@@ -1,0 +1,970 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>tooz.coordination &mdash; tooz 1.48.1.dev1 documentation</title>
+    
+    <link rel="stylesheet" href="../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../',
+        VERSION:     '1.48.1.dev1',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../_static/doctools.js"></script>
+    <link rel="top" title="tooz 1.48.1.dev1 documentation" href="../../index.html" />
+    <link rel="up" title="tooz" href="../tooz.html" /> 
+  </head>
+  <body>
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body">
+            
+  <h1>Source code for tooz.coordination</h1><div class="highlight"><pre>
+<span></span><span class="c1"># -*- coding: utf-8 -*-</span>
+<span class="c1">#</span>
+<span class="c1">#    Copyright (C) 2016 Red Hat, Inc.</span>
+<span class="c1">#    Copyright (C) 2013-2014 eNovance Inc. All Rights Reserved.</span>
+<span class="c1">#</span>
+<span class="c1">#    Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may</span>
+<span class="c1">#    not use this file except in compliance with the License. You may obtain</span>
+<span class="c1">#    a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#         http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1">#    Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1">#    distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="c1">#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="c1">#    License for the specific language governing permissions and limitations</span>
+<span class="c1">#    under the License.</span>
+
+<span class="kn">import</span> <span class="nn">abc</span>
+<span class="kn">import</span> <span class="nn">collections</span>
+<span class="kn">import</span> <span class="nn">enum</span>
+<span class="kn">import</span> <span class="nn">logging</span>
+<span class="kn">import</span> <span class="nn">threading</span>
+
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">excutils</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">netutils</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">timeutils</span>
+<span class="kn">import</span> <span class="nn">six</span>
+<span class="kn">from</span> <span class="nn">stevedore</span> <span class="kn">import</span> <span class="n">driver</span>
+
+<span class="kn">import</span> <span class="nn">tooz</span>
+<span class="kn">from</span> <span class="nn">tooz</span> <span class="kn">import</span> <span class="n">_retry</span>
+<span class="kn">from</span> <span class="nn">tooz</span> <span class="kn">import</span> <span class="n">partitioner</span>
+<span class="kn">from</span> <span class="nn">tooz</span> <span class="kn">import</span> <span class="n">utils</span>
+
+<span class="n">LOG</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+
+<span class="n">TOOZ_BACKENDS_NAMESPACE</span> <span class="o">=</span> <span class="s2">&quot;tooz.backends&quot;</span>
+
+
+<div class="viewcode-block" id="Characteristics"><a class="viewcode-back" href="../../drivers.html#tooz.coordination.Characteristics">[docs]</a><span class="k">class</span> <span class="nc">Characteristics</span><span class="p">(</span><span class="n">enum</span><span class="o">.</span><span class="n">Enum</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Attempts to describe the characteristic that a driver supports.&quot;&quot;&quot;</span>
+
+    <span class="n">DISTRIBUTED_ACROSS_THREADS</span> <span class="o">=</span> <span class="s1">&#39;DISTRIBUTED_ACROSS_THREADS&#39;</span>
+    <span class="sd">&quot;&quot;&quot;Coordinator components when used by multiple **threads** work</span>
+<span class="sd">       the same as if those components were only used by a single thread.&quot;&quot;&quot;</span>
+
+    <span class="n">DISTRIBUTED_ACROSS_PROCESSES</span> <span class="o">=</span> <span class="s1">&#39;DISTRIBUTED_ACROSS_PROCESSES&#39;</span>
+    <span class="sd">&quot;&quot;&quot;Coordinator components when used by multiple **processes** work</span>
+<span class="sd">       the same as if those components were only used by a single thread.&quot;&quot;&quot;</span>
+
+    <span class="n">DISTRIBUTED_ACROSS_HOSTS</span> <span class="o">=</span> <span class="s1">&#39;DISTRIBUTED_ACROSS_HOSTS&#39;</span>
+    <span class="sd">&quot;&quot;&quot;Coordinator components when used by multiple **hosts** work</span>
+<span class="sd">       the same as if those components were only used by a single thread.&quot;&quot;&quot;</span>
+
+    <span class="n">NON_TIMEOUT_BASED</span> <span class="o">=</span> <span class="s1">&#39;NON_TIMEOUT_BASED&#39;</span>
+    <span class="sd">&quot;&quot;&quot;The driver has the following property:</span>
+
+<span class="sd">    * Its operations are not based on the timeout of other clients, but on some</span>
+<span class="sd">    other more robust mechanisms.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">LINEARIZABLE</span> <span class="o">=</span> <span class="s1">&#39;LINEARIZABLE&#39;</span>
+    <span class="sd">&quot;&quot;&quot;The driver has the following properties:</span>
+
+<span class="sd">    * Ensures each operation must take place before its</span>
+<span class="sd">      completion time.</span>
+<span class="sd">    * Any operation invoked subsequently must take place</span>
+<span class="sd">      after the invocation and by extension, after the original operation</span>
+<span class="sd">      itself.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">SEQUENTIAL</span> <span class="o">=</span> <span class="s1">&#39;SEQUENTIAL&#39;</span>
+    <span class="sd">&quot;&quot;&quot;The driver has the following properties:</span>
+
+<span class="sd">    * Operations can take effect before or after completion – but all</span>
+<span class="sd">      operations retain the constraint that operations from any given process</span>
+<span class="sd">      must take place in that processes order.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">CAUSAL</span> <span class="o">=</span> <span class="s1">&#39;CAUSAL&#39;</span>
+    <span class="sd">&quot;&quot;&quot;The driver has the following properties:</span>
+
+<span class="sd">    * Does **not** have to enforce the order of every</span>
+<span class="sd">      operation from a process, perhaps, only causally related operations</span>
+<span class="sd">      must occur in order.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">SERIALIZABLE</span> <span class="o">=</span> <span class="s1">&#39;SERIALIZABLE&#39;</span>
+    <span class="sd">&quot;&quot;&quot;The driver has the following properties:</span>
+
+<span class="sd">    * The history of **all** operations is equivalent to</span>
+<span class="sd">      one that took place in some single atomic order but with unknown</span>
+<span class="sd">      invocation and completion times - it places no bounds on</span>
+<span class="sd">      time or order.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">SAME_VIEW_UNDER_PARTITIONS</span> <span class="o">=</span> <span class="s1">&#39;SAME_VIEW_UNDER_PARTITIONS&#39;</span>
+    <span class="sd">&quot;&quot;&quot;When a client is connected to a server and that server is partitioned</span>
+<span class="sd">    from a group of other servers it will (somehow) have the same view of</span>
+<span class="sd">    data as a client connected to a server on the other side of the</span>
+<span class="sd">    partition (typically this is accomplished by write availability being</span>
+<span class="sd">    lost and therefore nothing can change).</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">SAME_VIEW_ACROSS_CLIENTS</span> <span class="o">=</span> <span class="s1">&#39;SAME_VIEW_ACROSS_CLIENTS&#39;</span>
+    <span class="sd">&quot;&quot;&quot;A client connected to one server will *always* have the same view</span>
+<span class="sd">    every other client will have (no matter what server those other</span>
+<span class="sd">    clients are connected to). Typically this is a sacrifice in</span>
+<span class="sd">    write availability because before a write can be acknowledged it must</span>
+<span class="sd">    be acknowledged by *all* servers in a cluster (so that all clients</span>
+<span class="sd">    that are connected to those servers read the exact *same* thing).</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+</div>
+<span class="k">class</span> <span class="nc">Hooks</span><span class="p">(</span><span class="nb">list</span><span class="p">):</span>
+    <span class="k">def</span> <span class="nf">run</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="k">return</span> <span class="nb">list</span><span class="p">(</span><span class="nb">map</span><span class="p">(</span><span class="k">lambda</span> <span class="n">cb</span><span class="p">:</span> <span class="n">cb</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">),</span> <span class="bp">self</span><span class="p">))</span>
+
+
+<span class="k">class</span> <span class="nc">Event</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Base class for events.&quot;&quot;&quot;</span>
+
+
+<span class="k">class</span> <span class="nc">MemberJoinedGroup</span><span class="p">(</span><span class="n">Event</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A member joined a group event.&quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">group_id</span><span class="p">,</span> <span class="n">member_id</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">group_id</span> <span class="o">=</span> <span class="n">group_id</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">member_id</span> <span class="o">=</span> <span class="n">member_id</span>
+
+    <span class="k">def</span> <span class="fm">__repr__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="s2">&quot;&lt;</span><span class="si">%s</span><span class="s2">: group </span><span class="si">%s</span><span class="s2">: +member </span><span class="si">%s</span><span class="s2">&gt;&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="vm">__name__</span><span class="p">,</span>
+                                               <span class="bp">self</span><span class="o">.</span><span class="n">member_id</span><span class="p">,</span>
+                                               <span class="bp">self</span><span class="o">.</span><span class="n">group_id</span><span class="p">)</span>
+
+
+<span class="k">class</span> <span class="nc">MemberLeftGroup</span><span class="p">(</span><span class="n">Event</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A member left a group event.&quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">group_id</span><span class="p">,</span> <span class="n">member_id</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">group_id</span> <span class="o">=</span> <span class="n">group_id</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">member_id</span> <span class="o">=</span> <span class="n">member_id</span>
+
+    <span class="k">def</span> <span class="fm">__repr__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="s2">&quot;&lt;</span><span class="si">%s</span><span class="s2">: group </span><span class="si">%s</span><span class="s2">: -member </span><span class="si">%s</span><span class="s2">&gt;&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="vm">__name__</span><span class="p">,</span>
+                                               <span class="bp">self</span><span class="o">.</span><span class="n">member_id</span><span class="p">,</span>
+                                               <span class="bp">self</span><span class="o">.</span><span class="n">group_id</span><span class="p">)</span>
+
+
+<span class="k">class</span> <span class="nc">LeaderElected</span><span class="p">(</span><span class="n">Event</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A leader as been elected.&quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">group_id</span><span class="p">,</span> <span class="n">member_id</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">group_id</span> <span class="o">=</span> <span class="n">group_id</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">member_id</span> <span class="o">=</span> <span class="n">member_id</span>
+
+
+<span class="k">class</span> <span class="nc">Heart</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Coordination drivers main liveness pump (its heart).&quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">driver</span><span class="p">,</span> <span class="n">thread_cls</span><span class="o">=</span><span class="n">threading</span><span class="o">.</span><span class="n">Thread</span><span class="p">,</span>
+                 <span class="n">event_cls</span><span class="o">=</span><span class="n">threading</span><span class="o">.</span><span class="n">Event</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_thread_cls</span> <span class="o">=</span> <span class="n">thread_cls</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_dead</span> <span class="o">=</span> <span class="n">event_cls</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_finished</span> <span class="o">=</span> <span class="n">event_cls</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_finished</span><span class="o">.</span><span class="n">set</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_runner</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_driver</span> <span class="o">=</span> <span class="n">driver</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_beats</span> <span class="o">=</span> <span class="mi">0</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">beats</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;How many times the heart has beaten.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_beats</span>
+
+    <span class="k">def</span> <span class="nf">is_alive</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Returns if the heart is beating.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="ow">not</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_runner</span> <span class="ow">is</span> <span class="bp">None</span>
+                    <span class="ow">or</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_runner</span><span class="o">.</span><span class="n">is_alive</span><span class="p">()</span>
+                    <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">_finished</span><span class="o">.</span><span class="n">is_set</span><span class="p">())</span>
+
+    <span class="nd">@excutils.forever_retry_uncaught_exceptions</span>
+    <span class="k">def</span> <span class="nf">_beat_forever_until_stopped</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Inner beating loop.&quot;&quot;&quot;</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">while</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_dead</span><span class="o">.</span><span class="n">is_set</span><span class="p">():</span>
+                <span class="k">with</span> <span class="n">timeutils</span><span class="o">.</span><span class="n">StopWatch</span><span class="p">()</span> <span class="k">as</span> <span class="n">w</span><span class="p">:</span>
+                    <span class="n">wait_until_next_beat</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_driver</span><span class="o">.</span><span class="n">heartbeat</span><span class="p">()</span>
+                <span class="n">ran_for</span> <span class="o">=</span> <span class="n">w</span><span class="o">.</span><span class="n">elapsed</span><span class="p">()</span>
+                <span class="k">if</span> <span class="n">ran_for</span> <span class="o">&gt;</span> <span class="n">wait_until_next_beat</span><span class="p">:</span>
+                    <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
+                        <span class="s2">&quot;Heartbeating took too long to execute (it ran for&quot;</span>
+                        <span class="s2">&quot; </span><span class="si">%0.2f</span><span class="s2"> seconds which is </span><span class="si">%0.2f</span><span class="s2"> seconds longer than&quot;</span>
+                        <span class="s2">&quot; the next heartbeat idle time). This may cause&quot;</span>
+                        <span class="s2">&quot; timeouts (in locks, leadership, ...) to&quot;</span>
+                        <span class="s2">&quot; happen (which will not end well).&quot;</span><span class="p">,</span> <span class="n">ran_for</span><span class="p">,</span>
+                        <span class="n">ran_for</span> <span class="o">-</span> <span class="n">wait_until_next_beat</span><span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_beats</span> <span class="o">+=</span> <span class="mi">1</span>
+                <span class="c1"># NOTE(harlowja): use the event object for waiting and</span>
+                <span class="c1"># not a sleep function since doing that will allow this code</span>
+                <span class="c1"># to terminate early if stopped via the stop() method vs</span>
+                <span class="c1"># having to wait until the sleep function returns.</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_dead</span><span class="o">.</span><span class="n">wait</span><span class="p">(</span><span class="n">wait_until_next_beat</span><span class="p">)</span>
+        <span class="k">finally</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_finished</span><span class="o">.</span><span class="n">set</span><span class="p">()</span>
+
+    <span class="k">def</span> <span class="nf">start</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">thread_cls</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Starts the heart beating thread (noop if already started).&quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_alive</span><span class="p">():</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_finished</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_dead</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_beats</span> <span class="o">=</span> <span class="mi">0</span>
+            <span class="k">if</span> <span class="n">thread_cls</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="n">thread_cls</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_thread_cls</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_runner</span> <span class="o">=</span> <span class="n">thread_cls</span><span class="p">(</span><span class="n">target</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_beat_forever_until_stopped</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_runner</span><span class="o">.</span><span class="n">daemon</span> <span class="o">=</span> <span class="bp">True</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_runner</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+
+    <span class="k">def</span> <span class="nf">stop</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Requests the heart beating thread to stop beating.&quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_dead</span><span class="o">.</span><span class="n">set</span><span class="p">()</span>
+
+    <span class="k">def</span> <span class="nf">wait</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Wait up to given timeout for the heart beating thread to stop.&quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_finished</span><span class="o">.</span><span class="n">wait</span><span class="p">(</span><span class="n">timeout</span><span class="p">)</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_finished</span><span class="o">.</span><span class="n">is_set</span><span class="p">()</span>
+
+
+<div class="viewcode-block" id="CoordinationDriver"><a class="viewcode-back" href="../../developers.html#tooz.coordination.CoordinationDriver">[docs]</a><span class="k">class</span> <span class="nc">CoordinationDriver</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+
+    <span class="n">requires_beating</span> <span class="o">=</span> <span class="bp">False</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Usage requirement that if true requires that the :py:meth:`~.heartbeat`</span>
+<span class="sd">    be called periodically (at a given rate) to avoid locks, sessions and</span>
+<span class="sd">    other from being automatically closed/discarded by the coordinators</span>
+<span class="sd">    backing store.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">CHARACTERISTICS</span> <span class="o">=</span> <span class="p">()</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Tuple of :py:class:`~tooz.coordination.Characteristics` introspectable</span>
+<span class="sd">    enum member(s) that can be used to interogate how this driver works.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">member_id</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">CoordinationDriver</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_member_id</span> <span class="o">=</span> <span class="n">member_id</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_started</span> <span class="o">=</span> <span class="bp">False</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_hooks_join_group</span> <span class="o">=</span> <span class="n">collections</span><span class="o">.</span><span class="n">defaultdict</span><span class="p">(</span><span class="n">Hooks</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_hooks_leave_group</span> <span class="o">=</span> <span class="n">collections</span><span class="o">.</span><span class="n">defaultdict</span><span class="p">(</span><span class="n">Hooks</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_hooks_elected_leader</span> <span class="o">=</span> <span class="n">collections</span><span class="o">.</span><span class="n">defaultdict</span><span class="p">(</span><span class="n">Hooks</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">requires_beating</span> <span class="o">=</span> <span class="p">(</span>
+            <span class="n">CoordinationDriver</span><span class="o">.</span><span class="n">heartbeat</span> <span class="o">!=</span> <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="n">heartbeat</span>
+        <span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">heart</span> <span class="o">=</span> <span class="n">Heart</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_has_hooks_for_group</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">group_id</span><span class="p">):</span>
+        <span class="k">return</span> <span class="p">(</span><span class="n">group_id</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_hooks_join_group</span> <span class="ow">or</span>
+                <span class="n">group_id</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_hooks_leave_group</span><span class="p">)</span>
+
+<div class="viewcode-block" id="CoordinationDriver.join_partitioned_group"><a class="viewcode-back" href="../../developers.html#tooz.coordination.CoordinationDriver.join_partitioned_group">[docs]</a>    <span class="k">def</span> <span class="nf">join_partitioned_group</span><span class="p">(</span>
+            <span class="bp">self</span><span class="p">,</span> <span class="n">group_id</span><span class="p">,</span>
+            <span class="n">weight</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span>
+            <span class="n">partitions</span><span class="o">=</span><span class="n">partitioner</span><span class="o">.</span><span class="n">Partitioner</span><span class="o">.</span><span class="n">DEFAULT_PARTITION_NUMBER</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Join a group and get a partitioner.</span>
+
+<span class="sd">        A partitioner allows to distribute a bunch of objects across several</span>
+<span class="sd">        members using a consistent hash ring. Each object gets assigned (at</span>
+<span class="sd">        least) one member responsible for it. It&#39;s then possible to check which</span>
+<span class="sd">        object is owned by any member of the group.</span>
+
+<span class="sd">        This method also creates if necessary, and joins the group with the</span>
+<span class="sd">        selected weight.</span>
+
+<span class="sd">        :param group_id: The group to create a partitioner for.</span>
+<span class="sd">        :param weight: The weight to use in the hashring for this node.</span>
+<span class="sd">        :param partitions: The number of partitions to create.</span>
+<span class="sd">        :return: A :py:class:`~tooz.partitioner.Partitioner` object.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">join_group_create</span><span class="p">(</span>
+            <span class="n">group_id</span><span class="p">,</span> <span class="n">capabilities</span><span class="o">=</span><span class="n">utils</span><span class="o">.</span><span class="n">dumps</span><span class="p">({</span><span class="s1">&#39;weight&#39;</span><span class="p">:</span> <span class="n">weight</span><span class="p">}))</span>
+        <span class="k">return</span> <span class="n">partitioner</span><span class="o">.</span><span class="n">Partitioner</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">group_id</span><span class="p">)</span>
+</div>
+<div class="viewcode-block" id="CoordinationDriver.leave_partitioned_group"><a class="viewcode-back" href="../../developers.html#tooz.coordination.CoordinationDriver.leave_partitioned_group">[docs]</a>    <span class="k">def</span> <span class="nf">leave_partitioned_group</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">partitioner</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Leave a partitioned group.</span>
+
+<span class="sd">        This leaves the partitioned group and stop the partitioner.</span>
+<span class="sd">        :param group_id: The group to create a partitioner for.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">leave</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">leave_group</span><span class="p">(</span><span class="n">partitioner</span><span class="o">.</span><span class="n">group_id</span><span class="p">)</span>
+        <span class="n">partitioner</span><span class="o">.</span><span class="n">stop</span><span class="p">()</span>
+        <span class="k">return</span> <span class="n">leave</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
+</div>
+    <span class="nd">@staticmethod</span>
+<div class="viewcode-block" id="CoordinationDriver.run_watchers"><a class="viewcode-back" href="../../developers.html#tooz.coordination.CoordinationDriver.run_watchers">[docs]</a>    <span class="k">def</span> <span class="nf">run_watchers</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Run the watchers callback.</span>
+
+<span class="sd">        This may also activate :py:meth:`.run_elect_coordinator` (depending</span>
+<span class="sd">        on driver implementation).</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">raise</span> <span class="n">tooz</span><span class="o">.</span><span class="n">NotImplemented</span>
+</div>
+    <span class="nd">@staticmethod</span>
+<div class="viewcode-block" id="CoordinationDriver.run_elect_coordinator"><a class="viewcode-back" href="../../developers.html#tooz.coordination.CoordinationDriver.run_elect_coordinator">[docs]</a>    <span class="k">def</span> <span class="nf">run_elect_coordinator</span><span class="p">():</span>
+        <span class="sd">&quot;&quot;&quot;Try to leader elect this coordinator &amp; activate hooks on success.&quot;&quot;&quot;</span>
+        <span class="k">raise</span> <span class="n">tooz</span><span class="o">.</span><span class="n">NotImplemented</span>
+</div>
+<div class="viewcode-block" id="CoordinationDriver.watch_join_group"><a class="viewcode-back" href="../../developers.html#tooz.coordination.CoordinationDriver.watch_join_group">[docs]</a>    <span class="k">def</span> <span class="nf">watch_join_group</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">group_id</span><span class="p">,</span> <span class="n">callback</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Call a function when group_id sees a new member joined.</span>
+
+<span class="sd">        The callback functions will be executed when `run_watchers` is</span>
+<span class="sd">        called.</span>
+
+<span class="sd">        :param group_id: The group id to watch</span>
+<span class="sd">        :param callback: The function to execute when a member joins this group</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_hooks_join_group</span><span class="p">[</span><span class="n">group_id</span><span class="p">]</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">callback</span><span class="p">)</span>
+</div>
+<div class="viewcode-block" id="CoordinationDriver.unwatch_join_group"><a class="viewcode-back" href="../../developers.html#tooz.coordination.CoordinationDriver.unwatch_join_group">[docs]</a>    <span class="k">def</span> <span class="nf">unwatch_join_group</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">group_id</span><span class="p">,</span> <span class="n">callback</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Stop executing a function when a group_id sees a new member joined.</span>
+
+<span class="sd">        :param group_id: The group id to unwatch</span>
+<span class="sd">        :param callback: The function that was executed when a member joined</span>
+<span class="sd">                         this group</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="c1"># Check if group_id is in hooks to avoid creating a default empty</span>
+            <span class="c1"># entry in hooks list.</span>
+            <span class="k">if</span> <span class="n">group_id</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_hooks_join_group</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_hooks_join_group</span><span class="p">[</span><span class="n">group_id</span><span class="p">]</span><span class="o">.</span><span class="n">remove</span><span class="p">(</span><span class="n">callback</span><span class="p">)</span>
+        <span class="k">except</span> <span class="ne">ValueError</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">WatchCallbackNotFound</span><span class="p">(</span><span class="n">group_id</span><span class="p">,</span> <span class="n">callback</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_hooks_join_group</span><span class="p">[</span><span class="n">group_id</span><span class="p">]:</span>
+            <span class="k">del</span> <span class="bp">self</span><span class="o">.</span><span class="n">_hooks_join_group</span><span class="p">[</span><span class="n">group_id</span><span class="p">]</span>
+</div>
+<div class="viewcode-block" id="CoordinationDriver.watch_leave_group"><a class="viewcode-back" href="../../developers.html#tooz.coordination.CoordinationDriver.watch_leave_group">[docs]</a>    <span class="k">def</span> <span class="nf">watch_leave_group</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">group_id</span><span class="p">,</span> <span class="n">callback</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Call a function when group_id sees a new member leaving.</span>
+
+<span class="sd">        The callback functions will be executed when `run_watchers` is</span>
+<span class="sd">        called.</span>
+
+<span class="sd">        :param group_id: The group id to watch</span>
+<span class="sd">        :param callback: The function to execute when a member leaves this</span>
+<span class="sd">                         group</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_hooks_leave_group</span><span class="p">[</span><span class="n">group_id</span><span class="p">]</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">callback</span><span class="p">)</span>
+</div>
+<div class="viewcode-block" id="CoordinationDriver.unwatch_leave_group"><a class="viewcode-back" href="../../developers.html#tooz.coordination.CoordinationDriver.unwatch_leave_group">[docs]</a>    <span class="k">def</span> <span class="nf">unwatch_leave_group</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">group_id</span><span class="p">,</span> <span class="n">callback</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Stop executing a function when a group_id sees a new member leaving.</span>
+
+<span class="sd">        :param group_id: The group id to unwatch</span>
+<span class="sd">        :param callback: The function that was executed when a member left</span>
+<span class="sd">                         this group</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="c1"># Check if group_id is in hooks to avoid creating a default empty</span>
+            <span class="c1"># entry in hooks list.</span>
+            <span class="k">if</span> <span class="n">group_id</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_hooks_leave_group</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_hooks_leave_group</span><span class="p">[</span><span class="n">group_id</span><span class="p">]</span><span class="o">.</span><span class="n">remove</span><span class="p">(</span><span class="n">callback</span><span class="p">)</span>
+        <span class="k">except</span> <span class="ne">ValueError</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">WatchCallbackNotFound</span><span class="p">(</span><span class="n">group_id</span><span class="p">,</span> <span class="n">callback</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_hooks_leave_group</span><span class="p">[</span><span class="n">group_id</span><span class="p">]:</span>
+            <span class="k">del</span> <span class="bp">self</span><span class="o">.</span><span class="n">_hooks_leave_group</span><span class="p">[</span><span class="n">group_id</span><span class="p">]</span>
+</div>
+<div class="viewcode-block" id="CoordinationDriver.watch_elected_as_leader"><a class="viewcode-back" href="../../developers.html#tooz.coordination.CoordinationDriver.watch_elected_as_leader">[docs]</a>    <span class="k">def</span> <span class="nf">watch_elected_as_leader</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">group_id</span><span class="p">,</span> <span class="n">callback</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Call a function when member gets elected as leader.</span>
+
+<span class="sd">        The callback functions will be executed when `run_watchers` is</span>
+<span class="sd">        called.</span>
+
+<span class="sd">        :param group_id: The group id to watch</span>
+<span class="sd">        :param callback: The function to execute when a member leaves this</span>
+<span class="sd">                         group</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_hooks_elected_leader</span><span class="p">[</span><span class="n">group_id</span><span class="p">]</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">callback</span><span class="p">)</span>
+</div>
+<div class="viewcode-block" id="CoordinationDriver.unwatch_elected_as_leader"><a class="viewcode-back" href="../../developers.html#tooz.coordination.CoordinationDriver.unwatch_elected_as_leader">[docs]</a>    <span class="k">def</span> <span class="nf">unwatch_elected_as_leader</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">group_id</span><span class="p">,</span> <span class="n">callback</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Call a function when member gets elected as leader.</span>
+
+<span class="sd">        The callback functions will be executed when `run_watchers` is</span>
+<span class="sd">        called.</span>
+
+<span class="sd">        :param group_id: The group id to watch</span>
+<span class="sd">        :param callback: The function to execute when a member leaves this</span>
+<span class="sd">                         group</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_hooks_elected_leader</span><span class="p">[</span><span class="n">group_id</span><span class="p">]</span><span class="o">.</span><span class="n">remove</span><span class="p">(</span><span class="n">callback</span><span class="p">)</span>
+        <span class="k">except</span> <span class="ne">ValueError</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">WatchCallbackNotFound</span><span class="p">(</span><span class="n">group_id</span><span class="p">,</span> <span class="n">callback</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_hooks_elected_leader</span><span class="p">[</span><span class="n">group_id</span><span class="p">]:</span>
+            <span class="k">del</span> <span class="bp">self</span><span class="o">.</span><span class="n">_hooks_elected_leader</span><span class="p">[</span><span class="n">group_id</span><span class="p">]</span>
+</div>
+    <span class="nd">@staticmethod</span>
+<div class="viewcode-block" id="CoordinationDriver.stand_down_group_leader"><a class="viewcode-back" href="../../developers.html#tooz.coordination.CoordinationDriver.stand_down_group_leader">[docs]</a>    <span class="k">def</span> <span class="nf">stand_down_group_leader</span><span class="p">(</span><span class="n">group_id</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Stand down as the group leader if we are.</span>
+
+<span class="sd">        :param group_id: The group where we don&#39;t want to be a leader anymore</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">raise</span> <span class="n">tooz</span><span class="o">.</span><span class="n">NotImplemented</span>
+</div>
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">is_started</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_started</span>
+
+<div class="viewcode-block" id="CoordinationDriver.start"><a class="viewcode-back" href="../../developers.html#tooz.coordination.CoordinationDriver.start">[docs]</a>    <span class="k">def</span> <span class="nf">start</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">start_heart</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Start the service engine.</span>
+
+<span class="sd">        If needed, the establishment of a connection to the servers</span>
+<span class="sd">        is initiated.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_started</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">tooz</span><span class="o">.</span><span class="n">ToozError</span><span class="p">(</span>
+                <span class="s2">&quot;Can not start a driver which has not been stopped&quot;</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_start</span><span class="p">()</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">requires_beating</span> <span class="ow">and</span> <span class="n">start_heart</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">heart</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_started</span> <span class="o">=</span> <span class="bp">True</span>
+        <span class="c1"># Tracks which group are joined</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_joined_groups</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+</div>
+    <span class="k">def</span> <span class="nf">_start</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">pass</span>
+
+<div class="viewcode-block" id="CoordinationDriver.stop"><a class="viewcode-back" href="../../developers.html#tooz.coordination.CoordinationDriver.stop">[docs]</a>    <span class="k">def</span> <span class="nf">stop</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Stop the service engine.</span>
+
+<span class="sd">        If needed, the connection to servers is closed and the client will</span>
+<span class="sd">        disappear from all joined groups.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_started</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">tooz</span><span class="o">.</span><span class="n">ToozError</span><span class="p">(</span>
+                <span class="s2">&quot;Can not stop a driver which has not been started&quot;</span><span class="p">)</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">heart</span><span class="o">.</span><span class="n">is_alive</span><span class="p">():</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">heart</span><span class="o">.</span><span class="n">stop</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">heart</span><span class="o">.</span><span class="n">wait</span><span class="p">()</span>
+        <span class="c1"># Some of the drivers modify joined_groups when being called to leave</span>
+        <span class="c1"># so clone it so that we aren&#39;t modifying something while iterating.</span>
+        <span class="n">joined_groups</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_joined_groups</span><span class="o">.</span><span class="n">copy</span><span class="p">()</span>
+        <span class="n">leaving</span> <span class="o">=</span> <span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">leave_group</span><span class="p">(</span><span class="n">group</span><span class="p">)</span> <span class="k">for</span> <span class="n">group</span> <span class="ow">in</span> <span class="n">joined_groups</span><span class="p">]</span>
+        <span class="k">for</span> <span class="n">fut</span> <span class="ow">in</span> <span class="n">leaving</span><span class="p">:</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">fut</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
+            <span class="k">except</span> <span class="n">tooz</span><span class="o">.</span><span class="n">ToozError</span><span class="p">:</span>
+                <span class="c1"># Whatever happens, ignore. Maybe we got booted out/never</span>
+                <span class="c1"># existed in the first place, or something is down, but we just</span>
+                <span class="c1"># want to call _stop after whatever happens to not leak any</span>
+                <span class="c1"># connection.</span>
+                <span class="k">pass</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_stop</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_started</span> <span class="o">=</span> <span class="bp">False</span>
+</div>
+    <span class="k">def</span> <span class="nf">_stop</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">pass</span>
+
+    <span class="nd">@staticmethod</span>
+<div class="viewcode-block" id="CoordinationDriver.create_group"><a class="viewcode-back" href="../../developers.html#tooz.coordination.CoordinationDriver.create_group">[docs]</a>    <span class="k">def</span> <span class="nf">create_group</span><span class="p">(</span><span class="n">group_id</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Request the creation of a group asynchronously.</span>
+
+<span class="sd">        :param group_id: the id of the group to create</span>
+<span class="sd">        :type group_id: str</span>
+<span class="sd">        :returns: None</span>
+<span class="sd">        :rtype: CoordAsyncResult</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">raise</span> <span class="n">tooz</span><span class="o">.</span><span class="n">NotImplemented</span>
+</div>
+    <span class="nd">@staticmethod</span>
+<div class="viewcode-block" id="CoordinationDriver.get_groups"><a class="viewcode-back" href="../../developers.html#tooz.coordination.CoordinationDriver.get_groups">[docs]</a>    <span class="k">def</span> <span class="nf">get_groups</span><span class="p">():</span>
+        <span class="sd">&quot;&quot;&quot;Return the list composed by all groups ids asynchronously.</span>
+
+<span class="sd">        :returns: the list of all created group ids</span>
+<span class="sd">        :rtype: CoordAsyncResult</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">raise</span> <span class="n">tooz</span><span class="o">.</span><span class="n">NotImplemented</span>
+</div>
+    <span class="nd">@staticmethod</span>
+<div class="viewcode-block" id="CoordinationDriver.join_group"><a class="viewcode-back" href="../../developers.html#tooz.coordination.CoordinationDriver.join_group">[docs]</a>    <span class="k">def</span> <span class="nf">join_group</span><span class="p">(</span><span class="n">group_id</span><span class="p">,</span> <span class="n">capabilities</span><span class="o">=</span><span class="sa">b</span><span class="s2">&quot;&quot;</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Join a group and establish group membership asynchronously.</span>
+
+<span class="sd">        :param group_id: the id of the group to join</span>
+<span class="sd">        :type group_id: str</span>
+<span class="sd">        :param capabilities: the capabilities of the joined member</span>
+<span class="sd">        :type capabilities: object (typically str)</span>
+<span class="sd">        :returns: None</span>
+<span class="sd">        :rtype: CoordAsyncResult</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">raise</span> <span class="n">tooz</span><span class="o">.</span><span class="n">NotImplemented</span>
+</div>
+    <span class="nd">@_retry.retry</span><span class="p">()</span>
+<div class="viewcode-block" id="CoordinationDriver.join_group_create"><a class="viewcode-back" href="../../developers.html#tooz.coordination.CoordinationDriver.join_group_create">[docs]</a>    <span class="k">def</span> <span class="nf">join_group_create</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">group_id</span><span class="p">,</span> <span class="n">capabilities</span><span class="o">=</span><span class="sa">b</span><span class="s2">&quot;&quot;</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Join a group and create it if necessary.</span>
+
+<span class="sd">        If the group cannot be joined because it does not exist, it is created</span>
+<span class="sd">        before being joined.</span>
+
+<span class="sd">        This function will keep retrying until it can create the group and join</span>
+<span class="sd">        it. Since nothing is transactional, it may have to retry several times</span>
+<span class="sd">        if another member is creating/deleting the group at the same time.</span>
+
+<span class="sd">        :param group_id: Identifier of the group to join and create</span>
+<span class="sd">        :param capabilities: the capabilities of the joined member</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">req</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">join_group</span><span class="p">(</span><span class="n">group_id</span><span class="p">,</span> <span class="n">capabilities</span><span class="p">)</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">req</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
+        <span class="k">except</span> <span class="n">GroupNotCreated</span><span class="p">:</span>
+            <span class="n">req</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">create_group</span><span class="p">(</span><span class="n">group_id</span><span class="p">)</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">req</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
+            <span class="k">except</span> <span class="n">GroupAlreadyExist</span><span class="p">:</span>
+                <span class="c1"># The group might have been created in the meantime, ignore</span>
+                <span class="k">pass</span>
+            <span class="c1"># Now retry to join the group</span>
+            <span class="k">raise</span> <span class="n">_retry</span><span class="o">.</span><span class="n">TryAgain</span>
+</div>
+    <span class="nd">@staticmethod</span>
+<div class="viewcode-block" id="CoordinationDriver.leave_group"><a class="viewcode-back" href="../../developers.html#tooz.coordination.CoordinationDriver.leave_group">[docs]</a>    <span class="k">def</span> <span class="nf">leave_group</span><span class="p">(</span><span class="n">group_id</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Leave a group asynchronously.</span>
+
+<span class="sd">        :param group_id: the id of the group to leave</span>
+<span class="sd">        :type group_id: str</span>
+<span class="sd">        :returns: None</span>
+<span class="sd">        :rtype: CoordAsyncResult</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">raise</span> <span class="n">tooz</span><span class="o">.</span><span class="n">NotImplemented</span>
+</div>
+    <span class="nd">@staticmethod</span>
+<div class="viewcode-block" id="CoordinationDriver.delete_group"><a class="viewcode-back" href="../../developers.html#tooz.coordination.CoordinationDriver.delete_group">[docs]</a>    <span class="k">def</span> <span class="nf">delete_group</span><span class="p">(</span><span class="n">group_id</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Delete a group asynchronously.</span>
+
+<span class="sd">        :param group_id: the id of the group to leave</span>
+<span class="sd">        :type group_id: str</span>
+<span class="sd">        :returns: Result</span>
+<span class="sd">        :rtype: CoordAsyncResult</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">raise</span> <span class="n">tooz</span><span class="o">.</span><span class="n">NotImplemented</span>
+</div>
+    <span class="nd">@staticmethod</span>
+<div class="viewcode-block" id="CoordinationDriver.get_members"><a class="viewcode-back" href="../../developers.html#tooz.coordination.CoordinationDriver.get_members">[docs]</a>    <span class="k">def</span> <span class="nf">get_members</span><span class="p">(</span><span class="n">group_id</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Return the set of all members ids of the specified group.</span>
+
+<span class="sd">        :returns: set of all created group ids</span>
+<span class="sd">        :rtype: CoordAsyncResult</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">raise</span> <span class="n">tooz</span><span class="o">.</span><span class="n">NotImplemented</span>
+</div>
+    <span class="nd">@staticmethod</span>
+<div class="viewcode-block" id="CoordinationDriver.get_member_capabilities"><a class="viewcode-back" href="../../developers.html#tooz.coordination.CoordinationDriver.get_member_capabilities">[docs]</a>    <span class="k">def</span> <span class="nf">get_member_capabilities</span><span class="p">(</span><span class="n">group_id</span><span class="p">,</span> <span class="n">member_id</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Return the capabilities of a member asynchronously.</span>
+
+<span class="sd">        :param group_id: the id of the group of the member</span>
+<span class="sd">        :type group_id: str</span>
+<span class="sd">        :param member_id: the id of the member</span>
+<span class="sd">        :type member_id: str</span>
+<span class="sd">        :returns: capabilities of a member</span>
+<span class="sd">        :rtype: CoordAsyncResult</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">raise</span> <span class="n">tooz</span><span class="o">.</span><span class="n">NotImplemented</span>
+</div>
+    <span class="nd">@staticmethod</span>
+<div class="viewcode-block" id="CoordinationDriver.get_member_info"><a class="viewcode-back" href="../../developers.html#tooz.coordination.CoordinationDriver.get_member_info">[docs]</a>    <span class="k">def</span> <span class="nf">get_member_info</span><span class="p">(</span><span class="n">group_id</span><span class="p">,</span> <span class="n">member_id</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Return the statistics and capabilities of a member asynchronously.</span>
+
+<span class="sd">        :param group_id: the id of the group of the member</span>
+<span class="sd">        :type group_id: str</span>
+<span class="sd">        :param member_id: the id of the member</span>
+<span class="sd">        :type member_id: str</span>
+<span class="sd">        :returns: capabilities and statistics of a member</span>
+<span class="sd">        :rtype: CoordAsyncResult</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">raise</span> <span class="n">tooz</span><span class="o">.</span><span class="n">NotImplemented</span>
+</div>
+    <span class="nd">@staticmethod</span>
+<div class="viewcode-block" id="CoordinationDriver.update_capabilities"><a class="viewcode-back" href="../../developers.html#tooz.coordination.CoordinationDriver.update_capabilities">[docs]</a>    <span class="k">def</span> <span class="nf">update_capabilities</span><span class="p">(</span><span class="n">group_id</span><span class="p">,</span> <span class="n">capabilities</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Update member capabilities in the specified group.</span>
+
+<span class="sd">        :param group_id: the id of the group of the current member</span>
+<span class="sd">        :type group_id: str</span>
+<span class="sd">        :param capabilities: the capabilities of the updated member</span>
+<span class="sd">        :type capabilities: object (typically str)</span>
+<span class="sd">        :returns: None</span>
+<span class="sd">        :rtype: CoordAsyncResult</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">raise</span> <span class="n">tooz</span><span class="o">.</span><span class="n">NotImplemented</span>
+</div>
+    <span class="nd">@staticmethod</span>
+<div class="viewcode-block" id="CoordinationDriver.get_leader"><a class="viewcode-back" href="../../developers.html#tooz.coordination.CoordinationDriver.get_leader">[docs]</a>    <span class="k">def</span> <span class="nf">get_leader</span><span class="p">(</span><span class="n">group_id</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Return the leader for a group.</span>
+
+<span class="sd">        :param group_id: the id of the group:</span>
+<span class="sd">        :returns: the leader</span>
+<span class="sd">        :rtype: CoordAsyncResult</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">raise</span> <span class="n">tooz</span><span class="o">.</span><span class="n">NotImplemented</span>
+</div>
+    <span class="nd">@staticmethod</span>
+<div class="viewcode-block" id="CoordinationDriver.get_lock"><a class="viewcode-back" href="../../developers.html#tooz.coordination.CoordinationDriver.get_lock">[docs]</a>    <span class="k">def</span> <span class="nf">get_lock</span><span class="p">(</span><span class="n">name</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Return a distributed lock.</span>
+
+<span class="sd">        This is a exclusive lock, a second call to acquire() will block or</span>
+<span class="sd">        return False.</span>
+
+<span class="sd">        :param name: The lock name that is used to identify it across all</span>
+<span class="sd">                     nodes.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">raise</span> <span class="n">tooz</span><span class="o">.</span><span class="n">NotImplemented</span>
+</div>
+    <span class="nd">@staticmethod</span>
+<div class="viewcode-block" id="CoordinationDriver.heartbeat"><a class="viewcode-back" href="../../developers.html#tooz.coordination.CoordinationDriver.heartbeat">[docs]</a>    <span class="k">def</span> <span class="nf">heartbeat</span><span class="p">():</span>
+        <span class="sd">&quot;&quot;&quot;Update member status to indicate it is still alive.</span>
+
+<span class="sd">        Method to run once in a while to be sure that the member is not dead</span>
+<span class="sd">        and is still an active member of a group.</span>
+
+<span class="sd">        :return: The number of seconds to wait before sending a new heartbeat.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">pass</span>
+
+</div></div>
+<span class="nd">@six.add_metaclass</span><span class="p">(</span><span class="n">abc</span><span class="o">.</span><span class="n">ABCMeta</span><span class="p">)</span>
+<span class="k">class</span> <span class="nc">CoordAsyncResult</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Representation of an asynchronous task.</span>
+
+<span class="sd">    Every call API returns an CoordAsyncResult object on which the result or</span>
+<span class="sd">    the status of the task can be requested.</span>
+
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="nd">@abc.abstractmethod</span>
+    <span class="k">def</span> <span class="nf">get</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="mi">10</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Retrieve the result of the corresponding asynchronous call.</span>
+
+<span class="sd">        :param timeout: block until the timeout expire.</span>
+<span class="sd">        :type timeout: float</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+
+    <span class="nd">@abc.abstractmethod</span>
+    <span class="k">def</span> <span class="nf">done</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Returns True if the task is done, False otherwise.&quot;&quot;&quot;</span>
+
+
+<span class="k">class</span> <span class="nc">CoordinationDriverCachedRunWatchers</span><span class="p">(</span><span class="n">CoordinationDriver</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Coordination driver with a `run_watchers` implementation.</span>
+
+<span class="sd">    This implementation of `run_watchers` is based on a cache of the group</span>
+<span class="sd">    members between each run of `run_watchers` that is being updated between</span>
+<span class="sd">    each run.</span>
+
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">member_id</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">CoordinationDriverCachedRunWatchers</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">member_id</span><span class="p">)</span>
+        <span class="c1"># A cache for group members</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_group_members</span> <span class="o">=</span> <span class="n">collections</span><span class="o">.</span><span class="n">defaultdict</span><span class="p">(</span><span class="nb">set</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_joined_groups</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+
+    <span class="k">def</span> <span class="nf">_init_watch_group</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">group_id</span><span class="p">):</span>
+        <span class="n">members</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_members</span><span class="p">(</span><span class="n">group_id</span><span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
+        <span class="k">if</span> <span class="n">group_id</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_group_members</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_group_members</span><span class="p">[</span><span class="n">group_id</span><span class="p">]</span> <span class="o">=</span> <span class="n">members</span>
+
+    <span class="k">def</span> <span class="nf">watch_join_group</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">group_id</span><span class="p">,</span> <span class="n">callback</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_init_watch_group</span><span class="p">(</span><span class="n">group_id</span><span class="p">)</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">CoordinationDriverCachedRunWatchers</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">watch_join_group</span><span class="p">(</span>
+            <span class="n">group_id</span><span class="p">,</span> <span class="n">callback</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">unwatch_join_group</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">group_id</span><span class="p">,</span> <span class="n">callback</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">CoordinationDriverCachedRunWatchers</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">unwatch_join_group</span><span class="p">(</span>
+            <span class="n">group_id</span><span class="p">,</span> <span class="n">callback</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="p">(</span><span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_has_hooks_for_group</span><span class="p">(</span><span class="n">group_id</span><span class="p">)</span> <span class="ow">and</span>
+           <span class="n">group_id</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_group_members</span><span class="p">):</span>
+            <span class="k">del</span> <span class="bp">self</span><span class="o">.</span><span class="n">_group_members</span><span class="p">[</span><span class="n">group_id</span><span class="p">]</span>
+
+    <span class="k">def</span> <span class="nf">watch_leave_group</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">group_id</span><span class="p">,</span> <span class="n">callback</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_init_watch_group</span><span class="p">(</span><span class="n">group_id</span><span class="p">)</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">CoordinationDriverCachedRunWatchers</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">watch_leave_group</span><span class="p">(</span>
+            <span class="n">group_id</span><span class="p">,</span> <span class="n">callback</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">unwatch_leave_group</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">group_id</span><span class="p">,</span> <span class="n">callback</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">CoordinationDriverCachedRunWatchers</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">unwatch_leave_group</span><span class="p">(</span>
+            <span class="n">group_id</span><span class="p">,</span> <span class="n">callback</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="p">(</span><span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_has_hooks_for_group</span><span class="p">(</span><span class="n">group_id</span><span class="p">)</span> <span class="ow">and</span>
+           <span class="n">group_id</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_group_members</span><span class="p">):</span>
+            <span class="k">del</span> <span class="bp">self</span><span class="o">.</span><span class="n">_group_members</span><span class="p">[</span><span class="n">group_id</span><span class="p">]</span>
+
+    <span class="k">def</span> <span class="nf">run_watchers</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="k">with</span> <span class="n">timeutils</span><span class="o">.</span><span class="n">StopWatch</span><span class="p">(</span><span class="n">duration</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span> <span class="k">as</span> <span class="n">w</span><span class="p">:</span>
+            <span class="n">result</span> <span class="o">=</span> <span class="p">[]</span>
+            <span class="n">group_with_hooks</span> <span class="o">=</span> <span class="nb">set</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_hooks_join_group</span><span class="o">.</span><span class="n">keys</span><span class="p">())</span><span class="o">.</span><span class="n">union</span><span class="p">(</span>
+                <span class="nb">set</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_hooks_leave_group</span><span class="o">.</span><span class="n">keys</span><span class="p">()))</span>
+            <span class="k">for</span> <span class="n">group_id</span> <span class="ow">in</span> <span class="n">group_with_hooks</span><span class="p">:</span>
+                <span class="k">try</span><span class="p">:</span>
+                    <span class="n">group_members</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_members</span><span class="p">(</span><span class="n">group_id</span><span class="p">)</span><span class="o">.</span><span class="n">get</span><span class="p">(</span>
+                        <span class="n">timeout</span><span class="o">=</span><span class="n">w</span><span class="o">.</span><span class="n">leftover</span><span class="p">(</span><span class="n">return_none</span><span class="o">=</span><span class="bp">True</span><span class="p">))</span>
+                <span class="k">except</span> <span class="n">GroupNotCreated</span><span class="p">:</span>
+                    <span class="n">group_members</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+                <span class="k">if</span> <span class="p">(</span><span class="n">group_id</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_joined_groups</span> <span class="ow">and</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">_member_id</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">group_members</span><span class="p">):</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_joined_groups</span><span class="o">.</span><span class="n">discard</span><span class="p">(</span><span class="n">group_id</span><span class="p">)</span>
+                <span class="n">old_group_members</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_group_members</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">group_id</span><span class="p">,</span> <span class="nb">set</span><span class="p">())</span>
+                <span class="k">for</span> <span class="n">member_id</span> <span class="ow">in</span> <span class="p">(</span><span class="n">group_members</span> <span class="o">-</span> <span class="n">old_group_members</span><span class="p">):</span>
+                    <span class="n">result</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">_hooks_join_group</span><span class="p">[</span><span class="n">group_id</span><span class="p">]</span><span class="o">.</span><span class="n">run</span><span class="p">(</span>
+                            <span class="n">MemberJoinedGroup</span><span class="p">(</span><span class="n">group_id</span><span class="p">,</span> <span class="n">member_id</span><span class="p">)))</span>
+                <span class="k">for</span> <span class="n">member_id</span> <span class="ow">in</span> <span class="p">(</span><span class="n">old_group_members</span> <span class="o">-</span> <span class="n">group_members</span><span class="p">):</span>
+                    <span class="n">result</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">_hooks_leave_group</span><span class="p">[</span><span class="n">group_id</span><span class="p">]</span><span class="o">.</span><span class="n">run</span><span class="p">(</span>
+                            <span class="n">MemberLeftGroup</span><span class="p">(</span><span class="n">group_id</span><span class="p">,</span> <span class="n">member_id</span><span class="p">)))</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_group_members</span><span class="p">[</span><span class="n">group_id</span><span class="p">]</span> <span class="o">=</span> <span class="n">group_members</span>
+            <span class="k">return</span> <span class="n">result</span>
+
+
+<span class="k">def</span> <span class="nf">get_coordinator</span><span class="p">(</span><span class="n">backend_url</span><span class="p">,</span> <span class="n">member_id</span><span class="p">,</span>
+                    <span class="n">characteristics</span><span class="o">=</span><span class="nb">frozenset</span><span class="p">(),</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Initialize and load the backend.</span>
+
+<span class="sd">    :param backend_url: the backend URL to use</span>
+<span class="sd">    :type backend: str</span>
+<span class="sd">    :param member_id: the id of the member</span>
+<span class="sd">    :type member_id: str</span>
+<span class="sd">    :param characteristics: set</span>
+<span class="sd">    :type characteristics: set of :py:class:`.Characteristics` that will</span>
+<span class="sd">                           be matched to the requested driver (this **will**</span>
+<span class="sd">                           become a **required** parameter in a future tooz</span>
+<span class="sd">                           version)</span>
+<span class="sd">    :param kwargs: additional coordinator options (these take precedence over</span>
+<span class="sd">                   options of the **same** name found in the ``backend_url``</span>
+<span class="sd">                   arguments query string)</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">parsed_url</span> <span class="o">=</span> <span class="n">netutils</span><span class="o">.</span><span class="n">urlsplit</span><span class="p">(</span><span class="n">backend_url</span><span class="p">)</span>
+    <span class="n">parsed_qs</span> <span class="o">=</span> <span class="n">six</span><span class="o">.</span><span class="n">moves</span><span class="o">.</span><span class="n">urllib</span><span class="o">.</span><span class="n">parse</span><span class="o">.</span><span class="n">parse_qs</span><span class="p">(</span><span class="n">parsed_url</span><span class="o">.</span><span class="n">query</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">kwargs</span><span class="p">:</span>
+        <span class="n">options</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="k">for</span> <span class="p">(</span><span class="n">k</span><span class="p">,</span> <span class="n">v</span><span class="p">)</span> <span class="ow">in</span> <span class="n">six</span><span class="o">.</span><span class="n">iteritems</span><span class="p">(</span><span class="n">kwargs</span><span class="p">):</span>
+            <span class="n">options</span><span class="p">[</span><span class="n">k</span><span class="p">]</span> <span class="o">=</span> <span class="p">[</span><span class="n">v</span><span class="p">]</span>
+        <span class="k">for</span> <span class="p">(</span><span class="n">k</span><span class="p">,</span> <span class="n">v</span><span class="p">)</span> <span class="ow">in</span> <span class="n">six</span><span class="o">.</span><span class="n">iteritems</span><span class="p">(</span><span class="n">parsed_qs</span><span class="p">):</span>
+            <span class="k">if</span> <span class="n">k</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">options</span><span class="p">:</span>
+                <span class="n">options</span><span class="p">[</span><span class="n">k</span><span class="p">]</span> <span class="o">=</span> <span class="n">v</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">options</span> <span class="o">=</span> <span class="n">parsed_qs</span>
+    <span class="n">d</span> <span class="o">=</span> <span class="n">driver</span><span class="o">.</span><span class="n">DriverManager</span><span class="p">(</span>
+        <span class="n">namespace</span><span class="o">=</span><span class="n">TOOZ_BACKENDS_NAMESPACE</span><span class="p">,</span>
+        <span class="n">name</span><span class="o">=</span><span class="n">parsed_url</span><span class="o">.</span><span class="n">scheme</span><span class="p">,</span>
+        <span class="n">invoke_on_load</span><span class="o">=</span><span class="bp">True</span><span class="p">,</span>
+        <span class="n">invoke_args</span><span class="o">=</span><span class="p">(</span><span class="n">member_id</span><span class="p">,</span> <span class="n">parsed_url</span><span class="p">,</span> <span class="n">options</span><span class="p">))</span><span class="o">.</span><span class="n">driver</span>
+    <span class="n">characteristics</span> <span class="o">=</span> <span class="nb">set</span><span class="p">(</span><span class="n">characteristics</span><span class="p">)</span>
+    <span class="n">driver_characteristics</span> <span class="o">=</span> <span class="nb">set</span><span class="p">(</span><span class="nb">getattr</span><span class="p">(</span><span class="n">d</span><span class="p">,</span> <span class="s1">&#39;CHARACTERISTICS&#39;</span><span class="p">,</span> <span class="nb">set</span><span class="p">()))</span>
+    <span class="n">missing_characteristics</span> <span class="o">=</span> <span class="n">characteristics</span> <span class="o">-</span> <span class="n">driver_characteristics</span>
+    <span class="k">if</span> <span class="n">missing_characteristics</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">ToozDriverChosenPoorly</span><span class="p">(</span><span class="s2">&quot;Desired characteristics </span><span class="si">%s</span><span class="s2">&quot;</span>
+                                     <span class="s2">&quot; is not a strict subset of driver&quot;</span>
+                                     <span class="s2">&quot; characteristics </span><span class="si">%s</span><span class="s2">, </span><span class="si">%s</span><span class="s2">&quot;</span>
+                                     <span class="s2">&quot; characteristics were not found&quot;</span>
+                                     <span class="o">%</span> <span class="p">(</span><span class="n">characteristics</span><span class="p">,</span>
+                                        <span class="n">driver_characteristics</span><span class="p">,</span>
+                                        <span class="n">missing_characteristics</span><span class="p">))</span>
+    <span class="k">return</span> <span class="n">d</span>
+
+
+<span class="c1"># TODO(harlowja): We&#39;ll have to figure out a way to remove this &#39;alias&#39; at</span>
+<span class="c1"># some point in the future (when we have a better way to tell people it has</span>
+<span class="c1"># moved without messing up their exception catching hierarchy).</span>
+<span class="n">ToozError</span> <span class="o">=</span> <span class="n">tooz</span><span class="o">.</span><span class="n">ToozError</span>
+
+
+<span class="k">class</span> <span class="nc">ToozDriverChosenPoorly</span><span class="p">(</span><span class="n">tooz</span><span class="o">.</span><span class="n">ToozError</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Raised when a driver does not match desired characteristics.&quot;&quot;&quot;</span>
+
+
+<div class="viewcode-block" id="ToozConnectionError"><a class="viewcode-back" href="../../developers.html#tooz.coordination.ToozConnectionError">[docs]</a><span class="k">class</span> <span class="nc">ToozConnectionError</span><span class="p">(</span><span class="n">tooz</span><span class="o">.</span><span class="n">ToozError</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Exception raised when the client cannot connect to the server.&quot;&quot;&quot;</span>
+
+</div>
+<div class="viewcode-block" id="OperationTimedOut"><a class="viewcode-back" href="../../developers.html#tooz.coordination.OperationTimedOut">[docs]</a><span class="k">class</span> <span class="nc">OperationTimedOut</span><span class="p">(</span><span class="n">tooz</span><span class="o">.</span><span class="n">ToozError</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Exception raised when an operation times out.&quot;&quot;&quot;</span>
+
+</div>
+<span class="k">class</span> <span class="nc">LockAcquireFailed</span><span class="p">(</span><span class="n">tooz</span><span class="o">.</span><span class="n">ToozError</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Exception raised when a lock acquire fails in a context manager.&quot;&quot;&quot;</span>
+
+
+<div class="viewcode-block" id="GroupNotCreated"><a class="viewcode-back" href="../../developers.html#tooz.coordination.GroupNotCreated">[docs]</a><span class="k">class</span> <span class="nc">GroupNotCreated</span><span class="p">(</span><span class="n">tooz</span><span class="o">.</span><span class="n">ToozError</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Exception raised when the caller request an nonexistent group.&quot;&quot;&quot;</span>
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">group_id</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">group_id</span> <span class="o">=</span> <span class="n">group_id</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">GroupNotCreated</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span>
+            <span class="s2">&quot;Group </span><span class="si">%s</span><span class="s2"> does not exist&quot;</span> <span class="o">%</span> <span class="n">group_id</span><span class="p">)</span>
+
+</div>
+<div class="viewcode-block" id="GroupAlreadyExist"><a class="viewcode-back" href="../../developers.html#tooz.coordination.GroupAlreadyExist">[docs]</a><span class="k">class</span> <span class="nc">GroupAlreadyExist</span><span class="p">(</span><span class="n">tooz</span><span class="o">.</span><span class="n">ToozError</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Exception raised trying to create an already existing group.&quot;&quot;&quot;</span>
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">group_id</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">group_id</span> <span class="o">=</span> <span class="n">group_id</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">GroupAlreadyExist</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span>
+            <span class="s2">&quot;Group </span><span class="si">%s</span><span class="s2"> already exists&quot;</span> <span class="o">%</span> <span class="n">group_id</span><span class="p">)</span>
+
+</div>
+<div class="viewcode-block" id="MemberAlreadyExist"><a class="viewcode-back" href="../../developers.html#tooz.coordination.MemberAlreadyExist">[docs]</a><span class="k">class</span> <span class="nc">MemberAlreadyExist</span><span class="p">(</span><span class="n">tooz</span><span class="o">.</span><span class="n">ToozError</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Exception raised trying to join a group already joined.&quot;&quot;&quot;</span>
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">group_id</span><span class="p">,</span> <span class="n">member_id</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">group_id</span> <span class="o">=</span> <span class="n">group_id</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">member_id</span> <span class="o">=</span> <span class="n">member_id</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">MemberAlreadyExist</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span>
+            <span class="s2">&quot;Member </span><span class="si">%s</span><span class="s2"> has already joined </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span>
+            <span class="p">(</span><span class="n">member_id</span><span class="p">,</span> <span class="n">group_id</span><span class="p">))</span>
+
+</div>
+<div class="viewcode-block" id="MemberNotJoined"><a class="viewcode-back" href="../../developers.html#tooz.coordination.MemberNotJoined">[docs]</a><span class="k">class</span> <span class="nc">MemberNotJoined</span><span class="p">(</span><span class="n">tooz</span><span class="o">.</span><span class="n">ToozError</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Exception raised trying to access a member not in a group.&quot;&quot;&quot;</span>
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">group_id</span><span class="p">,</span> <span class="n">member_id</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">group_id</span> <span class="o">=</span> <span class="n">group_id</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">member_id</span> <span class="o">=</span> <span class="n">member_id</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">MemberNotJoined</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="s2">&quot;Member </span><span class="si">%s</span><span class="s2"> has not joined </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span>
+                                              <span class="p">(</span><span class="n">member_id</span><span class="p">,</span> <span class="n">group_id</span><span class="p">))</span>
+
+</div>
+<div class="viewcode-block" id="GroupNotEmpty"><a class="viewcode-back" href="../../developers.html#tooz.coordination.GroupNotEmpty">[docs]</a><span class="k">class</span> <span class="nc">GroupNotEmpty</span><span class="p">(</span><span class="n">tooz</span><span class="o">.</span><span class="n">ToozError</span><span class="p">):</span>
+    <span class="s2">&quot;Exception raised when the caller try to delete a group with members.&quot;</span>
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">group_id</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">group_id</span> <span class="o">=</span> <span class="n">group_id</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">GroupNotEmpty</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="s2">&quot;Group </span><span class="si">%s</span><span class="s2"> is not empty&quot;</span> <span class="o">%</span> <span class="n">group_id</span><span class="p">)</span>
+
+</div>
+<span class="k">class</span> <span class="nc">WatchCallbackNotFound</span><span class="p">(</span><span class="n">tooz</span><span class="o">.</span><span class="n">ToozError</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Exception raised when unwatching a group.</span>
+
+<span class="sd">    Raised when the caller tries to unwatch a group with a callback that</span>
+<span class="sd">    does not exist.</span>
+
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">group_id</span><span class="p">,</span> <span class="n">callback</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">group_id</span> <span class="o">=</span> <span class="n">group_id</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">callback</span> <span class="o">=</span> <span class="n">callback</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">WatchCallbackNotFound</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span>
+            <span class="s1">&#39;Callback </span><span class="si">%s</span><span class="s1"> is not registered on group </span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span>
+            <span class="p">(</span><span class="n">callback</span><span class="o">.</span><span class="vm">__name__</span><span class="p">,</span> <span class="n">group_id</span><span class="p">))</span>
+
+
+<span class="c1"># TODO(harlowja,jd): We&#39;ll have to figure out a way to remove this &#39;alias&#39; at</span>
+<span class="c1"># some point in the future (when we have a better way to tell people it has</span>
+<span class="c1"># moved without messing up their exception catching hierarchy).</span>
+<span class="n">SerializationError</span> <span class="o">=</span> <span class="n">utils</span><span class="o">.</span><span class="n">SerializationError</span>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/tooz
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li><a href="../../index.html">tooz 1.48.1.dev1 documentation</a> &raquo;</li>
+          <li><a href="../index.html" >Module code</a> &raquo;</li>
+          <li><a href="../tooz.html" accesskey="U">tooz</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer">
+        &copy; Copyright 2017, OpenStack Foundation.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.2.3.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/tooz");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

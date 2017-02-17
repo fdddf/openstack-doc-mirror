@@ -1,0 +1,761 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Testing NUMA related hardware setup with libvirt &mdash; nova 15.0.0.0rc2.dev69 documentation</title>
+    
+    <link rel="stylesheet" href="../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/support-matrix.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/feature-matrix.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../',
+        VERSION:     '15.0.0.0rc2.dev69',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../_static/jquery.js"></script>
+    <script type="text/javascript" src="../_static/underscore.js"></script>
+    <script type="text/javascript" src="../_static/doctools.js"></script>
+    <link rel="top" title="nova 15.0.0.0rc2.dev69 documentation" href="../index.html" />
+    <link rel="next" title="Testing Serial Console" href="serial-console.html" />
+    <link rel="prev" title="Guru Meditation Reports" href="../gmr.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="testing-numa-related-hardware-setup-with-libvirt">
+<h1>Testing NUMA related hardware setup with libvirt<a class="headerlink" href="#testing-numa-related-hardware-setup-with-libvirt" title="Permalink to this headline">¶</a></h1>
+<p>This page describes how to test the libvirt driver&#8217;s handling of the NUMA
+placement, large page allocation and CPU pinning features. It relies on setting
+up a virtual machine as the test environment and requires support for nested
+virtualization since plain QEMU is not sufficiently functional. The virtual
+machine will itself be given NUMA topology, so it can then act as a virtual
+&#8220;host&#8221; for testing purposes.</p>
+<div class="section" id="provisioning-a-virtual-machine-for-testing">
+<h2>Provisioning a virtual machine for testing<a class="headerlink" href="#provisioning-a-virtual-machine-for-testing" title="Permalink to this headline">¶</a></h2>
+<p>The entire test process will take place inside a large virtual machine running
+Fedora 24. The instructions should work for any other Linux distribution which
+includes libvirt &gt;= 1.2.9 and QEMU &gt;= 2.1.2</p>
+<p>The tests will require support for nested KVM, which is not enabled by default
+on hypervisor hosts. It must be explicitly turned on in the host when loading
+the kvm-intel/kvm-amd kernel modules.</p>
+<p>On Intel hosts verify it with</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span><span class="c1"># cat /sys/module/kvm_intel/parameters/nested</span>
+N
+
+<span class="c1"># rmmod kvm-intel</span>
+<span class="c1"># echo &quot;options kvm-intel nested=y&quot; &gt; /etc/modprobe.d/dist.conf</span>
+<span class="c1"># modprobe kvm-intel</span>
+
+<span class="c1"># cat /sys/module/kvm_intel/parameters/nested</span>
+Y
+</pre></div>
+</div>
+<p>While on AMD hosts verify it with</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span><span class="c1"># cat /sys/module/kvm_amd/parameters/nested</span>
+<span class="m">0</span>
+
+<span class="c1"># rmmod kvm-amd</span>
+<span class="c1"># echo &quot;options kvm-amd nested=1&quot; &gt; /etc/modprobe.d/dist.conf</span>
+<span class="c1"># modprobe kvm-amd</span>
+
+<span class="c1"># cat /sys/module/kvm_amd/parameters/nested</span>
+<span class="m">1</span>
+</pre></div>
+</div>
+<p>The virt-install command below shows how to provision a basic Fedora 24 x86_64
+guest with 8 virtual CPUs, 8 GB of RAM and 20 GB of disk space:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span><span class="c1"># cd /var/lib/libvirt/images</span>
+<span class="c1"># wget https://download.fedoraproject.org/pub/fedora/linux/releases/24/Server/x86_64/iso/Fedora-Server-netinst-x86_64-24-1.2.iso</span>
+
+<span class="c1"># virt-install \</span>
+   --name f24x86_64 <span class="se">\</span>
+   --ram <span class="m">8000</span> <span class="se">\</span>
+   --vcpus <span class="m">8</span> <span class="se">\</span>
+   --file /var/lib/libvirt/images/f24x86_64.img <span class="se">\</span>
+   --file-size <span class="m">20</span>
+   --cdrom /var/lib/libvirt/images/Fedora-Server-netinst-x86_64-24-1.2.iso <span class="se">\</span>
+   --os-variant fedora23
+</pre></div>
+</div>
+<p>When the virt-viewer application displays the installer, follow the defaults
+for the installation with a couple of exceptions:</p>
+<ul class="simple">
+<li>The automatic disk partition setup can be optionally tweaked to reduce the
+swap space allocated. No more than 500MB is required, free&#8217;ing up an extra
+1.5 GB for the root disk</li>
+<li>Select &#8220;Minimal install&#8221; when asked for the installation type since a desktop
+environment is not required</li>
+<li>When creating a user account be sure to select the option &#8220;Make this user
+administrator&#8221; so it gets &#8216;sudo&#8217; rights</li>
+</ul>
+<p>Once the installation process has completed, the virtual machine will reboot
+into the final operating system. It is now ready to deploy an OpenStack
+development environment.</p>
+</div>
+<div class="section" id="setting-up-a-devstack-environment">
+<h2>Setting up a devstack environment<a class="headerlink" href="#setting-up-a-devstack-environment" title="Permalink to this headline">¶</a></h2>
+<p>For later ease of use, copy your SSH public key into the virtual machine:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span><span class="c1"># ssh-copy-id  &lt;IP of VM&gt;</span>
+</pre></div>
+</div>
+<p>Now login to the virtual machine:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span><span class="c1"># ssh &lt;IP of VM&gt;</span>
+</pre></div>
+</div>
+<p>The Fedora minimal install does not contain git. Install git and clone the
+devstack repo:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span>$ sudo dnf -y install git
+$ git clone git://github.com/openstack-dev/devstack.git
+$ <span class="nb">cd</span> devstack
+</pre></div>
+</div>
+<p>At this point a fairly standard devstack setup can be done with one exception:
+we should enable the <code class="docutils literal"><span class="pre">NUMATopologyFilter</span></code> filter, which we will use later.
+For example:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span>$ cat &gt;&gt;local.conf <span class="s">&lt;&lt;EOF</span>
+<span class="s">[[local|localrc]]</span>
+<span class="s">DATA_DIR=$DEST/data</span>
+<span class="s">SERVICE_DIR=$DEST/status</span>
+
+<span class="s">LOGFILE=$DATA_DIR/logs/stack.log</span>
+<span class="s">SCREEN_LOGDIR=$DATA_DIR/logs</span>
+<span class="s">VERBOSE=True</span>
+
+<span class="s">disable_service n-net</span>
+<span class="s">enable_service neutron q-svc q-dhcp q-l3 q-meta q-agt</span>
+
+<span class="s">MYSQL_PASSWORD=123456</span>
+<span class="s">DATABASE_PASSWORD=123456</span>
+<span class="s">SERVICE_TOKEN=123456</span>
+<span class="s">SERVICE_PASSWORD=123456</span>
+<span class="s">ADMIN_PASSWORD=123456</span>
+<span class="s">RABBIT_PASSWORD=123456</span>
+
+<span class="s">[[post-config|$NOVA_CONF]]</span>
+<span class="s">[DEFAULT]</span>
+<span class="s">firewall_driver=nova.virt.firewall.NoopFirewallDriver</span>
+
+<span class="s">[filter_scheduler]</span>
+<span class="s">enabled_filters=RamFilter,ComputeFilter,AvailabilityZoneFilter,ComputeCapabilitiesFilter,ImagePropertiesFilter,PciPassthroughFilter,NUMATopologyFilter</span>
+<span class="s">EOF</span>
+$ <span class="nv">FORCE</span><span class="o">=</span>yes ./stack.sh
+</pre></div>
+</div>
+<p>Unfortunately while devstack starts various system services and changes various
+system settings it doesn&#8217;t make the changes persistent. Fix that now to avoid
+later surprises after reboots:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span>$ sudo systemctl <span class="nb">enable</span> mariadb.service
+$ sudo systemctl <span class="nb">enable</span> rabbitmq-server.service
+$ sudo systemctl <span class="nb">enable</span> httpd.service
+
+$ sudo vi /etc/sysconfig/selinux
+<span class="nv">SELINUX</span><span class="o">=</span>permissive
+</pre></div>
+</div>
+</div>
+<div class="section" id="testing-basis-non-numa-usage">
+<h2>Testing basis non-NUMA usage<a class="headerlink" href="#testing-basis-non-numa-usage" title="Permalink to this headline">¶</a></h2>
+<p>First to confirm we&#8217;ve not done anything unusual to the traditional operation
+of nova libvirt guests boot a tiny instance:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span>$ . openrc admin
+$ openstack server create --image cirros-0.3.4-x86_64-uec --flavor m1.tiny <span class="se">\</span>
+    cirros1
+</pre></div>
+</div>
+<p>The host will be reporting NUMA topology, but there should only be a single
+NUMA cell this point. We can validate this by querying the nova database. For
+example (with object versioning fields removed):</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span>$ mysql -u root -p123456 nova
+MariaDB <span class="o">[</span>nova<span class="o">]</span>&gt; <span class="k">select</span> numa_topology from compute_nodes<span class="p">;</span>
++----------------------------------------------------------------------------+
+<span class="p">|</span> numa_topology                                                              <span class="p">|</span>
++----------------------------------------------------------------------------+
+<span class="p">|</span> <span class="o">{</span>
+<span class="p">|</span>     <span class="s2">&quot;nova_object.name&quot;</span>: <span class="s2">&quot;NUMATopology&quot;</span>,
+<span class="p">|</span>     <span class="s2">&quot;nova_object.data&quot;</span>: <span class="o">{</span>
+<span class="p">|</span>         <span class="s2">&quot;cells&quot;</span>: <span class="o">[{</span>
+<span class="p">|</span>                 <span class="s2">&quot;nova_object.name&quot;</span>: <span class="s2">&quot;NUMACell&quot;</span>,
+<span class="p">|</span>                 <span class="s2">&quot;nova_object.data&quot;</span>: <span class="o">{</span>
+<span class="p">|</span>                     <span class="s2">&quot;cpu_usage&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                     <span class="s2">&quot;memory_usage&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                     <span class="s2">&quot;cpuset&quot;</span>: <span class="o">[</span><span class="m">0</span>, <span class="m">1</span>, <span class="m">2</span>, <span class="m">3</span>, <span class="m">4</span>, <span class="m">5</span>, <span class="m">6</span>, <span class="m">7</span><span class="o">]</span>,
+<span class="p">|</span>                     <span class="s2">&quot;pinned_cpus&quot;</span>: <span class="o">[]</span>,
+<span class="p">|</span>                     <span class="s2">&quot;siblings&quot;</span>: <span class="o">[]</span>,
+<span class="p">|</span>                     <span class="s2">&quot;memory&quot;</span>: <span class="m">7793</span>,
+<span class="p">|</span>                     <span class="s2">&quot;mempages&quot;</span>: <span class="o">[</span>
+<span class="p">|</span>                         <span class="o">{</span>
+<span class="p">|</span>                             <span class="s2">&quot;nova_object.name&quot;</span>: <span class="s2">&quot;NUMAPagesTopology&quot;</span>,
+<span class="p">|</span>                             <span class="s2">&quot;nova_object.data&quot;</span>: <span class="o">{</span>
+<span class="p">|</span>                                 <span class="s2">&quot;used&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                                 <span class="s2">&quot;total&quot;</span>: <span class="m">987430</span>,
+<span class="p">|</span>                                 <span class="s2">&quot;reserved&quot;</span>:0,
+<span class="p">|</span>                                 <span class="s2">&quot;size_kb&quot;</span>: <span class="m">4</span>
+<span class="p">|</span>                             <span class="o">}</span>,
+<span class="p">|</span>                         <span class="o">}</span>,
+<span class="p">|</span>                         <span class="o">{</span>
+<span class="p">|</span>                             <span class="s2">&quot;nova_object.name&quot;</span>: <span class="s2">&quot;NUMAPagesTopology&quot;</span>,
+<span class="p">|</span>                             <span class="s2">&quot;nova_object.data&quot;</span>: <span class="o">{</span>
+<span class="p">|</span>                                 <span class="s2">&quot;used&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                                 <span class="s2">&quot;total&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                                 <span class="s2">&quot;reserved&quot;</span>:0,
+<span class="p">|</span>                                 <span class="s2">&quot;size_kb&quot;</span>: <span class="m">2048</span>
+<span class="p">|</span>                             <span class="o">}</span>,
+<span class="p">|</span>                         <span class="o">}</span>,
+<span class="p">|</span>                         <span class="o">{</span>
+<span class="p">|</span>                             <span class="s2">&quot;nova_object.name&quot;</span>: <span class="s2">&quot;NUMAPagesTopology&quot;</span>,
+<span class="p">|</span>                             <span class="s2">&quot;nova_object.data&quot;</span>: <span class="o">{</span>
+<span class="p">|</span>                                 <span class="s2">&quot;used&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                                 <span class="s2">&quot;total&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                                 <span class="s2">&quot;reserved&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                                 <span class="s2">&quot;size_kb&quot;</span>: <span class="m">1048576</span>
+<span class="p">|</span>                             <span class="o">}</span>,
+<span class="p">|</span>                         <span class="o">}</span>
+<span class="p">|</span>                     <span class="o">]</span>,
+<span class="p">|</span>                     <span class="s2">&quot;id&quot;</span>: <span class="m">0</span>
+<span class="p">|</span>                 <span class="o">}</span>,
+<span class="p">|</span>             <span class="o">}</span>,
+<span class="p">|</span>         <span class="o">]</span>
+<span class="p">|</span>     <span class="o">}</span>,
+<span class="p">|</span> <span class="o">}</span>
++----------------------------------------------------------------------------+
+</pre></div>
+</div>
+<p>Meanwhile, the guest instance should not have any NUMA configuration recorded:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span>MariaDB <span class="o">[</span>nova<span class="o">]</span>&gt; <span class="k">select</span> numa_topology from instance_extra<span class="p">;</span>
++---------------+
+<span class="p">|</span> numa_topology <span class="p">|</span>
++---------------+
+<span class="p">|</span> NULL          <span class="p">|</span>
++---------------+
+</pre></div>
+</div>
+</div>
+<div class="section" id="reconfiguring-the-test-instance-to-have-numa-topology">
+<h2>Reconfiguring the test instance to have NUMA topology<a class="headerlink" href="#reconfiguring-the-test-instance-to-have-numa-topology" title="Permalink to this headline">¶</a></h2>
+<p>Now that devstack is proved operational, it is time to configure some NUMA
+topology for the test VM, so that it can be used to verify the OpenStack NUMA
+support. To do the changes, the VM instance that is running devstack must be
+shut down:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span>$ sudo shutdown -h now
+</pre></div>
+</div>
+<p>And now back on the physical host edit the guest config as root:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span>$ sudo virsh edit f21x86_64
+</pre></div>
+</div>
+<p>The first thing is to change the <cite>&lt;cpu&gt;</cite> block to do passthrough of the host
+CPU. In particular this exposes the &#8220;SVM&#8221; or &#8220;VMX&#8221; feature bits to the guest so
+that &#8220;Nested KVM&#8221; can work. At the same time we want to define the NUMA
+topology of the guest. To make things interesting we&#8217;re going to give the guest
+an asymmetric topology with 4 CPUS and 4 GBs of RAM in the first NUMA node and
+2 CPUs and 2 GB of RAM in the second and third NUMA nodes. So modify the guest
+XML to include the following CPU XML:</p>
+<div class="highlight-xml"><div class="highlight"><pre><span></span><span class="nt">&lt;cpu</span> <span class="na">mode=</span><span class="s">&#39;host-passthrough&#39;</span><span class="nt">&gt;</span>
+  <span class="nt">&lt;numa&gt;</span>
+    <span class="nt">&lt;cell</span> <span class="na">id=</span><span class="s">&#39;0&#39;</span> <span class="na">cpus=</span><span class="s">&#39;0-3&#39;</span> <span class="na">memory=</span><span class="s">&#39;4096000&#39;</span><span class="nt">/&gt;</span>
+    <span class="nt">&lt;cell</span> <span class="na">id=</span><span class="s">&#39;1&#39;</span> <span class="na">cpus=</span><span class="s">&#39;4-5&#39;</span> <span class="na">memory=</span><span class="s">&#39;2048000&#39;</span><span class="nt">/&gt;</span>
+    <span class="nt">&lt;cell</span> <span class="na">id=</span><span class="s">&#39;2&#39;</span> <span class="na">cpus=</span><span class="s">&#39;6-7&#39;</span> <span class="na">memory=</span><span class="s">&#39;2048000&#39;</span><span class="nt">/&gt;</span>
+  <span class="nt">&lt;/numa&gt;</span>
+<span class="nt">&lt;/cpu&gt;</span>
+</pre></div>
+</div>
+<p>Now start the guest again:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span><span class="c1"># virsh start f24x86_64</span>
+</pre></div>
+</div>
+<p>...and login back in:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span><span class="c1"># ssh &lt;IP of VM&gt;</span>
+</pre></div>
+</div>
+<p>Before starting OpenStack services again, it is necessary to explicitly set the
+libvirt virtualization type to KVM, so that guests can take advantage of nested
+KVM:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span>$ sudo sed -i <span class="s1">&#39;s/virt_type = qemu/virt_type = kvm/g&#39;</span> /etc/nova/nova.conf
+</pre></div>
+</div>
+<p>With that done, OpenStack can be started again:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span>$ <span class="nb">cd</span> devstack
+$ ./stack.sh
+</pre></div>
+</div>
+<p>The first thing is to check that the compute node picked up the new NUMA
+topology setup for the guest:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span>$ mysql -u root -p123456 nova
+MariaDB <span class="o">[</span>nova<span class="o">]</span>&gt; <span class="k">select</span> numa_topology from compute_nodes<span class="p">;</span>
++----------------------------------------------------------------------------+
+<span class="p">|</span> numa_topology                                                              <span class="p">|</span>
++----------------------------------------------------------------------------+
+<span class="p">|</span> <span class="o">{</span>
+<span class="p">|</span>     <span class="s2">&quot;nova_object.name&quot;</span>: <span class="s2">&quot;NUMATopology&quot;</span>,
+<span class="p">|</span>     <span class="s2">&quot;nova_object.data&quot;</span>: <span class="o">{</span>
+<span class="p">|</span>         <span class="s2">&quot;cells&quot;</span>: <span class="o">[</span>
+<span class="p">|</span>             <span class="o">{</span>
+<span class="p">|</span>                 <span class="s2">&quot;nova_object.name&quot;</span>: <span class="s2">&quot;NUMACell&quot;</span>,
+<span class="p">|</span>                 <span class="s2">&quot;nova_object.data&quot;</span>: <span class="o">{</span>
+<span class="p">|</span>                     <span class="s2">&quot;cpu_usage&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                     <span class="s2">&quot;memory_usage&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                     <span class="s2">&quot;cpuset&quot;</span>: <span class="o">[</span><span class="m">0</span>, <span class="m">1</span>, <span class="m">2</span>, <span class="m">3</span><span class="o">]</span>,
+<span class="p">|</span>                     <span class="s2">&quot;pinned_cpus&quot;</span>: <span class="o">[]</span>,
+<span class="p">|</span>                     <span class="s2">&quot;siblings&quot;</span>: <span class="o">[]</span>,
+<span class="p">|</span>                     <span class="s2">&quot;memory&quot;</span>: <span class="m">3856</span>,
+<span class="p">|</span>                     <span class="s2">&quot;mempages&quot;</span>: <span class="o">[</span>
+<span class="p">|</span>                         <span class="o">{</span>
+<span class="p">|</span>                             <span class="s2">&quot;nova_object.name&quot;</span>: <span class="s2">&quot;NUMAPagesTopology&quot;</span>,
+<span class="p">|</span>                             <span class="s2">&quot;nova_object.data&quot;</span>: <span class="o">{</span>
+<span class="p">|</span>                                 <span class="s2">&quot;used&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                                 <span class="s2">&quot;total&quot;</span>: <span class="m">987231</span>,
+<span class="p">|</span>                                 <span class="s2">&quot;reserved&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                                 <span class="s2">&quot;size_kb&quot;</span>: <span class="m">4</span>
+<span class="p">|</span>                             <span class="o">}</span>,
+<span class="p">|</span>                         <span class="o">}</span>,
+<span class="p">|</span>                         <span class="o">{</span>
+<span class="p">|</span>                             <span class="s2">&quot;nova_object.name&quot;</span>: <span class="s2">&quot;NUMAPagesTopology&quot;</span>,
+<span class="p">|</span>                             <span class="s2">&quot;nova_object.data&quot;</span>: <span class="o">{</span>
+<span class="p">|</span>                                 <span class="s2">&quot;used&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                                 <span class="s2">&quot;total&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                                 <span class="s2">&quot;reserved&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                                 <span class="s2">&quot;size_kb&quot;</span>: <span class="m">2048</span>
+<span class="p">|</span>                             <span class="o">}</span>,
+<span class="p">|</span>                         <span class="o">}</span>,
+<span class="p">|</span>                         <span class="o">{</span>
+<span class="p">|</span>                             <span class="s2">&quot;nova_object.name&quot;</span>: <span class="s2">&quot;NUMAPagesTopology&quot;</span>,
+<span class="p">|</span>                             <span class="s2">&quot;nova_object.data&quot;</span>: <span class="o">{</span>
+<span class="p">|</span>                                 <span class="s2">&quot;used&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                                 <span class="s2">&quot;total&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                                 <span class="s2">&quot;reserved&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                                 <span class="s2">&quot;size_kb&quot;</span>: <span class="m">1048576</span>
+<span class="p">|</span>                             <span class="o">}</span>,
+<span class="p">|</span>                         <span class="o">}</span>
+<span class="p">|</span>                     <span class="o">]</span>,
+<span class="p">|</span>                     <span class="s2">&quot;id&quot;</span>: <span class="m">0</span>
+<span class="p">|</span>                 <span class="o">}</span>,
+<span class="p">|</span>             <span class="o">}</span>,
+<span class="p">|</span>             <span class="o">{</span>
+<span class="p">|</span>                 <span class="s2">&quot;nova_object.name&quot;</span>: <span class="s2">&quot;NUMACell&quot;</span>,
+<span class="p">|</span>                 <span class="s2">&quot;nova_object.data&quot;</span>: <span class="o">{</span>
+<span class="p">|</span>                     <span class="s2">&quot;cpu_usage&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                     <span class="s2">&quot;memory_usage&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                     <span class="s2">&quot;cpuset&quot;</span>: <span class="o">[</span><span class="m">4</span>, <span class="m">5</span><span class="o">]</span>,
+<span class="p">|</span>                     <span class="s2">&quot;pinned_cpus&quot;</span>: <span class="o">[]</span>,
+<span class="p">|</span>                     <span class="s2">&quot;siblings&quot;</span>: <span class="o">[]</span>,
+<span class="p">|</span>                     <span class="s2">&quot;memory&quot;</span>: <span class="m">1969</span>,
+<span class="p">|</span>                     <span class="s2">&quot;mempages&quot;</span>: <span class="o">[</span>
+<span class="p">|</span>                         <span class="o">{</span>
+<span class="p">|</span>                             <span class="s2">&quot;nova_object.name&quot;</span>: <span class="s2">&quot;NUMAPagesTopology&quot;</span>,
+<span class="p">|</span>                             <span class="s2">&quot;nova_object.data&quot;</span>: <span class="o">{</span>
+<span class="p">|</span>                                 <span class="s2">&quot;used&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                                 <span class="s2">&quot;total&quot;</span>: <span class="m">504202</span>,
+<span class="p">|</span>                                 <span class="s2">&quot;reserved&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                                 <span class="s2">&quot;size_kb&quot;</span>: <span class="m">4</span>
+<span class="p">|</span>                             <span class="o">}</span>,
+<span class="p">|</span>                         <span class="o">}</span>,
+<span class="p">|</span>                         <span class="o">{</span>
+<span class="p">|</span>                             <span class="s2">&quot;nova_object.name&quot;</span>: <span class="s2">&quot;NUMAPagesTopology&quot;</span>,
+<span class="p">|</span>                             <span class="s2">&quot;nova_object.data&quot;</span>: <span class="o">{</span>
+<span class="p">|</span>                                 <span class="s2">&quot;used&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                                 <span class="s2">&quot;total&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                                 <span class="s2">&quot;reserved&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                                 <span class="s2">&quot;size_kb&quot;</span>: <span class="m">2048</span>
+<span class="p">|</span>                             <span class="o">}</span>,
+<span class="p">|</span>                         <span class="o">}</span>,
+<span class="p">|</span>                         <span class="o">{</span>
+<span class="p">|</span>                             <span class="s2">&quot;nova_object.name&quot;</span>: <span class="s2">&quot;NUMAPagesTopology&quot;</span>,
+<span class="p">|</span>                             <span class="s2">&quot;nova_object.data&quot;</span>: <span class="o">{</span>
+<span class="p">|</span>                                 <span class="s2">&quot;used&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                                 <span class="s2">&quot;total&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                                 <span class="s2">&quot;reserved&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                                 <span class="s2">&quot;size_kb&quot;</span>: <span class="m">1048576</span>
+<span class="p">|</span>                             <span class="o">}</span>,
+<span class="p">|</span>                         <span class="o">}</span>
+<span class="p">|</span>                     <span class="o">]</span>,
+<span class="p">|</span>                     <span class="s2">&quot;id&quot;</span>: <span class="m">1</span>
+<span class="p">|</span>                 <span class="o">}</span>,
+<span class="p">|</span>             <span class="o">}</span>,
+<span class="p">|</span>             <span class="o">{</span>
+<span class="p">|</span>                 <span class="s2">&quot;nova_object.name&quot;</span>: <span class="s2">&quot;NUMACell&quot;</span>,
+<span class="p">|</span>                 <span class="s2">&quot;nova_object.data&quot;</span>: <span class="o">{</span>
+<span class="p">|</span>                     <span class="s2">&quot;cpu_usage&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                     <span class="s2">&quot;memory_usage&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                     <span class="s2">&quot;cpuset&quot;</span>: <span class="o">[</span><span class="m">6</span>, <span class="m">7</span><span class="o">]</span>,
+<span class="p">|</span>                     <span class="s2">&quot;pinned_cpus&quot;</span>: <span class="o">[]</span>,
+<span class="p">|</span>                     <span class="s2">&quot;siblings&quot;</span>: <span class="o">[]</span>,
+<span class="p">|</span>                     <span class="s2">&quot;memory&quot;</span>: <span class="m">1967</span>,
+<span class="p">|</span>                     <span class="s2">&quot;mempages&quot;</span>: <span class="o">[</span>
+<span class="p">|</span>                         <span class="o">{</span>
+<span class="p">|</span>                             <span class="s2">&quot;nova_object.name&quot;</span>: <span class="s2">&quot;NUMAPagesTopology&quot;</span>,
+<span class="p">|</span>                             <span class="s2">&quot;nova_object.data&quot;</span>: <span class="o">{</span>
+<span class="p">|</span>                                 <span class="s2">&quot;used&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                                 <span class="s2">&quot;total&quot;</span>: <span class="m">503565</span>,
+<span class="p">|</span>                                 <span class="s2">&quot;reserved&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                                 <span class="s2">&quot;size_kb&quot;</span>: <span class="m">4</span>
+<span class="p">|</span>                             <span class="o">}</span>,
+<span class="p">|</span>                         <span class="o">}</span>,
+<span class="p">|</span>                         <span class="o">{</span>
+<span class="p">|</span>                             <span class="s2">&quot;nova_object.name&quot;</span>: <span class="s2">&quot;NUMAPagesTopology&quot;</span>,
+<span class="p">|</span>                             <span class="s2">&quot;nova_object.data&quot;</span>: <span class="o">{</span>
+<span class="p">|</span>                                 <span class="s2">&quot;used&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                                 <span class="s2">&quot;total&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                                 <span class="s2">&quot;reserved&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                                 <span class="s2">&quot;size_kb&quot;</span>: <span class="m">2048</span>
+<span class="p">|</span>                             <span class="o">}</span>,
+<span class="p">|</span>                         <span class="o">}</span>,
+<span class="p">|</span>                         <span class="o">{</span>
+<span class="p">|</span>                             <span class="s2">&quot;nova_object.name&quot;</span>: <span class="s2">&quot;NUMAPagesTopology&quot;</span>,
+<span class="p">|</span>                             <span class="s2">&quot;nova_object.data&quot;</span>: <span class="o">{</span>
+<span class="p">|</span>                                 <span class="s2">&quot;used&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                                 <span class="s2">&quot;total&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                                 <span class="s2">&quot;reserved&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                                 <span class="s2">&quot;size_kb&quot;</span>: <span class="m">1048576</span>
+<span class="p">|</span>                             <span class="o">}</span>,
+<span class="p">|</span>                         <span class="o">}</span>
+<span class="p">|</span>                     <span class="o">]</span>,
+<span class="p">|</span>                     <span class="s2">&quot;id&quot;</span>: <span class="m">2</span>
+<span class="p">|</span>                 <span class="o">}</span>,
+<span class="p">|</span>             <span class="o">}</span>
+<span class="p">|</span>         <span class="o">]</span>
+<span class="p">|</span>     <span class="o">}</span>,
+<span class="p">|</span> <span class="o">}</span>
++----------------------------------------------------------------------------+
+</pre></div>
+</div>
+<p>This indeed shows that there are now 3 NUMA nodes for the &#8220;host&#8221; machine, the
+first with 4 GB of RAM and 4 CPUs, and others with 2 GB of RAM and 2 CPUs each.</p>
+</div>
+<div class="section" id="testing-instance-boot-with-no-numa-topology-requested">
+<h2>Testing instance boot with no NUMA topology requested<a class="headerlink" href="#testing-instance-boot-with-no-numa-topology-requested" title="Permalink to this headline">¶</a></h2>
+<p>For the sake of backwards compatibility, if the NUMA filter is enabled, but the
+flavor/image does not have any NUMA settings requested, it should be assumed
+that the guest will have a single NUMA node. The guest should be locked to a
+single host NUMA node too. Boot a guest with the <cite>m1.tiny</cite> flavor to test this
+condition:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span>$ . openrc admin admin
+$ openstack server create --image cirros-0.3.4-x86_64-uec --flavor m1.tiny <span class="se">\</span>
+    cirros1
+</pre></div>
+</div>
+<p>Now look at the libvirt guest XML:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span>$ sudo virsh list
+ Id    Name                           State
+----------------------------------------------------
+ <span class="m">1</span>     instance-00000001              running
+$ sudo virsh dumpxml instance-00000001
+...
+&lt;vcpu <span class="nv">placement</span><span class="o">=</span><span class="s1">&#39;static&#39;</span>&gt;1&lt;/vcpu&gt;
+...
+</pre></div>
+</div>
+<p>This example shows that there is no explicit NUMA topology listed in the guest
+XML.</p>
+</div>
+<div class="section" id="testing-instance-boot-with-1-numa-cell-requested">
+<h2>Testing instance boot with 1 NUMA cell requested<a class="headerlink" href="#testing-instance-boot-with-1-numa-cell-requested" title="Permalink to this headline">¶</a></h2>
+<p>Moving forward a little, explicitly tell nova that the NUMA topology for the
+guest should have a single NUMA node. This should operate in an identical
+manner to the default behavior where no NUMA policy is set. To define the
+topology we will create a new flavor:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span>$ openstack flavor create --ram <span class="m">1024</span> --disk <span class="m">1</span> --vcpus <span class="m">4</span> m1.numa
+$ openstack flavor <span class="nb">set</span> --property hw:numa_nodes<span class="o">=</span><span class="m">1</span> m1.numa
+$ openstack flavor show m1.numa
+</pre></div>
+</div>
+<p>Now boot the guest using this new flavor:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span>$ openstack server create --image cirros-0.3.4-x86_64-uec --flavor m1.numa <span class="se">\</span>
+    cirros2
+</pre></div>
+</div>
+<p>Looking at the resulting guest XML from libvirt:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span>$ sudo virsh list
+ Id    Name                           State
+----------------------------------------------------
+ <span class="m">1</span>     instance-00000001              running
+ <span class="m">2</span>     instance-00000002              running
+$ sudo virsh dumpxml instance-00000002
+...
+&lt;vcpu <span class="nv">placement</span><span class="o">=</span><span class="s1">&#39;static&#39;</span>&gt;4&lt;/vcpu&gt;
+&lt;cputune&gt;
+  &lt;vcpupin <span class="nv">vcpu</span><span class="o">=</span><span class="s1">&#39;0&#39;</span> <span class="nv">cpuset</span><span class="o">=</span><span class="s1">&#39;0-3&#39;</span>/&gt;
+  &lt;vcpupin <span class="nv">vcpu</span><span class="o">=</span><span class="s1">&#39;1&#39;</span> <span class="nv">cpuset</span><span class="o">=</span><span class="s1">&#39;0-3&#39;</span>/&gt;
+  &lt;vcpupin <span class="nv">vcpu</span><span class="o">=</span><span class="s1">&#39;2&#39;</span> <span class="nv">cpuset</span><span class="o">=</span><span class="s1">&#39;0-3&#39;</span>/&gt;
+  &lt;vcpupin <span class="nv">vcpu</span><span class="o">=</span><span class="s1">&#39;3&#39;</span> <span class="nv">cpuset</span><span class="o">=</span><span class="s1">&#39;0-3&#39;</span>/&gt;
+  &lt;emulatorpin <span class="nv">cpuset</span><span class="o">=</span><span class="s1">&#39;0-3&#39;</span>/&gt;
+&lt;/cputune&gt;
+...
+&lt;cpu&gt;
+  &lt;topology <span class="nv">sockets</span><span class="o">=</span><span class="s1">&#39;4&#39;</span> <span class="nv">cores</span><span class="o">=</span><span class="s1">&#39;1&#39;</span> <span class="nv">threads</span><span class="o">=</span><span class="s1">&#39;1&#39;</span>/&gt;
+  &lt;numa&gt;
+    &lt;cell <span class="nv">id</span><span class="o">=</span><span class="s1">&#39;0&#39;</span> <span class="nv">cpus</span><span class="o">=</span><span class="s1">&#39;0-3&#39;</span> <span class="nv">memory</span><span class="o">=</span><span class="s1">&#39;1048576&#39;</span>/&gt;
+  &lt;/numa&gt;
+&lt;/cpu&gt;
+...
+&lt;numatune&gt;
+  &lt;memory <span class="nv">mode</span><span class="o">=</span><span class="s1">&#39;strict&#39;</span> <span class="nv">nodeset</span><span class="o">=</span><span class="s1">&#39;0&#39;</span>/&gt;
+  &lt;memnode <span class="nv">cellid</span><span class="o">=</span><span class="s1">&#39;0&#39;</span> <span class="nv">mode</span><span class="o">=</span><span class="s1">&#39;strict&#39;</span> <span class="nv">nodeset</span><span class="o">=</span><span class="s1">&#39;0&#39;</span>/&gt;
+&lt;/numatune&gt;
+</pre></div>
+</div>
+<p>The XML shows:</p>
+<ul class="simple">
+<li>Each guest CPU has been pinned to the physical CPUs associated with a
+particular NUMA node</li>
+<li>The emulator threads have been pinned to the union of all physical CPUs in
+the host NUMA node that the guest is placed on</li>
+<li>The guest has been given a virtual NUMA topology with a single node holding
+all RAM and CPUs</li>
+<li>The guest NUMA node has been strictly pinned to a host NUMA node.</li>
+</ul>
+<p>As a further sanity test, check what nova recorded for the instance in the
+database. This should match the <code class="docutils literal"><span class="pre">&lt;numatune&gt;</span></code> information:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span>$ mysql -u root -p123456 nova
+MariaDB <span class="o">[</span>nova<span class="o">]</span>&gt; <span class="k">select</span> numa_topology from instance_extra<span class="p">;</span>
++----------------------------------------------------------------------------+
+<span class="p">|</span> numa_topology                                                              <span class="p">|</span>
++----------------------------------------------------------------------------+
+<span class="p">|</span> <span class="o">{</span>
+<span class="p">|</span>     <span class="s2">&quot;nova_object.name&quot;</span>: <span class="s2">&quot;InstanceNUMATopology&quot;</span>,
+<span class="p">|</span>     <span class="s2">&quot;nova_object.data&quot;</span>: <span class="o">{</span>
+<span class="p">|</span>         <span class="s2">&quot;cells&quot;</span>: <span class="o">[</span>
+<span class="p">|</span>             <span class="o">{</span>
+<span class="p">|</span>                 <span class="s2">&quot;nova_object.name&quot;</span>: <span class="s2">&quot;InstanceNUMACell&quot;</span>,
+<span class="p">|</span>                 <span class="s2">&quot;nova_object.data&quot;</span>: <span class="o">{</span>
+<span class="p">|</span>                     <span class="s2">&quot;pagesize&quot;</span>: null,
+<span class="p">|</span>                     <span class="s2">&quot;cpu_topology&quot;</span>: null,
+<span class="p">|</span>                     <span class="s2">&quot;cpuset&quot;</span>: <span class="o">[</span><span class="m">0</span>, <span class="m">1</span>, <span class="m">2</span>, <span class="m">3</span><span class="o">]</span>,
+<span class="p">|</span>                     <span class="s2">&quot;cpu_policy&quot;</span>: null,
+<span class="p">|</span>                     <span class="s2">&quot;memory&quot;</span>: <span class="m">1024</span>,
+<span class="p">|</span>                     <span class="s2">&quot;cpu_pinning_raw&quot;</span>: null,
+<span class="p">|</span>                     <span class="s2">&quot;id&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                     <span class="s2">&quot;cpu_thread_policy&quot;</span>: null
+<span class="p">|</span>                 <span class="o">}</span>,
+<span class="p">|</span>             <span class="o">}</span>
+<span class="p">|</span>         <span class="o">]</span>
+<span class="p">|</span>     <span class="o">}</span>,
+<span class="p">|</span> <span class="o">}</span>
++----------------------------------------------------------------------------+
+</pre></div>
+</div>
+<p>Delete this instance:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span>$ openstack server delete cirros2
+</pre></div>
+</div>
+</div>
+<div class="section" id="testing-instance-boot-with-2-numa-cells-requested">
+<h2>Testing instance boot with 2 NUMA cells requested<a class="headerlink" href="#testing-instance-boot-with-2-numa-cells-requested" title="Permalink to this headline">¶</a></h2>
+<p>Now getting more advanced we tell nova that the guest will have two NUMA nodes.
+To define the topology we will change the previously defined flavor:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span>$ openstack flavor <span class="nb">set</span> --property hw:numa_nodes<span class="o">=</span><span class="m">2</span> m1.numa
+$ openstack flavor show m1.numa
+</pre></div>
+</div>
+<p>Now boot the guest using this changed flavor:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span>$ openstack server create --image cirros-0.3.4-x86_64-uec --flavor m1.numa <span class="se">\</span>
+    cirros2
+</pre></div>
+</div>
+<p>Looking at the resulting guest XML from libvirt:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span>$ sudo virsh list
+ Id    Name                           State
+----------------------------------------------------
+ <span class="m">1</span>     instance-00000001              running
+ <span class="m">3</span>     instance-00000003              running
+$ sudo virsh dumpxml instance-00000003
+...
+&lt;vcpu <span class="nv">placement</span><span class="o">=</span><span class="s1">&#39;static&#39;</span>&gt;4&lt;/vcpu&gt;
+&lt;cputune&gt;
+  &lt;vcpupin <span class="nv">vcpu</span><span class="o">=</span><span class="s1">&#39;0&#39;</span> <span class="nv">cpuset</span><span class="o">=</span><span class="s1">&#39;0-3&#39;</span>/&gt;
+  &lt;vcpupin <span class="nv">vcpu</span><span class="o">=</span><span class="s1">&#39;1&#39;</span> <span class="nv">cpuset</span><span class="o">=</span><span class="s1">&#39;0-3&#39;</span>/&gt;
+  &lt;vcpupin <span class="nv">vcpu</span><span class="o">=</span><span class="s1">&#39;2&#39;</span> <span class="nv">cpuset</span><span class="o">=</span><span class="s1">&#39;4-5&#39;</span>/&gt;
+  &lt;vcpupin <span class="nv">vcpu</span><span class="o">=</span><span class="s1">&#39;3&#39;</span> <span class="nv">cpuset</span><span class="o">=</span><span class="s1">&#39;4-5&#39;</span>/&gt;
+  &lt;emulatorpin <span class="nv">cpuset</span><span class="o">=</span><span class="s1">&#39;0-5&#39;</span>/&gt;
+&lt;/cputune&gt;
+...
+&lt;cpu&gt;
+  &lt;topology <span class="nv">sockets</span><span class="o">=</span><span class="s1">&#39;4&#39;</span> <span class="nv">cores</span><span class="o">=</span><span class="s1">&#39;1&#39;</span> <span class="nv">threads</span><span class="o">=</span><span class="s1">&#39;1&#39;</span>/&gt;
+  &lt;numa&gt;
+    &lt;cell <span class="nv">id</span><span class="o">=</span><span class="s1">&#39;0&#39;</span> <span class="nv">cpus</span><span class="o">=</span><span class="s1">&#39;0-1&#39;</span> <span class="nv">memory</span><span class="o">=</span><span class="s1">&#39;524288&#39;</span>/&gt;
+    &lt;cell <span class="nv">id</span><span class="o">=</span><span class="s1">&#39;1&#39;</span> <span class="nv">cpus</span><span class="o">=</span><span class="s1">&#39;2-3&#39;</span> <span class="nv">memory</span><span class="o">=</span><span class="s1">&#39;524288&#39;</span>/&gt;
+  &lt;/numa&gt;
+&lt;/cpu&gt;
+...
+&lt;numatune&gt;
+  &lt;memory <span class="nv">mode</span><span class="o">=</span><span class="s1">&#39;strict&#39;</span> <span class="nv">nodeset</span><span class="o">=</span><span class="s1">&#39;0-1&#39;</span>/&gt;
+  &lt;memnode <span class="nv">cellid</span><span class="o">=</span><span class="s1">&#39;0&#39;</span> <span class="nv">mode</span><span class="o">=</span><span class="s1">&#39;strict&#39;</span> <span class="nv">nodeset</span><span class="o">=</span><span class="s1">&#39;0&#39;</span>/&gt;
+  &lt;memnode <span class="nv">cellid</span><span class="o">=</span><span class="s1">&#39;1&#39;</span> <span class="nv">mode</span><span class="o">=</span><span class="s1">&#39;strict&#39;</span> <span class="nv">nodeset</span><span class="o">=</span><span class="s1">&#39;1&#39;</span>/&gt;
+&lt;/numatune&gt;
+</pre></div>
+</div>
+<p>The XML shows:</p>
+<ul class="simple">
+<li>Each guest CPU has been pinned to the physical CPUs associated with
+particular NUMA nodes</li>
+<li>The emulator threads have been pinned to the union of all physical CPUs in
+the host NUMA nodes that the guest is placed on</li>
+<li>The guest has been given a virtual NUMA topology with two nodes, each holding
+half the RAM and CPUs</li>
+<li>The guest NUMA nodes have been strictly pinned to different host NUMA node</li>
+</ul>
+<p>As a further sanity test, check what nova recorded for the instance in the
+database. This should match the <code class="docutils literal"><span class="pre">&lt;numatune&gt;</span></code> information:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span>MariaDB <span class="o">[</span>nova<span class="o">]</span>&gt; <span class="k">select</span> numa_topology from instance_extra<span class="p">;</span>
++----------------------------------------------------------------------------+
+<span class="p">|</span> numa_topology                                                              <span class="p">|</span>
++----------------------------------------------------------------------------+
+<span class="p">|</span> <span class="o">{</span>
+<span class="p">|</span>     <span class="s2">&quot;nova_object.name&quot;</span>: <span class="s2">&quot;InstanceNUMATopology&quot;</span>,
+<span class="p">|</span>     <span class="s2">&quot;nova_object.data&quot;</span>: <span class="o">{</span>
+<span class="p">|</span>         <span class="s2">&quot;cells&quot;</span>: <span class="o">[</span>
+<span class="p">|</span>             <span class="o">{</span>
+<span class="p">|</span>                 <span class="s2">&quot;nova_object.name&quot;</span>: <span class="s2">&quot;InstanceNUMACell&quot;</span>,
+<span class="p">|</span>                 <span class="s2">&quot;nova_object.data&quot;</span>: <span class="o">{</span>
+<span class="p">|</span>                     <span class="s2">&quot;pagesize&quot;</span>: null,
+<span class="p">|</span>                     <span class="s2">&quot;cpu_topology&quot;</span>: null,
+<span class="p">|</span>                     <span class="s2">&quot;cpuset&quot;</span>: <span class="o">[</span><span class="m">0</span>, <span class="m">1</span><span class="o">]</span>,
+<span class="p">|</span>                     <span class="s2">&quot;cpu_policy&quot;</span>: null,
+<span class="p">|</span>                     <span class="s2">&quot;memory&quot;</span>: <span class="m">512</span>,
+<span class="p">|</span>                     <span class="s2">&quot;cpu_pinning_raw&quot;</span>: null,
+<span class="p">|</span>                     <span class="s2">&quot;id&quot;</span>: <span class="m">0</span>,
+<span class="p">|</span>                     <span class="s2">&quot;cpu_thread_policy&quot;</span>: null
+<span class="p">|</span>                 <span class="o">}</span>,
+<span class="p">|</span>             <span class="o">}</span>,
+<span class="p">|</span>             <span class="o">{</span>
+<span class="p">|</span>                 <span class="s2">&quot;nova_object.name&quot;</span>: <span class="s2">&quot;InstanceNUMACell&quot;</span>,
+<span class="p">|</span>                 <span class="s2">&quot;nova_object.data&quot;</span>: <span class="o">{</span>
+<span class="p">|</span>                     <span class="s2">&quot;pagesize&quot;</span>: null,
+<span class="p">|</span>                     <span class="s2">&quot;cpu_topology&quot;</span>: null,
+<span class="p">|</span>                     <span class="s2">&quot;cpuset&quot;</span>: <span class="o">[</span><span class="m">2</span>, <span class="m">3</span><span class="o">]</span>,
+<span class="p">|</span>                     <span class="s2">&quot;cpu_policy&quot;</span>: null,
+<span class="p">|</span>                     <span class="s2">&quot;memory&quot;</span>: <span class="m">512</span>,
+<span class="p">|</span>                     <span class="s2">&quot;cpu_pinning_raw&quot;</span>: null,
+<span class="p">|</span>                     <span class="s2">&quot;id&quot;</span>: <span class="m">1</span>,
+<span class="p">|</span>                     <span class="s2">&quot;cpu_thread_policy&quot;</span>: null
+<span class="p">|</span>                 <span class="o">}</span>,
+<span class="p">|</span>             <span class="o">}</span>
+<span class="p">|</span>         <span class="o">]</span>
+<span class="p">|</span>     <span class="o">}</span>,
+<span class="p">|</span> <span class="o">}</span>
++----------------------------------------------------------------------------+
+</pre></div>
+</div>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="../index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Testing NUMA related hardware setup with libvirt</a><ul>
+<li><a class="reference internal" href="#provisioning-a-virtual-machine-for-testing">Provisioning a virtual machine for testing</a></li>
+<li><a class="reference internal" href="#setting-up-a-devstack-environment">Setting up a devstack environment</a></li>
+<li><a class="reference internal" href="#testing-basis-non-numa-usage">Testing basis non-NUMA usage</a></li>
+<li><a class="reference internal" href="#reconfiguring-the-test-instance-to-have-numa-topology">Reconfiguring the test instance to have NUMA topology</a></li>
+<li><a class="reference internal" href="#testing-instance-boot-with-no-numa-topology-requested">Testing instance boot with no NUMA topology requested</a></li>
+<li><a class="reference internal" href="#testing-instance-boot-with-1-numa-cell-requested">Testing instance boot with 1 NUMA cell requested</a></li>
+<li><a class="reference internal" href="#testing-instance-boot-with-2-numa-cells-requested">Testing instance boot with 2 NUMA cells requested</a></li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="../gmr.html"
+                                  title="previous chapter">Guru Meditation Reports</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="serial-console.html"
+                                  title="next chapter">Testing Serial Console</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/nova
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="../_sources/testing/libvirt-numa.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="serial-console.html" title="Testing Serial Console"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="../gmr.html" title="Guru Meditation Reports"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../index.html">nova 15.0.0.0rc2.dev69 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2010-present, OpenStack Foundation.
+      Last updated on &#39;Tue Feb 14 09:22:31 2017, commit 159bf6e&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/nova");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

@@ -1,0 +1,1360 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Jobs &mdash; TaskFlow 2.9.1.dev9 documentation</title>
+    
+    <link rel="stylesheet" href="_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '2.9.1.dev9',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <link rel="top" title="TaskFlow 2.9.1.dev9 documentation" href="index.html" />
+    <link rel="next" title="Conductors" href="conductors.html" />
+    <link rel="prev" title="Resumption" href="resumption.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="jobs">
+<h1>Jobs<a class="headerlink" href="#jobs" title="Permalink to this headline">¶</a></h1>
+<div class="section" id="overview">
+<h2>Overview<a class="headerlink" href="#overview" title="Permalink to this headline">¶</a></h2>
+<p>Jobs and jobboards are a <strong>novel</strong> concept that TaskFlow provides to allow for
+automatic ownership transfer of workflows between capable owners (those owners
+usually then use <a class="reference internal" href="engines.html"><em>engines</em></a> to complete the workflow). They
+provide the necessary semantics to be able to atomically transfer a job from a
+producer to a consumer in a reliable and fault tolerant manner. They are
+modeled off the concept used to post and acquire work in the physical world
+(typically a job listing in a newspaper or online website serves a similar
+role).</p>
+<p><strong>TLDR:</strong> It&#8217;s similar to a queue, but consumers lock items on the queue when
+claiming them, and only remove them from the queue when they&#8217;re done with the
+work. If the consumer fails, the lock is <em>automatically</em> released and the item
+is back on the queue for further consumption.</p>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">For more information, please visit the <a class="reference external" href="https://wiki.openstack.org/wiki/TaskFlow/Paradigm_shifts#Workflow_ownership_transfer">paradigm shift</a> page for
+more details.</p>
+</div>
+</div>
+<div class="section" id="definitions">
+<h2>Definitions<a class="headerlink" href="#definitions" title="Permalink to this headline">¶</a></h2>
+<dl class="docutils">
+<dt>Jobs</dt>
+<dd>A <a class="reference internal" href="#taskflow.jobs.base.Job" title="taskflow.jobs.base.Job"><code class="xref py py-class docutils literal"><span class="pre">job</span></code></a> consists of a unique identifier,
+name, and a reference to a <a class="reference internal" href="persistence.html#taskflow.persistence.models.LogBook" title="taskflow.persistence.models.LogBook"><code class="xref py py-class docutils literal"><span class="pre">logbook</span></code></a> which contains the details of the
+work that has been or should be/will be completed to finish the work that has
+been created for that job.</dd>
+<dt>Jobboards</dt>
+<dd>A <a class="reference internal" href="#taskflow.jobs.base.JobBoard" title="taskflow.jobs.base.JobBoard"><code class="xref py py-class docutils literal"><span class="pre">jobboard</span></code></a> is responsible for
+managing the posting, ownership, and delivery of jobs. It acts as the
+location where jobs can be posted, claimed and searched for; typically by
+iteration or notification.  Jobboards may be backed by different <em>capable</em>
+implementations (each with potentially differing configuration) but all
+jobboards implement the same interface and semantics so that the backend
+usage is as transparent as possible. This allows deployers or developers of a
+service that uses TaskFlow to select a jobboard implementation that fits
+their setup (and their intended usage) best.</dd>
+</dl>
+</div>
+<div class="section" id="high-level-architecture">
+<h2>High level architecture<a class="headerlink" href="#high-level-architecture" title="Permalink to this headline">¶</a></h2>
+<div class="figure align-right" id="id8">
+<a class="reference internal image-reference" href="_images/jobboard.png"><img alt="_images/jobboard.png" src="_images/jobboard.png" style="height: 350px;" /></a>
+<p class="caption"><span class="caption-text"><strong>Note:</strong> This diagram shows the high-level diagram (and further
+parts of this documentation also refer to it as well) of the zookeeper
+implementation (other implementations will typically have
+different architectures).</span></p>
+</div>
+</div>
+<div class="section" id="features">
+<h2>Features<a class="headerlink" href="#features" title="Permalink to this headline">¶</a></h2>
+<ul class="simple">
+<li>High availability<ul>
+<li>Guarantees workflow forward progress by transferring partially complete
+work or work that has not been started to entities which can either resume
+the previously partially completed work or begin initial work to ensure
+that the workflow as a whole progresses (where progressing implies
+transitioning through the workflow <a class="reference internal" href="patterns.html"><em>patterns</em></a> and
+<a class="reference internal" href="atoms.html"><em>atoms</em></a> and completing their associated
+<a class="reference internal" href="states.html"><em>states</em></a> transitions).</li>
+</ul>
+</li>
+<li>Atomic transfer and single ownership<ul>
+<li>Ensures that only one workflow is managed (aka owned) by a single owner at
+a time in an atomic manner (including when the workflow is transferred to
+a owner that is resuming some other failed owners work). This avoids
+contention and ensures a workflow is managed by one and only one entity at
+a time.</li>
+<li><em>Note:</em> this does not mean that the owner needs to run the
+workflow itself but instead said owner could use an engine that runs the
+work in a distributed manner to ensure that the workflow progresses.</li>
+</ul>
+</li>
+<li>Separation of workflow construction and execution<ul>
+<li>Jobs can be created with logbooks that contain a specification of the work
+to be done by a entity (such as an API server). The job then can be
+completed by a entity that is watching that jobboard (not necessarily the
+API server itself). This creates a disconnection between work
+formation and work completion that is useful for scaling out horizontally.</li>
+</ul>
+</li>
+<li>Asynchronous completion<ul>
+<li>When for example a API server posts a job for completion to a
+jobboard that API server can return a <em>tracking</em> identifier to the user
+calling the API service. This  <em>tracking</em> identifier can be used by the
+user to poll for status (similar in concept to a shipping <em>tracking</em>
+identifier created by fedex or UPS).</li>
+</ul>
+</li>
+</ul>
+</div>
+<div class="section" id="usage">
+<h2>Usage<a class="headerlink" href="#usage" title="Permalink to this headline">¶</a></h2>
+<p>All jobboards are mere classes that implement same interface, and of course
+it is possible to import them and create instances of them just like with any
+other class in Python. But the easier (and recommended) way for creating
+jobboards is by using the <a class="reference internal" href="#taskflow.jobs.backends.fetch" title="taskflow.jobs.backends.fetch"><code class="xref py py-meth docutils literal"><span class="pre">fetch()</span></code></a>
+function which uses entrypoints (internally using <a class="reference external" href="http://docs.openstack.org/developer/stevedore/">stevedore</a>) to fetch and
+configure your backend.</p>
+<p>Using this function the typical creation of a jobboard (and an example posting
+of a job) might look like:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="kn">from</span> <span class="nn">taskflow.persistence</span> <span class="kn">import</span> <span class="n">backends</span> <span class="k">as</span> <span class="n">persistence_backends</span>
+<span class="kn">from</span> <span class="nn">taskflow.jobs</span> <span class="kn">import</span> <span class="n">backends</span> <span class="k">as</span> <span class="n">job_backends</span>
+
+<span class="o">...</span>
+<span class="n">persistence</span> <span class="o">=</span> <span class="n">persistence_backends</span><span class="o">.</span><span class="n">fetch</span><span class="p">({</span>
+    <span class="s2">&quot;connection&#39;: &quot;</span><span class="n">mysql</span><span class="s2">&quot;,</span>
+    <span class="s2">&quot;user&quot;</span><span class="p">:</span> <span class="o">...</span><span class="p">,</span>
+    <span class="s2">&quot;password&quot;</span><span class="p">:</span> <span class="o">...</span><span class="p">,</span>
+<span class="p">})</span>
+<span class="n">book</span> <span class="o">=</span> <span class="n">make_and_save_logbook</span><span class="p">(</span><span class="n">persistence</span><span class="p">)</span>
+<span class="n">board</span> <span class="o">=</span> <span class="n">job_backends</span><span class="o">.</span><span class="n">fetch</span><span class="p">(</span><span class="s1">&#39;my-board&#39;</span><span class="p">,</span> <span class="p">{</span>
+    <span class="s2">&quot;board&quot;</span><span class="p">:</span> <span class="s2">&quot;zookeeper&quot;</span><span class="p">,</span>
+<span class="p">},</span> <span class="n">persistence</span><span class="o">=</span><span class="n">persistence</span><span class="p">)</span>
+<span class="n">job</span> <span class="o">=</span> <span class="n">board</span><span class="o">.</span><span class="n">post</span><span class="p">(</span><span class="s2">&quot;my-first-job&quot;</span><span class="p">,</span> <span class="n">book</span><span class="p">)</span>
+<span class="o">...</span>
+</pre></div>
+</div>
+<p>Consumption of jobs is similarly achieved by creating a jobboard and using
+the iteration functionality to find and claim jobs (and eventually consume
+them). The typical usage of a jobboard for consumption (and work completion)
+might look like:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="kn">import</span> <span class="nn">time</span>
+
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">exceptions</span> <span class="k">as</span> <span class="n">exc</span>
+<span class="kn">from</span> <span class="nn">taskflow.persistence</span> <span class="kn">import</span> <span class="n">backends</span> <span class="k">as</span> <span class="n">persistence_backends</span>
+<span class="kn">from</span> <span class="nn">taskflow.jobs</span> <span class="kn">import</span> <span class="n">backends</span> <span class="k">as</span> <span class="n">job_backends</span>
+
+<span class="o">...</span>
+<span class="n">my_name</span> <span class="o">=</span> <span class="s1">&#39;worker-1&#39;</span>
+<span class="n">coffee_break_time</span> <span class="o">=</span> <span class="mi">60</span>
+<span class="n">persistence</span> <span class="o">=</span> <span class="n">persistence_backends</span><span class="o">.</span><span class="n">fetch</span><span class="p">({</span>
+    <span class="s2">&quot;connection&#39;: &quot;</span><span class="n">mysql</span><span class="s2">&quot;,</span>
+    <span class="s2">&quot;user&quot;</span><span class="p">:</span> <span class="o">...</span><span class="p">,</span>
+    <span class="s2">&quot;password&quot;</span><span class="p">:</span> <span class="o">...</span><span class="p">,</span>
+<span class="p">})</span>
+<span class="n">board</span> <span class="o">=</span> <span class="n">job_backends</span><span class="o">.</span><span class="n">fetch</span><span class="p">(</span><span class="s1">&#39;my-board&#39;</span><span class="p">,</span> <span class="p">{</span>
+    <span class="s2">&quot;board&quot;</span><span class="p">:</span> <span class="s2">&quot;zookeeper&quot;</span><span class="p">,</span>
+<span class="p">},</span> <span class="n">persistence</span><span class="o">=</span><span class="n">persistence</span><span class="p">)</span>
+<span class="k">while</span> <span class="bp">True</span><span class="p">:</span>
+    <span class="n">my_job</span> <span class="o">=</span> <span class="bp">None</span>
+    <span class="k">for</span> <span class="n">job</span> <span class="ow">in</span> <span class="n">board</span><span class="o">.</span><span class="n">iterjobs</span><span class="p">(</span><span class="n">only_unclaimed</span><span class="o">=</span><span class="bp">True</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">board</span><span class="o">.</span><span class="n">claim</span><span class="p">(</span><span class="n">job</span><span class="p">,</span> <span class="n">my_name</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">exc</span><span class="o">.</span><span class="n">UnclaimableJob</span><span class="p">:</span>
+            <span class="k">pass</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">my_job</span> <span class="o">=</span> <span class="n">job</span>
+            <span class="k">break</span>
+    <span class="k">if</span> <span class="n">my_job</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">perform_job</span><span class="p">(</span><span class="n">my_job</span><span class="p">)</span>
+        <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">exception</span><span class="p">(</span><span class="s2">&quot;I failed performing job: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">my_job</span><span class="p">)</span>
+            <span class="n">board</span><span class="o">.</span><span class="n">abandon</span><span class="p">(</span><span class="n">my_job</span><span class="p">,</span> <span class="n">my_name</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="c1"># I finished it, now cleanup.</span>
+            <span class="n">board</span><span class="o">.</span><span class="n">consume</span><span class="p">(</span><span class="n">my_job</span><span class="p">)</span>
+            <span class="n">persistence</span><span class="o">.</span><span class="n">get_connection</span><span class="p">()</span><span class="o">.</span><span class="n">destroy_logbook</span><span class="p">(</span><span class="n">my_job</span><span class="o">.</span><span class="n">book</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+    <span class="n">time</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="n">coffee_break_time</span><span class="p">)</span>
+<span class="o">...</span>
+</pre></div>
+</div>
+<p>There are a few ways to provide arguments to the flow.  The first option is to
+add a <code class="docutils literal"><span class="pre">store</span></code> to the flowdetail object in the
+<a class="reference internal" href="persistence.html#taskflow.persistence.models.LogBook" title="taskflow.persistence.models.LogBook"><code class="xref py py-class docutils literal"><span class="pre">logbook</span></code></a>.</p>
+<p>You can also provide a <code class="docutils literal"><span class="pre">store</span></code> in the
+<a class="reference internal" href="#taskflow.jobs.base.Job" title="taskflow.jobs.base.Job"><code class="xref py py-class docutils literal"><span class="pre">job</span></code></a> itself when posting it to the
+job board.  If both <code class="docutils literal"><span class="pre">store</span></code> values are found, they will be combined,
+with the <a class="reference internal" href="#taskflow.jobs.base.Job" title="taskflow.jobs.base.Job"><code class="xref py py-class docutils literal"><span class="pre">job</span></code></a> <code class="docutils literal"><span class="pre">store</span></code>
+overriding the <a class="reference internal" href="persistence.html#taskflow.persistence.models.LogBook" title="taskflow.persistence.models.LogBook"><code class="xref py py-class docutils literal"><span class="pre">logbook</span></code></a>
+<code class="docutils literal"><span class="pre">store</span></code>.</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">uuidutils</span>
+
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">engines</span>
+<span class="kn">from</span> <span class="nn">taskflow.persistence</span> <span class="kn">import</span> <span class="n">backends</span> <span class="k">as</span> <span class="n">persistence_backends</span>
+<span class="kn">from</span> <span class="nn">taskflow.persistence</span> <span class="kn">import</span> <span class="n">models</span>
+<span class="kn">from</span> <span class="nn">taskflow.jobs</span> <span class="kn">import</span> <span class="n">backends</span> <span class="k">as</span> <span class="n">job_backends</span>
+
+
+<span class="o">...</span>
+<span class="n">persistence</span> <span class="o">=</span> <span class="n">persistence_backends</span><span class="o">.</span><span class="n">fetch</span><span class="p">({</span>
+    <span class="s2">&quot;connection&#39;: &quot;</span><span class="n">mysql</span><span class="s2">&quot;,</span>
+    <span class="s2">&quot;user&quot;</span><span class="p">:</span> <span class="o">...</span><span class="p">,</span>
+    <span class="s2">&quot;password&quot;</span><span class="p">:</span> <span class="o">...</span><span class="p">,</span>
+<span class="p">})</span>
+<span class="n">board</span> <span class="o">=</span> <span class="n">job_backends</span><span class="o">.</span><span class="n">fetch</span><span class="p">(</span><span class="s1">&#39;my-board&#39;</span><span class="p">,</span> <span class="p">{</span>
+    <span class="s2">&quot;board&quot;</span><span class="p">:</span> <span class="s2">&quot;zookeeper&quot;</span><span class="p">,</span>
+<span class="p">},</span> <span class="n">persistence</span><span class="o">=</span><span class="n">persistence</span><span class="p">)</span>
+
+<span class="n">book</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">LogBook</span><span class="p">(</span><span class="s1">&#39;my-book&#39;</span><span class="p">,</span> <span class="n">uuidutils</span><span class="o">.</span><span class="n">generate_uuid</span><span class="p">())</span>
+
+<span class="n">flow_detail</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">FlowDetail</span><span class="p">(</span><span class="s1">&#39;my-job&#39;</span><span class="p">,</span> <span class="n">uuidutils</span><span class="o">.</span><span class="n">generate_uuid</span><span class="p">())</span>
+<span class="n">book</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">flow_detail</span><span class="p">)</span>
+
+<span class="n">connection</span> <span class="o">=</span> <span class="n">persistence</span><span class="o">.</span><span class="n">get_connection</span><span class="p">()</span>
+<span class="n">connection</span><span class="o">.</span><span class="n">save_logbook</span><span class="p">(</span><span class="n">book</span><span class="p">)</span>
+
+<span class="n">flow_detail</span><span class="o">.</span><span class="n">meta</span><span class="p">[</span><span class="s1">&#39;store&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span><span class="s1">&#39;a&#39;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s1">&#39;c&#39;</span><span class="p">:</span> <span class="mi">3</span><span class="p">}</span>
+
+<span class="n">job_details</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s2">&quot;flow_uuid&quot;</span><span class="p">:</span> <span class="n">flow_detail</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span>
+    <span class="s2">&quot;store&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s1">&#39;a&#39;</span><span class="p">:</span> <span class="mi">2</span><span class="p">,</span> <span class="s1">&#39;b&#39;</span><span class="p">:</span> <span class="mi">1</span><span class="p">}</span>
+<span class="p">}</span>
+
+<span class="n">engines</span><span class="o">.</span><span class="n">save_factory_details</span><span class="p">(</span><span class="n">flow_detail</span><span class="p">,</span> <span class="n">flow_factory</span><span class="p">,</span>
+                             <span class="n">factory_args</span><span class="o">=</span><span class="p">[],</span>
+                             <span class="n">factory_kwargs</span><span class="o">=</span><span class="p">{},</span>
+                             <span class="n">backend</span><span class="o">=</span><span class="n">persistence</span><span class="p">)</span>
+
+<span class="n">jobboard</span> <span class="o">=</span> <span class="n">get_jobboard</span><span class="p">(</span><span class="n">zk_client</span><span class="p">)</span>
+<span class="n">jobboard</span><span class="o">.</span><span class="n">connect</span><span class="p">()</span>
+<span class="n">job</span> <span class="o">=</span> <span class="n">jobboard</span><span class="o">.</span><span class="n">post</span><span class="p">(</span><span class="s1">&#39;my-job&#39;</span><span class="p">,</span> <span class="n">book</span><span class="o">=</span><span class="n">book</span><span class="p">,</span> <span class="n">details</span><span class="o">=</span><span class="n">job_details</span><span class="p">)</span>
+
+<span class="c1"># the flow global parameters are now the combined store values</span>
+<span class="c1"># {&#39;a&#39;: 2, &#39;b&#39;: 1&#39;, &#39;c&#39;: 3}</span>
+<span class="o">...</span>
+</pre></div>
+</div>
+</div>
+<div class="section" id="types">
+<h2>Types<a class="headerlink" href="#types" title="Permalink to this headline">¶</a></h2>
+<div class="section" id="zookeeper">
+<h3>Zookeeper<a class="headerlink" href="#zookeeper" title="Permalink to this headline">¶</a></h3>
+<p><strong>Board type</strong>: <code class="docutils literal"><span class="pre">'zookeeper'</span></code></p>
+<p>Uses <a class="reference external" href="http://zookeeper.apache.org/">zookeeper</a> to provide the jobboard capabilities and semantics by using
+a zookeeper directory, ephemeral, non-ephemeral nodes and watches.</p>
+<p>Additional <em>kwarg</em> parameters:</p>
+<ul class="simple">
+<li><code class="docutils literal"><span class="pre">client</span></code>: a class that provides <code class="docutils literal"><span class="pre">kazoo.client.KazooClient</span></code>-like
+interface; it will be used for zookeeper interactions, sharing clients
+between jobboard instances will likely provide better scalability and can
+help avoid creating to many open connections to a set of zookeeper servers.</li>
+<li><code class="docutils literal"><span class="pre">persistence</span></code>: a class that provides a <a class="reference internal" href="persistence.html"><em>persistence</em></a>
+backend interface; it will be used for loading jobs logbooks for usage at
+runtime or for usage before a job is claimed for introspection.</li>
+</ul>
+<p>Additional <em>configuration</em> parameters:</p>
+<ul class="simple">
+<li><code class="docutils literal"><span class="pre">path</span></code>: the root zookeeper path to store job information (<em>defaults</em> to
+<code class="docutils literal"><span class="pre">/taskflow/jobs</span></code>)</li>
+<li><code class="docutils literal"><span class="pre">hosts</span></code>: the list of zookeeper hosts to connect to (<em>defaults</em> to
+<code class="docutils literal"><span class="pre">localhost:2181</span></code>); only used if a client is not provided.</li>
+<li><code class="docutils literal"><span class="pre">timeout</span></code>: the timeout used when performing operations with zookeeper;
+only used if a client is not provided.</li>
+<li><code class="docutils literal"><span class="pre">handler</span></code>: a class that provides <code class="docutils literal"><span class="pre">kazoo.handlers</span></code>-like interface; it will
+be used internally by <a class="reference external" href="http://kazoo.readthedocs.org/">kazoo</a> to perform asynchronous operations, useful
+when your program uses eventlet and you want to instruct kazoo to use an
+eventlet compatible handler.</li>
+</ul>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">See <a class="reference internal" href="#taskflow.jobs.backends.impl_zookeeper.ZookeeperJobBoard" title="taskflow.jobs.backends.impl_zookeeper.ZookeeperJobBoard"><code class="xref py py-class docutils literal"><span class="pre">ZookeeperJobBoard</span></code></a>
+for implementation details.</p>
+</div>
+</div>
+<div class="section" id="redis">
+<h3>Redis<a class="headerlink" href="#redis" title="Permalink to this headline">¶</a></h3>
+<p><strong>Board type</strong>: <code class="docutils literal"><span class="pre">'redis'</span></code></p>
+<p>Uses <a class="reference external" href="http://redis.io/">redis</a> to provide the jobboard capabilities and semantics by using
+a redis hash data structure and individual job ownership keys (that can
+optionally expire after a given amount of time).</p>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">See <a class="reference internal" href="#taskflow.jobs.backends.impl_redis.RedisJobBoard" title="taskflow.jobs.backends.impl_redis.RedisJobBoard"><code class="xref py py-class docutils literal"><span class="pre">RedisJobBoard</span></code></a>
+for implementation details.</p>
+</div>
+</div>
+</div>
+<div class="section" id="considerations">
+<h2>Considerations<a class="headerlink" href="#considerations" title="Permalink to this headline">¶</a></h2>
+<p>Some usage considerations should be used when using a jobboard to make sure
+it&#8217;s used in a safe and reliable manner. Eventually we hope to make these
+non-issues but for now they are worth mentioning.</p>
+<div class="section" id="dual-engine-jobs">
+<h3>Dual-engine jobs<a class="headerlink" href="#dual-engine-jobs" title="Permalink to this headline">¶</a></h3>
+<p><strong>What:</strong> Since atoms and engines are not currently <a class="reference external" href="http://en.wikipedia.org/wiki/Preemption_%28computing%29">preemptable</a> we can not
+force an engine (or the threads/remote workers... it is using to run) to stop
+working on an atom (it is general bad behavior to force code to stop without
+its consent anyway) if it has already started working on an atom (short of
+doing a <code class="docutils literal"><span class="pre">kill</span> <span class="pre">-9</span></code> on the running interpreter).  This could cause problems
+since the points an engine can notice that it no longer owns a claim is at any
+<a class="reference internal" href="states.html"><em>state</em></a> change that occurs (transitioning to a new atom or
+recording a result for example), where upon noticing the claim has been lost
+the engine can immediately stop doing further work. The effect that this causes
+is that when a claim is lost another engine can immediately attempt to acquire
+the claim that was previously lost and it <em>could</em> begin working on the
+unfinished tasks that the later engine may also still be executing (since that
+engine is not yet aware that it has <em>lost</em> the claim).</p>
+<p><strong>TLDR:</strong> not <a class="reference external" href="http://en.wikipedia.org/wiki/Preemption_%28computing%29">preemptable</a>, possible to become aware of losing a claim
+after the fact (at the next state change), another engine could have acquired
+the claim by then, therefore both would be <em>working</em> on a job.</p>
+<p><strong>Alleviate by:</strong></p>
+<ol class="arabic simple">
+<li>Ensure your atoms are <a class="reference external" href="http://en.wikipedia.org/wiki/Idempotence">idempotent</a>, this will cause an engine that may be
+executing the same atom to be able to continue executing without causing
+any conflicts/problems (idempotency guarantees this).</li>
+<li>On claiming jobs that have been claimed previously enforce a policy that
+happens before the jobs workflow begins to execute (possibly prior to an
+engine beginning the jobs work) that ensures that any prior work has been
+rolled back before continuing rolling forward. For example:<ul>
+<li>Rolling back the last atom/set of atoms that finished.</li>
+<li>Rolling back the last state change that occurred.</li>
+</ul>
+</li>
+<li>Delay claiming partially completed work by adding a wait period (to allow
+the previous engine to coalesce) before working on a partially completed job
+(combine this with the prior suggestions and <em>most</em> dual-engine issues
+should be avoided).</li>
+</ol>
+</div>
+</div>
+<div class="section" id="module-taskflow.jobs.base">
+<span id="interfaces"></span><h2>Interfaces<a class="headerlink" href="#module-taskflow.jobs.base" title="Permalink to this headline">¶</a></h2>
+<dl class="class">
+<dt id="taskflow.jobs.base.JobPriority">
+<em class="property">class </em><code class="descclassname">taskflow.jobs.base.</code><code class="descname">JobPriority</code><a class="reference internal" href="_modules/taskflow/jobs/base.html#JobPriority"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.jobs.base.JobPriority" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">enum.Enum</span></code></p>
+<p>Enum of job priorities (modeled after hadoop job priorities).</p>
+<dl class="attribute">
+<dt id="taskflow.jobs.base.JobPriority.VERY_HIGH">
+<code class="descname">VERY_HIGH</code><em class="property"> = &lt;JobPriority.VERY_HIGH: 'VERY_HIGH'&gt;</em><a class="headerlink" href="#taskflow.jobs.base.JobPriority.VERY_HIGH" title="Permalink to this definition">¶</a></dt>
+<dd><p>Extremely urgent job priority.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.base.JobPriority.HIGH">
+<code class="descname">HIGH</code><em class="property"> = &lt;JobPriority.HIGH: 'HIGH'&gt;</em><a class="headerlink" href="#taskflow.jobs.base.JobPriority.HIGH" title="Permalink to this definition">¶</a></dt>
+<dd><p>Mildly urgent job priority.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.base.JobPriority.NORMAL">
+<code class="descname">NORMAL</code><em class="property"> = &lt;JobPriority.NORMAL: 'NORMAL'&gt;</em><a class="headerlink" href="#taskflow.jobs.base.JobPriority.NORMAL" title="Permalink to this definition">¶</a></dt>
+<dd><p>Default job priority.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.base.JobPriority.LOW">
+<code class="descname">LOW</code><em class="property"> = &lt;JobPriority.LOW: 'LOW'&gt;</em><a class="headerlink" href="#taskflow.jobs.base.JobPriority.LOW" title="Permalink to this definition">¶</a></dt>
+<dd><p>Not needed anytime soon job priority.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.base.JobPriority.VERY_LOW">
+<code class="descname">VERY_LOW</code><em class="property"> = &lt;JobPriority.VERY_LOW: 'VERY_LOW'&gt;</em><a class="headerlink" href="#taskflow.jobs.base.JobPriority.VERY_LOW" title="Permalink to this definition">¶</a></dt>
+<dd><p>Very much not needed anytime soon job priority.</p>
+</dd></dl>
+
+<dl class="classmethod">
+<dt id="taskflow.jobs.base.JobPriority.reorder">
+<em class="property">classmethod </em><code class="descname">reorder</code><span class="sig-paren">(</span><em>*values</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/jobs/base.html#JobPriority.reorder"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.jobs.base.JobPriority.reorder" title="Permalink to this definition">¶</a></dt>
+<dd><p>Reorders (priority, value) tuples -&gt; priority ordered values.</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.jobs.base.Job">
+<em class="property">class </em><code class="descclassname">taskflow.jobs.base.</code><code class="descname">Job</code><span class="sig-paren">(</span><em>board</em>, <em>name</em>, <em>uuid=None</em>, <em>details=None</em>, <em>backend=None</em>, <em>book=None</em>, <em>book_data=None</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/jobs/base.html#Job"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.jobs.base.Job" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>A abstraction that represents a named and trackable unit of work.</p>
+<p>A job connects a logbook, a owner, a priority, last modified and created
+on dates and any associated state that the job has. Since it is a connected
+to a logbook, which are each associated with a set of factories that can
+create set of flows, it is the current top-level container for a piece of
+work that can be owned by an entity (typically that entity will read those
+logbooks and run any contained flows).</p>
+<p>Only one entity will be allowed to own and operate on the flows contained
+in a job at a given time (for the foreseeable future).</p>
+<p>NOTE(harlowja): It is the object that will be transferred to another
+entity on failure so that the contained flows ownership can be
+transferred to the secondary entity/owner for resumption, continuation,
+reverting...</p>
+<dl class="attribute">
+<dt id="taskflow.jobs.base.Job.last_modified">
+<code class="descname">last_modified</code><a class="headerlink" href="#taskflow.jobs.base.Job.last_modified" title="Permalink to this definition">¶</a></dt>
+<dd><p>The datetime the job was last modified.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.base.Job.created_on">
+<code class="descname">created_on</code><a class="headerlink" href="#taskflow.jobs.base.Job.created_on" title="Permalink to this definition">¶</a></dt>
+<dd><p>The datetime the job was created on.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.base.Job.board">
+<code class="descname">board</code><a class="headerlink" href="#taskflow.jobs.base.Job.board" title="Permalink to this definition">¶</a></dt>
+<dd><p>The board this job was posted on or was created from.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.base.Job.state">
+<code class="descname">state</code><a class="headerlink" href="#taskflow.jobs.base.Job.state" title="Permalink to this definition">¶</a></dt>
+<dd><p>Access the current state of this job.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.base.Job.priority">
+<code class="descname">priority</code><a class="headerlink" href="#taskflow.jobs.base.Job.priority" title="Permalink to this definition">¶</a></dt>
+<dd><p>The <a class="reference internal" href="#taskflow.jobs.base.JobPriority" title="taskflow.jobs.base.JobPriority"><code class="xref py py-class docutils literal"><span class="pre">JobPriority</span></code></a> of this job.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.jobs.base.Job.wait">
+<code class="descname">wait</code><span class="sig-paren">(</span><em>timeout=None</em>, <em>delay=0.01</em>, <em>delay_multiplier=2.0</em>, <em>max_delay=60.0</em>, <em>sleep_func=&lt;built-in function sleep&gt;</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/jobs/base.html#Job.wait"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.jobs.base.Job.wait" title="Permalink to this definition">¶</a></dt>
+<dd><p>Wait for job to enter completion state.</p>
+<p>If the job has not completed in the given timeout, then return false,
+otherwise return true (a job failure exception may also be raised if
+the job information can not be read, for whatever reason). Periodic
+state checks will happen every <code class="docutils literal"><span class="pre">delay</span></code> seconds where <code class="docutils literal"><span class="pre">delay</span></code> will
+be multiplied by the given multipler after a state is found that is
+<strong>not</strong> complete.</p>
+<p>Note that if no timeout is given this is equivalent to blocking
+until the job has completed. Also note that if a jobboard backend
+can optimize this method then its implementation may not use
+delays (and backoffs) at all. In general though no matter what
+optimizations are applied implementations must <strong>always</strong> respect
+the given timeout value.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.base.Job.book">
+<code class="descname">book</code><a class="headerlink" href="#taskflow.jobs.base.Job.book" title="Permalink to this definition">¶</a></dt>
+<dd><p>Logbook associated with this job.</p>
+<p>If no logbook is associated with this job, this property is None.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.base.Job.book_uuid">
+<code class="descname">book_uuid</code><a class="headerlink" href="#taskflow.jobs.base.Job.book_uuid" title="Permalink to this definition">¶</a></dt>
+<dd><p>UUID of logbook associated with this job.</p>
+<p>If no logbook is associated with this job, this property is None.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.base.Job.book_name">
+<code class="descname">book_name</code><a class="headerlink" href="#taskflow.jobs.base.Job.book_name" title="Permalink to this definition">¶</a></dt>
+<dd><p>Name of logbook associated with this job.</p>
+<p>If no logbook is associated with this job, this property is None.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.base.Job.uuid">
+<code class="descname">uuid</code><a class="headerlink" href="#taskflow.jobs.base.Job.uuid" title="Permalink to this definition">¶</a></dt>
+<dd><p>The uuid of this job.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.base.Job.details">
+<code class="descname">details</code><a class="headerlink" href="#taskflow.jobs.base.Job.details" title="Permalink to this definition">¶</a></dt>
+<dd><p>A dictionary of any details associated with this job.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.base.Job.name">
+<code class="descname">name</code><a class="headerlink" href="#taskflow.jobs.base.Job.name" title="Permalink to this definition">¶</a></dt>
+<dd><p>The non-uniquely identifying name of this job.</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.jobs.base.JobBoardIterator">
+<em class="property">class </em><code class="descclassname">taskflow.jobs.base.</code><code class="descname">JobBoardIterator</code><span class="sig-paren">(</span><em>board</em>, <em>logger</em>, <em>board_fetch_func=None</em>, <em>board_removal_func=None</em>, <em>only_unclaimed=False</em>, <em>ensure_fresh=False</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/jobs/base.html#JobBoardIterator"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.jobs.base.JobBoardIterator" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">six.Iterator</span></code></p>
+<p>Iterator over a jobboard that iterates over potential jobs.</p>
+<p>It provides the following attributes:</p>
+<ul class="simple">
+<li><code class="docutils literal"><span class="pre">only_unclaimed</span></code>: boolean that indicates whether to only iterate
+over unclaimed jobs</li>
+<li><code class="docutils literal"><span class="pre">ensure_fresh</span></code>: boolean that requests that during every fetch of a new
+set of jobs this will cause the iterator to force the backend to
+refresh (ensuring that the jobboard has the most recent job listings)</li>
+<li><code class="docutils literal"><span class="pre">board</span></code>: the board this iterator was created from</li>
+</ul>
+<dl class="attribute">
+<dt id="taskflow.jobs.base.JobBoardIterator.board">
+<code class="descname">board</code><a class="headerlink" href="#taskflow.jobs.base.JobBoardIterator.board" title="Permalink to this definition">¶</a></dt>
+<dd><p>The board this iterator was created from.</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.jobs.base.JobBoard">
+<em class="property">class </em><code class="descclassname">taskflow.jobs.base.</code><code class="descname">JobBoard</code><span class="sig-paren">(</span><em>name</em>, <em>conf</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/jobs/base.html#JobBoard"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.jobs.base.JobBoard" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>A place where jobs can be posted, reposted, claimed and transferred.</p>
+<p>There can be multiple implementations of this job board, depending on the
+desired semantics and capabilities of the underlying jobboard
+implementation.</p>
+<p>NOTE(harlowja): the name is meant to be an analogous to a board/posting
+system that is used in newspapers, or elsewhere to solicit jobs that
+people can interview and apply for (and then work on &amp; complete).</p>
+<dl class="method">
+<dt id="taskflow.jobs.base.JobBoard.iterjobs">
+<code class="descname">iterjobs</code><span class="sig-paren">(</span><em>only_unclaimed=False</em>, <em>ensure_fresh=False</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/jobs/base.html#JobBoard.iterjobs"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.jobs.base.JobBoard.iterjobs" title="Permalink to this definition">¶</a></dt>
+<dd><p>Returns an iterator of jobs that are currently on this board.</p>
+<p>NOTE(harlowja): the ordering of this iteration should be by posting
+order (oldest to newest) with higher priority jobs
+being provided before lower priority jobs, but it is left up to the
+backing implementation to provide the order that best suits it..</p>
+<p>NOTE(harlowja): the iterator that is returned may support other
+attributes which can be used to further customize how iteration can
+be accomplished; check with the backends iterator object to determine
+what other attributes are supported.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><ul class="first last simple">
+<li><strong>only_unclaimed</strong> &#8211; boolean that indicates whether to only iteration
+over unclaimed jobs.</li>
+<li><strong>ensure_fresh</strong> &#8211; boolean that requests to only iterate over the
+most recent jobs available, where the definition of what is recent
+is backend specific. It is allowable that a backend may ignore this
+value if the backends internal semantics/capabilities can not
+support this argument.</li>
+</ul>
+</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.jobs.base.JobBoard.wait">
+<code class="descname">wait</code><span class="sig-paren">(</span><em>timeout=None</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/jobs/base.html#JobBoard.wait"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.jobs.base.JobBoard.wait" title="Permalink to this definition">¶</a></dt>
+<dd><p>Waits a given amount of time for <strong>any</strong> jobs to be posted.</p>
+<p>When jobs are found then an iterator will be returned that can be used
+to iterate over those jobs.</p>
+<p>NOTE(harlowja): since a jobboard can be mutated on by multiple external
+entities at the <strong>same</strong> time the iterator that can be
+returned <strong>may</strong> still be empty due to other entities removing those
+jobs after the iterator has been created (be aware of this when
+using it).</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><strong>timeout</strong> &#8211; float that indicates how long to wait for a job to
+appear (if None then waits forever).</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.base.JobBoard.job_count">
+<code class="descname">job_count</code><a class="headerlink" href="#taskflow.jobs.base.JobBoard.job_count" title="Permalink to this definition">¶</a></dt>
+<dd><p>Returns how many jobs are on this jobboard.</p>
+<p>NOTE(harlowja): this count may change as jobs appear or are removed so
+the accuracy of this count should not be used in a way that requires
+it to be exact &amp; absolute.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.jobs.base.JobBoard.find_owner">
+<code class="descname">find_owner</code><span class="sig-paren">(</span><em>job</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/jobs/base.html#JobBoard.find_owner"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.jobs.base.JobBoard.find_owner" title="Permalink to this definition">¶</a></dt>
+<dd><p>Gets the owner of the job if one exists.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.base.JobBoard.name">
+<code class="descname">name</code><a class="headerlink" href="#taskflow.jobs.base.JobBoard.name" title="Permalink to this definition">¶</a></dt>
+<dd><p>The non-uniquely identifying name of this jobboard.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.jobs.base.JobBoard.consume">
+<code class="descname">consume</code><span class="sig-paren">(</span><em>job</em>, <em>who</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/jobs/base.html#JobBoard.consume"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.jobs.base.JobBoard.consume" title="Permalink to this definition">¶</a></dt>
+<dd><p>Permanently (and atomically) removes a job from the jobboard.</p>
+<p>Consumption signals to the board (and any others examining the board)
+that this job has been completed by the entity that previously claimed
+that job.</p>
+<p>Only the entity that has claimed that job is able to consume the job.</p>
+<p>A job that has been consumed can not be reclaimed or reposted by
+another entity (job postings are immutable). Any entity consuming
+a unclaimed job (or a job they do not have a claim on) will cause an
+exception.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><ul class="first last simple">
+<li><strong>job</strong> &#8211; a job on this jobboard that can be consumed (if it does
+not exist then a NotFound exception will be raised).</li>
+<li><strong>who</strong> &#8211; string that names the entity performing the consumption,
+this must be the same name that was used for claiming this job.</li>
+</ul>
+</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.jobs.base.JobBoard.post">
+<code class="descname">post</code><span class="sig-paren">(</span><em>name</em>, <em>book=None</em>, <em>details=None</em>, <em>priority=&lt;JobPriority.NORMAL: 'NORMAL'&gt;</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/jobs/base.html#JobBoard.post"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.jobs.base.JobBoard.post" title="Permalink to this definition">¶</a></dt>
+<dd><p>Atomically creates and posts a job to the jobboard.</p>
+<p>This posting allowing others to attempt to claim that job (and
+subsequently work on that job). The contents of the provided logbook,
+details dictionary, or name (or a mix of these) must provide <em>enough</em>
+information for consumers to reference to construct and perform that
+jobs contained work (whatever it may be).</p>
+<p>Once a job has been posted it can only be removed by consuming that
+job (after that job is claimed). Any entity can post/propose jobs
+to the jobboard (in the future this may be restricted).</p>
+<p>Returns a job object representing the information that was posted.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.jobs.base.JobBoard.claim">
+<code class="descname">claim</code><span class="sig-paren">(</span><em>job</em>, <em>who</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/jobs/base.html#JobBoard.claim"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.jobs.base.JobBoard.claim" title="Permalink to this definition">¶</a></dt>
+<dd><p>Atomically attempts to claim the provided job.</p>
+<p>If a job is claimed it is expected that the entity that claims that job
+will at sometime in the future work on that jobs contents and either
+fail at completing them (resulting in a reposting) or consume that job
+from the jobboard (signaling its completion). If claiming fails then
+a corresponding exception will be raised to signal this to the claim
+attempter.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><ul class="first last simple">
+<li><strong>job</strong> &#8211; a job on this jobboard that can be claimed (if it does
+not exist then a NotFound exception will be raised).</li>
+<li><strong>who</strong> &#8211; string that names the claiming entity.</li>
+</ul>
+</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.jobs.base.JobBoard.abandon">
+<code class="descname">abandon</code><span class="sig-paren">(</span><em>job</em>, <em>who</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/jobs/base.html#JobBoard.abandon"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.jobs.base.JobBoard.abandon" title="Permalink to this definition">¶</a></dt>
+<dd><p>Atomically attempts to abandon the provided job.</p>
+<p>This abandonment signals to others that the job may now be reclaimed.
+This would typically occur if the entity that has claimed the job has
+failed or is unable to complete the job or jobs it had previously
+claimed.</p>
+<p>Only the entity that has claimed that job can abandon a job. Any entity
+abandoning a unclaimed job (or a job they do not own) will cause an
+exception.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><ul class="first last simple">
+<li><strong>job</strong> &#8211; a job on this jobboard that can be abandoned (if it does
+not exist then a NotFound exception will be raised).</li>
+<li><strong>who</strong> &#8211; string that names the entity performing the abandoning,
+this must be the same name that was used for claiming this job.</li>
+</ul>
+</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.jobs.base.JobBoard.trash">
+<code class="descname">trash</code><span class="sig-paren">(</span><em>job</em>, <em>who</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/jobs/base.html#JobBoard.trash"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.jobs.base.JobBoard.trash" title="Permalink to this definition">¶</a></dt>
+<dd><p>Trash the provided job.</p>
+<p>Trashing a job signals to others that the job is broken and should not
+be reclaimed. This is provided as an option for users to be able to
+remove jobs from the board externally.  The trashed job details should
+be kept around in an alternate location to be reviewed, if desired.</p>
+<p>Only the entity that has claimed that job can trash a job. Any entity
+trashing a unclaimed job (or a job they do not own) will cause an
+exception.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><ul class="first last simple">
+<li><strong>job</strong> &#8211; a job on this jobboard that can be trashed (if it does
+not exist then a NotFound exception will be raised).</li>
+<li><strong>who</strong> &#8211; string that names the entity performing the trashing,
+this must be the same name that was used for claiming this job.</li>
+</ul>
+</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.jobs.base.JobBoard.register_entity">
+<code class="descname">register_entity</code><span class="sig-paren">(</span><em>entity</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/jobs/base.html#JobBoard.register_entity"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.jobs.base.JobBoard.register_entity" title="Permalink to this definition">¶</a></dt>
+<dd><p>Register an entity to the jobboard(&#8216;s backend), e.g: a conductor.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><strong>entity</strong> (<a class="reference internal" href="types.html#taskflow.types.entity.Entity" title="taskflow.types.entity.Entity"><code class="xref py py-class docutils literal"><span class="pre">Entity</span></code></a>) &#8211; entity to register as being associated with the
+jobboard(&#8216;s backend)</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.base.JobBoard.connected">
+<code class="descname">connected</code><a class="headerlink" href="#taskflow.jobs.base.JobBoard.connected" title="Permalink to this definition">¶</a></dt>
+<dd><p>Returns if this jobboard is connected.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.jobs.base.JobBoard.connect">
+<code class="descname">connect</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/jobs/base.html#JobBoard.connect"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.jobs.base.JobBoard.connect" title="Permalink to this definition">¶</a></dt>
+<dd><p>Opens the connection to any backend system.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.jobs.base.JobBoard.close">
+<code class="descname">close</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/jobs/base.html#JobBoard.close"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.jobs.base.JobBoard.close" title="Permalink to this definition">¶</a></dt>
+<dd><p>Close the connection to any backend system.</p>
+<p>Once closed the jobboard can no longer be used (unless reconnection
+occurs).</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.jobs.base.NotifyingJobBoard">
+<em class="property">class </em><code class="descclassname">taskflow.jobs.base.</code><code class="descname">NotifyingJobBoard</code><span class="sig-paren">(</span><em>name</em>, <em>conf</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/jobs/base.html#NotifyingJobBoard"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.jobs.base.NotifyingJobBoard" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <a class="reference internal" href="#taskflow.jobs.base.JobBoard" title="taskflow.jobs.base.JobBoard"><code class="xref py py-class docutils literal"><span class="pre">taskflow.jobs.base.JobBoard</span></code></a></p>
+<p>A jobboard subclass that can notify others about board events.</p>
+<p>Implementers are expected to notify <em>at least</em> about jobs being posted
+and removed.</p>
+<p>NOTE(harlowja): notifications that are emitted <em>may</em> be emitted on a
+separate dedicated thread when they occur, so ensure that all callbacks
+registered are thread safe (and block for as little time as possible).</p>
+</dd></dl>
+
+<span class="target" id="module-taskflow.jobs.backends"></span><dl class="function">
+<dt id="taskflow.jobs.backends.fetch">
+<code class="descclassname">taskflow.jobs.backends.</code><code class="descname">fetch</code><span class="sig-paren">(</span><em>name</em>, <em>conf</em>, <em>namespace='taskflow.jobboards'</em>, <em>**kwargs</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/jobs/backends.html#fetch"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.jobs.backends.fetch" title="Permalink to this definition">¶</a></dt>
+<dd><p>Fetch a jobboard backend with the given configuration.</p>
+<p>This fetch method will look for the entrypoint name in the entrypoint
+namespace, and then attempt to instantiate that entrypoint using the
+provided name, configuration and any board specific kwargs.</p>
+<p>NOTE(harlowja): to aid in making it easy to specify configuration and
+options to a board the configuration (which is typical just a dictionary)
+can also be a URI string that identifies the entrypoint name and any
+configuration specific to that board.</p>
+<p>For example, given the following configuration URI:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>zookeeper://&lt;not-used&gt;/?a=b&amp;c=d
+</pre></div>
+</div>
+<p>This will look for the entrypoint named &#8216;zookeeper&#8217; and will provide
+a configuration object composed of the URI&#8217;s components, in this case that
+is <code class="docutils literal"><span class="pre">{'a':</span> <span class="pre">'b',</span> <span class="pre">'c':</span> <span class="pre">'d'}</span></code> to the constructor of that board
+instance (also including the name specified).</p>
+</dd></dl>
+
+<dl class="function">
+<dt id="taskflow.jobs.backends.backend">
+<code class="descclassname">taskflow.jobs.backends.</code><code class="descname">backend</code><span class="sig-paren">(</span><em>*args</em>, <em>**kwds</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/jobs/backends.html#backend"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.jobs.backends.backend" title="Permalink to this definition">¶</a></dt>
+<dd><p>Fetches a jobboard, connects to it and closes it on completion.</p>
+<p>This allows a board instance to fetched, connected to, and then used in a
+context manager statement with the board being closed upon context
+manager exit.</p>
+</dd></dl>
+
+</div>
+<div class="section" id="implementations">
+<h2>Implementations<a class="headerlink" href="#implementations" title="Permalink to this headline">¶</a></h2>
+<div class="section" id="id1">
+<h3>Zookeeper<a class="headerlink" href="#id1" title="Permalink to this headline">¶</a></h3>
+<span class="target" id="module-taskflow.jobs.backends.impl_zookeeper"></span><dl class="class">
+<dt id="taskflow.jobs.backends.impl_zookeeper.ZookeeperJob">
+<em class="property">class </em><code class="descclassname">taskflow.jobs.backends.impl_zookeeper.</code><code class="descname">ZookeeperJob</code><span class="sig-paren">(</span><em>board</em>, <em>name</em>, <em>client</em>, <em>path</em>, <em>uuid=None</em>, <em>details=None</em>, <em>book=None</em>, <em>book_data=None</em>, <em>created_on=None</em>, <em>backend=None</em>, <em>priority=&lt;JobPriority.NORMAL: 'NORMAL'&gt;</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/jobs/backends/impl_zookeeper.html#ZookeeperJob"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.jobs.backends.impl_zookeeper.ZookeeperJob" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <a class="reference internal" href="#taskflow.jobs.base.Job" title="taskflow.jobs.base.Job"><code class="xref py py-class docutils literal"><span class="pre">taskflow.jobs.base.Job</span></code></a></p>
+<p>A zookeeper job.</p>
+<dl class="attribute">
+<dt id="taskflow.jobs.backends.impl_zookeeper.ZookeeperJob.lock_path">
+<code class="descname">lock_path</code><a class="headerlink" href="#taskflow.jobs.backends.impl_zookeeper.ZookeeperJob.lock_path" title="Permalink to this definition">¶</a></dt>
+<dd><p>Path the job lock/claim and owner znode is stored.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.backends.impl_zookeeper.ZookeeperJob.path">
+<code class="descname">path</code><a class="headerlink" href="#taskflow.jobs.backends.impl_zookeeper.ZookeeperJob.path" title="Permalink to this definition">¶</a></dt>
+<dd><p>Path the job data znode is stored.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.backends.impl_zookeeper.ZookeeperJob.sequence">
+<code class="descname">sequence</code><a class="headerlink" href="#taskflow.jobs.backends.impl_zookeeper.ZookeeperJob.sequence" title="Permalink to this definition">¶</a></dt>
+<dd><p>Sequence number of the current job.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.backends.impl_zookeeper.ZookeeperJob.root">
+<code class="descname">root</code><a class="headerlink" href="#taskflow.jobs.backends.impl_zookeeper.ZookeeperJob.root" title="Permalink to this definition">¶</a></dt>
+<dd><p>The parent path of the job in zookeeper.</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.jobs.backends.impl_zookeeper.ZookeeperJobBoard">
+<em class="property">class </em><code class="descclassname">taskflow.jobs.backends.impl_zookeeper.</code><code class="descname">ZookeeperJobBoard</code><span class="sig-paren">(</span><em>name</em>, <em>conf</em>, <em>client=None</em>, <em>persistence=None</em>, <em>emit_notifications=True</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/jobs/backends/impl_zookeeper.html#ZookeeperJobBoard"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.jobs.backends.impl_zookeeper.ZookeeperJobBoard" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <a class="reference internal" href="#taskflow.jobs.base.NotifyingJobBoard" title="taskflow.jobs.base.NotifyingJobBoard"><code class="xref py py-class docutils literal"><span class="pre">taskflow.jobs.base.NotifyingJobBoard</span></code></a></p>
+<p>A jobboard backed by <a class="reference external" href="http://zookeeper.apache.org/">zookeeper</a>.</p>
+<p>Powered by the <a class="reference external" href="http://kazoo.readthedocs.org/">kazoo</a> library.</p>
+<p>This jobboard creates <em>sequenced</em> persistent znodes in a directory in
+zookeeper and uses zookeeper watches to notify other jobboards of
+jobs which were posted using the <a class="reference internal" href="#taskflow.jobs.base.JobBoard.post" title="taskflow.jobs.base.JobBoard.post"><code class="xref py py-meth docutils literal"><span class="pre">post()</span></code></a> method (this creates a
+znode with job contents/details encoded in <a class="reference external" href="http://json.org/">json</a>). The users of these
+jobboard(s) (potentially on disjoint sets of machines) can then iterate
+over the available jobs and decide if they want
+to attempt to claim one of the jobs they have iterated over. If so they
+will then attempt to contact zookeeper and they will attempt to create a
+ephemeral znode using the name of the persistent znode + &#8221;.lock&#8221; as a
+postfix. If the entity trying to use the jobboard to <a class="reference internal" href="#taskflow.jobs.base.JobBoard.claim" title="taskflow.jobs.base.JobBoard.claim"><code class="xref py py-meth docutils literal"><span class="pre">claim()</span></code></a> the
+job is able to create a ephemeral znode with that name then it will be
+allowed (and expected) to perform whatever <em>work</em> the contents of that
+job described. Once the claiming entity is finished the ephemeral znode
+and persistent znode will be deleted (if successfully completed) in a
+single transaction. If the claiming entity is not successful (or the
+entity that claimed the znode dies) the ephemeral znode will be
+released (either manually by using <a class="reference internal" href="#taskflow.jobs.base.JobBoard.abandon" title="taskflow.jobs.base.JobBoard.abandon"><code class="xref py py-meth docutils literal"><span class="pre">abandon()</span></code></a> or automatically by
+zookeeper when the ephemeral node and associated session is deemed to
+have been lost).</p>
+<p>Do note that the creation of a kazoo client is achieved
+by <a class="reference internal" href="utils.html#taskflow.utils.kazoo_utils.make_client" title="taskflow.utils.kazoo_utils.make_client"><code class="xref py py-func docutils literal"><span class="pre">make_client()</span></code></a> and the transfer
+of this jobboard configuration to that function to make a
+client may happen at <code class="docutils literal"><span class="pre">__init__</span></code> time. This implies that certain
+parameters from this jobboard configuration may be provided to
+<a class="reference internal" href="utils.html#taskflow.utils.kazoo_utils.make_client" title="taskflow.utils.kazoo_utils.make_client"><code class="xref py py-func docutils literal"><span class="pre">make_client()</span></code></a> such
+that if a client was not provided by the caller one will be created
+according to <a class="reference internal" href="utils.html#taskflow.utils.kazoo_utils.make_client" title="taskflow.utils.kazoo_utils.make_client"><code class="xref py py-func docutils literal"><span class="pre">make_client()</span></code></a>&#8216;s
+specification</p>
+<dl class="attribute">
+<dt id="taskflow.jobs.backends.impl_zookeeper.ZookeeperJobBoard.MIN_ZK_VERSION">
+<code class="descname">MIN_ZK_VERSION</code><em class="property"> = (3, 4, 0)</em><a class="headerlink" href="#taskflow.jobs.backends.impl_zookeeper.ZookeeperJobBoard.MIN_ZK_VERSION" title="Permalink to this definition">¶</a></dt>
+<dd><p>Transaction support was added in 3.4.0 so we need at least that version.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.backends.impl_zookeeper.ZookeeperJobBoard.LOCK_POSTFIX">
+<code class="descname">LOCK_POSTFIX</code><em class="property"> = '.lock'</em><a class="headerlink" href="#taskflow.jobs.backends.impl_zookeeper.ZookeeperJobBoard.LOCK_POSTFIX" title="Permalink to this definition">¶</a></dt>
+<dd><p>Znode <strong>postfix</strong> that lock entries have.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.backends.impl_zookeeper.ZookeeperJobBoard.TRASH_FOLDER">
+<code class="descname">TRASH_FOLDER</code><em class="property"> = '.trash'</em><a class="headerlink" href="#taskflow.jobs.backends.impl_zookeeper.ZookeeperJobBoard.TRASH_FOLDER" title="Permalink to this definition">¶</a></dt>
+<dd><p>Znode child path created under root path that contains trashed jobs.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.backends.impl_zookeeper.ZookeeperJobBoard.ENTITY_FOLDER">
+<code class="descname">ENTITY_FOLDER</code><em class="property"> = '.entities'</em><a class="headerlink" href="#taskflow.jobs.backends.impl_zookeeper.ZookeeperJobBoard.ENTITY_FOLDER" title="Permalink to this definition">¶</a></dt>
+<dd><p>Znode child path created under root path that contains registered
+entities.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.backends.impl_zookeeper.ZookeeperJobBoard.JOB_PREFIX">
+<code class="descname">JOB_PREFIX</code><em class="property"> = 'job'</em><a class="headerlink" href="#taskflow.jobs.backends.impl_zookeeper.ZookeeperJobBoard.JOB_PREFIX" title="Permalink to this definition">¶</a></dt>
+<dd><p>Znode <strong>prefix</strong> that job entries have.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.backends.impl_zookeeper.ZookeeperJobBoard.DEFAULT_PATH">
+<code class="descname">DEFAULT_PATH</code><em class="property"> = '/taskflow/jobs'</em><a class="headerlink" href="#taskflow.jobs.backends.impl_zookeeper.ZookeeperJobBoard.DEFAULT_PATH" title="Permalink to this definition">¶</a></dt>
+<dd><p>Default znode path used for jobs (data, locks...).</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.backends.impl_zookeeper.ZookeeperJobBoard.STATE_HISTORY_LENGTH">
+<code class="descname">STATE_HISTORY_LENGTH</code><em class="property"> = 2</em><a class="headerlink" href="#taskflow.jobs.backends.impl_zookeeper.ZookeeperJobBoard.STATE_HISTORY_LENGTH" title="Permalink to this definition">¶</a></dt>
+<dd><p>Number of prior state changes to keep a history of, mainly useful
+for history tracking and debugging connectivity issues.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.backends.impl_zookeeper.ZookeeperJobBoard.NO_FETCH_STATES">
+<code class="descname">NO_FETCH_STATES</code><em class="property"> = ('LOST', 'SUSPENDED')</em><a class="headerlink" href="#taskflow.jobs.backends.impl_zookeeper.ZookeeperJobBoard.NO_FETCH_STATES" title="Permalink to this definition">¶</a></dt>
+<dd><p>Client states underwhich we return empty lists from fetching routines,
+during these states the underlying connection either is being recovered
+or may be recovered (aka, it has not full disconnected).</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.backends.impl_zookeeper.ZookeeperJobBoard.path">
+<code class="descname">path</code><a class="headerlink" href="#taskflow.jobs.backends.impl_zookeeper.ZookeeperJobBoard.path" title="Permalink to this definition">¶</a></dt>
+<dd><p>Path where all job znodes will be stored.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.backends.impl_zookeeper.ZookeeperJobBoard.trash_path">
+<code class="descname">trash_path</code><a class="headerlink" href="#taskflow.jobs.backends.impl_zookeeper.ZookeeperJobBoard.trash_path" title="Permalink to this definition">¶</a></dt>
+<dd><p>Path where all trashed job znodes will be stored.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.backends.impl_zookeeper.ZookeeperJobBoard.entity_path">
+<code class="descname">entity_path</code><a class="headerlink" href="#taskflow.jobs.backends.impl_zookeeper.ZookeeperJobBoard.entity_path" title="Permalink to this definition">¶</a></dt>
+<dd><p>Path where all conductor info znodes will be stored.</p>
+</dd></dl>
+
+</dd></dl>
+
+</div>
+<div class="section" id="id3">
+<h3>Redis<a class="headerlink" href="#id3" title="Permalink to this headline">¶</a></h3>
+<span class="target" id="module-taskflow.jobs.backends.impl_redis"></span><dl class="class">
+<dt id="taskflow.jobs.backends.impl_redis.RedisJob">
+<em class="property">class </em><code class="descclassname">taskflow.jobs.backends.impl_redis.</code><code class="descname">RedisJob</code><span class="sig-paren">(</span><em>board</em>, <em>name</em>, <em>sequence</em>, <em>key</em>, <em>uuid=None</em>, <em>details=None</em>, <em>created_on=None</em>, <em>backend=None</em>, <em>book=None</em>, <em>book_data=None</em>, <em>priority=&lt;JobPriority.NORMAL: 'NORMAL'&gt;</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/jobs/backends/impl_redis.html#RedisJob"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.jobs.backends.impl_redis.RedisJob" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <a class="reference internal" href="#taskflow.jobs.base.Job" title="taskflow.jobs.base.Job"><code class="xref py py-class docutils literal"><span class="pre">taskflow.jobs.base.Job</span></code></a></p>
+<p>A redis job.</p>
+<dl class="attribute">
+<dt id="taskflow.jobs.backends.impl_redis.RedisJob.key">
+<code class="descname">key</code><a class="headerlink" href="#taskflow.jobs.backends.impl_redis.RedisJob.key" title="Permalink to this definition">¶</a></dt>
+<dd><p>Key (in board listings/trash hash) the job data is stored under.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.backends.impl_redis.RedisJob.last_modified_key">
+<code class="descname">last_modified_key</code><a class="headerlink" href="#taskflow.jobs.backends.impl_redis.RedisJob.last_modified_key" title="Permalink to this definition">¶</a></dt>
+<dd><p>Key the job last modified data is stored under.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.backends.impl_redis.RedisJob.owner_key">
+<code class="descname">owner_key</code><a class="headerlink" href="#taskflow.jobs.backends.impl_redis.RedisJob.owner_key" title="Permalink to this definition">¶</a></dt>
+<dd><p>Key the job claim + data of the owner is stored under.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.backends.impl_redis.RedisJob.sequence">
+<code class="descname">sequence</code><a class="headerlink" href="#taskflow.jobs.backends.impl_redis.RedisJob.sequence" title="Permalink to this definition">¶</a></dt>
+<dd><p>Sequence number of the current job.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.jobs.backends.impl_redis.RedisJob.expires_in">
+<code class="descname">expires_in</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/jobs/backends/impl_redis.html#RedisJob.expires_in"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.jobs.backends.impl_redis.RedisJob.expires_in" title="Permalink to this definition">¶</a></dt>
+<dd><p>How many seconds until the claim expires.</p>
+<p>Returns the number of seconds until the ownership entry expires or
+<a class="reference internal" href="utils.html#taskflow.utils.redis_utils.UnknownExpire.DOES_NOT_EXPIRE" title="taskflow.utils.redis_utils.UnknownExpire.DOES_NOT_EXPIRE"><code class="xref py py-attr docutils literal"><span class="pre">DOES_NOT_EXPIRE</span></code></a> or
+<a class="reference internal" href="utils.html#taskflow.utils.redis_utils.UnknownExpire.KEY_NOT_FOUND" title="taskflow.utils.redis_utils.UnknownExpire.KEY_NOT_FOUND"><code class="xref py py-attr docutils literal"><span class="pre">KEY_NOT_FOUND</span></code></a> if it
+does not expire or if the expiry can not be determined (perhaps the
+<a class="reference internal" href="#taskflow.jobs.backends.impl_redis.RedisJob.owner_key" title="taskflow.jobs.backends.impl_redis.RedisJob.owner_key"><code class="xref py py-attr docutils literal"><span class="pre">owner_key</span></code></a> expired at/before time of inquiry?).</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.jobs.backends.impl_redis.RedisJob.extend_expiry">
+<code class="descname">extend_expiry</code><span class="sig-paren">(</span><em>expiry</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/jobs/backends/impl_redis.html#RedisJob.extend_expiry"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.jobs.backends.impl_redis.RedisJob.extend_expiry" title="Permalink to this definition">¶</a></dt>
+<dd><p>Extends the owner key (aka the claim) expiry for this job.</p>
+<p>NOTE(harlowja): if the claim for this job did <strong>not</strong> previously
+have an expiry associated with it, calling this method will create
+one (and after that time elapses the claim on this job will cease
+to exist).</p>
+<p>Returns <code class="docutils literal"><span class="pre">True</span></code> if the expiry request was performed
+otherwise <code class="docutils literal"><span class="pre">False</span></code>.</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.jobs.backends.impl_redis.RedisJobBoard">
+<em class="property">class </em><code class="descclassname">taskflow.jobs.backends.impl_redis.</code><code class="descname">RedisJobBoard</code><span class="sig-paren">(</span><em>name</em>, <em>conf</em>, <em>client=None</em>, <em>persistence=None</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/jobs/backends/impl_redis.html#RedisJobBoard"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.jobs.backends.impl_redis.RedisJobBoard" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <a class="reference internal" href="#taskflow.jobs.base.JobBoard" title="taskflow.jobs.base.JobBoard"><code class="xref py py-class docutils literal"><span class="pre">taskflow.jobs.base.JobBoard</span></code></a></p>
+<p>A jobboard backed by <a class="reference external" href="http://redis.io/">redis</a>.</p>
+<p>Powered by the <a class="reference external" href="http://redis-py.readthedocs.org/">redis-py</a> library.</p>
+<p>This jobboard creates job entries by listing jobs in a redis <a class="reference external" href="http://redis.io/topics/data-types#hashes">hash</a>. This
+hash contains jobs that can be actively worked on by (and examined/claimed
+by) some set of eligible consumers. Job posting is typically performed
+using the <a class="reference internal" href="#taskflow.jobs.base.JobBoard.post" title="taskflow.jobs.base.JobBoard.post"><code class="xref py py-meth docutils literal"><span class="pre">post()</span></code></a> method (this creates a hash entry with job
+contents/details encoded in <a class="reference external" href="http://msgpack.org/">msgpack</a>). The users of these
+jobboard(s) (potentially on disjoint sets of machines) can then
+iterate over the available jobs and decide if they want to attempt to
+claim one of the jobs they have iterated over. If so they will then
+attempt to contact redis and they will attempt to create a key in
+redis (using a embedded lua script to perform this atomically) to claim a
+desired job. If the entity trying to use the jobboard to <a class="reference internal" href="#taskflow.jobs.base.JobBoard.claim" title="taskflow.jobs.base.JobBoard.claim"><code class="xref py py-meth docutils literal"><span class="pre">claim()</span></code></a>
+the job is able to create that lock/owner key then it will be
+allowed (and expected) to perform whatever <em>work</em> the contents of that
+job described. Once the claiming entity is finished the lock/owner key
+and the <a class="reference external" href="http://redis.io/topics/data-types#hashes">hash</a> entry will be deleted (if successfully completed) in a
+single request (also using a embedded lua script to perform this
+atomically). If the claiming entity is not successful (or the entity
+that claimed the job dies) the lock/owner key can be released
+automatically (by <strong>optional</strong> usage of a claim expiry) or by
+using <a class="reference internal" href="#taskflow.jobs.base.JobBoard.abandon" title="taskflow.jobs.base.JobBoard.abandon"><code class="xref py py-meth docutils literal"><span class="pre">abandon()</span></code></a> to manually abandon the job so that it can be
+consumed/worked on by others.</p>
+<p>NOTE(harlowja): by default the <a class="reference internal" href="#taskflow.jobs.base.JobBoard.claim" title="taskflow.jobs.base.JobBoard.claim"><code class="xref py py-meth docutils literal"><span class="pre">claim()</span></code></a> has no expiry (which
+means claims will be persistent, even under claiming entity failure). To
+ensure a expiry occurs pass a numeric value for the <code class="docutils literal"><span class="pre">expiry</span></code> keyword
+argument to the <a class="reference internal" href="#taskflow.jobs.base.JobBoard.claim" title="taskflow.jobs.base.JobBoard.claim"><code class="xref py py-meth docutils literal"><span class="pre">claim()</span></code></a> method that defines how many seconds the
+claim should be retained for. When an expiry is used ensure that that
+claim is kept alive while it is being worked on by using
+the <a class="reference internal" href="#taskflow.jobs.backends.impl_redis.RedisJob.extend_expiry" title="taskflow.jobs.backends.impl_redis.RedisJob.extend_expiry"><code class="xref py py-meth docutils literal"><span class="pre">extend_expiry()</span></code></a> method periodically.</p>
+<dl class="attribute">
+<dt id="taskflow.jobs.backends.impl_redis.RedisJobBoard.CLIENT_CONF_TRANSFERS">
+<code class="descname">CLIENT_CONF_TRANSFERS</code><em class="property"> = (('host', &lt;type 'str'&gt;), ('port', &lt;type 'int'&gt;), ('password', &lt;type 'str'&gt;), ('encoding', &lt;type 'str'&gt;), ('encoding_errors', &lt;type 'str'&gt;), ('socket_timeout', &lt;type 'float'&gt;), ('socket_connect_timeout', &lt;type 'float'&gt;), ('unix_socket_path', &lt;type 'str'&gt;), ('ssl', &lt;function bool_from_string at 0x7f4313aa8b18&gt;), ('ssl_keyfile', &lt;type 'str'&gt;), ('ssl_certfile', &lt;type 'str'&gt;), ('ssl_cert_reqs', &lt;type 'str'&gt;), ('ssl_ca_certs', &lt;type 'str'&gt;), ('db', &lt;type 'int'&gt;))</em><a class="headerlink" href="#taskflow.jobs.backends.impl_redis.RedisJobBoard.CLIENT_CONF_TRANSFERS" title="Permalink to this definition">¶</a></dt>
+<dd><p>Keys (and value type converters) that we allow to proxy from the jobboard
+configuration into the redis client (used to configure the redis client
+internals if no explicit client is provided via the <code class="docutils literal"><span class="pre">client</span></code> keyword
+argument).</p>
+<p>See: <a class="reference external" href="http://redis-py.readthedocs.org/en/latest/#redis.Redis">http://redis-py.readthedocs.org/en/latest/#redis.Redis</a></p>
+<p>See: <a class="reference external" href="https://github.com/andymccurdy/redis-py/blob/2.10.3/redis/client.py">https://github.com/andymccurdy/redis-py/blob/2.10.3/redis/client.py</a></p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.backends.impl_redis.RedisJobBoard.OWNED_POSTFIX">
+<code class="descname">OWNED_POSTFIX</code><em class="property"> = '.owned'</em><a class="headerlink" href="#taskflow.jobs.backends.impl_redis.RedisJobBoard.OWNED_POSTFIX" title="Permalink to this definition">¶</a></dt>
+<dd><p>Postfix (combined with job key) used to make a jobs owner key.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.backends.impl_redis.RedisJobBoard.LAST_MODIFIED_POSTFIX">
+<code class="descname">LAST_MODIFIED_POSTFIX</code><em class="property"> = '.last_modified'</em><a class="headerlink" href="#taskflow.jobs.backends.impl_redis.RedisJobBoard.LAST_MODIFIED_POSTFIX" title="Permalink to this definition">¶</a></dt>
+<dd><p>Postfix (combined with job key) used to make a jobs last modified key.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.backends.impl_redis.RedisJobBoard.DEFAULT_NAMESPACE">
+<code class="descname">DEFAULT_NAMESPACE</code><em class="property"> = 'taskflow'</em><a class="headerlink" href="#taskflow.jobs.backends.impl_redis.RedisJobBoard.DEFAULT_NAMESPACE" title="Permalink to this definition">¶</a></dt>
+<dd><p>Default namespace for keys when none is provided.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.backends.impl_redis.RedisJobBoard.MIN_REDIS_VERSION">
+<code class="descname">MIN_REDIS_VERSION</code><em class="property"> = (2, 6)</em><a class="headerlink" href="#taskflow.jobs.backends.impl_redis.RedisJobBoard.MIN_REDIS_VERSION" title="Permalink to this definition">¶</a></dt>
+<dd><p>Minimum redis version this backend requires.</p>
+<p>This version is required since we need the built-in server-side lua
+scripting support that is included in 2.6 and newer.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.backends.impl_redis.RedisJobBoard.NAMESPACE_SEP">
+<code class="descname">NAMESPACE_SEP</code><em class="property"> = ':'</em><a class="headerlink" href="#taskflow.jobs.backends.impl_redis.RedisJobBoard.NAMESPACE_SEP" title="Permalink to this definition">¶</a></dt>
+<dd><p>Separator that is used to combine a key with the namespace (to get
+the <strong>actual</strong> key that will be used).</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.backends.impl_redis.RedisJobBoard.KEY_PIECE_SEP">
+<code class="descname">KEY_PIECE_SEP</code><em class="property"> = '.'</em><a class="headerlink" href="#taskflow.jobs.backends.impl_redis.RedisJobBoard.KEY_PIECE_SEP" title="Permalink to this definition">¶</a></dt>
+<dd><p>Separator that is used to combine a bunch of key pieces together (to get
+the <strong>actual</strong> key that will be used).</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.backends.impl_redis.RedisJobBoard.SCRIPT_STATUS_OK">
+<code class="descname">SCRIPT_STATUS_OK</code><em class="property"> = 'ok'</em><a class="headerlink" href="#taskflow.jobs.backends.impl_redis.RedisJobBoard.SCRIPT_STATUS_OK" title="Permalink to this definition">¶</a></dt>
+<dd><p>Expected lua response status field when call is ok.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.backends.impl_redis.RedisJobBoard.SCRIPT_STATUS_ERROR">
+<code class="descname">SCRIPT_STATUS_ERROR</code><em class="property"> = 'error'</em><a class="headerlink" href="#taskflow.jobs.backends.impl_redis.RedisJobBoard.SCRIPT_STATUS_ERROR" title="Permalink to this definition">¶</a></dt>
+<dd><p>Expected lua response status field when call is <strong>not</strong> ok.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.backends.impl_redis.RedisJobBoard.SCRIPT_NOT_EXPECTED_OWNER">
+<code class="descname">SCRIPT_NOT_EXPECTED_OWNER</code><em class="property"> = 'Not expected owner!'</em><a class="headerlink" href="#taskflow.jobs.backends.impl_redis.RedisJobBoard.SCRIPT_NOT_EXPECTED_OWNER" title="Permalink to this definition">¶</a></dt>
+<dd><p>Expected lua script error response when the owner is not as expected.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.backends.impl_redis.RedisJobBoard.SCRIPT_UNKNOWN_OWNER">
+<code class="descname">SCRIPT_UNKNOWN_OWNER</code><em class="property"> = 'Unknown owner!'</em><a class="headerlink" href="#taskflow.jobs.backends.impl_redis.RedisJobBoard.SCRIPT_UNKNOWN_OWNER" title="Permalink to this definition">¶</a></dt>
+<dd><p>Expected lua script error response when the owner is not findable.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.backends.impl_redis.RedisJobBoard.SCRIPT_UNKNOWN_JOB">
+<code class="descname">SCRIPT_UNKNOWN_JOB</code><em class="property"> = 'Unknown job!'</em><a class="headerlink" href="#taskflow.jobs.backends.impl_redis.RedisJobBoard.SCRIPT_UNKNOWN_JOB" title="Permalink to this definition">¶</a></dt>
+<dd><p>Expected lua script error response when the job is not findable.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.backends.impl_redis.RedisJobBoard.SCRIPT_ALREADY_CLAIMED">
+<code class="descname">SCRIPT_ALREADY_CLAIMED</code><em class="property"> = 'Job already claimed!'</em><a class="headerlink" href="#taskflow.jobs.backends.impl_redis.RedisJobBoard.SCRIPT_ALREADY_CLAIMED" title="Permalink to this definition">¶</a></dt>
+<dd><p>Expected lua script error response when the job is already claimed.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.backends.impl_redis.RedisJobBoard.SCRIPT_TEMPLATES">
+<code class="descname">SCRIPT_TEMPLATES</code><em class="property"> = {'claim': '\nlocal function apply_ttl(key, ms_expiry)\n    if ms_expiry ~= nil then\n        redis.call(&quot;pexpire&quot;, key, ms_expiry)\n    end\nend\n\n-- Extract *all* the variables (so we can easily know what they are)...\nlocal owner_key = KEYS[1]\nlocal listings_key = KEYS[2]\nlocal last_modified_key = KEYS[3]\n\nlocal expected_owner = ARGV[1]\nlocal job_key = ARGV[2]\nlocal last_modified_blob = ARGV[3]\n\n-- If this is non-numeric (which it may be) this becomes nil\nlocal ms_expiry = nil\nif ARGV[4] ~= &quot;none&quot; then\n    ms_expiry = tonumber(ARGV[4])\nend\nlocal result = {}\nif redis.call(&quot;hexists&quot;, listings_key, job_key) == 1 then\n    if redis.call(&quot;exists&quot;, owner_key) == 1 then\n        local owner = redis.call(&quot;get&quot;, owner_key)\n        if owner == expected_owner then\n            -- Owner is the same, leave it alone...\n            redis.call(&quot;set&quot;, last_modified_key, last_modified_blob)\n            apply_ttl(owner_key, ms_expiry)\n            result[&quot;status&quot;] = &quot;${ok}&quot;\n        else\n            result[&quot;status&quot;] = &quot;${error}&quot;\n            result[&quot;reason&quot;] = &quot;${already_claimed}&quot;\n            result[&quot;owner&quot;] = owner\n        end\n    else\n        redis.call(&quot;set&quot;, owner_key, expected_owner)\n        redis.call(&quot;set&quot;, last_modified_key, last_modified_blob)\n        apply_ttl(owner_key, ms_expiry)\n        result[&quot;status&quot;] = &quot;${ok}&quot;\n    end\nelse\n    result[&quot;status&quot;] = &quot;${error}&quot;\n    result[&quot;reason&quot;] = &quot;${unknown_job}&quot;\nend\nreturn cmsgpack.pack(result)\n', 'abandon': '\n-- Extract *all* the variables (so we can easily know what they are)...\nlocal owner_key = KEYS[1]\nlocal listings_key = KEYS[2]\nlocal last_modified_key = KEYS[3]\n\nlocal expected_owner = ARGV[1]\nlocal job_key = ARGV[2]\nlocal last_modified_blob = ARGV[3]\nlocal result = {}\nif redis.call(&quot;hexists&quot;, listings_key, job_key) == 1 then\n    if redis.call(&quot;exists&quot;, owner_key) == 1 then\n        local owner = redis.call(&quot;get&quot;, owner_key)\n        if owner ~= expected_owner then\n            result[&quot;status&quot;] = &quot;${error}&quot;\n            result[&quot;reason&quot;] = &quot;${not_expected_owner}&quot;\n            result[&quot;owner&quot;] = owner\n        else\n            redis.call(&quot;del&quot;, owner_key)\n            redis.call(&quot;set&quot;, last_modified_key, last_modified_blob)\n            result[&quot;status&quot;] = &quot;${ok}&quot;\n        end\n    else\n        result[&quot;status&quot;] = &quot;${error}&quot;\n        result[&quot;reason&quot;] = &quot;${unknown_owner}&quot;\n    end\nelse\n    result[&quot;status&quot;] = &quot;${error}&quot;\n    result[&quot;reason&quot;] = &quot;${unknown_job}&quot;\nend\nreturn cmsgpack.pack(result)\n', 'trash': '\n-- Extract *all* the variables (so we can easily know what they are)...\nlocal owner_key = KEYS[1]\nlocal listings_key = KEYS[2]\nlocal last_modified_key = KEYS[3]\nlocal trash_listings_key = KEYS[4]\n\nlocal expected_owner = ARGV[1]\nlocal job_key = ARGV[2]\nlocal last_modified_blob = ARGV[3]\nlocal result = {}\nif redis.call(&quot;hexists&quot;, listings_key, job_key) == 1 then\n    local raw_posting = redis.call(&quot;hget&quot;, listings_key, job_key)\n    if redis.call(&quot;exists&quot;, owner_key) == 1 then\n        local owner = redis.call(&quot;get&quot;, owner_key)\n        if owner ~= expected_owner then\n            result[&quot;status&quot;] = &quot;${error}&quot;\n            result[&quot;reason&quot;] = &quot;${not_expected_owner}&quot;\n            result[&quot;owner&quot;] = owner\n        else\n            -- This ordering is important (try to first move the value\n            -- and only if that works do we try to do any deletions)...\n            redis.call(&quot;hset&quot;, trash_listings_key, job_key, raw_posting)\n            redis.call(&quot;set&quot;, last_modified_key, last_modified_blob)\n            redis.call(&quot;del&quot;, owner_key)\n            redis.call(&quot;hdel&quot;, listings_key, job_key)\n            result[&quot;status&quot;] = &quot;${ok}&quot;\n        end\n    else\n        result[&quot;status&quot;] = &quot;${error}&quot;\n        result[&quot;reason&quot;] = &quot;${unknown_owner}&quot;\n    end\nelse\n    result[&quot;status&quot;] = &quot;${error}&quot;\n    result[&quot;reason&quot;] = &quot;${unknown_job}&quot;\nend\nreturn cmsgpack.pack(result)\n', 'consume': '\n-- Extract *all* the variables (so we can easily know what they are)...\nlocal owner_key = KEYS[1]\nlocal listings_key = KEYS[2]\nlocal last_modified_key = KEYS[3]\n\nlocal expected_owner = ARGV[1]\nlocal job_key = ARGV[2]\nlocal result = {}\nif redis.call(&quot;hexists&quot;, listings_key, job_key) == 1 then\n    if redis.call(&quot;exists&quot;, owner_key) == 1 then\n        local owner = redis.call(&quot;get&quot;, owner_key)\n        if owner ~= expected_owner then\n            result[&quot;status&quot;] = &quot;${error}&quot;\n            result[&quot;reason&quot;] = &quot;${not_expected_owner}&quot;\n            result[&quot;owner&quot;] = owner\n        else\n            -- The order is important here, delete the owner first (and if\n            -- that blows up, the job data will still exist so it can be\n            -- worked on again, instead of the reverse)...\n            redis.call(&quot;del&quot;, owner_key, last_modified_key)\n            redis.call(&quot;hdel&quot;, listings_key, job_key)\n            result[&quot;status&quot;] = &quot;${ok}&quot;\n        end\n    else\n        result[&quot;status&quot;] = &quot;${error}&quot;\n        result[&quot;reason&quot;] = &quot;${unknown_owner}&quot;\n    end\nelse\n    result[&quot;status&quot;] = &quot;${error}&quot;\n    result[&quot;reason&quot;] = &quot;${unknown_job}&quot;\nend\nreturn cmsgpack.pack(result)\n'}</em><a class="headerlink" href="#taskflow.jobs.backends.impl_redis.RedisJobBoard.SCRIPT_TEMPLATES" title="Permalink to this definition">¶</a></dt>
+<dd><p><a class="reference external" href="http://www.lua.org/">Lua</a> <strong>template</strong> scripts that will be used by various methods (they
+are turned into real scripts and loaded on call into the <code class="xref py py-func docutils literal"><span class="pre">connect()</span></code>
+method).</p>
+<p>Some things to note:</p>
+<ul class="simple">
+<li>The lua script is ran serially, so when this runs no other command will
+be mutating the backend (and redis also ensures that no other script
+will be running) so atomicity of these scripts are  guaranteed by redis.</li>
+<li>Transactions were considered (and even mostly implemented) but
+ultimately rejected since redis does not support rollbacks and
+transactions can <strong>not</strong> be interdependent (later operations can <strong>not</strong>
+depend on the results of earlier operations). Both of these issues limit
+our ability to correctly report errors (with useful messages) and to
+maintain consistency under failure/contention (due to the inability to
+rollback). A third and final blow to using transactions was to
+correctly use them we would have to set a watch on a <em>very</em> contentious
+key (the listings key) which would under load cause clients to retry more
+often then would be desired (this also increases network load, CPU
+cycles used, transactions failures triggered and so on).</li>
+<li>Partial transaction execution is possible due to pre/post <code class="docutils literal"><span class="pre">EXEC</span></code>
+failures (and the lack of rollback makes this worse).</li>
+</ul>
+<p>So overall after thinking, it seemed like having little lua scripts
+was not that bad (even if it is somewhat convoluted) due to the above and
+public mentioned issues with transactions. In general using lua scripts
+for this purpose seems to be somewhat common practice and it solves the
+issues that came up when transactions were considered &amp; implemented.</p>
+<p>Some links about redis (and redis + lua) that may be useful to look over:</p>
+<ul class="simple">
+<li><a class="reference external" href="http://redis.io/commands/eval#atomicity-of-scripts">Atomicity of scripts</a></li>
+<li><a class="reference external" href="http://redis.io/topics/transactions#redis-scripting-and-transactions">Scripting and transactions</a></li>
+<li><a class="reference external" href="http://redis.io/topics/transactions#why-redis-does-not-support-roll-backs">Why redis does not support rollbacks</a></li>
+<li><a class="reference external" href="http://www.redisgreen.net/blog/intro-to-lua-for-redis-programmers">Intro to lua for redis programmers</a></li>
+<li><a class="reference external" href="https://redislabs.com/blog/5-key-takeaways-for-developing-with-redis">Five key takeaways for developing with redis</a></li>
+<li><a class="reference external" href="http://www.slideshare.net/carlosabalde/everything-you-always-wanted-to-know-about-redis-but-were-afraid-to-ask">Everything you always wanted to know about redis</a> (slides)</li>
+</ul>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.jobs.backends.impl_redis.RedisJobBoard.join">
+<code class="descname">join</code><span class="sig-paren">(</span><em>key_piece</em>, <em>*more_key_pieces</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/jobs/backends/impl_redis.html#RedisJobBoard.join"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.jobs.backends.impl_redis.RedisJobBoard.join" title="Permalink to this definition">¶</a></dt>
+<dd><p>Create and return a namespaced key from many segments.</p>
+<p>NOTE(harlowja): all pieces that are text/unicode are converted into
+their binary equivalent (if they are already binary no conversion
+takes place) before being joined (as redis expects binary keys and not
+unicode/text ones).</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.backends.impl_redis.RedisJobBoard.namespace">
+<code class="descname">namespace</code><a class="headerlink" href="#taskflow.jobs.backends.impl_redis.RedisJobBoard.namespace" title="Permalink to this definition">¶</a></dt>
+<dd><p>The namespace all keys will be prefixed with (or none).</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.backends.impl_redis.RedisJobBoard.trash_key">
+<code class="descname">trash_key</code><a class="headerlink" href="#taskflow.jobs.backends.impl_redis.RedisJobBoard.trash_key" title="Permalink to this definition">¶</a></dt>
+<dd><p>Key where a hash will be stored with trashed jobs in it.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.backends.impl_redis.RedisJobBoard.sequence_key">
+<code class="descname">sequence_key</code><a class="headerlink" href="#taskflow.jobs.backends.impl_redis.RedisJobBoard.sequence_key" title="Permalink to this definition">¶</a></dt>
+<dd><p>Key where a integer will be stored (used to sequence jobs).</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.jobs.backends.impl_redis.RedisJobBoard.listings_key">
+<code class="descname">listings_key</code><a class="headerlink" href="#taskflow.jobs.backends.impl_redis.RedisJobBoard.listings_key" title="Permalink to this definition">¶</a></dt>
+<dd><p>Key where a hash will be stored with active jobs in it.</p>
+</dd></dl>
+
+</dd></dl>
+
+</div>
+</div>
+<div class="section" id="hierarchy">
+<h2>Hierarchy<a class="headerlink" href="#hierarchy" title="Permalink to this headline">¶</a></h2>
+<p class="graphviz">
+<img src="_images/inheritance-ec1afd50c81f890da92e2ad0444d0adfa4d92811.png" alt="Inheritance diagram of taskflow.jobs.base, taskflow.jobs.backends.impl_redis, taskflow.jobs.backends.impl_zookeeper" usemap="#inheritance76bf59753b" class="inheritance"/>
+<map id="inheritance76bf59753b" name="inheritance76bf59753b">
+<area shape="rect" id="node1" title="Generic enumeration." alt="" coords="9,252,81,277"/>
+<area shape="rect" id="node6" href="#taskflow.jobs.base.JobPriority" target="_top" title="Enum of job priorities (modeled after hadoop job priorities)." alt="" coords="157,252,242,277"/>
+<area shape="rect" id="node5" href="#taskflow.jobs.base.JobBoardIterator" target="_top" title="Iterator over a jobboard that iterates over potential jobs." alt="" coords="136,203,263,228"/>
+<area shape="rect" id="node3" href="#taskflow.jobs.base.Job" target="_top" title="A abstraction that represents a named and trackable unit of work." alt="" coords="9,116,81,141"/>
+<area shape="rect" id="node8" href="#taskflow.jobs.backends.impl_redis.RedisJob" target="_top" title="A redis job." alt="" coords="162,104,237,129"/>
+<area shape="rect" id="node10" href="#taskflow.jobs.backends.impl_zookeeper.ZookeeperJob" target="_top" title="A zookeeper job." alt="" coords="144,153,255,179"/>
+<area shape="rect" id="node4" href="#taskflow.jobs.base.JobBoard" target="_top" title="A place where jobs can be posted, reposted, claimed and transferred." alt="" coords="5,43,84,68"/>
+<area shape="rect" id="node7" href="#taskflow.jobs.base.NotifyingJobBoard" target="_top" title="A jobboard subclass that can notify others about board events." alt="" coords="132,5,267,31"/>
+<area shape="rect" id="node9" href="#taskflow.jobs.backends.impl_redis.RedisJobBoard" target="_top" title="A jobboard backed by `redis`_." alt="" coords="143,55,255,80"/>
+<area shape="rect" id="node11" href="#taskflow.jobs.backends.impl_zookeeper.ZookeeperJobBoard" target="_top" title="A jobboard backed by `zookeeper`_." alt="" coords="315,5,464,31"/>
+</map>
+</p>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Jobs</a><ul>
+<li><a class="reference internal" href="#overview">Overview</a></li>
+<li><a class="reference internal" href="#definitions">Definitions</a></li>
+<li><a class="reference internal" href="#high-level-architecture">High level architecture</a></li>
+<li><a class="reference internal" href="#features">Features</a></li>
+<li><a class="reference internal" href="#usage">Usage</a></li>
+<li><a class="reference internal" href="#types">Types</a><ul>
+<li><a class="reference internal" href="#zookeeper">Zookeeper</a></li>
+<li><a class="reference internal" href="#redis">Redis</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#considerations">Considerations</a><ul>
+<li><a class="reference internal" href="#dual-engine-jobs">Dual-engine jobs</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#module-taskflow.jobs.base">Interfaces</a></li>
+<li><a class="reference internal" href="#implementations">Implementations</a><ul>
+<li><a class="reference internal" href="#id1">Zookeeper</a></li>
+<li><a class="reference internal" href="#id3">Redis</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#hierarchy">Hierarchy</a></li>
+</ul>
+</li>
+</ul>
+
+  <h3>Navigation</h3>
+  <ul>
+
+    <li><a href="index.html">Table Of Contents</a></li>
+
+
+    <li><a href="conductors.html" title="next chapter">Next topic: Conductors</a></li>
+
+
+    <li><a href="resumption.html" title="previous chapter">Previous topic: Resumption</a></li>
+
+  </ul>
+
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/taskflow
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="_sources/jobs.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="right" >
+          <a href="conductors.html" title="Conductors"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="resumption.html" title="Resumption"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="index.html">TaskFlow 2.9.1.dev9 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2017, OpenStack Foundation.
+      Last updated on &#39;Fri Feb 10 20:11:17 2017, commit 643495f&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/TaskFlow");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

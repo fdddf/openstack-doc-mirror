@@ -1,0 +1,1074 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>tempest.lib.common.rest_client &mdash; Tempest 14.0.1.dev239 documentation</title>
+    
+    <link rel="stylesheet" href="../../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../../',
+        VERSION:     '14.0.1.dev239',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../../_static/doctools.js"></script>
+    <link rel="top" title="Tempest 14.0.1.dev239 documentation" href="../../../../index.html" />
+    <link rel="up" title="Module code" href="../../../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for tempest.lib.common.rest_client</h1><div class="highlight"><pre>
+<span></span><span class="c1"># Copyright 2012 OpenStack Foundation</span>
+<span class="c1"># Copyright 2013 IBM Corp.</span>
+<span class="c1"># All Rights Reserved.</span>
+<span class="c1">#</span>
+<span class="c1">#    Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may</span>
+<span class="c1">#    not use this file except in compliance with the License. You may obtain</span>
+<span class="c1">#    a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#         http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1">#    Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1">#    distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="c1">#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="c1">#    License for the specific language governing permissions and limitations</span>
+<span class="c1">#    under the License.</span>
+
+<span class="kn">import</span> <span class="nn">collections</span>
+<span class="kn">import</span> <span class="nn">email.utils</span>
+<span class="kn">import</span> <span class="nn">re</span>
+<span class="kn">import</span> <span class="nn">time</span>
+
+<span class="kn">import</span> <span class="nn">jsonschema</span>
+<span class="kn">from</span> <span class="nn">oslo_log</span> <span class="kn">import</span> <span class="n">log</span> <span class="k">as</span> <span class="n">logging</span>
+<span class="kn">from</span> <span class="nn">oslo_serialization</span> <span class="kn">import</span> <span class="n">jsonutils</span> <span class="k">as</span> <span class="n">json</span>
+<span class="kn">import</span> <span class="nn">six</span>
+
+<span class="kn">from</span> <span class="nn">tempest.lib.common</span> <span class="kn">import</span> <span class="n">http</span>
+<span class="kn">from</span> <span class="nn">tempest.lib.common</span> <span class="kn">import</span> <span class="n">jsonschema_validator</span>
+<span class="kn">from</span> <span class="nn">tempest.lib.common.utils</span> <span class="kn">import</span> <span class="n">test_utils</span>
+<span class="kn">from</span> <span class="nn">tempest.lib</span> <span class="kn">import</span> <span class="n">exceptions</span>
+
+<span class="c1"># redrive rate limited calls at most twice</span>
+<span class="n">MAX_RECURSION_DEPTH</span> <span class="o">=</span> <span class="mi">2</span>
+
+<span class="c1"># All the successful HTTP status codes from RFC 7231 &amp; 4918</span>
+<span class="n">HTTP_SUCCESS</span> <span class="o">=</span> <span class="p">(</span><span class="mi">200</span><span class="p">,</span> <span class="mi">201</span><span class="p">,</span> <span class="mi">202</span><span class="p">,</span> <span class="mi">203</span><span class="p">,</span> <span class="mi">204</span><span class="p">,</span> <span class="mi">205</span><span class="p">,</span> <span class="mi">206</span><span class="p">,</span> <span class="mi">207</span><span class="p">)</span>
+
+<span class="c1"># All the redirection HTTP status codes from RFC 7231 &amp; 4918</span>
+<span class="n">HTTP_REDIRECTION</span> <span class="o">=</span> <span class="p">(</span><span class="mi">300</span><span class="p">,</span> <span class="mi">301</span><span class="p">,</span> <span class="mi">302</span><span class="p">,</span> <span class="mi">303</span><span class="p">,</span> <span class="mi">304</span><span class="p">,</span> <span class="mi">305</span><span class="p">,</span> <span class="mi">306</span><span class="p">,</span> <span class="mi">307</span><span class="p">)</span>
+
+<span class="c1"># JSON Schema validator and format checker used for JSON Schema validation</span>
+<span class="n">JSONSCHEMA_VALIDATOR</span> <span class="o">=</span> <span class="n">jsonschema_validator</span><span class="o">.</span><span class="n">JSONSCHEMA_VALIDATOR</span>
+<span class="n">FORMAT_CHECKER</span> <span class="o">=</span> <span class="n">jsonschema_validator</span><span class="o">.</span><span class="n">FORMAT_CHECKER</span>
+
+
+<div class="viewcode-block" id="RestClient"><a class="viewcode-back" href="../../../../library/rest_client.html#tempest.lib.common.rest_client.RestClient">[docs]</a><span class="k">class</span> <span class="nc">RestClient</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Unified OpenStack RestClient class</span>
+
+<span class="sd">    This class is used for building openstack api clients on top of. It is</span>
+<span class="sd">    intended to provide a base layer for wrapping outgoing http requests in</span>
+<span class="sd">    keystone auth as well as providing response code checking and error</span>
+<span class="sd">    handling.</span>
+
+<span class="sd">    :param auth_provider: an auth provider object used to wrap requests in auth</span>
+<span class="sd">    :param str service: The service name to use for the catalog lookup</span>
+<span class="sd">    :param str region: The region to use for the catalog lookup</span>
+<span class="sd">    :param str name: The endpoint name to use for the catalog lookup; this</span>
+<span class="sd">                     returns only if the service exists</span>
+<span class="sd">    :param str endpoint_type: The endpoint type to use for the catalog lookup</span>
+<span class="sd">    :param int build_interval: Time in seconds between to status checks in</span>
+<span class="sd">                               wait loops</span>
+<span class="sd">    :param int build_timeout: Timeout in seconds to wait for a wait operation.</span>
+<span class="sd">    :param bool disable_ssl_certificate_validation: Set to true to disable ssl</span>
+<span class="sd">                                                    certificate validation</span>
+<span class="sd">    :param str ca_certs: File containing the CA Bundle to use in verifying a</span>
+<span class="sd">                         TLS server cert</span>
+<span class="sd">    :param str trace_requests: Regex to use for specifying logging the entirety</span>
+<span class="sd">                              of the request and response payload</span>
+<span class="sd">    :param str http_timeout: Timeout in seconds to wait for the http request to</span>
+<span class="sd">                             return</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">TYPE</span> <span class="o">=</span> <span class="s2">&quot;json&quot;</span>
+
+    <span class="c1"># The version of the API this client implements</span>
+    <span class="n">api_version</span> <span class="o">=</span> <span class="bp">None</span>
+
+    <span class="n">LOG</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">auth_provider</span><span class="p">,</span> <span class="n">service</span><span class="p">,</span> <span class="n">region</span><span class="p">,</span>
+                 <span class="n">endpoint_type</span><span class="o">=</span><span class="s1">&#39;publicURL&#39;</span><span class="p">,</span>
+                 <span class="n">build_interval</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">build_timeout</span><span class="o">=</span><span class="mi">60</span><span class="p">,</span>
+                 <span class="n">disable_ssl_certificate_validation</span><span class="o">=</span><span class="bp">False</span><span class="p">,</span> <span class="n">ca_certs</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+                 <span class="n">trace_requests</span><span class="o">=</span><span class="s1">&#39;&#39;</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">http_timeout</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">auth_provider</span> <span class="o">=</span> <span class="n">auth_provider</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">service</span> <span class="o">=</span> <span class="n">service</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">region</span> <span class="o">=</span> <span class="n">region</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">name</span> <span class="o">=</span> <span class="n">name</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">endpoint_type</span> <span class="o">=</span> <span class="n">endpoint_type</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">build_interval</span> <span class="o">=</span> <span class="n">build_interval</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">build_timeout</span> <span class="o">=</span> <span class="n">build_timeout</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">trace_requests</span> <span class="o">=</span> <span class="n">trace_requests</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">_skip_path</span> <span class="o">=</span> <span class="bp">False</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">general_header_lc</span> <span class="o">=</span> <span class="nb">set</span><span class="p">((</span><span class="s1">&#39;cache-control&#39;</span><span class="p">,</span> <span class="s1">&#39;connection&#39;</span><span class="p">,</span>
+                                      <span class="s1">&#39;date&#39;</span><span class="p">,</span> <span class="s1">&#39;pragma&#39;</span><span class="p">,</span> <span class="s1">&#39;trailer&#39;</span><span class="p">,</span>
+                                      <span class="s1">&#39;transfer-encoding&#39;</span><span class="p">,</span> <span class="s1">&#39;via&#39;</span><span class="p">,</span>
+                                      <span class="s1">&#39;warning&#39;</span><span class="p">))</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">response_header_lc</span> <span class="o">=</span> <span class="nb">set</span><span class="p">((</span><span class="s1">&#39;accept-ranges&#39;</span><span class="p">,</span> <span class="s1">&#39;age&#39;</span><span class="p">,</span> <span class="s1">&#39;etag&#39;</span><span class="p">,</span>
+                                       <span class="s1">&#39;location&#39;</span><span class="p">,</span> <span class="s1">&#39;proxy-authenticate&#39;</span><span class="p">,</span>
+                                       <span class="s1">&#39;retry-after&#39;</span><span class="p">,</span> <span class="s1">&#39;server&#39;</span><span class="p">,</span>
+                                       <span class="s1">&#39;vary&#39;</span><span class="p">,</span> <span class="s1">&#39;www-authenticate&#39;</span><span class="p">))</span>
+        <span class="n">dscv</span> <span class="o">=</span> <span class="n">disable_ssl_certificate_validation</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">http_obj</span> <span class="o">=</span> <span class="n">http</span><span class="o">.</span><span class="n">ClosingHttp</span><span class="p">(</span>
+            <span class="n">disable_ssl_certificate_validation</span><span class="o">=</span><span class="n">dscv</span><span class="p">,</span> <span class="n">ca_certs</span><span class="o">=</span><span class="n">ca_certs</span><span class="p">,</span>
+            <span class="n">timeout</span><span class="o">=</span><span class="n">http_timeout</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_get_type</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">TYPE</span> <span class="o">!=</span> <span class="s2">&quot;json&quot;</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">&quot;Tempest has dropped XML support and the TYPE &quot;</span>
+                             <span class="s2">&quot;became meaningless&quot;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">TYPE</span>
+
+<div class="viewcode-block" id="RestClient.get_headers"><a class="viewcode-back" href="../../../../library/rest_client.html#tempest.lib.common.rest_client.RestClient.get_headers">[docs]</a>    <span class="k">def</span> <span class="nf">get_headers</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">accept_type</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">send_type</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Return the default headers which will be used with outgoing requests</span>
+
+<span class="sd">        :param str accept_type: The media type to use for the Accept header, if</span>
+<span class="sd">                                one isn&#39;t provided the object var TYPE will be</span>
+<span class="sd">                                used</span>
+<span class="sd">        :param str send_type: The media-type to use for the Content-Type</span>
+<span class="sd">                              header, if one isn&#39;t provided the object var</span>
+<span class="sd">                              TYPE will be used</span>
+<span class="sd">        :rtype: dict</span>
+<span class="sd">        :return: The dictionary of headers which can be used in the headers</span>
+<span class="sd">                 dict for outgoing request</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="n">accept_type</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">accept_type</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_type</span><span class="p">()</span>
+        <span class="k">if</span> <span class="n">send_type</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">send_type</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_type</span><span class="p">()</span>
+        <span class="k">return</span> <span class="p">{</span><span class="s1">&#39;Content-Type&#39;</span><span class="p">:</span> <span class="s1">&#39;application/</span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="n">send_type</span><span class="p">,</span>
+                <span class="s1">&#39;Accept&#39;</span><span class="p">:</span> <span class="s1">&#39;application/</span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="n">accept_type</span><span class="p">}</span></div>
+
+    <span class="k">def</span> <span class="fm">__str__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">STRING_LIMIT</span> <span class="o">=</span> <span class="mi">80</span>
+        <span class="n">str_format</span> <span class="o">=</span> <span class="p">(</span><span class="s2">&quot;service:</span><span class="si">%s</span><span class="s2">, base_url:</span><span class="si">%s</span><span class="s2">, &quot;</span>
+                      <span class="s2">&quot;filters: </span><span class="si">%s</span><span class="s2">, build_interval:</span><span class="si">%s</span><span class="s2">, build_timeout:</span><span class="si">%s</span><span class="s2">&quot;</span>
+                      <span class="s2">&quot;</span><span class="se">\n</span><span class="s2">token:</span><span class="si">%s</span><span class="s2">..., </span><span class="se">\n</span><span class="s2">headers:</span><span class="si">%s</span><span class="s2">...&quot;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">str_format</span> <span class="o">%</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">service</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">base_url</span><span class="p">,</span>
+                             <span class="bp">self</span><span class="o">.</span><span class="n">filters</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">build_interval</span><span class="p">,</span>
+                             <span class="bp">self</span><span class="o">.</span><span class="n">build_timeout</span><span class="p">,</span>
+                             <span class="nb">str</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">token</span><span class="p">)[</span><span class="mi">0</span><span class="p">:</span><span class="n">STRING_LIMIT</span><span class="p">],</span>
+                             <span class="nb">str</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">get_headers</span><span class="p">())[</span><span class="mi">0</span><span class="p">:</span><span class="n">STRING_LIMIT</span><span class="p">])</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">user</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;The username used for requests</span>
+
+<span class="sd">        :rtype: string</span>
+<span class="sd">        :return: The username being used for requests</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">auth_provider</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">username</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">user_id</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;The user_id used for requests</span>
+
+<span class="sd">        :rtype: string</span>
+<span class="sd">        :return: The user id being used for requests</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">auth_provider</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">user_id</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">tenant_name</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;The tenant/project being used for requests</span>
+
+<span class="sd">        :rtype: string</span>
+<span class="sd">        :return: The tenant/project name being used for requests</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">auth_provider</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">tenant_name</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">tenant_id</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;The tenant/project id being used for requests</span>
+
+<span class="sd">        :rtype: string</span>
+<span class="sd">        :return: The tenant/project id being used for requests</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">auth_provider</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">tenant_id</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">password</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;The password being used for requests</span>
+
+<span class="sd">        :rtype: string</span>
+<span class="sd">        :return: The password being used for requests</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">auth_provider</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">password</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">base_url</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">auth_provider</span><span class="o">.</span><span class="n">base_url</span><span class="p">(</span><span class="n">filters</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">filters</span><span class="p">)</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">token</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">auth_provider</span><span class="o">.</span><span class="n">get_token</span><span class="p">()</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">filters</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">_filters</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">(</span>
+            <span class="n">service</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">service</span><span class="p">,</span>
+            <span class="n">endpoint_type</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">endpoint_type</span><span class="p">,</span>
+            <span class="n">region</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">region</span><span class="p">,</span>
+            <span class="n">name</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">name</span>
+        <span class="p">)</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">api_version</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">_filters</span><span class="p">[</span><span class="s1">&#39;api_version&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">api_version</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_skip_path</span><span class="p">:</span>
+            <span class="n">_filters</span><span class="p">[</span><span class="s1">&#39;skip_path&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_skip_path</span>
+        <span class="k">return</span> <span class="n">_filters</span>
+
+<div class="viewcode-block" id="RestClient.skip_path"><a class="viewcode-back" href="../../../../library/rest_client.html#tempest.lib.common.rest_client.RestClient.skip_path">[docs]</a>    <span class="k">def</span> <span class="nf">skip_path</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;When set, ignore the path part of the base URL from the catalog&quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_skip_path</span> <span class="o">=</span> <span class="bp">True</span></div>
+
+<div class="viewcode-block" id="RestClient.reset_path"><a class="viewcode-back" href="../../../../library/rest_client.html#tempest.lib.common.rest_client.RestClient.reset_path">[docs]</a>    <span class="k">def</span> <span class="nf">reset_path</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;When reset, use the base URL from the catalog as-is&quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_skip_path</span> <span class="o">=</span> <span class="bp">False</span></div>
+
+    <span class="nd">@classmethod</span>
+<div class="viewcode-block" id="RestClient.expected_success"><a class="viewcode-back" href="../../../../library/rest_client.html#tempest.lib.common.rest_client.RestClient.expected_success">[docs]</a>    <span class="k">def</span> <span class="nf">expected_success</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">expected_code</span><span class="p">,</span> <span class="n">read_code</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Check expected success response code against the http response</span>
+
+<span class="sd">        :param int expected_code: The response code that is expected.</span>
+<span class="sd">                                  Optionally a list of integers can be used</span>
+<span class="sd">                                  to specify multiple valid success codes</span>
+<span class="sd">        :param int read_code: The response code which was returned in the</span>
+<span class="sd">                              response</span>
+<span class="sd">        :raises AssertionError: if the expected_code isn&#39;t a valid http success</span>
+<span class="sd">                                response code</span>
+<span class="sd">        :raises exceptions.InvalidHttpSuccessCode: if the read code isn&#39;t an</span>
+<span class="sd">                                                   expected http success code</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">read_code</span><span class="p">,</span> <span class="nb">int</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="s2">&quot;&#39;read_code&#39; must be an int instead of (</span><span class="si">%s</span><span class="s2">)&quot;</span>
+                            <span class="o">%</span> <span class="nb">type</span><span class="p">(</span><span class="n">read_code</span><span class="p">))</span>
+
+        <span class="n">assert_msg</span> <span class="o">=</span> <span class="p">(</span><span class="s2">&quot;This function only allowed to use for HTTP status &quot;</span>
+                      <span class="s2">&quot;codes which explicitly defined in the RFC 7231 &amp; 4918. &quot;</span>
+                      <span class="s2">&quot;{0} is not a defined Success Code!&quot;</span>
+                      <span class="p">)</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">expected_code</span><span class="p">)</span>
+        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">expected_code</span><span class="p">,</span> <span class="nb">list</span><span class="p">):</span>
+            <span class="k">for</span> <span class="n">code</span> <span class="ow">in</span> <span class="n">expected_code</span><span class="p">:</span>
+                <span class="k">assert</span> <span class="n">code</span> <span class="ow">in</span> <span class="n">HTTP_SUCCESS</span> <span class="o">+</span> <span class="n">HTTP_REDIRECTION</span><span class="p">,</span> <span class="n">assert_msg</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">assert</span> <span class="n">expected_code</span> <span class="ow">in</span> <span class="n">HTTP_SUCCESS</span> <span class="o">+</span> <span class="n">HTTP_REDIRECTION</span><span class="p">,</span> <span class="n">assert_msg</span>
+
+        <span class="c1"># NOTE(afazekas): the http status code above 400 is processed by</span>
+        <span class="c1"># the _error_checker method</span>
+        <span class="k">if</span> <span class="n">read_code</span> <span class="o">&lt;</span> <span class="mi">400</span><span class="p">:</span>
+            <span class="n">pattern</span> <span class="o">=</span> <span class="p">(</span><span class="s2">&quot;Unexpected http success status code {0}, &quot;</span>
+                       <span class="s2">&quot;The expected status code is {1}&quot;</span><span class="p">)</span>
+            <span class="k">if</span> <span class="p">((</span><span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">expected_code</span><span class="p">,</span> <span class="nb">list</span><span class="p">)</span> <span class="ow">and</span>
+                 <span class="p">(</span><span class="n">read_code</span> <span class="o">!=</span> <span class="n">expected_code</span><span class="p">))</span> <span class="ow">or</span>
+                <span class="p">(</span><span class="nb">isinstance</span><span class="p">(</span><span class="n">expected_code</span><span class="p">,</span> <span class="nb">list</span><span class="p">)</span> <span class="ow">and</span>
+                 <span class="p">(</span><span class="n">read_code</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">expected_code</span><span class="p">))):</span>
+                <span class="n">details</span> <span class="o">=</span> <span class="n">pattern</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">read_code</span><span class="p">,</span> <span class="n">expected_code</span><span class="p">)</span>
+                <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">InvalidHttpSuccessCode</span><span class="p">(</span><span class="n">details</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="RestClient.post"><a class="viewcode-back" href="../../../../library/rest_client.html#tempest.lib.common.rest_client.RestClient.post">[docs]</a>    <span class="k">def</span> <span class="nf">post</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">url</span><span class="p">,</span> <span class="n">body</span><span class="p">,</span> <span class="n">headers</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">extra_headers</span><span class="o">=</span><span class="bp">False</span><span class="p">,</span>
+             <span class="n">chunked</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Send a HTTP POST request using keystone auth</span>
+
+<span class="sd">        :param str url: the relative url to send the post request to</span>
+<span class="sd">        :param dict body: the request body</span>
+<span class="sd">        :param dict headers: The headers to use for the request</span>
+<span class="sd">        :param bool extra_headers: Boolean value than indicates if the headers</span>
+<span class="sd">                                   returned by the get_headers() method are to</span>
+<span class="sd">                                   be used but additional headers are needed in</span>
+<span class="sd">                                   the request pass them in as a dict.</span>
+<span class="sd">        :param bool chunked: sends the body with chunked encoding</span>
+<span class="sd">        :return: a tuple with the first entry containing the response headers</span>
+<span class="sd">                 and the second the response body</span>
+<span class="sd">        :rtype: tuple</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">request</span><span class="p">(</span><span class="s1">&#39;POST&#39;</span><span class="p">,</span> <span class="n">url</span><span class="p">,</span> <span class="n">extra_headers</span><span class="p">,</span> <span class="n">headers</span><span class="p">,</span> <span class="n">body</span><span class="p">,</span> <span class="n">chunked</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="RestClient.get"><a class="viewcode-back" href="../../../../library/rest_client.html#tempest.lib.common.rest_client.RestClient.get">[docs]</a>    <span class="k">def</span> <span class="nf">get</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">url</span><span class="p">,</span> <span class="n">headers</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">extra_headers</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Send a HTTP GET request using keystone service catalog and auth</span>
+
+<span class="sd">        :param str url: the relative url to send the post request to</span>
+<span class="sd">        :param dict headers: The headers to use for the request</span>
+<span class="sd">        :param bool extra_headers: Boolean value than indicates if the headers</span>
+<span class="sd">                                   returned by the get_headers() method are to</span>
+<span class="sd">                                   be used but additional headers are needed in</span>
+<span class="sd">                                   the request pass them in as a dict.</span>
+<span class="sd">        :return: a tuple with the first entry containing the response headers</span>
+<span class="sd">                 and the second the response body</span>
+<span class="sd">        :rtype: tuple</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">request</span><span class="p">(</span><span class="s1">&#39;GET&#39;</span><span class="p">,</span> <span class="n">url</span><span class="p">,</span> <span class="n">extra_headers</span><span class="p">,</span> <span class="n">headers</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="RestClient.delete"><a class="viewcode-back" href="../../../../library/rest_client.html#tempest.lib.common.rest_client.RestClient.delete">[docs]</a>    <span class="k">def</span> <span class="nf">delete</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">url</span><span class="p">,</span> <span class="n">headers</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">body</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">extra_headers</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Send a HTTP DELETE request using keystone service catalog and auth</span>
+
+<span class="sd">        :param str url: the relative url to send the post request to</span>
+<span class="sd">        :param dict headers: The headers to use for the request</span>
+<span class="sd">        :param dict body: the request body</span>
+<span class="sd">        :param bool extra_headers: Boolean value than indicates if the headers</span>
+<span class="sd">                                   returned by the get_headers() method are to</span>
+<span class="sd">                                   be used but additional headers are needed in</span>
+<span class="sd">                                   the request pass them in as a dict.</span>
+<span class="sd">        :return: a tuple with the first entry containing the response headers</span>
+<span class="sd">                 and the second the response body</span>
+<span class="sd">        :rtype: tuple</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">request</span><span class="p">(</span><span class="s1">&#39;DELETE&#39;</span><span class="p">,</span> <span class="n">url</span><span class="p">,</span> <span class="n">extra_headers</span><span class="p">,</span> <span class="n">headers</span><span class="p">,</span> <span class="n">body</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="RestClient.patch"><a class="viewcode-back" href="../../../../library/rest_client.html#tempest.lib.common.rest_client.RestClient.patch">[docs]</a>    <span class="k">def</span> <span class="nf">patch</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">url</span><span class="p">,</span> <span class="n">body</span><span class="p">,</span> <span class="n">headers</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">extra_headers</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Send a HTTP PATCH request using keystone service catalog and auth</span>
+
+<span class="sd">        :param str url: the relative url to send the post request to</span>
+<span class="sd">        :param dict body: the request body</span>
+<span class="sd">        :param dict headers: The headers to use for the request</span>
+<span class="sd">        :param bool extra_headers: Boolean value than indicates if the headers</span>
+<span class="sd">                                   returned by the get_headers() method are to</span>
+<span class="sd">                                   be used but additional headers are needed in</span>
+<span class="sd">                                   the request pass them in as a dict.</span>
+<span class="sd">        :return: a tuple with the first entry containing the response headers</span>
+<span class="sd">                 and the second the response body</span>
+<span class="sd">        :rtype: tuple</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">request</span><span class="p">(</span><span class="s1">&#39;PATCH&#39;</span><span class="p">,</span> <span class="n">url</span><span class="p">,</span> <span class="n">extra_headers</span><span class="p">,</span> <span class="n">headers</span><span class="p">,</span> <span class="n">body</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="RestClient.put"><a class="viewcode-back" href="../../../../library/rest_client.html#tempest.lib.common.rest_client.RestClient.put">[docs]</a>    <span class="k">def</span> <span class="nf">put</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">url</span><span class="p">,</span> <span class="n">body</span><span class="p">,</span> <span class="n">headers</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">extra_headers</span><span class="o">=</span><span class="bp">False</span><span class="p">,</span> <span class="n">chunked</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Send a HTTP PUT request using keystone service catalog and auth</span>
+
+<span class="sd">        :param str url: the relative url to send the post request to</span>
+<span class="sd">        :param dict body: the request body</span>
+<span class="sd">        :param dict headers: The headers to use for the request</span>
+<span class="sd">        :param bool extra_headers: Boolean value than indicates if the headers</span>
+<span class="sd">                                   returned by the get_headers() method are to</span>
+<span class="sd">                                   be used but additional headers are needed in</span>
+<span class="sd">                                   the request pass them in as a dict.</span>
+<span class="sd">        :param bool chunked: sends the body with chunked encoding</span>
+<span class="sd">        :return: a tuple with the first entry containing the response headers</span>
+<span class="sd">                 and the second the response body</span>
+<span class="sd">        :rtype: tuple</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">request</span><span class="p">(</span><span class="s1">&#39;PUT&#39;</span><span class="p">,</span> <span class="n">url</span><span class="p">,</span> <span class="n">extra_headers</span><span class="p">,</span> <span class="n">headers</span><span class="p">,</span> <span class="n">body</span><span class="p">,</span> <span class="n">chunked</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="RestClient.head"><a class="viewcode-back" href="../../../../library/rest_client.html#tempest.lib.common.rest_client.RestClient.head">[docs]</a>    <span class="k">def</span> <span class="nf">head</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">url</span><span class="p">,</span> <span class="n">headers</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">extra_headers</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Send a HTTP HEAD request using keystone service catalog and auth</span>
+
+<span class="sd">        :param str url: the relative url to send the post request to</span>
+<span class="sd">        :param dict headers: The headers to use for the request</span>
+<span class="sd">        :param bool extra_headers: Boolean value than indicates if the headers</span>
+<span class="sd">                                   returned by the get_headers() method are to</span>
+<span class="sd">                                   be used but additional headers are needed in</span>
+<span class="sd">                                   the request pass them in as a dict.</span>
+<span class="sd">        :return: a tuple with the first entry containing the response headers</span>
+<span class="sd">                 and the second the response body</span>
+<span class="sd">        :rtype: tuple</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">request</span><span class="p">(</span><span class="s1">&#39;HEAD&#39;</span><span class="p">,</span> <span class="n">url</span><span class="p">,</span> <span class="n">extra_headers</span><span class="p">,</span> <span class="n">headers</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="RestClient.copy"><a class="viewcode-back" href="../../../../library/rest_client.html#tempest.lib.common.rest_client.RestClient.copy">[docs]</a>    <span class="k">def</span> <span class="nf">copy</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">url</span><span class="p">,</span> <span class="n">headers</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">extra_headers</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Send a HTTP COPY request using keystone service catalog and auth</span>
+
+<span class="sd">        :param str url: the relative url to send the post request to</span>
+<span class="sd">        :param dict headers: The headers to use for the request</span>
+<span class="sd">        :param bool extra_headers: Boolean value than indicates if the headers</span>
+<span class="sd">                                   returned by the get_headers() method are to</span>
+<span class="sd">                                   be used but additional headers are needed in</span>
+<span class="sd">                                   the request pass them in as a dict.</span>
+<span class="sd">        :return: a tuple with the first entry containing the response headers</span>
+<span class="sd">                 and the second the response body</span>
+<span class="sd">        :rtype: tuple</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">request</span><span class="p">(</span><span class="s1">&#39;COPY&#39;</span><span class="p">,</span> <span class="n">url</span><span class="p">,</span> <span class="n">extra_headers</span><span class="p">,</span> <span class="n">headers</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="RestClient.get_versions"><a class="viewcode-back" href="../../../../library/rest_client.html#tempest.lib.common.rest_client.RestClient.get_versions">[docs]</a>    <span class="k">def</span> <span class="nf">get_versions</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get the versions on a endpoint from the keystone catalog</span>
+
+<span class="sd">        This method will make a GET request on the baseurl from the keystone</span>
+<span class="sd">        catalog to return a list of API versions. It is expected that a GET</span>
+<span class="sd">        on the endpoint in the catalog will return a list of supported API</span>
+<span class="sd">        versions.</span>
+
+<span class="sd">        :return tuple with response headers and list of version numbers</span>
+<span class="sd">        :rtype: tuple</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">resp</span><span class="p">,</span> <span class="n">body</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;&#39;</span><span class="p">)</span>
+        <span class="n">body</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_parse_resp</span><span class="p">(</span><span class="n">body</span><span class="p">)</span>
+        <span class="n">versions</span> <span class="o">=</span> <span class="nb">map</span><span class="p">(</span><span class="k">lambda</span> <span class="n">x</span><span class="p">:</span> <span class="n">x</span><span class="p">[</span><span class="s1">&#39;id&#39;</span><span class="p">],</span> <span class="n">body</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">resp</span><span class="p">,</span> <span class="n">versions</span></div>
+
+    <span class="k">def</span> <span class="nf">_get_request_id</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">resp</span><span class="p">):</span>
+        <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="p">(</span><span class="s1">&#39;x-openstack-request-id&#39;</span><span class="p">,</span> <span class="s1">&#39;x-compute-request-id&#39;</span><span class="p">):</span>
+            <span class="k">if</span> <span class="n">i</span> <span class="ow">in</span> <span class="n">resp</span><span class="p">:</span>
+                <span class="k">return</span> <span class="n">resp</span><span class="p">[</span><span class="n">i</span><span class="p">]</span>
+        <span class="k">return</span> <span class="s2">&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="nf">_safe_body</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">body</span><span class="p">,</span> <span class="n">maxlen</span><span class="o">=</span><span class="mi">4096</span><span class="p">):</span>
+        <span class="c1"># convert a structure into a string safely</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">text</span> <span class="o">=</span> <span class="n">six</span><span class="o">.</span><span class="n">text_type</span><span class="p">(</span><span class="n">body</span><span class="p">)</span>
+        <span class="k">except</span> <span class="ne">UnicodeDecodeError</span><span class="p">:</span>
+            <span class="c1"># if this isn&#39;t actually text, return marker that</span>
+            <span class="k">return</span> <span class="s2">&quot;&lt;BinaryData: removed&gt;&quot;</span>
+        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">text</span><span class="p">)</span> <span class="o">&gt;</span> <span class="n">maxlen</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">text</span><span class="p">[:</span><span class="n">maxlen</span><span class="p">]</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">text</span>
+
+    <span class="k">def</span> <span class="nf">_log_request_start</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">method</span><span class="p">,</span> <span class="n">req_url</span><span class="p">):</span>
+        <span class="n">caller_name</span> <span class="o">=</span> <span class="n">test_utils</span><span class="o">.</span><span class="n">find_test_caller</span><span class="p">()</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">trace_requests</span> <span class="ow">and</span> <span class="n">re</span><span class="o">.</span><span class="n">search</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">trace_requests</span><span class="p">,</span> <span class="n">caller_name</span><span class="p">):</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;Starting Request (</span><span class="si">%s</span><span class="s1">): </span><span class="si">%s</span><span class="s1"> </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">,</span> <span class="n">caller_name</span><span class="p">,</span>
+                           <span class="n">method</span><span class="p">,</span> <span class="n">req_url</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_log_request_full</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">resp</span><span class="p">,</span> <span class="n">req_headers</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">req_body</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+                          <span class="n">resp_body</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">extra</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="k">if</span> <span class="s1">&#39;X-Auth-Token&#39;</span> <span class="ow">in</span> <span class="n">req_headers</span><span class="p">:</span>
+            <span class="n">req_headers</span><span class="p">[</span><span class="s1">&#39;X-Auth-Token&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="s1">&#39;&lt;omitted&gt;&#39;</span>
+        <span class="c1"># A shallow copy is sufficient</span>
+        <span class="n">resp_log</span> <span class="o">=</span> <span class="n">resp</span><span class="o">.</span><span class="n">copy</span><span class="p">()</span>
+        <span class="k">if</span> <span class="s1">&#39;x-subject-token&#39;</span> <span class="ow">in</span> <span class="n">resp_log</span><span class="p">:</span>
+            <span class="n">resp_log</span><span class="p">[</span><span class="s1">&#39;x-subject-token&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="s1">&#39;&lt;omitted&gt;&#39;</span>
+        <span class="n">log_fmt</span> <span class="o">=</span> <span class="s2">&quot;&quot;&quot;Request - Headers: </span><span class="si">%s</span><span class="s2"></span>
+<span class="s2">        Body: </span><span class="si">%s</span><span class="s2"></span>
+<span class="s2">    Response - Headers: </span><span class="si">%s</span><span class="s2"></span>
+<span class="s2">        Body: </span><span class="si">%s</span><span class="s2">&quot;&quot;&quot;</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
+            <span class="n">log_fmt</span><span class="p">,</span>
+            <span class="nb">str</span><span class="p">(</span><span class="n">req_headers</span><span class="p">),</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_safe_body</span><span class="p">(</span><span class="n">req_body</span><span class="p">),</span>
+            <span class="nb">str</span><span class="p">(</span><span class="n">resp_log</span><span class="p">),</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_safe_body</span><span class="p">(</span><span class="n">resp_body</span><span class="p">),</span>
+            <span class="n">extra</span><span class="o">=</span><span class="n">extra</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_log_request</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">method</span><span class="p">,</span> <span class="n">req_url</span><span class="p">,</span> <span class="n">resp</span><span class="p">,</span>
+                     <span class="n">secs</span><span class="o">=</span><span class="s2">&quot;&quot;</span><span class="p">,</span> <span class="n">req_headers</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+                     <span class="n">req_body</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">resp_body</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">req_headers</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">req_headers</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="c1"># if we have the request id, put it in the right part of the log</span>
+        <span class="n">extra</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">(</span><span class="n">request_id</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_get_request_id</span><span class="p">(</span><span class="n">resp</span><span class="p">))</span>
+        <span class="c1"># NOTE(sdague): while we still have 6 callers to this function</span>
+        <span class="c1"># we&#39;re going to just provide work around on who is actually</span>
+        <span class="c1"># providing timings by gracefully adding no content if they don&#39;t.</span>
+        <span class="c1"># Once we&#39;re down to 1 caller, clean this up.</span>
+        <span class="n">caller_name</span> <span class="o">=</span> <span class="n">test_utils</span><span class="o">.</span><span class="n">find_test_caller</span><span class="p">()</span>
+        <span class="k">if</span> <span class="n">secs</span><span class="p">:</span>
+            <span class="n">secs</span> <span class="o">=</span> <span class="s2">&quot; </span><span class="si">%.3f</span><span class="s2">s&quot;</span> <span class="o">%</span> <span class="n">secs</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">LOG</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
+            <span class="s1">&#39;Request (</span><span class="si">%s</span><span class="s1">): </span><span class="si">%s</span><span class="s1"> </span><span class="si">%s</span><span class="s1"> </span><span class="si">%s%s</span><span class="s1">&#39;</span><span class="p">,</span>
+            <span class="n">caller_name</span><span class="p">,</span>
+            <span class="n">resp</span><span class="p">[</span><span class="s1">&#39;status&#39;</span><span class="p">],</span>
+            <span class="n">method</span><span class="p">,</span>
+            <span class="n">req_url</span><span class="p">,</span>
+            <span class="n">secs</span><span class="p">,</span>
+            <span class="n">extra</span><span class="o">=</span><span class="n">extra</span><span class="p">)</span>
+
+        <span class="c1"># Also look everything at DEBUG if you want to filter this</span>
+        <span class="c1"># out, don&#39;t run at debug.</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">LOG</span><span class="o">.</span><span class="n">isEnabledFor</span><span class="p">(</span><span class="n">logging</span><span class="o">.</span><span class="n">DEBUG</span><span class="p">):</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_log_request_full</span><span class="p">(</span><span class="n">resp</span><span class="p">,</span> <span class="n">req_headers</span><span class="p">,</span> <span class="n">req_body</span><span class="p">,</span>
+                                   <span class="n">resp_body</span><span class="p">,</span> <span class="n">extra</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_parse_resp</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">body</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">body</span> <span class="o">=</span> <span class="n">json</span><span class="o">.</span><span class="n">loads</span><span class="p">(</span><span class="n">body</span><span class="p">)</span>
+        <span class="k">except</span> <span class="ne">ValueError</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">body</span>
+
+        <span class="c1"># We assume, that if the first value of the deserialized body&#39;s</span>
+        <span class="c1"># item set is a dict or a list, that we just return the first value</span>
+        <span class="c1"># of deserialized body.</span>
+        <span class="c1"># Essentially &quot;cutting out&quot; the first placeholder element in a body</span>
+        <span class="c1"># that looks like this:</span>
+        <span class="c1">#</span>
+        <span class="c1">#  {</span>
+        <span class="c1">#    &quot;users&quot;: [</span>
+        <span class="c1">#      ...</span>
+        <span class="c1">#    ]</span>
+        <span class="c1">#  }</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="c1"># Ensure there are not more than one top-level keys</span>
+            <span class="c1"># NOTE(freerunner): Ensure, that JSON is not nullable to</span>
+            <span class="c1"># to prevent StopIteration Exception</span>
+            <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">body</span><span class="o">.</span><span class="n">keys</span><span class="p">())</span> <span class="o">!=</span> <span class="mi">1</span><span class="p">:</span>
+                <span class="k">return</span> <span class="n">body</span>
+            <span class="c1"># Just return the &quot;wrapped&quot; element</span>
+            <span class="n">first_key</span><span class="p">,</span> <span class="n">first_item</span> <span class="o">=</span> <span class="n">six</span><span class="o">.</span><span class="n">next</span><span class="p">(</span><span class="n">six</span><span class="o">.</span><span class="n">iteritems</span><span class="p">(</span><span class="n">body</span><span class="p">))</span>
+            <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">first_item</span><span class="p">,</span> <span class="p">(</span><span class="nb">dict</span><span class="p">,</span> <span class="nb">list</span><span class="p">)):</span>
+                <span class="k">return</span> <span class="n">first_item</span>
+        <span class="k">except</span> <span class="p">(</span><span class="ne">ValueError</span><span class="p">,</span> <span class="ne">IndexError</span><span class="p">):</span>
+            <span class="k">pass</span>
+        <span class="k">return</span> <span class="n">body</span>
+
+<div class="viewcode-block" id="RestClient.response_checker"><a class="viewcode-back" href="../../../../library/rest_client.html#tempest.lib.common.rest_client.RestClient.response_checker">[docs]</a>    <span class="k">def</span> <span class="nf">response_checker</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">method</span><span class="p">,</span> <span class="n">resp</span><span class="p">,</span> <span class="n">resp_body</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;A sanity check on the response from a HTTP request</span>
+
+<span class="sd">        This method does a sanity check on whether the response from an HTTP</span>
+<span class="sd">        request conforms the HTTP RFC.</span>
+
+<span class="sd">        :param str method: The HTTP verb of the request associated with the</span>
+<span class="sd">                           response being passed in.</span>
+<span class="sd">        :param resp: The response headers</span>
+<span class="sd">        :param resp_body: The body of the response</span>
+<span class="sd">        :raises ResponseWithNonEmptyBody: If the response with the status code</span>
+<span class="sd">                                          is not supposed to have a body</span>
+<span class="sd">        :raises ResponseWithEntity: If the response code is 205 but has an</span>
+<span class="sd">                                    entity</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="p">(</span><span class="n">resp</span><span class="o">.</span><span class="n">status</span> <span class="ow">in</span> <span class="nb">set</span><span class="p">((</span><span class="mi">204</span><span class="p">,</span> <span class="mi">205</span><span class="p">,</span> <span class="mi">304</span><span class="p">))</span> <span class="ow">or</span> <span class="n">resp</span><span class="o">.</span><span class="n">status</span> <span class="o">&lt;</span> <span class="mi">200</span> <span class="ow">or</span>
+                <span class="n">method</span><span class="o">.</span><span class="n">upper</span><span class="p">()</span> <span class="o">==</span> <span class="s1">&#39;HEAD&#39;</span><span class="p">)</span> <span class="ow">and</span> <span class="n">resp_body</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">ResponseWithNonEmptyBody</span><span class="p">(</span><span class="n">status</span><span class="o">=</span><span class="n">resp</span><span class="o">.</span><span class="n">status</span><span class="p">)</span>
+        <span class="c1"># NOTE(afazekas):</span>
+        <span class="c1"># If the HTTP Status Code is 205</span>
+        <span class="c1">#   &#39;The response MUST NOT include an entity.&#39;</span>
+        <span class="c1"># A HTTP entity has an entity-body and an &#39;entity-header&#39;.</span>
+        <span class="c1"># In the HTTP response specification (Section 6) the &#39;entity-header&#39;</span>
+        <span class="c1"># &#39;generic-header&#39; and &#39;response-header&#39; are in OR relation.</span>
+        <span class="c1"># All headers not in the above two group are considered as entity</span>
+        <span class="c1"># header in every interpretation.</span>
+
+        <span class="k">if</span> <span class="p">(</span><span class="n">resp</span><span class="o">.</span><span class="n">status</span> <span class="o">==</span> <span class="mi">205</span> <span class="ow">and</span>
+            <span class="mi">0</span> <span class="o">!=</span> <span class="nb">len</span><span class="p">(</span><span class="nb">set</span><span class="p">(</span><span class="n">resp</span><span class="o">.</span><span class="n">keys</span><span class="p">())</span> <span class="o">-</span> <span class="nb">set</span><span class="p">((</span><span class="s1">&#39;status&#39;</span><span class="p">,))</span> <span class="o">-</span>
+                     <span class="bp">self</span><span class="o">.</span><span class="n">response_header_lc</span> <span class="o">-</span> <span class="bp">self</span><span class="o">.</span><span class="n">general_header_lc</span><span class="p">)):</span>
+                        <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">ResponseWithEntity</span><span class="p">()</span>
+        <span class="c1"># NOTE(afazekas)</span>
+        <span class="c1"># Now the swift sometimes (delete not empty container)</span>
+        <span class="c1"># returns with non json error response, we can create new rest class</span>
+        <span class="c1"># for swift.</span>
+        <span class="c1"># Usually RFC2616 says error responses SHOULD contain an explanation.</span>
+        <span class="c1"># The warning is normal for SHOULD/SHOULD NOT case</span>
+
+        <span class="c1"># Likely it will cause an error</span>
+        <span class="k">if</span> <span class="n">method</span> <span class="o">!=</span> <span class="s1">&#39;HEAD&#39;</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">resp_body</span> <span class="ow">and</span> <span class="n">resp</span><span class="o">.</span><span class="n">status</span> <span class="o">&gt;=</span> <span class="mi">400</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">&quot;status &gt;= 400 response with empty body&quot;</span><span class="p">)</span></div>
+
+    <span class="k">def</span> <span class="nf">_request</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">method</span><span class="p">,</span> <span class="n">url</span><span class="p">,</span> <span class="n">headers</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">body</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">chunked</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;A simple HTTP request interface.&quot;&quot;&quot;</span>
+        <span class="c1"># Authenticate the request with the auth provider</span>
+        <span class="n">req_url</span><span class="p">,</span> <span class="n">req_headers</span><span class="p">,</span> <span class="n">req_body</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">auth_provider</span><span class="o">.</span><span class="n">auth_request</span><span class="p">(</span>
+            <span class="n">method</span><span class="p">,</span> <span class="n">url</span><span class="p">,</span> <span class="n">headers</span><span class="p">,</span> <span class="n">body</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">filters</span><span class="p">)</span>
+
+        <span class="c1"># Do the actual request, and time it</span>
+        <span class="n">start</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">time</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_log_request_start</span><span class="p">(</span><span class="n">method</span><span class="p">,</span> <span class="n">req_url</span><span class="p">)</span>
+        <span class="n">resp</span><span class="p">,</span> <span class="n">resp_body</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">raw_request</span><span class="p">(</span>
+            <span class="n">req_url</span><span class="p">,</span> <span class="n">method</span><span class="p">,</span> <span class="n">headers</span><span class="o">=</span><span class="n">req_headers</span><span class="p">,</span> <span class="n">body</span><span class="o">=</span><span class="n">req_body</span><span class="p">,</span>
+            <span class="n">chunked</span><span class="o">=</span><span class="n">chunked</span>
+        <span class="p">)</span>
+        <span class="n">end</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">time</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_log_request</span><span class="p">(</span><span class="n">method</span><span class="p">,</span> <span class="n">req_url</span><span class="p">,</span> <span class="n">resp</span><span class="p">,</span> <span class="n">secs</span><span class="o">=</span><span class="p">(</span><span class="n">end</span> <span class="o">-</span> <span class="n">start</span><span class="p">),</span>
+                          <span class="n">req_headers</span><span class="o">=</span><span class="n">req_headers</span><span class="p">,</span> <span class="n">req_body</span><span class="o">=</span><span class="n">req_body</span><span class="p">,</span>
+                          <span class="n">resp_body</span><span class="o">=</span><span class="n">resp_body</span><span class="p">)</span>
+
+        <span class="c1"># Verify HTTP response codes</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">response_checker</span><span class="p">(</span><span class="n">method</span><span class="p">,</span> <span class="n">resp</span><span class="p">,</span> <span class="n">resp_body</span><span class="p">)</span>
+
+        <span class="k">return</span> <span class="n">resp</span><span class="p">,</span> <span class="n">resp_body</span>
+
+<div class="viewcode-block" id="RestClient.raw_request"><a class="viewcode-back" href="../../../../library/rest_client.html#tempest.lib.common.rest_client.RestClient.raw_request">[docs]</a>    <span class="k">def</span> <span class="nf">raw_request</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">url</span><span class="p">,</span> <span class="n">method</span><span class="p">,</span> <span class="n">headers</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">body</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">chunked</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Send a raw HTTP request without the keystone catalog or auth</span>
+
+<span class="sd">        This method sends a HTTP request in the same manner as the request()</span>
+<span class="sd">        method, however it does so without using keystone auth or the catalog</span>
+<span class="sd">        to determine the base url. Additionally no response handling is done</span>
+<span class="sd">        the results from the request are just returned.</span>
+
+<span class="sd">        :param str url: Full url to send the request</span>
+<span class="sd">        :param str method: The HTTP verb to use for the request</span>
+<span class="sd">        :param str headers: Headers to use for the request if none are specifed</span>
+<span class="sd">                            the headers</span>
+<span class="sd">        :param str body: Body to send with the request</span>
+<span class="sd">        :param bool chunked: sends the body with chunked encoding</span>
+<span class="sd">        :rtype: tuple</span>
+<span class="sd">        :return: a tuple with the first entry containing the response headers</span>
+<span class="sd">                 and the second the response body</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="n">headers</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">headers</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_headers</span><span class="p">()</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">http_obj</span><span class="o">.</span><span class="n">request</span><span class="p">(</span><span class="n">url</span><span class="p">,</span> <span class="n">method</span><span class="p">,</span> <span class="n">headers</span><span class="o">=</span><span class="n">headers</span><span class="p">,</span>
+                                     <span class="n">body</span><span class="o">=</span><span class="n">body</span><span class="p">,</span> <span class="n">chunked</span><span class="o">=</span><span class="n">chunked</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="RestClient.request"><a class="viewcode-back" href="../../../../library/rest_client.html#tempest.lib.common.rest_client.RestClient.request">[docs]</a>    <span class="k">def</span> <span class="nf">request</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">method</span><span class="p">,</span> <span class="n">url</span><span class="p">,</span> <span class="n">extra_headers</span><span class="o">=</span><span class="bp">False</span><span class="p">,</span> <span class="n">headers</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+                <span class="n">body</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">chunked</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Send a HTTP request with keystone auth and using the catalog</span>
+
+<span class="sd">        This method will send an HTTP request using keystone auth in the</span>
+<span class="sd">        headers and the catalog to determine the endpoint to use for the</span>
+<span class="sd">        baseurl to send the request to. Additionally</span>
+
+<span class="sd">        When a response is received it will check it to see if an error</span>
+<span class="sd">        response was received. If it was an exception will be raised to enable</span>
+<span class="sd">        it to be handled quickly.</span>
+
+<span class="sd">        This method will also handle rate-limiting, if a 413 response code is</span>
+<span class="sd">        received it will retry the request after waiting the &#39;retry-after&#39;</span>
+<span class="sd">        duration from the header.</span>
+
+<span class="sd">        :param str method: The HTTP verb to use for the request</span>
+<span class="sd">        :param str url: Relative url to send the request to</span>
+<span class="sd">        :param bool extra_headers: Boolean value than indicates if the headers</span>
+<span class="sd">                                   returned by the get_headers() method are to</span>
+<span class="sd">                                   be used but additional headers are needed in</span>
+<span class="sd">                                   the request pass them in as a dict.</span>
+<span class="sd">        :param dict headers: Headers to use for the request if none are</span>
+<span class="sd">                             specifed the headers returned from the</span>
+<span class="sd">                             get_headers() method are used. If the request</span>
+<span class="sd">                             explicitly requires no headers use an empty dict.</span>
+<span class="sd">        :param str body: Body to send with the request</span>
+<span class="sd">        :param bool chunked: sends the body with chunked encoding</span>
+<span class="sd">        :rtype: tuple</span>
+<span class="sd">        :return: a tuple with the first entry containing the response headers</span>
+<span class="sd">                 and the second the response body</span>
+<span class="sd">        :raises UnexpectedContentType: If the content-type of the response</span>
+<span class="sd">                                       isn&#39;t an expect type</span>
+<span class="sd">        :raises Unauthorized: If a 401 response code is received</span>
+<span class="sd">        :raises Forbidden: If a 403 response code is received</span>
+<span class="sd">        :raises NotFound: If a 404 response code is received</span>
+<span class="sd">        :raises BadRequest: If a 400 response code is received</span>
+<span class="sd">        :raises Gone: If a 410 response code is received</span>
+<span class="sd">        :raises Conflict: If a 409 response code is received</span>
+<span class="sd">        :raises PreconditionFailed: If a 412 response code is received</span>
+<span class="sd">        :raises OverLimit: If a 413 response code is received and over_limit is</span>
+<span class="sd">                          not in the response body</span>
+<span class="sd">        :raises RateLimitExceeded: If a 413 response code is received and</span>
+<span class="sd">                                   over_limit is in the response body</span>
+<span class="sd">        :raises InvalidContentType: If a 415 response code is received</span>
+<span class="sd">        :raises UnprocessableEntity: If a 422 response code is received</span>
+<span class="sd">        :raises InvalidHTTPResponseBody: The response body wasn&#39;t valid JSON</span>
+<span class="sd">                                         and couldn&#39;t be parsed</span>
+<span class="sd">        :raises NotImplemented: If a 501 response code is received</span>
+<span class="sd">        :raises ServerFault: If a 500 response code is received</span>
+<span class="sd">        :raises UnexpectedResponseCode: If a response code above 400 is</span>
+<span class="sd">                                        received and it doesn&#39;t fall into any</span>
+<span class="sd">                                        of the handled checks</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="c1"># if extra_headers is True</span>
+        <span class="c1"># default headers would be added to headers</span>
+        <span class="n">retry</span> <span class="o">=</span> <span class="mi">0</span>
+
+        <span class="k">if</span> <span class="n">headers</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="c1"># NOTE(vponomaryov): if some client do not need headers,</span>
+            <span class="c1"># it should explicitly pass empty dict</span>
+            <span class="n">headers</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_headers</span><span class="p">()</span>
+        <span class="k">elif</span> <span class="n">extra_headers</span><span class="p">:</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">headers</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">get_headers</span><span class="p">())</span>
+            <span class="k">except</span> <span class="p">(</span><span class="ne">ValueError</span><span class="p">,</span> <span class="ne">TypeError</span><span class="p">):</span>
+                <span class="n">headers</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_headers</span><span class="p">()</span>
+
+        <span class="n">resp</span><span class="p">,</span> <span class="n">resp_body</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_request</span><span class="p">(</span><span class="n">method</span><span class="p">,</span> <span class="n">url</span><span class="p">,</span> <span class="n">headers</span><span class="o">=</span><span class="n">headers</span><span class="p">,</span>
+                                        <span class="n">body</span><span class="o">=</span><span class="n">body</span><span class="p">,</span> <span class="n">chunked</span><span class="o">=</span><span class="n">chunked</span><span class="p">)</span>
+
+        <span class="k">while</span> <span class="p">(</span><span class="n">resp</span><span class="o">.</span><span class="n">status</span> <span class="o">==</span> <span class="mi">413</span> <span class="ow">and</span>
+               <span class="s1">&#39;retry-after&#39;</span> <span class="ow">in</span> <span class="n">resp</span> <span class="ow">and</span>
+                <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_absolute_limit</span><span class="p">(</span>
+                    <span class="n">resp</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_parse_resp</span><span class="p">(</span><span class="n">resp_body</span><span class="p">))</span> <span class="ow">and</span>
+                <span class="n">retry</span> <span class="o">&lt;</span> <span class="n">MAX_RECURSION_DEPTH</span><span class="p">):</span>
+            <span class="n">retry</span> <span class="o">+=</span> <span class="mi">1</span>
+            <span class="n">delay</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_retry_after_delay</span><span class="p">(</span><span class="n">resp</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span>
+                <span class="s2">&quot;Sleeping </span><span class="si">%s</span><span class="s2"> seconds based on retry-after header&quot;</span><span class="p">,</span> <span class="n">delay</span>
+            <span class="p">)</span>
+            <span class="n">time</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="n">delay</span><span class="p">)</span>
+            <span class="n">resp</span><span class="p">,</span> <span class="n">resp_body</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_request</span><span class="p">(</span><span class="n">method</span><span class="p">,</span> <span class="n">url</span><span class="p">,</span>
+                                            <span class="n">headers</span><span class="o">=</span><span class="n">headers</span><span class="p">,</span> <span class="n">body</span><span class="o">=</span><span class="n">body</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_error_checker</span><span class="p">(</span><span class="n">resp</span><span class="p">,</span> <span class="n">resp_body</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">resp</span><span class="p">,</span> <span class="n">resp_body</span></div>
+
+    <span class="k">def</span> <span class="nf">_get_retry_after_delay</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">resp</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Extract the delay from the retry-after header.</span>
+
+<span class="sd">        This supports both integer and HTTP date formatted retry-after headers</span>
+<span class="sd">        per RFC 2616.</span>
+
+<span class="sd">        :param resp: The response containing the retry-after headers</span>
+<span class="sd">        :rtype: int</span>
+<span class="sd">        :return: The delay in seconds, clamped to be at least 1 second</span>
+<span class="sd">        :raises ValueError: On failing to parse the delay</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">delay</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">delay</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">resp</span><span class="p">[</span><span class="s1">&#39;retry-after&#39;</span><span class="p">])</span>
+        <span class="k">except</span> <span class="p">(</span><span class="ne">ValueError</span><span class="p">,</span> <span class="ne">KeyError</span><span class="p">):</span>
+            <span class="k">pass</span>
+
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">retry_timestamp</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_parse_http_date</span><span class="p">(</span><span class="n">resp</span><span class="p">[</span><span class="s1">&#39;retry-after&#39;</span><span class="p">])</span>
+            <span class="n">date_timestamp</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_parse_http_date</span><span class="p">(</span><span class="n">resp</span><span class="p">[</span><span class="s1">&#39;date&#39;</span><span class="p">])</span>
+            <span class="n">delay</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">retry_timestamp</span> <span class="o">-</span> <span class="n">date_timestamp</span><span class="p">)</span>
+        <span class="k">except</span> <span class="p">(</span><span class="ne">ValueError</span><span class="p">,</span> <span class="ne">OverflowError</span><span class="p">,</span> <span class="ne">KeyError</span><span class="p">):</span>
+            <span class="k">pass</span>
+
+        <span class="k">if</span> <span class="n">delay</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+                <span class="s2">&quot;Failed to parse retry-after header </span><span class="si">%r</span><span class="s2"> as either int or &quot;</span>
+                <span class="s2">&quot;HTTP-date.&quot;</span> <span class="o">%</span> <span class="n">resp</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;retry-after&#39;</span><span class="p">)</span>
+            <span class="p">)</span>
+
+        <span class="c1"># Retry-after headers do not have sub-second precision. Clients may</span>
+        <span class="c1"># receive a delay of 0. After sleeping 0 seconds, we would (likely) hit</span>
+        <span class="c1"># another 413. To avoid this, always sleep at least 1 second.</span>
+        <span class="k">return</span> <span class="nb">max</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">delay</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_parse_http_date</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">val</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Parse an HTTP date, like &#39;Fri, 31 Dec 1999 23:59:59 GMT&#39;.</span>
+
+<span class="sd">        Return an epoch timestamp (float), as returned by time.mktime().</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">parts</span> <span class="o">=</span> <span class="n">email</span><span class="o">.</span><span class="n">utils</span><span class="o">.</span><span class="n">parsedate</span><span class="p">(</span><span class="n">val</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">parts</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;Failed to parse date </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="n">val</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">time</span><span class="o">.</span><span class="n">mktime</span><span class="p">(</span><span class="n">parts</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_error_checker</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">resp</span><span class="p">,</span> <span class="n">resp_body</span><span class="p">):</span>
+
+        <span class="c1"># NOTE(mtreinish): Check for httplib response from glance_http. The</span>
+        <span class="c1"># object can&#39;t be used here because importing httplib breaks httplib2.</span>
+        <span class="c1"># If another object from a class not imported were passed here as</span>
+        <span class="c1"># resp this could possibly fail</span>
+        <span class="k">if</span> <span class="nb">str</span><span class="p">(</span><span class="nb">type</span><span class="p">(</span><span class="n">resp</span><span class="p">))</span> <span class="o">==</span> <span class="s2">&quot;&lt;type &#39;instance&#39;&gt;&quot;</span><span class="p">:</span>
+            <span class="n">ctype</span> <span class="o">=</span> <span class="n">resp</span><span class="o">.</span><span class="n">getheader</span><span class="p">(</span><span class="s1">&#39;content-type&#39;</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">ctype</span> <span class="o">=</span> <span class="n">resp</span><span class="p">[</span><span class="s1">&#39;content-type&#39;</span><span class="p">]</span>
+            <span class="c1"># NOTE(mtreinish): Keystone delete user responses doesn&#39;t have a</span>
+            <span class="c1"># content-type header. (They don&#39;t have a body) So just pretend it</span>
+            <span class="c1"># is set.</span>
+            <span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+                <span class="n">ctype</span> <span class="o">=</span> <span class="s1">&#39;application/json&#39;</span>
+
+        <span class="c1"># It is not an error response</span>
+        <span class="k">if</span> <span class="n">resp</span><span class="o">.</span><span class="n">status</span> <span class="o">&lt;</span> <span class="mi">400</span><span class="p">:</span>
+            <span class="k">return</span>
+
+        <span class="n">JSON_ENC</span> <span class="o">=</span> <span class="p">[</span><span class="s1">&#39;application/json&#39;</span><span class="p">,</span> <span class="s1">&#39;application/json; charset=utf-8&#39;</span><span class="p">]</span>
+        <span class="c1"># NOTE(mtreinish): This is for compatibility with Glance and swift</span>
+        <span class="c1"># APIs. These are the return content types that Glance api v1</span>
+        <span class="c1"># (and occasionally swift) are using.</span>
+        <span class="n">TXT_ENC</span> <span class="o">=</span> <span class="p">[</span><span class="s1">&#39;text/plain&#39;</span><span class="p">,</span> <span class="s1">&#39;text/html&#39;</span><span class="p">,</span> <span class="s1">&#39;text/html; charset=utf-8&#39;</span><span class="p">,</span>
+                   <span class="s1">&#39;text/plain; charset=utf-8&#39;</span><span class="p">]</span>
+
+        <span class="k">if</span> <span class="n">ctype</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span> <span class="ow">in</span> <span class="n">JSON_ENC</span><span class="p">:</span>
+            <span class="n">parse_resp</span> <span class="o">=</span> <span class="bp">True</span>
+        <span class="k">elif</span> <span class="n">ctype</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span> <span class="ow">in</span> <span class="n">TXT_ENC</span><span class="p">:</span>
+            <span class="n">parse_resp</span> <span class="o">=</span> <span class="bp">False</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">UnexpectedContentType</span><span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="n">resp</span><span class="o">.</span><span class="n">status</span><span class="p">),</span>
+                                                   <span class="n">resp</span><span class="o">=</span><span class="n">resp</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">resp</span><span class="o">.</span><span class="n">status</span> <span class="o">==</span> <span class="mi">401</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">parse_resp</span><span class="p">:</span>
+                <span class="n">resp_body</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_parse_resp</span><span class="p">(</span><span class="n">resp_body</span><span class="p">)</span>
+            <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">Unauthorized</span><span class="p">(</span><span class="n">resp_body</span><span class="p">,</span> <span class="n">resp</span><span class="o">=</span><span class="n">resp</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">resp</span><span class="o">.</span><span class="n">status</span> <span class="o">==</span> <span class="mi">403</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">parse_resp</span><span class="p">:</span>
+                <span class="n">resp_body</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_parse_resp</span><span class="p">(</span><span class="n">resp_body</span><span class="p">)</span>
+            <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">Forbidden</span><span class="p">(</span><span class="n">resp_body</span><span class="p">,</span> <span class="n">resp</span><span class="o">=</span><span class="n">resp</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">resp</span><span class="o">.</span><span class="n">status</span> <span class="o">==</span> <span class="mi">404</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">parse_resp</span><span class="p">:</span>
+                <span class="n">resp_body</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_parse_resp</span><span class="p">(</span><span class="n">resp_body</span><span class="p">)</span>
+            <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">NotFound</span><span class="p">(</span><span class="n">resp_body</span><span class="p">,</span> <span class="n">resp</span><span class="o">=</span><span class="n">resp</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">resp</span><span class="o">.</span><span class="n">status</span> <span class="o">==</span> <span class="mi">400</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">parse_resp</span><span class="p">:</span>
+                <span class="n">resp_body</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_parse_resp</span><span class="p">(</span><span class="n">resp_body</span><span class="p">)</span>
+            <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">BadRequest</span><span class="p">(</span><span class="n">resp_body</span><span class="p">,</span> <span class="n">resp</span><span class="o">=</span><span class="n">resp</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">resp</span><span class="o">.</span><span class="n">status</span> <span class="o">==</span> <span class="mi">410</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">parse_resp</span><span class="p">:</span>
+                <span class="n">resp_body</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_parse_resp</span><span class="p">(</span><span class="n">resp_body</span><span class="p">)</span>
+            <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">Gone</span><span class="p">(</span><span class="n">resp_body</span><span class="p">,</span> <span class="n">resp</span><span class="o">=</span><span class="n">resp</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">resp</span><span class="o">.</span><span class="n">status</span> <span class="o">==</span> <span class="mi">409</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">parse_resp</span><span class="p">:</span>
+                <span class="n">resp_body</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_parse_resp</span><span class="p">(</span><span class="n">resp_body</span><span class="p">)</span>
+            <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">Conflict</span><span class="p">(</span><span class="n">resp_body</span><span class="p">,</span> <span class="n">resp</span><span class="o">=</span><span class="n">resp</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">resp</span><span class="o">.</span><span class="n">status</span> <span class="o">==</span> <span class="mi">412</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">parse_resp</span><span class="p">:</span>
+                <span class="n">resp_body</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_parse_resp</span><span class="p">(</span><span class="n">resp_body</span><span class="p">)</span>
+            <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">PreconditionFailed</span><span class="p">(</span><span class="n">resp_body</span><span class="p">,</span> <span class="n">resp</span><span class="o">=</span><span class="n">resp</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">resp</span><span class="o">.</span><span class="n">status</span> <span class="o">==</span> <span class="mi">413</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">parse_resp</span><span class="p">:</span>
+                <span class="n">resp_body</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_parse_resp</span><span class="p">(</span><span class="n">resp_body</span><span class="p">)</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_absolute_limit</span><span class="p">(</span><span class="n">resp</span><span class="p">,</span> <span class="n">resp_body</span><span class="p">):</span>
+                <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">OverLimit</span><span class="p">(</span><span class="n">resp_body</span><span class="p">,</span> <span class="n">resp</span><span class="o">=</span><span class="n">resp</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">RateLimitExceeded</span><span class="p">(</span><span class="n">resp_body</span><span class="p">,</span> <span class="n">resp</span><span class="o">=</span><span class="n">resp</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">resp</span><span class="o">.</span><span class="n">status</span> <span class="o">==</span> <span class="mi">415</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">parse_resp</span><span class="p">:</span>
+                <span class="n">resp_body</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_parse_resp</span><span class="p">(</span><span class="n">resp_body</span><span class="p">)</span>
+            <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">InvalidContentType</span><span class="p">(</span><span class="n">resp_body</span><span class="p">,</span> <span class="n">resp</span><span class="o">=</span><span class="n">resp</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">resp</span><span class="o">.</span><span class="n">status</span> <span class="o">==</span> <span class="mi">422</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">parse_resp</span><span class="p">:</span>
+                <span class="n">resp_body</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_parse_resp</span><span class="p">(</span><span class="n">resp_body</span><span class="p">)</span>
+            <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">UnprocessableEntity</span><span class="p">(</span><span class="n">resp_body</span><span class="p">,</span> <span class="n">resp</span><span class="o">=</span><span class="n">resp</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">resp</span><span class="o">.</span><span class="n">status</span> <span class="ow">in</span> <span class="p">(</span><span class="mi">500</span><span class="p">,</span> <span class="mi">501</span><span class="p">):</span>
+            <span class="n">message</span> <span class="o">=</span> <span class="n">resp_body</span>
+            <span class="k">if</span> <span class="n">parse_resp</span><span class="p">:</span>
+                <span class="k">try</span><span class="p">:</span>
+                    <span class="n">resp_body</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_parse_resp</span><span class="p">(</span><span class="n">resp_body</span><span class="p">)</span>
+                <span class="k">except</span> <span class="ne">ValueError</span><span class="p">:</span>
+                    <span class="c1"># If response body is a non-json string message.</span>
+                    <span class="c1"># Use resp_body as is and raise InvalidResponseBody</span>
+                    <span class="c1"># exception.</span>
+                    <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">InvalidHTTPResponseBody</span><span class="p">(</span><span class="n">message</span><span class="p">)</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">resp_body</span><span class="p">,</span> <span class="nb">dict</span><span class="p">):</span>
+                        <span class="c1"># I&#39;m seeing both computeFault</span>
+                        <span class="c1"># and cloudServersFault come back.</span>
+                        <span class="c1"># Will file a bug to fix, but leave as is for now.</span>
+                        <span class="k">if</span> <span class="s1">&#39;cloudServersFault&#39;</span> <span class="ow">in</span> <span class="n">resp_body</span><span class="p">:</span>
+                            <span class="n">message</span> <span class="o">=</span> <span class="n">resp_body</span><span class="p">[</span><span class="s1">&#39;cloudServersFault&#39;</span><span class="p">][</span><span class="s1">&#39;message&#39;</span><span class="p">]</span>
+                        <span class="k">elif</span> <span class="s1">&#39;computeFault&#39;</span> <span class="ow">in</span> <span class="n">resp_body</span><span class="p">:</span>
+                            <span class="n">message</span> <span class="o">=</span> <span class="n">resp_body</span><span class="p">[</span><span class="s1">&#39;computeFault&#39;</span><span class="p">][</span><span class="s1">&#39;message&#39;</span><span class="p">]</span>
+                        <span class="k">elif</span> <span class="s1">&#39;error&#39;</span> <span class="ow">in</span> <span class="n">resp_body</span><span class="p">:</span>
+                            <span class="n">message</span> <span class="o">=</span> <span class="n">resp_body</span><span class="p">[</span><span class="s1">&#39;error&#39;</span><span class="p">][</span><span class="s1">&#39;message&#39;</span><span class="p">]</span>
+                        <span class="k">elif</span> <span class="s1">&#39;message&#39;</span> <span class="ow">in</span> <span class="n">resp_body</span><span class="p">:</span>
+                            <span class="n">message</span> <span class="o">=</span> <span class="n">resp_body</span><span class="p">[</span><span class="s1">&#39;message&#39;</span><span class="p">]</span>
+                    <span class="k">else</span><span class="p">:</span>
+                        <span class="n">message</span> <span class="o">=</span> <span class="n">resp_body</span>
+
+            <span class="k">if</span> <span class="n">resp</span><span class="o">.</span><span class="n">status</span> <span class="o">==</span> <span class="mi">501</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">NotImplemented</span><span class="p">(</span><span class="n">resp_body</span><span class="p">,</span> <span class="n">resp</span><span class="o">=</span><span class="n">resp</span><span class="p">,</span>
+                                                <span class="n">message</span><span class="o">=</span><span class="n">message</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">ServerFault</span><span class="p">(</span><span class="n">resp_body</span><span class="p">,</span> <span class="n">resp</span><span class="o">=</span><span class="n">resp</span><span class="p">,</span>
+                                             <span class="n">message</span><span class="o">=</span><span class="n">message</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">resp</span><span class="o">.</span><span class="n">status</span> <span class="o">&gt;=</span> <span class="mi">400</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">UnexpectedResponseCode</span><span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="n">resp</span><span class="o">.</span><span class="n">status</span><span class="p">),</span>
+                                                    <span class="n">resp</span><span class="o">=</span><span class="n">resp</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">is_absolute_limit</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">resp</span><span class="p">,</span> <span class="n">resp_body</span><span class="p">):</span>
+        <span class="k">if</span> <span class="p">(</span><span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">resp_body</span><span class="p">,</span> <span class="n">collections</span><span class="o">.</span><span class="n">Mapping</span><span class="p">)</span> <span class="ow">or</span>
+                <span class="s1">&#39;retry-after&#39;</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">resp</span><span class="p">):</span>
+            <span class="k">return</span> <span class="bp">True</span>
+        <span class="k">return</span> <span class="s1">&#39;exceed&#39;</span> <span class="ow">in</span> <span class="n">resp_body</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;message&#39;</span><span class="p">,</span> <span class="s1">&#39;blabla&#39;</span><span class="p">)</span>
+
+<div class="viewcode-block" id="RestClient.wait_for_resource_deletion"><a class="viewcode-back" href="../../../../library/rest_client.html#tempest.lib.common.rest_client.RestClient.wait_for_resource_deletion">[docs]</a>    <span class="k">def</span> <span class="nf">wait_for_resource_deletion</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="nb">id</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Waits for a resource to be deleted</span>
+
+<span class="sd">        This method will loop over is_resource_deleted until either</span>
+<span class="sd">        is_resource_deleted returns True or the build timeout is reached. This</span>
+<span class="sd">        depends on is_resource_deleted being implemented</span>
+
+<span class="sd">        :param str id: The id of the resource to check</span>
+<span class="sd">        :raises TimeoutException: If the build_timeout has elapsed and the</span>
+<span class="sd">                                  resource still hasn&#39;t been deleted</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">start_time</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">time</span><span class="o">.</span><span class="n">time</span><span class="p">())</span>
+        <span class="k">while</span> <span class="bp">True</span><span class="p">:</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_resource_deleted</span><span class="p">(</span><span class="nb">id</span><span class="p">):</span>
+                <span class="k">return</span>
+            <span class="k">if</span> <span class="nb">int</span><span class="p">(</span><span class="n">time</span><span class="o">.</span><span class="n">time</span><span class="p">())</span> <span class="o">-</span> <span class="n">start_time</span> <span class="o">&gt;=</span> <span class="bp">self</span><span class="o">.</span><span class="n">build_timeout</span><span class="p">:</span>
+                <span class="n">message</span> <span class="o">=</span> <span class="p">(</span><span class="s1">&#39;Failed to delete </span><span class="si">%(resource_type)s</span><span class="s1"> </span><span class="si">%(id)s</span><span class="s1"> within &#39;</span>
+                           <span class="s1">&#39;the required time (</span><span class="si">%(timeout)s</span><span class="s1"> s).&#39;</span> <span class="o">%</span>
+                           <span class="p">{</span><span class="s1">&#39;resource_type&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">resource_type</span><span class="p">,</span> <span class="s1">&#39;id&#39;</span><span class="p">:</span> <span class="nb">id</span><span class="p">,</span>
+                            <span class="s1">&#39;timeout&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">build_timeout</span><span class="p">})</span>
+                <span class="n">caller</span> <span class="o">=</span> <span class="n">test_utils</span><span class="o">.</span><span class="n">find_test_caller</span><span class="p">()</span>
+                <span class="k">if</span> <span class="n">caller</span><span class="p">:</span>
+                    <span class="n">message</span> <span class="o">=</span> <span class="s1">&#39;(</span><span class="si">%s</span><span class="s1">) </span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="p">(</span><span class="n">caller</span><span class="p">,</span> <span class="n">message</span><span class="p">)</span>
+                <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">TimeoutException</span><span class="p">(</span><span class="n">message</span><span class="p">)</span>
+            <span class="n">time</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">build_interval</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="RestClient.is_resource_deleted"><a class="viewcode-back" href="../../../../library/rest_client.html#tempest.lib.common.rest_client.RestClient.is_resource_deleted">[docs]</a>    <span class="k">def</span> <span class="nf">is_resource_deleted</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="nb">id</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Subclasses override with specific deletion detection.&quot;&quot;&quot;</span>
+        <span class="n">message</span> <span class="o">=</span> <span class="p">(</span><span class="s1">&#39;&quot;</span><span class="si">%s</span><span class="s1">&quot; does not implement is_resource_deleted&#39;</span>
+                   <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="vm">__name__</span><span class="p">)</span>
+        <span class="k">raise</span> <span class="ne">NotImplementedError</span><span class="p">(</span><span class="n">message</span><span class="p">)</span></div>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">resource_type</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Returns the primary type of resource this client works with.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="s1">&#39;resource&#39;</span>
+
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span> <span class="nf">validate_response</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">schema</span><span class="p">,</span> <span class="n">resp</span><span class="p">,</span> <span class="n">body</span><span class="p">):</span>
+        <span class="c1"># Only check the response if the status code is a success code</span>
+        <span class="c1"># TODO(cyeoh): Eventually we should be able to verify that a failure</span>
+        <span class="c1"># code if it exists is something that we expect. This is explicitly</span>
+        <span class="c1"># declared in the V3 API and so we should be able to export this in</span>
+        <span class="c1"># the response schema. For now we&#39;ll ignore it.</span>
+        <span class="k">if</span> <span class="n">resp</span><span class="o">.</span><span class="n">status</span> <span class="ow">in</span> <span class="n">HTTP_SUCCESS</span> <span class="o">+</span> <span class="n">HTTP_REDIRECTION</span><span class="p">:</span>
+            <span class="bp">cls</span><span class="o">.</span><span class="n">expected_success</span><span class="p">(</span><span class="n">schema</span><span class="p">[</span><span class="s1">&#39;status_code&#39;</span><span class="p">],</span> <span class="n">resp</span><span class="o">.</span><span class="n">status</span><span class="p">)</span>
+
+            <span class="c1"># Check the body of a response</span>
+            <span class="n">body_schema</span> <span class="o">=</span> <span class="n">schema</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;response_body&#39;</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">body_schema</span><span class="p">:</span>
+                <span class="k">try</span><span class="p">:</span>
+                    <span class="n">jsonschema</span><span class="o">.</span><span class="n">validate</span><span class="p">(</span><span class="n">body</span><span class="p">,</span> <span class="n">body_schema</span><span class="p">,</span>
+                                        <span class="bp">cls</span><span class="o">=</span><span class="n">JSONSCHEMA_VALIDATOR</span><span class="p">,</span>
+                                        <span class="n">format_checker</span><span class="o">=</span><span class="n">FORMAT_CHECKER</span><span class="p">)</span>
+                <span class="k">except</span> <span class="n">jsonschema</span><span class="o">.</span><span class="n">ValidationError</span> <span class="k">as</span> <span class="n">ex</span><span class="p">:</span>
+                    <span class="n">msg</span> <span class="o">=</span> <span class="p">(</span><span class="s2">&quot;HTTP response body is invalid (</span><span class="si">%s</span><span class="s2">)&quot;</span> <span class="o">%</span> <span class="n">ex</span><span class="p">)</span>
+                    <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">InvalidHTTPResponseBody</span><span class="p">(</span><span class="n">msg</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">if</span> <span class="n">body</span><span class="p">:</span>
+                    <span class="n">msg</span> <span class="o">=</span> <span class="p">(</span><span class="s2">&quot;HTTP response body should not exist (</span><span class="si">%s</span><span class="s2">)&quot;</span> <span class="o">%</span> <span class="n">body</span><span class="p">)</span>
+                    <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">InvalidHTTPResponseBody</span><span class="p">(</span><span class="n">msg</span><span class="p">)</span>
+
+            <span class="c1"># Check the header of a response</span>
+            <span class="n">header_schema</span> <span class="o">=</span> <span class="n">schema</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;response_header&#39;</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">header_schema</span><span class="p">:</span>
+                <span class="k">try</span><span class="p">:</span>
+                    <span class="n">jsonschema</span><span class="o">.</span><span class="n">validate</span><span class="p">(</span><span class="n">resp</span><span class="p">,</span> <span class="n">header_schema</span><span class="p">,</span>
+                                        <span class="bp">cls</span><span class="o">=</span><span class="n">JSONSCHEMA_VALIDATOR</span><span class="p">,</span>
+                                        <span class="n">format_checker</span><span class="o">=</span><span class="n">FORMAT_CHECKER</span><span class="p">)</span>
+                <span class="k">except</span> <span class="n">jsonschema</span><span class="o">.</span><span class="n">ValidationError</span> <span class="k">as</span> <span class="n">ex</span><span class="p">:</span>
+                    <span class="n">msg</span> <span class="o">=</span> <span class="p">(</span><span class="s2">&quot;HTTP response header is invalid (</span><span class="si">%s</span><span class="s2">)&quot;</span> <span class="o">%</span> <span class="n">ex</span><span class="p">)</span>
+                    <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">InvalidHTTPResponseHeader</span><span class="p">(</span><span class="n">msg</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="ResponseBody"><a class="viewcode-back" href="../../../../library/rest_client.html#tempest.lib.common.rest_client.ResponseBody">[docs]</a><span class="k">class</span> <span class="nc">ResponseBody</span><span class="p">(</span><span class="nb">dict</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Class that wraps an http response and dict body into a single value.</span>
+
+<span class="sd">    Callers that receive this object will normally use it as a dict but</span>
+<span class="sd">    can extract the response if needed.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">response</span><span class="p">,</span> <span class="n">body</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="n">body_data</span> <span class="o">=</span> <span class="n">body</span> <span class="ow">or</span> <span class="p">{}</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">body_data</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">response</span> <span class="o">=</span> <span class="n">response</span>
+
+    <span class="k">def</span> <span class="fm">__str__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">body</span> <span class="o">=</span> <span class="nb">super</span><span class="p">(</span><span class="n">ResponseBody</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__str__</span><span class="p">()</span>
+        <span class="k">return</span> <span class="s2">&quot;response: </span><span class="si">%s</span><span class="se">\n</span><span class="s2">Body: </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">response</span><span class="p">,</span> <span class="n">body</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="ResponseBodyData"><a class="viewcode-back" href="../../../../library/rest_client.html#tempest.lib.common.rest_client.ResponseBodyData">[docs]</a><span class="k">class</span> <span class="nc">ResponseBodyData</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Class that wraps an http response and string data into a single value.</span>
+
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">response</span><span class="p">,</span> <span class="n">data</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">response</span> <span class="o">=</span> <span class="n">response</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">data</span> <span class="o">=</span> <span class="n">data</span>
+
+    <span class="k">def</span> <span class="fm">__str__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="s2">&quot;response: </span><span class="si">%s</span><span class="se">\n</span><span class="s2">Body: </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">response</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">data</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="ResponseBodyList"><a class="viewcode-back" href="../../../../library/rest_client.html#tempest.lib.common.rest_client.ResponseBodyList">[docs]</a><span class="k">class</span> <span class="nc">ResponseBodyList</span><span class="p">(</span><span class="nb">list</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Class that wraps an http response and list body into a single value.</span>
+
+<span class="sd">    Callers that receive this object will normally use it as a list but</span>
+<span class="sd">    can extract the response if needed.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">response</span><span class="p">,</span> <span class="n">body</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="n">body_data</span> <span class="o">=</span> <span class="n">body</span> <span class="ow">or</span> <span class="p">[]</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span><span class="n">body_data</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">response</span> <span class="o">=</span> <span class="n">response</span>
+
+    <span class="k">def</span> <span class="fm">__str__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">body</span> <span class="o">=</span> <span class="nb">super</span><span class="p">(</span><span class="n">ResponseBodyList</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__str__</span><span class="p">()</span>
+        <span class="k">return</span> <span class="s2">&quot;response: </span><span class="si">%s</span><span class="se">\n</span><span class="s2">Body: </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">response</span><span class="p">,</span> <span class="n">body</span><span class="p">)</span></div>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/tempest
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="nav-item nav-item-0"><a href="../../../../index.html">Tempest 14.0.1.dev239 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../../../index.html" accesskey="U">Module code</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2013, OpenStack QA Team.
+      Last updated on &#39;Wed Feb 15 06:42:15 2017, commit ee84e39&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/Tempest");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

@@ -1,0 +1,478 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>heat.engine.translation &mdash; heat 8.0.0.0rc2.dev38 documentation</title>
+    
+    <link rel="stylesheet" href="../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../',
+        VERSION:     '8.0.0.0rc2.dev38',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../_static/doctools.js"></script>
+    <link rel="top" title="heat 8.0.0.0rc2.dev38 documentation" href="../../../index.html" />
+    <link rel="up" title="Module code" href="../../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for heat.engine.translation</h1><div class="highlight"><pre>
+<span></span><span class="c1">#</span>
+<span class="c1">#    Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may</span>
+<span class="c1">#    not use this file except in compliance with the License. You may obtain</span>
+<span class="c1">#    a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#         http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1">#    Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1">#    distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="c1">#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="c1">#    License for the specific language governing permissions and limitations</span>
+<span class="c1">#    under the License.</span>
+
+<span class="kn">import</span> <span class="nn">six</span>
+
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">encodeutils</span>
+
+<span class="kn">from</span> <span class="nn">heat.common</span> <span class="kn">import</span> <span class="n">exception</span>
+<span class="kn">from</span> <span class="nn">heat.common.i18n</span> <span class="kn">import</span> <span class="n">_</span>
+<span class="kn">from</span> <span class="nn">heat.engine.cfn</span> <span class="kn">import</span> <span class="n">functions</span> <span class="k">as</span> <span class="n">cfn_funcs</span>
+<span class="kn">from</span> <span class="nn">heat.engine</span> <span class="kn">import</span> <span class="n">function</span>
+<span class="kn">from</span> <span class="nn">heat.engine.hot</span> <span class="kn">import</span> <span class="n">functions</span> <span class="k">as</span> <span class="n">hot_funcs</span>
+<span class="kn">from</span> <span class="nn">heat.engine</span> <span class="kn">import</span> <span class="n">properties</span>
+
+
+<div class="viewcode-block" id="TranslationRule"><a class="viewcode-back" href="../../../api/heat.engine.translation.html#heat.engine.translation.TranslationRule">[docs]</a><span class="k">class</span> <span class="nc">TranslationRule</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Translating mechanism one properties to another.</span>
+
+<span class="sd">    Mechanism uses list of rules, each defines by this class, and can be</span>
+<span class="sd">    executed. Working principe: during resource creating after properties</span>
+<span class="sd">    defining resource take list of rules, specified by method</span>
+<span class="sd">    translation_rules, which should be overloaded for each resource, if it&#39;s</span>
+<span class="sd">    needed, and execute each rule using translate_properties method. Next</span>
+<span class="sd">    operations are allowed:</span>
+
+<span class="sd">    - ADD. This rule allows to add some value to list-type properties. Only</span>
+<span class="sd">           list-type values can be added to such properties. Using for other</span>
+<span class="sd">           cases is prohibited and will be returned with error.</span>
+<span class="sd">    - REPLACE. This rule allows to replace some property value to another. Used</span>
+<span class="sd">           for all types of properties. Note, that if property has list type,</span>
+<span class="sd">           then value will be replaced for all elements of list, where it</span>
+<span class="sd">           needed. If element in such property must be replaced by value of</span>
+<span class="sd">           another element of this property, value_name must be defined.</span>
+<span class="sd">    - DELETE. This rule allows to delete some property. If property has list</span>
+<span class="sd">           type, then deleting affects value in all list elements.</span>
+<span class="sd">    - RESOLVE. This rule allows to resolve some property using client and</span>
+<span class="sd">           the finder function. Finders may require an additional entity key.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">RULE_KEYS</span> <span class="o">=</span> <span class="p">(</span><span class="n">ADD</span><span class="p">,</span> <span class="n">REPLACE</span><span class="p">,</span>
+                 <span class="n">DELETE</span><span class="p">,</span> <span class="n">RESOLVE</span><span class="p">)</span> <span class="o">=</span> <span class="p">(</span><span class="s1">&#39;Add&#39;</span><span class="p">,</span> <span class="s1">&#39;Replace&#39;</span><span class="p">,</span>
+                                     <span class="s1">&#39;Delete&#39;</span><span class="p">,</span> <span class="s1">&#39;Resolve&#39;</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">properties</span><span class="p">,</span> <span class="n">rule</span><span class="p">,</span> <span class="n">translation_path</span><span class="p">,</span> <span class="n">value</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+                 <span class="n">value_name</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">value_path</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">client_plugin</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+                 <span class="n">finder</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">entity</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">custom_value_path</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Add new rule for translating mechanism.</span>
+
+<span class="sd">        :param properties: properties of resource</span>
+<span class="sd">        :param rule: rule from RULE_KEYS</span>
+<span class="sd">        :param translation_path: list with path to property, which value will</span>
+<span class="sd">               be affected in rule.</span>
+<span class="sd">        :param value: value which will be involved in rule</span>
+<span class="sd">        :param value_name: value_name which used for replacing properties</span>
+<span class="sd">               inside list-type properties.</span>
+<span class="sd">        :param value_path: path to value, which should be used for translation.</span>
+<span class="sd">        :param client_plugin: client plugin that would be used to resolve</span>
+<span class="sd">        :param finder: finder method of the client plugin</span>
+<span class="sd">        :param entity: some generic finders require an entity to resolve ex.</span>
+<span class="sd">               neutron finder function.</span>
+<span class="sd">        :param custom_value_path: list-type value path to translate property,</span>
+<span class="sd">               which has no schema.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">properties</span> <span class="o">=</span> <span class="n">properties</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">rule</span> <span class="o">=</span> <span class="n">rule</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">translation_path</span> <span class="o">=</span> <span class="n">translation_path</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">value</span> <span class="o">=</span> <span class="n">value</span> <span class="ow">or</span> <span class="bp">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">value_name</span> <span class="o">=</span> <span class="n">value_name</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">value_path</span> <span class="o">=</span> <span class="n">value_path</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">client_plugin</span> <span class="o">=</span> <span class="n">client_plugin</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">finder</span> <span class="o">=</span> <span class="n">finder</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">entity</span> <span class="o">=</span> <span class="n">entity</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">custom_value_path</span> <span class="o">=</span> <span class="n">custom_value_path</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">validate</span><span class="p">()</span>
+
+<div class="viewcode-block" id="TranslationRule.validate"><a class="viewcode-back" href="../../../api/heat.engine.translation.html#heat.engine.translation.TranslationRule.validate">[docs]</a>    <span class="k">def</span> <span class="nf">validate</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">rule</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">RULE_KEYS</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;There is no rule </span><span class="si">%(rule)s</span><span class="s1">. List of allowed &#39;</span>
+                               <span class="s1">&#39;rules is: </span><span class="si">%(rules)s</span><span class="s1">.&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="p">{</span>
+                <span class="s1">&#39;rule&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">rule</span><span class="p">,</span>
+                <span class="s1">&#39;rules&#39;</span><span class="p">:</span> <span class="s1">&#39;, &#39;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">RULE_KEYS</span><span class="p">)})</span>
+        <span class="k">elif</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">properties</span><span class="p">,</span> <span class="n">properties</span><span class="o">.</span><span class="n">Properties</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Properties must be Properties type. &#39;</span>
+                               <span class="s1">&#39;Found </span><span class="si">%s</span><span class="s1">.&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">properties</span><span class="p">))</span>
+        <span class="k">elif</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">translation_path</span><span class="p">,</span> <span class="nb">list</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;translation_path should be a list with path &#39;</span>
+                               <span class="s1">&#39;instead of </span><span class="si">%s</span><span class="s1">.&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="nb">type</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">translation_path</span><span class="p">))</span>
+        <span class="k">elif</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">translation_path</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;translation_path must be non-empty list with &#39;</span>
+                               <span class="s1">&#39;path.&#39;</span><span class="p">))</span>
+        <span class="k">elif</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rule</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">ADD</span> <span class="ow">and</span>
+              <span class="p">((</span><span class="bp">self</span><span class="o">.</span><span class="n">value</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">)</span> <span class="o">==</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">value_name</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">))):</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Either value or value_name should be &#39;</span>
+                               <span class="s1">&#39;specified for rule Add.&#39;</span><span class="p">))</span>
+        <span class="k">elif</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rule</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">ADD</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">value</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span> <span class="ow">and</span>
+              <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">value</span><span class="p">,</span> <span class="nb">list</span><span class="p">)):</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;value must be list type when rule is Add.&#39;</span><span class="p">))</span>
+
+        <span class="k">elif</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rule</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">RESOLVE</span> <span class="ow">and</span> <span class="ow">not</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">client_plugin</span>
+                                                 <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">finder</span><span class="p">)):</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;client_plugin and finder should be specified &#39;</span>
+                               <span class="s1">&#39;for Resolve rule&#39;</span><span class="p">))</span></div>
+
+<div class="viewcode-block" id="TranslationRule.execute_rule"><a class="viewcode-back" href="../../../api/heat.engine.translation.html#heat.engine.translation.TranslationRule.execute_rule">[docs]</a>    <span class="k">def</span> <span class="nf">execute_rule</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">client_resolve</span><span class="o">=</span><span class="bp">True</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_prepare_data</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">properties</span><span class="o">.</span><span class="n">data</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">translation_path</span><span class="p">,</span>
+                               <span class="bp">self</span><span class="o">.</span><span class="n">properties</span><span class="o">.</span><span class="n">props</span><span class="p">)</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">value_path</span><span class="p">:</span>
+                <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">custom_value_path</span><span class="p">:</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">value_path</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">custom_value_path</span><span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_prepare_data</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">properties</span><span class="o">.</span><span class="n">data</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">value_path</span><span class="p">,</span>
+                                   <span class="bp">self</span><span class="o">.</span><span class="n">properties</span><span class="o">.</span><span class="n">props</span><span class="p">)</span>
+                <span class="p">(</span><span class="n">value_key</span><span class="p">,</span>
+                 <span class="n">value_data</span><span class="p">)</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">translate_property</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">value_path</span><span class="p">,</span>
+                                                       <span class="bp">self</span><span class="o">.</span><span class="n">properties</span><span class="o">.</span><span class="n">data</span><span class="p">,</span>
+                                                       <span class="n">return_value</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+                <span class="n">value</span> <span class="o">=</span> <span class="p">(</span><span class="n">value_data</span><span class="p">[</span><span class="n">value_key</span><span class="p">]</span>
+                         <span class="k">if</span> <span class="n">value_data</span> <span class="ow">and</span> <span class="n">value_data</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">value_key</span><span class="p">)</span>
+                         <span class="k">else</span> <span class="bp">self</span><span class="o">.</span><span class="n">value</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="p">(</span><span class="n">value_key</span><span class="p">,</span> <span class="n">value_data</span><span class="p">)</span> <span class="o">=</span> <span class="bp">None</span><span class="p">,</span> <span class="bp">None</span>
+                <span class="n">value</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">value</span>
+        <span class="k">except</span> <span class="ne">AttributeError</span><span class="p">:</span>
+            <span class="k">return</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">translate_property</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">translation_path</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">properties</span><span class="o">.</span><span class="n">data</span><span class="p">,</span>
+                                <span class="n">value</span><span class="o">=</span><span class="n">value</span><span class="p">,</span> <span class="n">value_data</span><span class="o">=</span><span class="n">value_data</span><span class="p">,</span>
+                                <span class="n">value_key</span><span class="o">=</span><span class="n">value_key</span><span class="p">,</span>
+                                <span class="n">client_resolve</span><span class="o">=</span><span class="n">client_resolve</span><span class="p">)</span></div>
+
+    <span class="k">def</span> <span class="nf">_prepare_data</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">data</span><span class="p">,</span> <span class="n">path</span><span class="p">,</span> <span class="n">props</span><span class="p">):</span>
+        <span class="k">def</span> <span class="nf">get_props</span><span class="p">(</span><span class="n">props</span><span class="p">,</span> <span class="n">key</span><span class="p">):</span>
+            <span class="n">props</span> <span class="o">=</span> <span class="n">props</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">key</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">props</span><span class="o">.</span><span class="n">schema</span><span class="o">.</span><span class="n">schema</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="n">keys</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="n">props</span><span class="o">.</span><span class="n">schema</span><span class="o">.</span><span class="n">schema</span><span class="p">)</span>
+                <span class="n">schemata</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">((</span><span class="n">k</span><span class="p">,</span> <span class="n">props</span><span class="o">.</span><span class="n">schema</span><span class="o">.</span><span class="n">schema</span><span class="p">[</span><span class="n">k</span><span class="p">])</span>
+                                <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="n">keys</span><span class="p">)</span>
+                <span class="n">props</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">((</span><span class="n">k</span><span class="p">,</span> <span class="n">properties</span><span class="o">.</span><span class="n">Property</span><span class="p">(</span><span class="n">s</span><span class="p">,</span> <span class="n">k</span><span class="p">))</span>
+                             <span class="k">for</span> <span class="n">k</span><span class="p">,</span> <span class="n">s</span> <span class="ow">in</span> <span class="n">schemata</span><span class="o">.</span><span class="n">items</span><span class="p">())</span>
+                <span class="k">if</span> <span class="nb">set</span><span class="p">(</span><span class="n">props</span><span class="o">.</span><span class="n">keys</span><span class="p">())</span> <span class="o">==</span> <span class="nb">set</span><span class="p">(</span><span class="s1">&#39;*&#39;</span><span class="p">):</span>
+                    <span class="k">return</span> <span class="n">get_props</span><span class="p">(</span><span class="n">props</span><span class="p">,</span> <span class="s1">&#39;*&#39;</span><span class="p">)</span>
+            <span class="k">return</span> <span class="n">props</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">path</span><span class="p">:</span>
+            <span class="k">return</span>
+        <span class="n">current_key</span> <span class="o">=</span> <span class="n">path</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+        <span class="k">if</span> <span class="n">data</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">current_key</span><span class="p">)</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="k">if</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rule</span> <span class="ow">in</span> <span class="p">(</span><span class="n">TranslationRule</span><span class="o">.</span><span class="n">DELETE</span><span class="p">,</span>
+                              <span class="n">TranslationRule</span><span class="o">.</span><span class="n">RESOLVE</span><span class="p">)</span> <span class="ow">or</span>
+                    <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">rule</span> <span class="o">==</span> <span class="n">TranslationRule</span><span class="o">.</span><span class="n">REPLACE</span> <span class="ow">and</span>
+                     <span class="bp">self</span><span class="o">.</span><span class="n">value_name</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">)):</span>
+                <span class="k">return</span>
+            <span class="n">data_type</span> <span class="o">=</span> <span class="n">props</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">current_key</span><span class="p">)</span><span class="o">.</span><span class="n">type</span><span class="p">()</span>
+            <span class="k">if</span> <span class="n">data_type</span> <span class="o">==</span> <span class="n">properties</span><span class="o">.</span><span class="n">Schema</span><span class="o">.</span><span class="n">LIST</span><span class="p">:</span>
+                <span class="n">data</span><span class="p">[</span><span class="n">current_key</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+            <span class="k">if</span> <span class="n">data_type</span> <span class="o">==</span> <span class="n">properties</span><span class="o">.</span><span class="n">Schema</span><span class="o">.</span><span class="n">MAP</span><span class="p">:</span>
+                <span class="n">data</span><span class="p">[</span><span class="n">current_key</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
+            <span class="k">return</span>
+        <span class="n">data</span><span class="p">[</span><span class="n">current_key</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_resolve_param</span><span class="p">(</span><span class="n">data</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">current_key</span><span class="p">))</span>
+        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">data</span><span class="p">[</span><span class="n">current_key</span><span class="p">],</span> <span class="nb">list</span><span class="p">):</span>
+            <span class="k">for</span> <span class="n">item</span> <span class="ow">in</span> <span class="n">data</span><span class="p">[</span><span class="n">current_key</span><span class="p">]:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_prepare_data</span><span class="p">(</span><span class="n">item</span><span class="p">,</span> <span class="n">path</span><span class="p">[</span><span class="mi">1</span><span class="p">:],</span>
+                                   <span class="n">get_props</span><span class="p">(</span><span class="n">props</span><span class="p">,</span> <span class="n">current_key</span><span class="p">))</span>
+        <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">data</span><span class="p">[</span><span class="n">current_key</span><span class="p">],</span> <span class="nb">dict</span><span class="p">):</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_prepare_data</span><span class="p">(</span><span class="n">data</span><span class="p">[</span><span class="n">current_key</span><span class="p">],</span> <span class="n">path</span><span class="p">[</span><span class="mi">1</span><span class="p">:],</span>
+                               <span class="n">get_props</span><span class="p">(</span><span class="n">props</span><span class="p">,</span> <span class="n">current_key</span><span class="p">))</span>
+
+    <span class="k">def</span> <span class="nf">_exec_action</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">key</span><span class="p">,</span> <span class="n">data</span><span class="p">,</span> <span class="n">value</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">value_key</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+                     <span class="n">value_data</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">client_resolve</span><span class="o">=</span><span class="bp">True</span><span class="p">):</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">rule</span> <span class="o">==</span> <span class="n">TranslationRule</span><span class="o">.</span><span class="n">ADD</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_exec_add</span><span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="n">data</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+        <span class="k">elif</span> <span class="bp">self</span><span class="o">.</span><span class="n">rule</span> <span class="o">==</span> <span class="n">TranslationRule</span><span class="o">.</span><span class="n">REPLACE</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_exec_replace</span><span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="n">data</span><span class="p">,</span> <span class="n">value_key</span><span class="p">,</span> <span class="n">value_data</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+        <span class="k">elif</span> <span class="bp">self</span><span class="o">.</span><span class="n">rule</span> <span class="o">==</span> <span class="n">TranslationRule</span><span class="o">.</span><span class="n">RESOLVE</span> <span class="ow">and</span> <span class="n">client_resolve</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_exec_resolve</span><span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="n">data</span><span class="p">)</span>
+        <span class="k">elif</span> <span class="bp">self</span><span class="o">.</span><span class="n">rule</span> <span class="o">==</span> <span class="n">TranslationRule</span><span class="o">.</span><span class="n">DELETE</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_exec_delete</span><span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="n">data</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_resolve_param</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">param</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Check whether given item is param and resolve, if it is.&quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">param</span><span class="p">,</span> <span class="p">(</span><span class="n">hot_funcs</span><span class="o">.</span><span class="n">GetParam</span><span class="p">,</span> <span class="n">cfn_funcs</span><span class="o">.</span><span class="n">ParamRef</span><span class="p">)):</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="k">return</span> <span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="n">param</span><span class="p">)</span>
+            <span class="k">except</span> <span class="n">exception</span><span class="o">.</span><span class="n">UserParameterMissing</span> <span class="k">as</span> <span class="n">ex</span><span class="p">:</span>
+                <span class="c1"># We can&#39;t resolve parameter now. Abort translation.</span>
+                <span class="n">err_msg</span> <span class="o">=</span> <span class="n">encodeutils</span><span class="o">.</span><span class="n">exception_to_unicode</span><span class="p">(</span><span class="n">ex</span><span class="p">)</span>
+                <span class="k">raise</span> <span class="ne">AttributeError</span><span class="p">(</span>
+                    <span class="n">_</span><span class="p">(</span><span class="s1">&#39;Can not resolve parameter &#39;</span>
+                      <span class="s1">&#39;due to: </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="n">err_msg</span><span class="p">)</span>
+        <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">param</span><span class="p">,</span> <span class="nb">list</span><span class="p">):</span>
+            <span class="k">return</span> <span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">_resolve_param</span><span class="p">(</span><span class="n">param_item</span><span class="p">)</span> <span class="k">for</span> <span class="n">param_item</span> <span class="ow">in</span> <span class="n">param</span><span class="p">]</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">param</span>
+
+<div class="viewcode-block" id="TranslationRule.resolve_custom_value_path"><a class="viewcode-back" href="../../../api/heat.engine.translation.html#heat.engine.translation.TranslationRule.resolve_custom_value_path">[docs]</a>    <span class="k">def</span> <span class="nf">resolve_custom_value_path</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">translation_data</span><span class="p">,</span> <span class="n">translation_key</span><span class="p">):</span>
+        <span class="n">new_value</span> <span class="o">=</span> <span class="n">translation_data</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">value_name</span><span class="p">]</span>
+        <span class="k">for</span> <span class="n">key</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">custom_value_path</span><span class="p">[:</span><span class="o">-</span><span class="mi">1</span><span class="p">]:</span>
+            <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">new_value</span><span class="p">,</span> <span class="p">(</span><span class="nb">list</span><span class="p">,</span> <span class="n">six</span><span class="o">.</span><span class="n">string_types</span><span class="p">)):</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+                    <span class="n">_</span><span class="p">(</span><span class="s1">&#39;Incorrectly specified custom_value_path - &#39;</span>
+                      <span class="s1">&#39;cannot pull out required value from &#39;</span>
+                      <span class="s1">&#39;data of </span><span class="si">%s</span><span class="s1"> type.&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="nb">type</span><span class="p">(</span><span class="n">new_value</span><span class="p">))</span>
+            <span class="k">if</span> <span class="n">new_value</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">key</span><span class="p">)</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="k">return</span>
+            <span class="n">new_value</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_resolve_param</span><span class="p">(</span><span class="n">new_value</span><span class="p">[</span><span class="n">key</span><span class="p">])</span>
+        <span class="n">resolved_value</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_resolve_param</span><span class="p">(</span>
+            <span class="n">new_value</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">custom_value_path</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]))</span>
+        <span class="k">if</span> <span class="n">resolved_value</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="k">return</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">rule</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">REPLACE</span><span class="p">:</span>
+            <span class="n">translation_data</span><span class="p">[</span><span class="n">translation_key</span><span class="p">]</span> <span class="o">=</span> <span class="n">resolved_value</span>
+            <span class="k">del</span> <span class="n">new_value</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">custom_value_path</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]]</span>
+        <span class="k">elif</span> <span class="bp">self</span><span class="o">.</span><span class="n">rule</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">ADD</span><span class="p">:</span>
+            <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">resolved_value</span><span class="p">,</span> <span class="nb">list</span><span class="p">):</span>
+                <span class="n">translation_data</span><span class="p">[</span><span class="n">translation_key</span><span class="p">]</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span><span class="n">resolved_value</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">translation_data</span><span class="p">[</span><span class="n">translation_key</span><span class="p">]</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">resolved_value</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="TranslationRule.translate_property"><a class="viewcode-back" href="../../../api/heat.engine.translation.html#heat.engine.translation.TranslationRule.translate_property">[docs]</a>    <span class="k">def</span> <span class="nf">translate_property</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="p">,</span> <span class="n">data</span><span class="p">,</span> <span class="n">return_value</span><span class="o">=</span><span class="bp">False</span><span class="p">,</span> <span class="n">value</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+                           <span class="n">value_data</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">value_key</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+                           <span class="n">client_resolve</span><span class="o">=</span><span class="bp">True</span><span class="p">):</span>
+        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">data</span><span class="p">,</span> <span class="n">function</span><span class="o">.</span><span class="n">Function</span><span class="p">):</span>
+            <span class="k">if</span> <span class="n">return_value</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="ne">AttributeError</span><span class="p">(</span><span class="s1">&#39;No chance to translate value due to &#39;</span>
+                                     <span class="s1">&#39;value is function. Skip translation.&#39;</span><span class="p">)</span>
+            <span class="k">return</span>
+        <span class="n">current_key</span> <span class="o">=</span> <span class="n">path</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">path</span><span class="p">)</span> <span class="o">&lt;=</span> <span class="mi">1</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">return_value</span><span class="p">:</span>
+                <span class="k">return</span> <span class="n">current_key</span><span class="p">,</span> <span class="n">data</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_exec_action</span><span class="p">(</span><span class="n">current_key</span><span class="p">,</span> <span class="n">data</span><span class="p">,</span>
+                                  <span class="n">value</span><span class="o">=</span><span class="n">value</span><span class="p">,</span> <span class="n">value_data</span><span class="o">=</span><span class="n">value_data</span><span class="p">,</span>
+                                  <span class="n">value_key</span><span class="o">=</span><span class="n">value_key</span><span class="p">,</span>
+                                  <span class="n">client_resolve</span><span class="o">=</span><span class="n">client_resolve</span><span class="p">)</span>
+            <span class="k">return</span>
+        <span class="k">if</span> <span class="n">data</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">current_key</span><span class="p">)</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="k">return</span>
+        <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">data</span><span class="p">[</span><span class="n">current_key</span><span class="p">],</span> <span class="nb">list</span><span class="p">):</span>
+            <span class="k">for</span> <span class="n">item</span> <span class="ow">in</span> <span class="n">data</span><span class="p">[</span><span class="n">current_key</span><span class="p">]:</span>
+                <span class="k">if</span> <span class="n">return_value</span><span class="p">:</span>
+                    <span class="c1"># Until there&#39;s no reasonable solution for cases of using</span>
+                    <span class="c1"># one list for value and another list for destination,</span>
+                    <span class="c1"># error would be raised.</span>
+                    <span class="n">msg</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;Cannot use value_path for properties inside &#39;</span>
+                            <span class="s1">&#39;list-type properties&#39;</span><span class="p">)</span>
+                    <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">msg</span><span class="p">)</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">translate_property</span><span class="p">(</span><span class="n">path</span><span class="p">[</span><span class="mi">1</span><span class="p">:],</span> <span class="n">item</span><span class="p">,</span>
+                                            <span class="n">return_value</span><span class="o">=</span><span class="n">return_value</span><span class="p">,</span>
+                                            <span class="n">value</span><span class="o">=</span><span class="n">value</span><span class="p">,</span> <span class="n">value_data</span><span class="o">=</span><span class="n">value_data</span><span class="p">,</span>
+                                            <span class="n">value_key</span><span class="o">=</span><span class="n">value_key</span><span class="p">,</span>
+                                            <span class="n">client_resolve</span><span class="o">=</span><span class="n">client_resolve</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">translate_property</span><span class="p">(</span><span class="n">path</span><span class="p">[</span><span class="mi">1</span><span class="p">:],</span> <span class="n">data</span><span class="p">[</span><span class="n">current_key</span><span class="p">],</span>
+                                           <span class="n">return_value</span><span class="o">=</span><span class="n">return_value</span><span class="p">,</span>
+                                           <span class="n">value</span><span class="o">=</span><span class="n">value</span><span class="p">,</span> <span class="n">value_data</span><span class="o">=</span><span class="n">value_data</span><span class="p">,</span>
+                                           <span class="n">value_key</span><span class="o">=</span><span class="n">value_key</span><span class="p">,</span>
+                                           <span class="n">client_resolve</span><span class="o">=</span><span class="n">client_resolve</span><span class="p">)</span></div>
+
+    <span class="k">def</span> <span class="nf">_exec_add</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">translation_key</span><span class="p">,</span> <span class="n">translation_data</span><span class="p">,</span> <span class="n">value</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">translation_data</span><span class="p">[</span><span class="n">translation_key</span><span class="p">],</span> <span class="nb">list</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Add rule must be used only for &#39;</span>
+                               <span class="s1">&#39;lists.&#39;</span><span class="p">))</span>
+        <span class="k">if</span> <span class="n">value</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">translation_data</span><span class="p">[</span><span class="n">translation_key</span><span class="p">]</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span><span class="n">value</span><span class="p">)</span>
+        <span class="k">elif</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">value_name</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span> <span class="ow">and</span>
+              <span class="n">translation_data</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">value_name</span><span class="p">)</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">):</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">custom_value_path</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">resolve_custom_value_path</span><span class="p">(</span><span class="n">translation_data</span><span class="p">,</span>
+                                               <span class="n">translation_key</span><span class="p">)</span>
+            <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">translation_data</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">value_name</span><span class="p">],</span> <span class="nb">list</span><span class="p">):</span>
+                <span class="n">translation_data</span><span class="p">[</span><span class="n">translation_key</span><span class="p">]</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span>
+                    <span class="n">translation_data</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">value_name</span><span class="p">])</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">translation_data</span><span class="p">[</span><span class="n">translation_key</span><span class="p">]</span><span class="o">.</span><span class="n">append</span><span class="p">(</span>
+                    <span class="n">translation_data</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">value_name</span><span class="p">])</span>
+
+    <span class="k">def</span> <span class="nf">_exec_replace</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">translation_key</span><span class="p">,</span> <span class="n">translation_data</span><span class="p">,</span>
+                      <span class="n">value_key</span><span class="p">,</span> <span class="n">value_data</span><span class="p">,</span> <span class="n">value</span><span class="p">):</span>
+        <span class="n">value_ind</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="k">if</span> <span class="n">translation_data</span> <span class="ow">and</span> <span class="n">translation_data</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">translation_key</span><span class="p">):</span>
+            <span class="k">if</span> <span class="n">value_data</span> <span class="ow">and</span> <span class="n">value_data</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">value_key</span><span class="p">):</span>
+                <span class="n">value_ind</span> <span class="o">=</span> <span class="n">value_key</span>
+            <span class="k">elif</span> <span class="n">translation_data</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">value_name</span><span class="p">)</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="n">value_ind</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">value_name</span>
+                <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">custom_value_path</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+                    <span class="n">data</span> <span class="o">=</span> <span class="n">translation_data</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">value_name</span><span class="p">)</span>
+                    <span class="k">for</span> <span class="n">key</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">custom_value_path</span><span class="p">:</span>
+                        <span class="n">data</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">key</span><span class="p">)</span>
+                        <span class="k">if</span> <span class="n">data</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+                            <span class="n">value_ind</span> <span class="o">=</span> <span class="bp">None</span>
+                            <span class="k">break</span>
+
+        <span class="k">if</span> <span class="n">value_ind</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">ResourcePropertyConflict</span><span class="p">(</span><span class="n">props</span><span class="o">=</span><span class="p">[</span><span class="n">translation_key</span><span class="p">,</span>
+                                                            <span class="n">value_ind</span><span class="p">])</span>
+        <span class="k">if</span> <span class="n">value</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">translation_data</span><span class="p">[</span><span class="n">translation_key</span><span class="p">]</span> <span class="o">=</span> <span class="n">value</span>
+        <span class="k">elif</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">value_name</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span> <span class="ow">and</span>
+                <span class="n">translation_data</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">value_name</span><span class="p">)</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">):</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">custom_value_path</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">resolve_custom_value_path</span><span class="p">(</span><span class="n">translation_data</span><span class="p">,</span>
+                                               <span class="n">translation_key</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">translation_data</span><span class="p">[</span>
+                    <span class="n">translation_key</span><span class="p">]</span> <span class="o">=</span> <span class="n">translation_data</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">value_name</span><span class="p">]</span>
+                <span class="k">del</span> <span class="n">translation_data</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">value_name</span><span class="p">]</span>
+
+        <span class="c1"># If value defined with value_path, need to delete value_path</span>
+        <span class="c1"># property data after it&#39;s replacing.</span>
+        <span class="k">if</span> <span class="n">value_data</span> <span class="ow">and</span> <span class="n">value_data</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">value_key</span><span class="p">):</span>
+            <span class="k">del</span> <span class="n">value_data</span><span class="p">[</span><span class="n">value_key</span><span class="p">]</span>
+
+    <span class="k">def</span> <span class="nf">_exec_resolve</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">translation_key</span><span class="p">,</span> <span class="n">translation_data</span><span class="p">):</span>
+
+        <span class="k">def</span> <span class="nf">resolve_and_find</span><span class="p">(</span><span class="n">translation_value</span><span class="p">):</span>
+            <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">translation_value</span><span class="p">,</span> <span class="n">function</span><span class="o">.</span><span class="n">Function</span><span class="p">):</span>
+                <span class="n">translation_value</span> <span class="o">=</span> <span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="n">translation_value</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">translation_value</span><span class="p">:</span>
+                <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">translation_value</span><span class="p">,</span> <span class="nb">list</span><span class="p">):</span>
+                    <span class="n">resolved_value</span> <span class="o">=</span> <span class="p">[]</span>
+                    <span class="k">for</span> <span class="n">item</span> <span class="ow">in</span> <span class="n">translation_value</span><span class="p">:</span>
+                        <span class="n">resolved_value</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">resolve_and_find</span><span class="p">(</span><span class="n">item</span><span class="p">))</span>
+                    <span class="k">return</span> <span class="n">resolved_value</span>
+                <span class="n">finder</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">client_plugin</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">finder</span><span class="p">)</span>
+                <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">entity</span><span class="p">:</span>
+                    <span class="k">return</span> <span class="n">finder</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">entity</span><span class="p">,</span> <span class="n">translation_value</span><span class="p">)</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="k">return</span> <span class="n">finder</span><span class="p">(</span><span class="n">translation_value</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">translation_data</span><span class="p">,</span> <span class="nb">list</span><span class="p">):</span>
+            <span class="k">for</span> <span class="n">item</span> <span class="ow">in</span> <span class="n">translation_data</span><span class="p">:</span>
+                <span class="n">translation_value</span> <span class="o">=</span> <span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">translation_key</span><span class="p">)</span>
+                <span class="n">resolved_value</span> <span class="o">=</span> <span class="n">resolve_and_find</span><span class="p">(</span><span class="n">translation_value</span><span class="p">)</span>
+                <span class="k">if</span> <span class="n">resolved_value</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+                    <span class="n">item</span><span class="p">[</span><span class="n">translation_key</span><span class="p">]</span> <span class="o">=</span> <span class="n">resolved_value</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">translation_value</span> <span class="o">=</span> <span class="n">translation_data</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">translation_key</span><span class="p">)</span>
+            <span class="n">resolved_value</span> <span class="o">=</span> <span class="n">resolve_and_find</span><span class="p">(</span><span class="n">translation_value</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">resolved_value</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="n">translation_data</span><span class="p">[</span><span class="n">translation_key</span><span class="p">]</span> <span class="o">=</span> <span class="n">resolved_value</span>
+
+    <span class="k">def</span> <span class="nf">_exec_delete</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">translation_key</span><span class="p">,</span> <span class="n">translation_data</span><span class="p">):</span>
+        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">translation_data</span><span class="p">,</span> <span class="nb">list</span><span class="p">):</span>
+            <span class="k">for</span> <span class="n">item</span> <span class="ow">in</span> <span class="n">translation_data</span><span class="p">:</span>
+                <span class="k">if</span> <span class="n">item</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">translation_key</span><span class="p">)</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+                    <span class="k">del</span> <span class="n">item</span><span class="p">[</span><span class="n">translation_key</span><span class="p">]</span>
+        <span class="k">elif</span> <span class="n">translation_data</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">translation_key</span><span class="p">)</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="k">del</span> <span class="n">translation_data</span><span class="p">[</span><span class="n">translation_key</span><span class="p">]</span></div>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/heat
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../../index.html">heat 8.0.0.0rc2.dev38 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../../index.html" accesskey="U">Module code</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2012,2013 Heat Developers.
+      Last updated on &#39;Tue Feb 14 11:42:51 2017, commit 3ffc97c&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/heat");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

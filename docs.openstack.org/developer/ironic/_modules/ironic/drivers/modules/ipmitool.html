@@ -1,0 +1,1529 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>ironic.drivers.modules.ipmitool &mdash; Ironic 7.0.1.dev7 documentation</title>
+    
+    <link rel="stylesheet" href="../../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/toggle.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../../',
+        VERSION:     '7.0.1.dev7',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../../_static/doctools.js"></script>
+    <script type="text/javascript" src="../../../../_static/toggle.js"></script>
+    <link rel="top" title="Ironic 7.0.1.dev7 documentation" href="../../../../index.html" />
+    <link rel="up" title="Module code" href="../../../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for ironic.drivers.modules.ipmitool</h1><div class="highlight"><pre>
+<span></span><span class="c1"># coding=utf-8</span>
+
+<span class="c1"># Copyright 2012 Hewlett-Packard Development Company, L.P.</span>
+<span class="c1"># Copyright (c) 2012 NTT DOCOMO, INC.</span>
+<span class="c1"># Copyright 2014 International Business Machines Corporation</span>
+<span class="c1"># All Rights Reserved.</span>
+<span class="c1">#</span>
+<span class="c1">#    Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may</span>
+<span class="c1">#    not use this file except in compliance with the License. You may obtain</span>
+<span class="c1">#    a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#         http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1">#    Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1">#    distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="c1">#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="c1">#    License for the specific language governing permissions and limitations</span>
+<span class="c1">#    under the License.</span>
+
+<span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">IPMI power manager driver.</span>
+
+<span class="sd">Uses the &#39;ipmitool&#39; command (http://ipmitool.sourceforge.net/) to remotely</span>
+<span class="sd">manage hardware.  This includes setting the boot device, getting a</span>
+<span class="sd">serial-over-LAN console, and controlling the power state of the machine.</span>
+
+<span class="sd">NOTE THAT CERTAIN DISTROS MAY INSTALL openipmi BY DEFAULT, INSTEAD OF ipmitool,</span>
+<span class="sd">WHICH PROVIDES DIFFERENT COMMAND-LINE OPTIONS AND *IS NOT SUPPORTED* BY THIS</span>
+<span class="sd">DRIVER.</span>
+<span class="sd">&quot;&quot;&quot;</span>
+
+<span class="kn">import</span> <span class="nn">contextlib</span>
+<span class="kn">import</span> <span class="nn">os</span>
+<span class="kn">import</span> <span class="nn">re</span>
+<span class="kn">import</span> <span class="nn">subprocess</span>
+<span class="kn">import</span> <span class="nn">tempfile</span>
+<span class="kn">import</span> <span class="nn">time</span>
+
+<span class="kn">from</span> <span class="nn">ironic_lib</span> <span class="kn">import</span> <span class="n">metrics_utils</span>
+<span class="kn">from</span> <span class="nn">ironic_lib</span> <span class="kn">import</span> <span class="n">utils</span> <span class="k">as</span> <span class="n">ironic_utils</span>
+<span class="kn">from</span> <span class="nn">oslo_concurrency</span> <span class="kn">import</span> <span class="n">processutils</span>
+<span class="kn">from</span> <span class="nn">oslo_log</span> <span class="kn">import</span> <span class="n">log</span> <span class="k">as</span> <span class="n">logging</span>
+<span class="kn">from</span> <span class="nn">oslo_service</span> <span class="kn">import</span> <span class="n">loopingcall</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">excutils</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">strutils</span>
+<span class="kn">import</span> <span class="nn">six</span>
+
+<span class="kn">from</span> <span class="nn">ironic.common</span> <span class="kn">import</span> <span class="n">boot_devices</span>
+<span class="kn">from</span> <span class="nn">ironic.common</span> <span class="kn">import</span> <span class="n">exception</span>
+<span class="kn">from</span> <span class="nn">ironic.common.i18n</span> <span class="kn">import</span> <span class="n">_</span><span class="p">,</span> <span class="n">_LE</span><span class="p">,</span> <span class="n">_LI</span><span class="p">,</span> <span class="n">_LW</span>
+<span class="kn">from</span> <span class="nn">ironic.common</span> <span class="kn">import</span> <span class="n">states</span>
+<span class="kn">from</span> <span class="nn">ironic.common</span> <span class="kn">import</span> <span class="n">utils</span>
+<span class="kn">from</span> <span class="nn">ironic.conductor</span> <span class="kn">import</span> <span class="n">task_manager</span>
+<span class="kn">from</span> <span class="nn">ironic.conf</span> <span class="kn">import</span> <span class="n">CONF</span>
+<span class="kn">from</span> <span class="nn">ironic.drivers</span> <span class="kn">import</span> <span class="n">base</span>
+<span class="kn">from</span> <span class="nn">ironic.drivers.modules</span> <span class="kn">import</span> <span class="n">console_utils</span>
+<span class="kn">from</span> <span class="nn">ironic.drivers.modules</span> <span class="kn">import</span> <span class="n">deploy_utils</span>
+<span class="kn">from</span> <span class="nn">ironic.drivers</span> <span class="kn">import</span> <span class="n">utils</span> <span class="k">as</span> <span class="n">driver_utils</span>
+
+
+<span class="n">LOG</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+<span class="n">METRICS</span> <span class="o">=</span> <span class="n">metrics_utils</span><span class="o">.</span><span class="n">get_metrics_logger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+<span class="n">VALID_PRIV_LEVELS</span> <span class="o">=</span> <span class="p">[</span><span class="s1">&#39;ADMINISTRATOR&#39;</span><span class="p">,</span> <span class="s1">&#39;CALLBACK&#39;</span><span class="p">,</span> <span class="s1">&#39;OPERATOR&#39;</span><span class="p">,</span> <span class="s1">&#39;USER&#39;</span><span class="p">]</span>
+
+<span class="n">VALID_PROTO_VERSIONS</span> <span class="o">=</span> <span class="p">(</span><span class="s1">&#39;2.0&#39;</span><span class="p">,</span> <span class="s1">&#39;1.5&#39;</span><span class="p">)</span>
+
+<span class="n">REQUIRED_PROPERTIES</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s1">&#39;ipmi_address&#39;</span><span class="p">:</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;IP address or hostname of the node. Required.&quot;</span><span class="p">)</span>
+<span class="p">}</span>
+<span class="n">OPTIONAL_PROPERTIES</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s1">&#39;ipmi_password&#39;</span><span class="p">:</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;password. Optional.&quot;</span><span class="p">),</span>
+    <span class="s1">&#39;ipmi_port&#39;</span><span class="p">:</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;remote IPMI RMCP port. Optional.&quot;</span><span class="p">),</span>
+    <span class="s1">&#39;ipmi_priv_level&#39;</span><span class="p">:</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;privilege level; default is ADMINISTRATOR. One of &quot;</span>
+                         <span class="s2">&quot;</span><span class="si">%s</span><span class="s2">. Optional.&quot;</span><span class="p">)</span> <span class="o">%</span> <span class="s1">&#39;, &#39;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">VALID_PRIV_LEVELS</span><span class="p">),</span>
+    <span class="s1">&#39;ipmi_username&#39;</span><span class="p">:</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;username; default is NULL user. Optional.&quot;</span><span class="p">),</span>
+    <span class="s1">&#39;ipmi_bridging&#39;</span><span class="p">:</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;bridging_type; default is </span><span class="se">\&quot;</span><span class="s2">no</span><span class="se">\&quot;</span><span class="s2">. One of </span><span class="se">\&quot;</span><span class="s2">single</span><span class="se">\&quot;</span><span class="s2">, &quot;</span>
+                       <span class="s2">&quot;</span><span class="se">\&quot;</span><span class="s2">dual</span><span class="se">\&quot;</span><span class="s2">, </span><span class="se">\&quot;</span><span class="s2">no</span><span class="se">\&quot;</span><span class="s2">. Optional.&quot;</span><span class="p">),</span>
+    <span class="s1">&#39;ipmi_transit_channel&#39;</span><span class="p">:</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;transit channel for bridged request. Required &quot;</span>
+                              <span class="s2">&quot;only if ipmi_bridging is set to </span><span class="se">\&quot;</span><span class="s2">dual</span><span class="se">\&quot;</span><span class="s2">.&quot;</span><span class="p">),</span>
+    <span class="s1">&#39;ipmi_transit_address&#39;</span><span class="p">:</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;transit address for bridged request. Required &quot;</span>
+                              <span class="s2">&quot;only if ipmi_bridging is set to </span><span class="se">\&quot;</span><span class="s2">dual</span><span class="se">\&quot;</span><span class="s2">.&quot;</span><span class="p">),</span>
+    <span class="s1">&#39;ipmi_target_channel&#39;</span><span class="p">:</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;destination channel for bridged request. &quot;</span>
+                             <span class="s2">&quot;Required only if ipmi_bridging is set to &quot;</span>
+                             <span class="s2">&quot;</span><span class="se">\&quot;</span><span class="s2">single</span><span class="se">\&quot;</span><span class="s2"> or </span><span class="se">\&quot;</span><span class="s2">dual</span><span class="se">\&quot;</span><span class="s2">.&quot;</span><span class="p">),</span>
+    <span class="s1">&#39;ipmi_target_address&#39;</span><span class="p">:</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;destination address for bridged request. &quot;</span>
+                             <span class="s2">&quot;Required only if ipmi_bridging is set &quot;</span>
+                             <span class="s2">&quot;to </span><span class="se">\&quot;</span><span class="s2">single</span><span class="se">\&quot;</span><span class="s2"> or </span><span class="se">\&quot;</span><span class="s2">dual</span><span class="se">\&quot;</span><span class="s2">.&quot;</span><span class="p">),</span>
+    <span class="s1">&#39;ipmi_local_address&#39;</span><span class="p">:</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;local IPMB address for bridged requests. &quot;</span>
+                            <span class="s2">&quot;Used only if ipmi_bridging is set &quot;</span>
+                            <span class="s2">&quot;to </span><span class="se">\&quot;</span><span class="s2">single</span><span class="se">\&quot;</span><span class="s2"> or </span><span class="se">\&quot;</span><span class="s2">dual</span><span class="se">\&quot;</span><span class="s2">. Optional.&quot;</span><span class="p">),</span>
+    <span class="s1">&#39;ipmi_protocol_version&#39;</span><span class="p">:</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;the version of the IPMI protocol; default &#39;</span>
+                               <span class="s1">&#39;is &quot;2.0&quot;. One of &quot;1.5&quot;, &quot;2.0&quot;. Optional.&#39;</span><span class="p">),</span>
+    <span class="s1">&#39;ipmi_force_boot_device&#39;</span><span class="p">:</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Whether Ironic should specify the boot &quot;</span>
+                                <span class="s2">&quot;device to the BMC each time the server &quot;</span>
+                                <span class="s2">&quot;is turned on, eg. because the BMC is not &quot;</span>
+                                <span class="s2">&quot;capable of remembering the selected boot &quot;</span>
+                                <span class="s2">&quot;device across power cycles; default value &quot;</span>
+                                <span class="s2">&quot;is False. Optional.&quot;</span><span class="p">)</span>
+<span class="p">}</span>
+<span class="n">COMMON_PROPERTIES</span> <span class="o">=</span> <span class="n">REQUIRED_PROPERTIES</span><span class="o">.</span><span class="n">copy</span><span class="p">()</span>
+<span class="n">COMMON_PROPERTIES</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">OPTIONAL_PROPERTIES</span><span class="p">)</span>
+<span class="n">CONSOLE_PROPERTIES</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s1">&#39;ipmi_terminal_port&#39;</span><span class="p">:</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;node&#39;s UDP port to connect to. Only required for &quot;</span>
+                            <span class="s2">&quot;console access.&quot;</span><span class="p">)</span>
+<span class="p">}</span>
+<span class="n">BRIDGING_OPTIONS</span> <span class="o">=</span> <span class="p">[(</span><span class="s1">&#39;local_address&#39;</span><span class="p">,</span> <span class="s1">&#39;-m&#39;</span><span class="p">),</span>
+                    <span class="p">(</span><span class="s1">&#39;transit_channel&#39;</span><span class="p">,</span> <span class="s1">&#39;-B&#39;</span><span class="p">),</span> <span class="p">(</span><span class="s1">&#39;transit_address&#39;</span><span class="p">,</span> <span class="s1">&#39;-T&#39;</span><span class="p">),</span>
+                    <span class="p">(</span><span class="s1">&#39;target_channel&#39;</span><span class="p">,</span> <span class="s1">&#39;-b&#39;</span><span class="p">),</span> <span class="p">(</span><span class="s1">&#39;target_address&#39;</span><span class="p">,</span> <span class="s1">&#39;-t&#39;</span><span class="p">)]</span>
+
+<span class="n">LAST_CMD_TIME</span> <span class="o">=</span> <span class="p">{}</span>
+<span class="n">TIMING_SUPPORT</span> <span class="o">=</span> <span class="bp">None</span>
+<span class="n">SINGLE_BRIDGE_SUPPORT</span> <span class="o">=</span> <span class="bp">None</span>
+<span class="n">DUAL_BRIDGE_SUPPORT</span> <span class="o">=</span> <span class="bp">None</span>
+<span class="n">TMP_DIR_CHECKED</span> <span class="o">=</span> <span class="bp">None</span>
+
+<span class="n">ipmitool_command_options</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s1">&#39;timing&#39;</span><span class="p">:</span> <span class="p">[</span><span class="s1">&#39;ipmitool&#39;</span><span class="p">,</span> <span class="s1">&#39;-N&#39;</span><span class="p">,</span> <span class="s1">&#39;0&#39;</span><span class="p">,</span> <span class="s1">&#39;-R&#39;</span><span class="p">,</span> <span class="s1">&#39;0&#39;</span><span class="p">,</span> <span class="s1">&#39;-h&#39;</span><span class="p">],</span>
+    <span class="s1">&#39;single_bridge&#39;</span><span class="p">:</span> <span class="p">[</span><span class="s1">&#39;ipmitool&#39;</span><span class="p">,</span> <span class="s1">&#39;-m&#39;</span><span class="p">,</span> <span class="s1">&#39;0&#39;</span><span class="p">,</span> <span class="s1">&#39;-b&#39;</span><span class="p">,</span> <span class="s1">&#39;0&#39;</span><span class="p">,</span> <span class="s1">&#39;-t&#39;</span><span class="p">,</span> <span class="s1">&#39;0&#39;</span><span class="p">,</span> <span class="s1">&#39;-h&#39;</span><span class="p">],</span>
+    <span class="s1">&#39;dual_bridge&#39;</span><span class="p">:</span> <span class="p">[</span><span class="s1">&#39;ipmitool&#39;</span><span class="p">,</span> <span class="s1">&#39;-m&#39;</span><span class="p">,</span> <span class="s1">&#39;0&#39;</span><span class="p">,</span> <span class="s1">&#39;-b&#39;</span><span class="p">,</span> <span class="s1">&#39;0&#39;</span><span class="p">,</span> <span class="s1">&#39;-t&#39;</span><span class="p">,</span> <span class="s1">&#39;0&#39;</span><span class="p">,</span>
+                    <span class="s1">&#39;-B&#39;</span><span class="p">,</span> <span class="s1">&#39;0&#39;</span><span class="p">,</span> <span class="s1">&#39;-T&#39;</span><span class="p">,</span> <span class="s1">&#39;0&#39;</span><span class="p">,</span> <span class="s1">&#39;-h&#39;</span><span class="p">]}</span>
+
+<span class="c1"># Note(TheJulia): This string is hardcoded in ipmitool&#39;s lanplus driver</span>
+<span class="c1"># and is substituted in return for the error code received from the IPMI</span>
+<span class="c1"># controller.  As of 1.8.15, no internationalization support appears to</span>
+<span class="c1"># be in ipmitool which means the string should always be returned in this</span>
+<span class="c1"># form regardless of locale.</span>
+<span class="n">IPMITOOL_RETRYABLE_FAILURES</span> <span class="o">=</span> <span class="p">[</span><span class="s1">&#39;insufficient resources for session&#39;</span><span class="p">]</span>
+
+<span class="c1"># NOTE(lucasagomes): A mapping for the boot devices and their hexadecimal</span>
+<span class="c1"># value. For more information about these values see the &quot;Set System Boot</span>
+<span class="c1"># Options Command&quot; section of the link below (page 418)</span>
+<span class="c1"># http://www.intel.com/content/www/us/en/servers/ipmi/ipmi-second-gen-interface-spec-v2-rev1-1.html  # noqa</span>
+<span class="n">BOOT_DEVICE_HEXA_MAP</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="n">boot_devices</span><span class="o">.</span><span class="n">PXE</span><span class="p">:</span> <span class="s1">&#39;0x04&#39;</span><span class="p">,</span>
+    <span class="n">boot_devices</span><span class="o">.</span><span class="n">DISK</span><span class="p">:</span> <span class="s1">&#39;0x08&#39;</span><span class="p">,</span>
+    <span class="n">boot_devices</span><span class="o">.</span><span class="n">CDROM</span><span class="p">:</span> <span class="s1">&#39;0x14&#39;</span><span class="p">,</span>
+    <span class="n">boot_devices</span><span class="o">.</span><span class="n">BIOS</span><span class="p">:</span> <span class="s1">&#39;0x18&#39;</span><span class="p">,</span>
+    <span class="n">boot_devices</span><span class="o">.</span><span class="n">SAFE</span><span class="p">:</span> <span class="s1">&#39;0x0c&#39;</span>
+<span class="p">}</span>
+
+
+<span class="k">def</span> <span class="nf">_check_option_support</span><span class="p">(</span><span class="n">options</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Checks if the specific ipmitool options are supported on host.</span>
+
+<span class="sd">    This method updates the module-level variables indicating whether</span>
+<span class="sd">    an option is supported so that it is accessible by any driver</span>
+<span class="sd">    interface class in this module. It is intended to be called from</span>
+<span class="sd">    the __init__ method of such classes only.</span>
+
+<span class="sd">    :param options: list of ipmitool options to be checked</span>
+<span class="sd">    :raises: OSError</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">for</span> <span class="n">opt</span> <span class="ow">in</span> <span class="n">options</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">_is_option_supported</span><span class="p">(</span><span class="n">opt</span><span class="p">)</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">cmd</span> <span class="o">=</span> <span class="n">ipmitool_command_options</span><span class="p">[</span><span class="n">opt</span><span class="p">]</span>
+                <span class="c1"># NOTE(cinerama): use subprocess.check_call to</span>
+                <span class="c1"># check options &amp; suppress ipmitool output to</span>
+                <span class="c1"># avoid alarming people</span>
+                <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">devnull</span><span class="p">,</span> <span class="s1">&#39;wb&#39;</span><span class="p">)</span> <span class="k">as</span> <span class="n">nullfile</span><span class="p">:</span>
+                    <span class="n">subprocess</span><span class="o">.</span><span class="n">check_call</span><span class="p">(</span><span class="n">cmd</span><span class="p">,</span> <span class="n">stdout</span><span class="o">=</span><span class="n">nullfile</span><span class="p">,</span>
+                                          <span class="n">stderr</span><span class="o">=</span><span class="n">nullfile</span><span class="p">)</span>
+            <span class="k">except</span> <span class="n">subprocess</span><span class="o">.</span><span class="n">CalledProcessError</span><span class="p">:</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">_LI</span><span class="p">(</span><span class="s2">&quot;Option </span><span class="si">%(opt)s</span><span class="s2"> is not supported by ipmitool&quot;</span><span class="p">),</span>
+                         <span class="p">{</span><span class="s1">&#39;opt&#39;</span><span class="p">:</span> <span class="n">opt</span><span class="p">})</span>
+                <span class="n">_is_option_supported</span><span class="p">(</span><span class="n">opt</span><span class="p">,</span> <span class="bp">False</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">_LI</span><span class="p">(</span><span class="s2">&quot;Option </span><span class="si">%(opt)s</span><span class="s2"> is supported by ipmitool&quot;</span><span class="p">),</span>
+                         <span class="p">{</span><span class="s1">&#39;opt&#39;</span><span class="p">:</span> <span class="n">opt</span><span class="p">})</span>
+                <span class="n">_is_option_supported</span><span class="p">(</span><span class="n">opt</span><span class="p">,</span> <span class="bp">True</span><span class="p">)</span>
+
+
+<span class="k">def</span> <span class="nf">_is_option_supported</span><span class="p">(</span><span class="n">option</span><span class="p">,</span> <span class="n">is_supported</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Indicates whether the particular ipmitool option is supported.</span>
+
+<span class="sd">    :param option: specific ipmitool option</span>
+<span class="sd">    :param is_supported: Optional Boolean. when specified, this value</span>
+<span class="sd">                         is assigned to the module-level variable indicating</span>
+<span class="sd">                         whether the option is supported. Used only if a value</span>
+<span class="sd">                         is not already assigned.</span>
+<span class="sd">    :returns: True, indicates the option is supported</span>
+<span class="sd">    :returns: False, indicates the option is not supported</span>
+<span class="sd">    :returns: None, indicates that it is not aware whether the option</span>
+<span class="sd">              is supported</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">global</span> <span class="n">SINGLE_BRIDGE_SUPPORT</span>
+    <span class="k">global</span> <span class="n">DUAL_BRIDGE_SUPPORT</span>
+    <span class="k">global</span> <span class="n">TIMING_SUPPORT</span>
+
+    <span class="k">if</span> <span class="n">option</span> <span class="o">==</span> <span class="s1">&#39;single_bridge&#39;</span><span class="p">:</span>
+        <span class="k">if</span> <span class="p">(</span><span class="n">SINGLE_BRIDGE_SUPPORT</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">)</span> <span class="ow">and</span> <span class="p">(</span><span class="n">is_supported</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">):</span>
+            <span class="n">SINGLE_BRIDGE_SUPPORT</span> <span class="o">=</span> <span class="n">is_supported</span>
+        <span class="k">return</span> <span class="n">SINGLE_BRIDGE_SUPPORT</span>
+    <span class="k">elif</span> <span class="n">option</span> <span class="o">==</span> <span class="s1">&#39;dual_bridge&#39;</span><span class="p">:</span>
+        <span class="k">if</span> <span class="p">(</span><span class="n">DUAL_BRIDGE_SUPPORT</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">)</span> <span class="ow">and</span> <span class="p">(</span><span class="n">is_supported</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">):</span>
+            <span class="n">DUAL_BRIDGE_SUPPORT</span> <span class="o">=</span> <span class="n">is_supported</span>
+        <span class="k">return</span> <span class="n">DUAL_BRIDGE_SUPPORT</span>
+    <span class="k">elif</span> <span class="n">option</span> <span class="o">==</span> <span class="s1">&#39;timing&#39;</span><span class="p">:</span>
+        <span class="k">if</span> <span class="p">(</span><span class="n">TIMING_SUPPORT</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">)</span> <span class="ow">and</span> <span class="p">(</span><span class="n">is_supported</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">):</span>
+            <span class="n">TIMING_SUPPORT</span> <span class="o">=</span> <span class="n">is_supported</span>
+        <span class="k">return</span> <span class="n">TIMING_SUPPORT</span>
+
+
+<span class="k">def</span> <span class="nf">_console_pwfile_path</span><span class="p">(</span><span class="n">uuid</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Return the file path for storing the ipmi password for a console.&quot;&quot;&quot;</span>
+    <span class="n">file_name</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="si">%(uuid)s</span><span class="s2">.pw&quot;</span> <span class="o">%</span> <span class="p">{</span><span class="s1">&#39;uuid&#39;</span><span class="p">:</span> <span class="n">uuid</span><span class="p">}</span>
+    <span class="k">return</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">CONF</span><span class="o">.</span><span class="n">tempdir</span><span class="p">,</span> <span class="n">file_name</span><span class="p">)</span>
+
+
+<span class="nd">@contextlib.contextmanager</span>
+<span class="k">def</span> <span class="nf">_make_password_file</span><span class="p">(</span><span class="n">password</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Makes a temporary file that contains the password.</span>
+
+<span class="sd">    :param password: the password</span>
+<span class="sd">    :returns: the absolute pathname of the temporary file</span>
+<span class="sd">    :raises: PasswordFileFailedToCreate from creating or writing to the</span>
+<span class="sd">             temporary file</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">f</span> <span class="o">=</span> <span class="bp">None</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">f</span> <span class="o">=</span> <span class="n">tempfile</span><span class="o">.</span><span class="n">NamedTemporaryFile</span><span class="p">(</span><span class="n">mode</span><span class="o">=</span><span class="s1">&#39;w&#39;</span><span class="p">,</span> <span class="nb">dir</span><span class="o">=</span><span class="n">CONF</span><span class="o">.</span><span class="n">tempdir</span><span class="p">)</span>
+        <span class="n">f</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="n">password</span><span class="p">))</span>
+        <span class="n">f</span><span class="o">.</span><span class="n">flush</span><span class="p">()</span>
+    <span class="k">except</span> <span class="p">(</span><span class="ne">IOError</span><span class="p">,</span> <span class="ne">OSError</span><span class="p">)</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">f</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">f</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
+        <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">PasswordFileFailedToCreate</span><span class="p">(</span><span class="n">error</span><span class="o">=</span><span class="n">exc</span><span class="p">)</span>
+    <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+        <span class="k">with</span> <span class="n">excutils</span><span class="o">.</span><span class="n">save_and_reraise_exception</span><span class="p">():</span>
+            <span class="k">if</span> <span class="n">f</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="n">f</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
+
+    <span class="k">try</span><span class="p">:</span>
+        <span class="c1"># NOTE(jlvillal): This yield can not be in the try/except block above</span>
+        <span class="c1"># because an exception by the caller of this function would then get</span>
+        <span class="c1"># changed to a PasswordFileFailedToCreate exception which would mislead</span>
+        <span class="c1"># about the problem and its cause.</span>
+        <span class="k">yield</span> <span class="n">f</span><span class="o">.</span><span class="n">name</span>
+    <span class="k">finally</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">f</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">f</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
+
+
+<span class="k">def</span> <span class="nf">_parse_driver_info</span><span class="p">(</span><span class="n">node</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Gets the parameters required for ipmitool to access the node.</span>
+
+<span class="sd">    :param node: the Node of interest.</span>
+<span class="sd">    :returns: dictionary of parameters.</span>
+<span class="sd">    :raises: InvalidParameterValue when an invalid value is specified</span>
+<span class="sd">    :raises: MissingParameterValue when a required ipmi parameter is missing.</span>
+
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">info</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">driver_info</span> <span class="ow">or</span> <span class="p">{}</span>
+    <span class="n">bridging_types</span> <span class="o">=</span> <span class="p">[</span><span class="s1">&#39;single&#39;</span><span class="p">,</span> <span class="s1">&#39;dual&#39;</span><span class="p">]</span>
+    <span class="n">missing_info</span> <span class="o">=</span> <span class="p">[</span><span class="n">key</span> <span class="k">for</span> <span class="n">key</span> <span class="ow">in</span> <span class="n">REQUIRED_PROPERTIES</span> <span class="k">if</span> <span class="ow">not</span> <span class="n">info</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">key</span><span class="p">)]</span>
+    <span class="k">if</span> <span class="n">missing_info</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">MissingParameterValue</span><span class="p">(</span><span class="n">_</span><span class="p">(</span>
+            <span class="s2">&quot;Missing the following IPMI credentials in node&#39;s&quot;</span>
+            <span class="s2">&quot; driver_info: </span><span class="si">%s</span><span class="s2">.&quot;</span><span class="p">)</span> <span class="o">%</span> <span class="n">missing_info</span><span class="p">)</span>
+
+    <span class="n">address</span> <span class="o">=</span> <span class="n">info</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;ipmi_address&#39;</span><span class="p">)</span>
+    <span class="n">username</span> <span class="o">=</span> <span class="n">info</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;ipmi_username&#39;</span><span class="p">)</span>
+    <span class="n">password</span> <span class="o">=</span> <span class="n">six</span><span class="o">.</span><span class="n">text_type</span><span class="p">(</span><span class="n">info</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;ipmi_password&#39;</span><span class="p">,</span> <span class="s1">&#39;&#39;</span><span class="p">))</span>
+    <span class="n">dest_port</span> <span class="o">=</span> <span class="n">info</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;ipmi_port&#39;</span><span class="p">)</span>
+    <span class="n">port</span> <span class="o">=</span> <span class="n">info</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;ipmi_terminal_port&#39;</span><span class="p">)</span>
+    <span class="n">priv_level</span> <span class="o">=</span> <span class="n">info</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;ipmi_priv_level&#39;</span><span class="p">,</span> <span class="s1">&#39;ADMINISTRATOR&#39;</span><span class="p">)</span>
+    <span class="n">bridging_type</span> <span class="o">=</span> <span class="n">info</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;ipmi_bridging&#39;</span><span class="p">,</span> <span class="s1">&#39;no&#39;</span><span class="p">)</span>
+    <span class="n">local_address</span> <span class="o">=</span> <span class="n">info</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;ipmi_local_address&#39;</span><span class="p">)</span>
+    <span class="n">transit_channel</span> <span class="o">=</span> <span class="n">info</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;ipmi_transit_channel&#39;</span><span class="p">)</span>
+    <span class="n">transit_address</span> <span class="o">=</span> <span class="n">info</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;ipmi_transit_address&#39;</span><span class="p">)</span>
+    <span class="n">target_channel</span> <span class="o">=</span> <span class="n">info</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;ipmi_target_channel&#39;</span><span class="p">)</span>
+    <span class="n">target_address</span> <span class="o">=</span> <span class="n">info</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;ipmi_target_address&#39;</span><span class="p">)</span>
+    <span class="n">protocol_version</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">info</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;ipmi_protocol_version&#39;</span><span class="p">,</span> <span class="s1">&#39;2.0&#39;</span><span class="p">))</span>
+    <span class="n">force_boot_device</span> <span class="o">=</span> <span class="n">info</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;ipmi_force_boot_device&#39;</span><span class="p">,</span> <span class="bp">False</span><span class="p">)</span>
+
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">username</span><span class="p">:</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s1">&#39;ipmi_username is not defined or empty for node </span><span class="si">%s</span><span class="s1">: &#39;</span>
+                        <span class="s1">&#39;NULL user will be utilized.&#39;</span><span class="p">),</span> <span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">password</span><span class="p">:</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s1">&#39;ipmi_password is not defined or empty for node </span><span class="si">%s</span><span class="s1">: &#39;</span>
+                        <span class="s1">&#39;NULL password will be utilized.&#39;</span><span class="p">),</span> <span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+
+    <span class="k">if</span> <span class="n">protocol_version</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">VALID_PROTO_VERSIONS</span><span class="p">:</span>
+        <span class="n">valid_versions</span> <span class="o">=</span> <span class="s1">&#39;, &#39;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">VALID_PROTO_VERSIONS</span><span class="p">)</span>
+        <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">InvalidParameterValue</span><span class="p">(</span><span class="n">_</span><span class="p">(</span>
+            <span class="s2">&quot;Invalid IPMI protocol version value </span><span class="si">%(version)s</span><span class="s2">, the valid &quot;</span>
+            <span class="s2">&quot;value can be one of </span><span class="si">%(valid_versions)s</span><span class="s2">&quot;</span><span class="p">)</span> <span class="o">%</span>
+            <span class="p">{</span><span class="s1">&#39;version&#39;</span><span class="p">:</span> <span class="n">protocol_version</span><span class="p">,</span> <span class="s1">&#39;valid_versions&#39;</span><span class="p">:</span> <span class="n">valid_versions</span><span class="p">})</span>
+
+    <span class="k">if</span> <span class="n">port</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+        <span class="n">port</span> <span class="o">=</span> <span class="n">utils</span><span class="o">.</span><span class="n">validate_network_port</span><span class="p">(</span><span class="n">port</span><span class="p">,</span> <span class="s1">&#39;ipmi_terminal_port&#39;</span><span class="p">)</span>
+
+    <span class="k">if</span> <span class="n">dest_port</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+        <span class="n">dest_port</span> <span class="o">=</span> <span class="n">utils</span><span class="o">.</span><span class="n">validate_network_port</span><span class="p">(</span><span class="n">dest_port</span><span class="p">,</span> <span class="s1">&#39;ipmi_port&#39;</span><span class="p">)</span>
+
+    <span class="c1"># check if ipmi_bridging has proper value</span>
+    <span class="k">if</span> <span class="n">bridging_type</span> <span class="o">==</span> <span class="s1">&#39;no&#39;</span><span class="p">:</span>
+        <span class="c1"># if bridging is not selected, then set all bridging params to None</span>
+        <span class="p">(</span><span class="n">local_address</span><span class="p">,</span> <span class="n">transit_channel</span><span class="p">,</span> <span class="n">transit_address</span><span class="p">,</span> <span class="n">target_channel</span><span class="p">,</span>
+         <span class="n">target_address</span><span class="p">)</span> <span class="o">=</span> <span class="p">(</span><span class="bp">None</span><span class="p">,)</span> <span class="o">*</span> <span class="mi">5</span>
+    <span class="k">elif</span> <span class="n">bridging_type</span> <span class="ow">in</span> <span class="n">bridging_types</span><span class="p">:</span>
+        <span class="c1"># check if the particular bridging option is supported on host</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">_is_option_supported</span><span class="p">(</span><span class="s1">&#39;</span><span class="si">%s</span><span class="s1">_bridge&#39;</span> <span class="o">%</span> <span class="n">bridging_type</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">InvalidParameterValue</span><span class="p">(</span><span class="n">_</span><span class="p">(</span>
+                <span class="s2">&quot;Value for ipmi_bridging is provided as </span><span class="si">%s</span><span class="s2">, but IPMI &quot;</span>
+                <span class="s2">&quot;bridging is not supported by the IPMI utility installed &quot;</span>
+                <span class="s2">&quot;on host. Ensure ipmitool version is &gt; 1.8.11&quot;</span>
+            <span class="p">)</span> <span class="o">%</span> <span class="n">bridging_type</span><span class="p">)</span>
+
+        <span class="c1"># ensure that all the required parameters are provided</span>
+        <span class="n">params_undefined</span> <span class="o">=</span> <span class="p">[</span><span class="n">param</span> <span class="k">for</span> <span class="n">param</span><span class="p">,</span> <span class="n">value</span> <span class="ow">in</span> <span class="p">[</span>
+            <span class="p">(</span><span class="s2">&quot;ipmi_target_channel&quot;</span><span class="p">,</span> <span class="n">target_channel</span><span class="p">),</span>
+            <span class="p">(</span><span class="s1">&#39;ipmi_target_address&#39;</span><span class="p">,</span> <span class="n">target_address</span><span class="p">)]</span> <span class="k">if</span> <span class="n">value</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">]</span>
+        <span class="k">if</span> <span class="n">bridging_type</span> <span class="o">==</span> <span class="s1">&#39;dual&#39;</span><span class="p">:</span>
+            <span class="n">params_undefined2</span> <span class="o">=</span> <span class="p">[</span><span class="n">param</span> <span class="k">for</span> <span class="n">param</span><span class="p">,</span> <span class="n">value</span> <span class="ow">in</span> <span class="p">[</span>
+                <span class="p">(</span><span class="s2">&quot;ipmi_transit_channel&quot;</span><span class="p">,</span> <span class="n">transit_channel</span><span class="p">),</span>
+                <span class="p">(</span><span class="s1">&#39;ipmi_transit_address&#39;</span><span class="p">,</span> <span class="n">transit_address</span><span class="p">)</span>
+            <span class="p">]</span> <span class="k">if</span> <span class="n">value</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">]</span>
+            <span class="n">params_undefined</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span><span class="n">params_undefined2</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="c1"># if single bridging was selected, set dual bridge params to None</span>
+            <span class="n">transit_channel</span> <span class="o">=</span> <span class="n">transit_address</span> <span class="o">=</span> <span class="bp">None</span>
+
+        <span class="c1"># If the required parameters were not provided,</span>
+        <span class="c1"># raise an exception</span>
+        <span class="k">if</span> <span class="n">params_undefined</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">MissingParameterValue</span><span class="p">(</span><span class="n">_</span><span class="p">(</span>
+                <span class="s2">&quot;</span><span class="si">%(param)s</span><span class="s2"> not provided&quot;</span><span class="p">)</span> <span class="o">%</span> <span class="p">{</span><span class="s1">&#39;param&#39;</span><span class="p">:</span> <span class="n">params_undefined</span><span class="p">})</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">InvalidParameterValue</span><span class="p">(</span><span class="n">_</span><span class="p">(</span>
+            <span class="s2">&quot;Invalid value for ipmi_bridging: </span><span class="si">%(bridging_type)s</span><span class="s2">,&quot;</span>
+            <span class="s2">&quot; the valid value can be one of: </span><span class="si">%(bridging_types)s</span><span class="s2">&quot;</span>
+        <span class="p">)</span> <span class="o">%</span> <span class="p">{</span><span class="s1">&#39;bridging_type&#39;</span><span class="p">:</span> <span class="n">bridging_type</span><span class="p">,</span>
+             <span class="s1">&#39;bridging_types&#39;</span><span class="p">:</span> <span class="n">bridging_types</span> <span class="o">+</span> <span class="p">[</span><span class="s1">&#39;no&#39;</span><span class="p">]})</span>
+
+    <span class="k">if</span> <span class="n">priv_level</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">VALID_PRIV_LEVELS</span><span class="p">:</span>
+        <span class="n">valid_priv_lvls</span> <span class="o">=</span> <span class="s1">&#39;, &#39;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">VALID_PRIV_LEVELS</span><span class="p">)</span>
+        <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">InvalidParameterValue</span><span class="p">(</span><span class="n">_</span><span class="p">(</span>
+            <span class="s2">&quot;Invalid privilege level value:</span><span class="si">%(priv_level)s</span><span class="s2">, the valid value&quot;</span>
+            <span class="s2">&quot; can be one of </span><span class="si">%(valid_levels)s</span><span class="s2">&quot;</span><span class="p">)</span> <span class="o">%</span>
+            <span class="p">{</span><span class="s1">&#39;priv_level&#39;</span><span class="p">:</span> <span class="n">priv_level</span><span class="p">,</span> <span class="s1">&#39;valid_levels&#39;</span><span class="p">:</span> <span class="n">valid_priv_lvls</span><span class="p">})</span>
+
+    <span class="k">return</span> <span class="p">{</span>
+        <span class="s1">&#39;address&#39;</span><span class="p">:</span> <span class="n">address</span><span class="p">,</span>
+        <span class="s1">&#39;dest_port&#39;</span><span class="p">:</span> <span class="n">dest_port</span><span class="p">,</span>
+        <span class="s1">&#39;username&#39;</span><span class="p">:</span> <span class="n">username</span><span class="p">,</span>
+        <span class="s1">&#39;password&#39;</span><span class="p">:</span> <span class="n">password</span><span class="p">,</span>
+        <span class="s1">&#39;port&#39;</span><span class="p">:</span> <span class="n">port</span><span class="p">,</span>
+        <span class="s1">&#39;uuid&#39;</span><span class="p">:</span> <span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span>
+        <span class="s1">&#39;priv_level&#39;</span><span class="p">:</span> <span class="n">priv_level</span><span class="p">,</span>
+        <span class="s1">&#39;local_address&#39;</span><span class="p">:</span> <span class="n">local_address</span><span class="p">,</span>
+        <span class="s1">&#39;transit_channel&#39;</span><span class="p">:</span> <span class="n">transit_channel</span><span class="p">,</span>
+        <span class="s1">&#39;transit_address&#39;</span><span class="p">:</span> <span class="n">transit_address</span><span class="p">,</span>
+        <span class="s1">&#39;target_channel&#39;</span><span class="p">:</span> <span class="n">target_channel</span><span class="p">,</span>
+        <span class="s1">&#39;target_address&#39;</span><span class="p">:</span> <span class="n">target_address</span><span class="p">,</span>
+        <span class="s1">&#39;protocol_version&#39;</span><span class="p">:</span> <span class="n">protocol_version</span><span class="p">,</span>
+        <span class="s1">&#39;force_boot_device&#39;</span><span class="p">:</span> <span class="n">force_boot_device</span><span class="p">,</span>
+    <span class="p">}</span>
+
+
+<span class="k">def</span> <span class="nf">_exec_ipmitool</span><span class="p">(</span><span class="n">driver_info</span><span class="p">,</span> <span class="n">command</span><span class="p">,</span> <span class="n">check_exit_code</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Execute the ipmitool command.</span>
+
+<span class="sd">    :param driver_info: the ipmitool parameters for accessing a node.</span>
+<span class="sd">    :param command: the ipmitool command to be executed.</span>
+<span class="sd">    :param check_exit_code: Single bool, int, or list of allowed exit codes.</span>
+<span class="sd">    :returns: (stdout, stderr) from executing the command.</span>
+<span class="sd">    :raises: PasswordFileFailedToCreate from creating or writing to the</span>
+<span class="sd">             temporary file.</span>
+<span class="sd">    :raises: processutils.ProcessExecutionError from executing the command.</span>
+
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">ipmi_version</span> <span class="o">=</span> <span class="p">(</span><span class="s1">&#39;lanplus&#39;</span>
+                    <span class="k">if</span> <span class="n">driver_info</span><span class="p">[</span><span class="s1">&#39;protocol_version&#39;</span><span class="p">]</span> <span class="o">==</span> <span class="s1">&#39;2.0&#39;</span>
+                    <span class="k">else</span> <span class="s1">&#39;lan&#39;</span><span class="p">)</span>
+    <span class="n">args</span> <span class="o">=</span> <span class="p">[</span><span class="s1">&#39;ipmitool&#39;</span><span class="p">,</span>
+            <span class="s1">&#39;-I&#39;</span><span class="p">,</span>
+            <span class="n">ipmi_version</span><span class="p">,</span>
+            <span class="s1">&#39;-H&#39;</span><span class="p">,</span>
+            <span class="n">driver_info</span><span class="p">[</span><span class="s1">&#39;address&#39;</span><span class="p">],</span>
+            <span class="s1">&#39;-L&#39;</span><span class="p">,</span> <span class="n">driver_info</span><span class="p">[</span><span class="s1">&#39;priv_level&#39;</span><span class="p">]</span>
+            <span class="p">]</span>
+
+    <span class="k">if</span> <span class="n">driver_info</span><span class="p">[</span><span class="s1">&#39;dest_port&#39;</span><span class="p">]:</span>
+        <span class="n">args</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s1">&#39;-p&#39;</span><span class="p">)</span>
+        <span class="n">args</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">driver_info</span><span class="p">[</span><span class="s1">&#39;dest_port&#39;</span><span class="p">])</span>
+
+    <span class="k">if</span> <span class="n">driver_info</span><span class="p">[</span><span class="s1">&#39;username&#39;</span><span class="p">]:</span>
+        <span class="n">args</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s1">&#39;-U&#39;</span><span class="p">)</span>
+        <span class="n">args</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">driver_info</span><span class="p">[</span><span class="s1">&#39;username&#39;</span><span class="p">])</span>
+
+    <span class="k">for</span> <span class="n">name</span><span class="p">,</span> <span class="n">option</span> <span class="ow">in</span> <span class="n">BRIDGING_OPTIONS</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">driver_info</span><span class="p">[</span><span class="n">name</span><span class="p">]</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">args</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">option</span><span class="p">)</span>
+            <span class="n">args</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">driver_info</span><span class="p">[</span><span class="n">name</span><span class="p">])</span>
+
+    <span class="c1"># specify retry timing more precisely, if supported</span>
+    <span class="n">num_tries</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span>
+        <span class="p">(</span><span class="n">CONF</span><span class="o">.</span><span class="n">ipmi</span><span class="o">.</span><span class="n">retry_timeout</span> <span class="o">//</span> <span class="n">CONF</span><span class="o">.</span><span class="n">ipmi</span><span class="o">.</span><span class="n">min_command_interval</span><span class="p">),</span> <span class="mi">1</span><span class="p">)</span>
+
+    <span class="k">if</span> <span class="n">_is_option_supported</span><span class="p">(</span><span class="s1">&#39;timing&#39;</span><span class="p">):</span>
+        <span class="n">args</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s1">&#39;-R&#39;</span><span class="p">)</span>
+        <span class="n">args</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="n">num_tries</span><span class="p">))</span>
+
+        <span class="n">args</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s1">&#39;-N&#39;</span><span class="p">)</span>
+        <span class="n">args</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="n">CONF</span><span class="o">.</span><span class="n">ipmi</span><span class="o">.</span><span class="n">min_command_interval</span><span class="p">))</span>
+
+    <span class="n">end_time</span> <span class="o">=</span> <span class="p">(</span><span class="n">time</span><span class="o">.</span><span class="n">time</span><span class="p">()</span> <span class="o">+</span> <span class="n">CONF</span><span class="o">.</span><span class="n">ipmi</span><span class="o">.</span><span class="n">retry_timeout</span><span class="p">)</span>
+
+    <span class="k">while</span> <span class="bp">True</span><span class="p">:</span>
+        <span class="n">num_tries</span> <span class="o">=</span> <span class="n">num_tries</span> <span class="o">-</span> <span class="mi">1</span>
+        <span class="c1"># NOTE(deva): ensure that no communications are sent to a BMC more</span>
+        <span class="c1">#             often than once every min_command_interval seconds.</span>
+        <span class="n">time_till_next_poll</span> <span class="o">=</span> <span class="n">CONF</span><span class="o">.</span><span class="n">ipmi</span><span class="o">.</span><span class="n">min_command_interval</span> <span class="o">-</span> <span class="p">(</span>
+            <span class="n">time</span><span class="o">.</span><span class="n">time</span><span class="p">()</span> <span class="o">-</span> <span class="n">LAST_CMD_TIME</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">driver_info</span><span class="p">[</span><span class="s1">&#39;address&#39;</span><span class="p">],</span> <span class="mi">0</span><span class="p">))</span>
+        <span class="k">if</span> <span class="n">time_till_next_poll</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="n">time</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="n">time_till_next_poll</span><span class="p">)</span>
+        <span class="c1"># Resetting the list that will be utilized so the password arguments</span>
+        <span class="c1"># from any previous execution are preserved.</span>
+        <span class="n">cmd_args</span> <span class="o">=</span> <span class="n">args</span><span class="p">[:]</span>
+        <span class="n">extra_args</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="k">if</span> <span class="n">check_exit_code</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">extra_args</span><span class="p">[</span><span class="s1">&#39;check_exit_code&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">check_exit_code</span>
+        <span class="c1"># &#39;ipmitool&#39; command will prompt password if there is no &#39;-f&#39;</span>
+        <span class="c1"># option, we set it to &#39;\0&#39; to write a password file to support</span>
+        <span class="c1"># empty password</span>
+        <span class="k">with</span> <span class="n">_make_password_file</span><span class="p">(</span><span class="n">driver_info</span><span class="p">[</span><span class="s1">&#39;password&#39;</span><span class="p">]</span> <span class="ow">or</span> <span class="s1">&#39;</span><span class="se">\0</span><span class="s1">&#39;</span><span class="p">)</span> <span class="k">as</span> <span class="n">pw_file</span><span class="p">:</span>
+            <span class="n">cmd_args</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s1">&#39;-f&#39;</span><span class="p">)</span>
+            <span class="n">cmd_args</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">pw_file</span><span class="p">)</span>
+            <span class="n">cmd_args</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span><span class="n">command</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s2">&quot; &quot;</span><span class="p">))</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">out</span><span class="p">,</span> <span class="n">err</span> <span class="o">=</span> <span class="n">utils</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="o">*</span><span class="n">cmd_args</span><span class="p">,</span> <span class="o">**</span><span class="n">extra_args</span><span class="p">)</span>
+                <span class="k">return</span> <span class="n">out</span><span class="p">,</span> <span class="n">err</span>
+            <span class="k">except</span> <span class="n">processutils</span><span class="o">.</span><span class="n">ProcessExecutionError</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+                <span class="k">with</span> <span class="n">excutils</span><span class="o">.</span><span class="n">save_and_reraise_exception</span><span class="p">()</span> <span class="k">as</span> <span class="n">ctxt</span><span class="p">:</span>
+                    <span class="n">err_list</span> <span class="o">=</span> <span class="p">[</span><span class="n">x</span> <span class="k">for</span> <span class="n">x</span> <span class="ow">in</span> <span class="n">IPMITOOL_RETRYABLE_FAILURES</span>
+                                <span class="k">if</span> <span class="n">x</span> <span class="ow">in</span> <span class="n">six</span><span class="o">.</span><span class="n">text_type</span><span class="p">(</span><span class="n">e</span><span class="p">)]</span>
+                    <span class="k">if</span> <span class="p">((</span><span class="n">time</span><span class="o">.</span><span class="n">time</span><span class="p">()</span> <span class="o">&gt;</span> <span class="n">end_time</span><span class="p">)</span> <span class="ow">or</span>
+                        <span class="p">(</span><span class="n">num_tries</span> <span class="o">==</span> <span class="mi">0</span><span class="p">)</span> <span class="ow">or</span>
+                        <span class="ow">not</span> <span class="n">err_list</span><span class="p">):</span>
+                        <span class="n">LOG</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">_LE</span><span class="p">(</span><span class="s1">&#39;IPMI Error while attempting &quot;</span><span class="si">%(cmd)s</span><span class="s1">&quot; &#39;</span>
+                                      <span class="s1">&#39;for node </span><span class="si">%(node)s</span><span class="s1">. Error: </span><span class="si">%(error)s</span><span class="s1">&#39;</span><span class="p">),</span> <span class="p">{</span>
+                                  <span class="s1">&#39;node&#39;</span><span class="p">:</span> <span class="n">driver_info</span><span class="p">[</span><span class="s1">&#39;uuid&#39;</span><span class="p">],</span>
+                                  <span class="s1">&#39;cmd&#39;</span><span class="p">:</span> <span class="n">e</span><span class="o">.</span><span class="n">cmd</span><span class="p">,</span> <span class="s1">&#39;error&#39;</span><span class="p">:</span> <span class="n">e</span>
+                                  <span class="p">})</span>
+                    <span class="k">else</span><span class="p">:</span>
+                        <span class="n">ctxt</span><span class="o">.</span><span class="n">reraise</span> <span class="o">=</span> <span class="bp">False</span>
+                        <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s1">&#39;IPMI Error encountered, retrying &#39;</span>
+                                        <span class="s1">&#39;&quot;</span><span class="si">%(cmd)s</span><span class="s1">&quot; for node </span><span class="si">%(node)s</span><span class="s1">. &#39;</span>
+                                        <span class="s1">&#39;Error: </span><span class="si">%(error)s</span><span class="s1">&#39;</span><span class="p">),</span> <span class="p">{</span>
+                                    <span class="s1">&#39;node&#39;</span><span class="p">:</span> <span class="n">driver_info</span><span class="p">[</span><span class="s1">&#39;uuid&#39;</span><span class="p">],</span>
+                                    <span class="s1">&#39;cmd&#39;</span><span class="p">:</span> <span class="n">e</span><span class="o">.</span><span class="n">cmd</span><span class="p">,</span> <span class="s1">&#39;error&#39;</span><span class="p">:</span> <span class="n">e</span>
+                                    <span class="p">})</span>
+            <span class="k">finally</span><span class="p">:</span>
+                <span class="n">LAST_CMD_TIME</span><span class="p">[</span><span class="n">driver_info</span><span class="p">[</span><span class="s1">&#39;address&#39;</span><span class="p">]]</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">time</span><span class="p">()</span>
+
+
+<span class="k">def</span> <span class="nf">_sleep_time</span><span class="p">(</span><span class="nb">iter</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Return the time-to-sleep for the n&#39;th iteration of a retry loop.</span>
+
+<span class="sd">    This implementation increases exponentially.</span>
+
+<span class="sd">    :param iter: iteration number</span>
+<span class="sd">    :returns: number of seconds to sleep</span>
+
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">if</span> <span class="nb">iter</span> <span class="o">&lt;=</span> <span class="mi">1</span><span class="p">:</span>
+        <span class="k">return</span> <span class="mi">1</span>
+    <span class="k">return</span> <span class="nb">iter</span> <span class="o">**</span> <span class="mi">2</span>
+
+
+<span class="k">def</span> <span class="nf">_set_and_wait</span><span class="p">(</span><span class="n">power_action</span><span class="p">,</span> <span class="n">driver_info</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Helper function for DynamicLoopingCall.</span>
+
+<span class="sd">    This method changes the power state and polls the BMC until the desired</span>
+<span class="sd">    power state is reached, or CONF.ipmi.retry_timeout would be exceeded by the</span>
+<span class="sd">    next iteration.</span>
+
+<span class="sd">    This method assumes the caller knows the current power state and does not</span>
+<span class="sd">    check it prior to changing the power state. Most BMCs should be fine, but</span>
+<span class="sd">    if a driver is concerned, the state should be checked prior to calling this</span>
+<span class="sd">    method.</span>
+
+<span class="sd">    :param power_action: the action Ironic will perform when changing the</span>
+<span class="sd">      power state of the node.</span>
+<span class="sd">    :param timeout: timeout (in seconds) positive integer (&gt; 0) for any</span>
+<span class="sd">      power state. ``None`` indicates to use default timeout.</span>
+<span class="sd">    :param driver_info: the ipmitool parameters for accessing a node.</span>
+<span class="sd">    :returns: one of ironic.common.states</span>
+
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">retry_timeout</span> <span class="o">=</span> <span class="n">timeout</span> <span class="ow">or</span> <span class="n">CONF</span><span class="o">.</span><span class="n">ipmi</span><span class="o">.</span><span class="n">retry_timeout</span>
+
+    <span class="k">if</span> <span class="n">power_action</span> <span class="o">==</span> <span class="n">states</span><span class="o">.</span><span class="n">POWER_ON</span><span class="p">:</span>
+        <span class="n">cmd_name</span> <span class="o">=</span> <span class="s2">&quot;on&quot;</span>
+        <span class="n">target_state</span> <span class="o">=</span> <span class="n">states</span><span class="o">.</span><span class="n">POWER_ON</span>
+    <span class="k">elif</span> <span class="n">power_action</span> <span class="o">==</span> <span class="n">states</span><span class="o">.</span><span class="n">POWER_OFF</span><span class="p">:</span>
+        <span class="n">cmd_name</span> <span class="o">=</span> <span class="s2">&quot;off&quot;</span>
+        <span class="n">target_state</span> <span class="o">=</span> <span class="n">states</span><span class="o">.</span><span class="n">POWER_OFF</span>
+    <span class="k">elif</span> <span class="n">power_action</span> <span class="o">==</span> <span class="n">states</span><span class="o">.</span><span class="n">SOFT_POWER_OFF</span><span class="p">:</span>
+        <span class="n">cmd_name</span> <span class="o">=</span> <span class="s2">&quot;soft&quot;</span>
+        <span class="n">target_state</span> <span class="o">=</span> <span class="n">states</span><span class="o">.</span><span class="n">POWER_OFF</span>
+        <span class="n">retry_timeout</span> <span class="o">=</span> <span class="n">timeout</span> <span class="ow">or</span> <span class="n">CONF</span><span class="o">.</span><span class="n">conductor</span><span class="o">.</span><span class="n">soft_power_off_timeout</span>
+
+    <span class="k">def</span> <span class="nf">_wait</span><span class="p">(</span><span class="n">mutable</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="c1"># Only issue power change command once</span>
+            <span class="k">if</span> <span class="n">mutable</span><span class="p">[</span><span class="s1">&#39;iter&#39;</span><span class="p">]</span> <span class="o">&lt;</span> <span class="mi">0</span><span class="p">:</span>
+                <span class="n">_exec_ipmitool</span><span class="p">(</span><span class="n">driver_info</span><span class="p">,</span> <span class="s2">&quot;power </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="n">cmd_name</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">mutable</span><span class="p">[</span><span class="s1">&#39;power&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">_power_status</span><span class="p">(</span><span class="n">driver_info</span><span class="p">)</span>
+        <span class="k">except</span> <span class="p">(</span><span class="n">exception</span><span class="o">.</span><span class="n">PasswordFileFailedToCreate</span><span class="p">,</span>
+                <span class="n">processutils</span><span class="o">.</span><span class="n">ProcessExecutionError</span><span class="p">,</span>
+                <span class="n">exception</span><span class="o">.</span><span class="n">IPMIFailure</span><span class="p">):</span>
+            <span class="c1"># Log failures but keep trying</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s2">&quot;IPMI power </span><span class="si">%(state)s</span><span class="s2"> failed for node </span><span class="si">%(node)s</span><span class="s2">.&quot;</span><span class="p">),</span>
+                        <span class="p">{</span><span class="s1">&#39;state&#39;</span><span class="p">:</span> <span class="n">cmd_name</span><span class="p">,</span> <span class="s1">&#39;node&#39;</span><span class="p">:</span> <span class="n">driver_info</span><span class="p">[</span><span class="s1">&#39;uuid&#39;</span><span class="p">]})</span>
+        <span class="k">finally</span><span class="p">:</span>
+            <span class="n">mutable</span><span class="p">[</span><span class="s1">&#39;iter&#39;</span><span class="p">]</span> <span class="o">+=</span> <span class="mi">1</span>
+
+        <span class="k">if</span> <span class="n">mutable</span><span class="p">[</span><span class="s1">&#39;power&#39;</span><span class="p">]</span> <span class="o">==</span> <span class="n">target_state</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">loopingcall</span><span class="o">.</span><span class="n">LoopingCallDone</span><span class="p">()</span>
+
+        <span class="n">sleep_time</span> <span class="o">=</span> <span class="n">_sleep_time</span><span class="p">(</span><span class="n">mutable</span><span class="p">[</span><span class="s1">&#39;iter&#39;</span><span class="p">])</span>
+        <span class="k">if</span> <span class="p">(</span><span class="n">sleep_time</span> <span class="o">+</span> <span class="n">mutable</span><span class="p">[</span><span class="s1">&#39;total_time&#39;</span><span class="p">])</span> <span class="o">&gt;</span> <span class="n">retry_timeout</span><span class="p">:</span>
+            <span class="c1"># Stop if the next loop would exceed maximum retry_timeout</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">_LE</span><span class="p">(</span><span class="s1">&#39;IPMI power </span><span class="si">%(state)s</span><span class="s1"> timed out after &#39;</span>
+                          <span class="s1">&#39;</span><span class="si">%(tries)s</span><span class="s1"> retries on node </span><span class="si">%(node_id)s</span><span class="s1">.&#39;</span><span class="p">),</span>
+                      <span class="p">{</span><span class="s1">&#39;state&#39;</span><span class="p">:</span> <span class="n">cmd_name</span><span class="p">,</span> <span class="s1">&#39;tries&#39;</span><span class="p">:</span> <span class="n">mutable</span><span class="p">[</span><span class="s1">&#39;iter&#39;</span><span class="p">],</span>
+                       <span class="s1">&#39;node_id&#39;</span><span class="p">:</span> <span class="n">driver_info</span><span class="p">[</span><span class="s1">&#39;uuid&#39;</span><span class="p">]})</span>
+            <span class="n">mutable</span><span class="p">[</span><span class="s1">&#39;power&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">states</span><span class="o">.</span><span class="n">ERROR</span>
+            <span class="k">raise</span> <span class="n">loopingcall</span><span class="o">.</span><span class="n">LoopingCallDone</span><span class="p">()</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">mutable</span><span class="p">[</span><span class="s1">&#39;total_time&#39;</span><span class="p">]</span> <span class="o">+=</span> <span class="n">sleep_time</span>
+            <span class="k">return</span> <span class="n">sleep_time</span>
+
+    <span class="c1"># Use mutable objects so the looped method can change them.</span>
+    <span class="c1"># Start &#39;iter&#39; from -1 so that the first two checks are one second apart.</span>
+    <span class="n">status</span> <span class="o">=</span> <span class="p">{</span><span class="s1">&#39;power&#39;</span><span class="p">:</span> <span class="bp">None</span><span class="p">,</span> <span class="s1">&#39;iter&#39;</span><span class="p">:</span> <span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="s1">&#39;total_time&#39;</span><span class="p">:</span> <span class="mi">0</span><span class="p">}</span>
+
+    <span class="n">timer</span> <span class="o">=</span> <span class="n">loopingcall</span><span class="o">.</span><span class="n">DynamicLoopingCall</span><span class="p">(</span><span class="n">_wait</span><span class="p">,</span> <span class="n">status</span><span class="p">)</span>
+    <span class="n">timer</span><span class="o">.</span><span class="n">start</span><span class="p">()</span><span class="o">.</span><span class="n">wait</span><span class="p">()</span>
+    <span class="k">return</span> <span class="n">status</span><span class="p">[</span><span class="s1">&#39;power&#39;</span><span class="p">]</span>
+
+
+<span class="k">def</span> <span class="nf">_power_on</span><span class="p">(</span><span class="n">driver_info</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Turn the power ON for this node.</span>
+
+<span class="sd">    :param driver_info: the ipmitool parameters for accessing a node.</span>
+<span class="sd">    :param timeout: the timeout in seconds (&gt; 0) to wait for the power</span>
+<span class="sd">      action to be completed. ``None`` indicates default timeout&quot;.</span>
+<span class="sd">    :returns: one of ironic.common.states POWER_ON or ERROR.</span>
+<span class="sd">    :raises: IPMIFailure on an error from ipmitool (from _power_status call).</span>
+
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">return</span> <span class="n">_set_and_wait</span><span class="p">(</span><span class="n">states</span><span class="o">.</span><span class="n">POWER_ON</span><span class="p">,</span> <span class="n">driver_info</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span>
+
+
+<span class="k">def</span> <span class="nf">_power_off</span><span class="p">(</span><span class="n">driver_info</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Turn the power OFF for this node.</span>
+
+<span class="sd">    :param driver_info: the ipmitool parameters for accessing a node.</span>
+<span class="sd">    :param timeout: the timeout in seconds (&gt; 0) to wait for the power</span>
+<span class="sd">      action to be completed. ``None`` indicates default timeout&quot;.</span>
+<span class="sd">    :returns: one of ironic.common.states POWER_OFF or ERROR.</span>
+<span class="sd">    :raises: IPMIFailure on an error from ipmitool (from _power_status call).</span>
+
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">return</span> <span class="n">_set_and_wait</span><span class="p">(</span><span class="n">states</span><span class="o">.</span><span class="n">POWER_OFF</span><span class="p">,</span> <span class="n">driver_info</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span>
+
+
+<span class="k">def</span> <span class="nf">_soft_power_off</span><span class="p">(</span><span class="n">driver_info</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Turn the power SOFT OFF for this node.</span>
+
+<span class="sd">    :param driver_info: the ipmitool parameters for accessing a node.</span>
+<span class="sd">    :param timeout: the timeout in seconds (&gt; 0) to wait for the power</span>
+<span class="sd">      action to be completed. ``None`` indicates default timeout&quot;.</span>
+<span class="sd">    :returns: one of ironic.common.states POWER_OFF or ERROR.</span>
+<span class="sd">    :raises: IPMIFailure on an error from ipmitool (from _power_status call).</span>
+
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">return</span> <span class="n">_set_and_wait</span><span class="p">(</span><span class="n">states</span><span class="o">.</span><span class="n">SOFT_POWER_OFF</span><span class="p">,</span> <span class="n">driver_info</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span>
+
+
+<span class="k">def</span> <span class="nf">_power_status</span><span class="p">(</span><span class="n">driver_info</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Get the power status for a node.</span>
+
+<span class="sd">    :param driver_info: the ipmitool access parameters for a node.</span>
+<span class="sd">    :returns: one of ironic.common.states POWER_OFF, POWER_ON or ERROR.</span>
+<span class="sd">    :raises: IPMIFailure on an error from ipmitool.</span>
+
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">cmd</span> <span class="o">=</span> <span class="s2">&quot;power status&quot;</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">out_err</span> <span class="o">=</span> <span class="n">_exec_ipmitool</span><span class="p">(</span><span class="n">driver_info</span><span class="p">,</span> <span class="n">cmd</span><span class="p">)</span>
+    <span class="k">except</span> <span class="p">(</span><span class="n">exception</span><span class="o">.</span><span class="n">PasswordFileFailedToCreate</span><span class="p">,</span>
+            <span class="n">processutils</span><span class="o">.</span><span class="n">ProcessExecutionError</span><span class="p">)</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s2">&quot;IPMI power status failed for node </span><span class="si">%(node_id)s</span><span class="s2"> with &quot;</span>
+                        <span class="s2">&quot;error: </span><span class="si">%(error)s</span><span class="s2">.&quot;</span><span class="p">),</span>
+                    <span class="p">{</span><span class="s1">&#39;node_id&#39;</span><span class="p">:</span> <span class="n">driver_info</span><span class="p">[</span><span class="s1">&#39;uuid&#39;</span><span class="p">],</span> <span class="s1">&#39;error&#39;</span><span class="p">:</span> <span class="n">e</span><span class="p">})</span>
+        <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">IPMIFailure</span><span class="p">(</span><span class="n">cmd</span><span class="o">=</span><span class="n">cmd</span><span class="p">)</span>
+
+    <span class="k">if</span> <span class="n">out_err</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">==</span> <span class="s2">&quot;Chassis Power is on</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">states</span><span class="o">.</span><span class="n">POWER_ON</span>
+    <span class="k">elif</span> <span class="n">out_err</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">==</span> <span class="s2">&quot;Chassis Power is off</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">states</span><span class="o">.</span><span class="n">POWER_OFF</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">states</span><span class="o">.</span><span class="n">ERROR</span>
+
+
+<span class="k">def</span> <span class="nf">_process_sensor</span><span class="p">(</span><span class="n">sensor_data</span><span class="p">):</span>
+    <span class="n">sensor_data_fields</span> <span class="o">=</span> <span class="n">sensor_data</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s1">&#39;</span><span class="se">\n</span><span class="s1">&#39;</span><span class="p">)</span>
+    <span class="n">sensor_data_dict</span> <span class="o">=</span> <span class="p">{}</span>
+    <span class="k">for</span> <span class="n">field</span> <span class="ow">in</span> <span class="n">sensor_data_fields</span><span class="p">:</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">field</span><span class="p">:</span>
+            <span class="k">continue</span>
+        <span class="n">kv_value</span> <span class="o">=</span> <span class="n">field</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s1">&#39;:&#39;</span><span class="p">)</span>
+        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">kv_value</span><span class="p">)</span> <span class="o">!=</span> <span class="mi">2</span><span class="p">:</span>
+            <span class="k">continue</span>
+        <span class="n">sensor_data_dict</span><span class="p">[</span><span class="n">kv_value</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">strip</span><span class="p">()]</span> <span class="o">=</span> <span class="n">kv_value</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span>
+
+    <span class="k">return</span> <span class="n">sensor_data_dict</span>
+
+
+<span class="k">def</span> <span class="nf">_get_sensor_type</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">sensor_data_dict</span><span class="p">):</span>
+    <span class="c1"># Have only three sensor type name IDs: &#39;Sensor Type (Analog)&#39;</span>
+    <span class="c1"># &#39;Sensor Type (Discrete)&#39; and &#39;Sensor Type (Threshold)&#39;</span>
+
+    <span class="k">for</span> <span class="n">key</span> <span class="ow">in</span> <span class="p">(</span><span class="s1">&#39;Sensor Type (Analog)&#39;</span><span class="p">,</span> <span class="s1">&#39;Sensor Type (Discrete)&#39;</span><span class="p">,</span>
+                <span class="s1">&#39;Sensor Type (Threshold)&#39;</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">sensor_data_dict</span><span class="p">[</span><span class="n">key</span><span class="p">]</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s1">&#39; &#39;</span><span class="p">,</span> <span class="mi">1</span><span class="p">)[</span><span class="mi">0</span><span class="p">]</span>
+        <span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+            <span class="k">continue</span>
+
+    <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">FailedToParseSensorData</span><span class="p">(</span>
+        <span class="n">node</span><span class="o">=</span><span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span>
+        <span class="n">error</span><span class="o">=</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s2">&quot;parse ipmi sensor data failed, unknown sensor type&quot;</span>
+                 <span class="s2">&quot; data: </span><span class="si">%(sensors_data)s</span><span class="s2">&quot;</span><span class="p">),</span>
+               <span class="p">{</span><span class="s1">&#39;sensors_data&#39;</span><span class="p">:</span> <span class="n">sensor_data_dict</span><span class="p">}))</span>
+
+
+<span class="k">def</span> <span class="nf">_parse_ipmi_sensors_data</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">sensors_data</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Parse the IPMI sensors data and format to the dict grouping by type.</span>
+
+<span class="sd">    We run &#39;ipmitool&#39; command with &#39;sdr -v&#39; options, which can return sensor</span>
+<span class="sd">    details in human-readable format, we need to format them to JSON string</span>
+<span class="sd">    dict-based data for Ceilometer Collector which can be sent it as payload</span>
+<span class="sd">    out via notification bus and consumed by Ceilometer Collector.</span>
+
+<span class="sd">    :param sensors_data: the sensor data returned by ipmitool command.</span>
+<span class="sd">    :returns: the sensor data with JSON format, grouped by sensor type.</span>
+<span class="sd">    :raises: FailedToParseSensorData when error encountered during parsing.</span>
+
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">sensors_data_dict</span> <span class="o">=</span> <span class="p">{}</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">sensors_data</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">sensors_data_dict</span>
+
+    <span class="n">sensors_data_array</span> <span class="o">=</span> <span class="n">sensors_data</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s1">&#39;</span><span class="se">\n\n</span><span class="s1">&#39;</span><span class="p">)</span>
+    <span class="k">for</span> <span class="n">sensor_data</span> <span class="ow">in</span> <span class="n">sensors_data_array</span><span class="p">:</span>
+        <span class="n">sensor_data_dict</span> <span class="o">=</span> <span class="n">_process_sensor</span><span class="p">(</span><span class="n">sensor_data</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">sensor_data_dict</span><span class="p">:</span>
+            <span class="k">continue</span>
+
+        <span class="n">sensor_type</span> <span class="o">=</span> <span class="n">_get_sensor_type</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">sensor_data_dict</span><span class="p">)</span>
+
+        <span class="c1"># ignore the sensors which has no current &#39;Sensor Reading&#39; data</span>
+        <span class="k">if</span> <span class="s1">&#39;Sensor Reading&#39;</span> <span class="ow">in</span> <span class="n">sensor_data_dict</span><span class="p">:</span>
+            <span class="n">sensors_data_dict</span><span class="o">.</span><span class="n">setdefault</span><span class="p">(</span>
+                <span class="n">sensor_type</span><span class="p">,</span>
+                <span class="p">{})[</span><span class="n">sensor_data_dict</span><span class="p">[</span><span class="s1">&#39;Sensor ID&#39;</span><span class="p">]]</span> <span class="o">=</span> <span class="n">sensor_data_dict</span>
+
+    <span class="c1"># get nothing, no valid sensor data</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">sensors_data_dict</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">FailedToParseSensorData</span><span class="p">(</span>
+            <span class="n">node</span><span class="o">=</span><span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span>
+            <span class="n">error</span><span class="o">=</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s2">&quot;parse ipmi sensor data failed, get nothing with input&quot;</span>
+                     <span class="s2">&quot; data: </span><span class="si">%(sensors_data)s</span><span class="s2">&quot;</span><span class="p">)</span>
+                   <span class="o">%</span> <span class="p">{</span><span class="s1">&#39;sensors_data&#39;</span><span class="p">:</span> <span class="n">sensors_data</span><span class="p">}))</span>
+    <span class="k">return</span> <span class="n">sensors_data_dict</span>
+
+
+<span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;send_raw&#39;</span><span class="p">)</span>
+<span class="nd">@task_manager.require_exclusive_lock</span>
+<span class="k">def</span> <span class="nf">send_raw</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">raw_bytes</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Send raw bytes to the BMC. Bytes should be a string of bytes.</span>
+
+<span class="sd">    :param task: a TaskManager instance.</span>
+<span class="sd">    :param raw_bytes: a string of raw bytes to send, e.g. &#39;0x00 0x01&#39;</span>
+<span class="sd">    :returns: a tuple with stdout and stderr.</span>
+<span class="sd">    :raises: IPMIFailure on an error from ipmitool.</span>
+<span class="sd">    :raises: MissingParameterValue if a required parameter is missing.</span>
+<span class="sd">    :raises: InvalidParameterValue when an invalid value is specified.</span>
+
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">node_uuid</span> <span class="o">=</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">uuid</span>
+    <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;Sending node </span><span class="si">%(node)s</span><span class="s1"> raw bytes </span><span class="si">%(bytes)s</span><span class="s1">&#39;</span><span class="p">,</span>
+              <span class="p">{</span><span class="s1">&#39;bytes&#39;</span><span class="p">:</span> <span class="n">raw_bytes</span><span class="p">,</span> <span class="s1">&#39;node&#39;</span><span class="p">:</span> <span class="n">node_uuid</span><span class="p">})</span>
+    <span class="n">driver_info</span> <span class="o">=</span> <span class="n">_parse_driver_info</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="p">)</span>
+    <span class="n">cmd</span> <span class="o">=</span> <span class="s1">&#39;raw </span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="n">raw_bytes</span>
+
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">out</span><span class="p">,</span> <span class="n">err</span> <span class="o">=</span> <span class="n">_exec_ipmitool</span><span class="p">(</span><span class="n">driver_info</span><span class="p">,</span> <span class="n">cmd</span><span class="p">)</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;send raw bytes returned stdout: </span><span class="si">%(stdout)s</span><span class="s1">, stderr:&#39;</span>
+                  <span class="s1">&#39; </span><span class="si">%(stderr)s</span><span class="s1">&#39;</span><span class="p">,</span> <span class="p">{</span><span class="s1">&#39;stdout&#39;</span><span class="p">:</span> <span class="n">out</span><span class="p">,</span> <span class="s1">&#39;stderr&#39;</span><span class="p">:</span> <span class="n">err</span><span class="p">})</span>
+    <span class="k">except</span> <span class="p">(</span><span class="n">exception</span><span class="o">.</span><span class="n">PasswordFileFailedToCreate</span><span class="p">,</span>
+            <span class="n">processutils</span><span class="o">.</span><span class="n">ProcessExecutionError</span><span class="p">)</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">exception</span><span class="p">(</span><span class="n">_LE</span><span class="p">(</span><span class="s1">&#39;IPMI &quot;raw bytes&quot; failed for node </span><span class="si">%(node_id)s</span><span class="s1"> &#39;</span>
+                      <span class="s1">&#39;with error: </span><span class="si">%(error)s</span><span class="s1">.&#39;</span><span class="p">),</span>
+                      <span class="p">{</span><span class="s1">&#39;node_id&#39;</span><span class="p">:</span> <span class="n">node_uuid</span><span class="p">,</span> <span class="s1">&#39;error&#39;</span><span class="p">:</span> <span class="n">e</span><span class="p">})</span>
+        <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">IPMIFailure</span><span class="p">(</span><span class="n">cmd</span><span class="o">=</span><span class="n">cmd</span><span class="p">)</span>
+
+    <span class="k">return</span> <span class="n">out</span><span class="p">,</span> <span class="n">err</span>
+
+
+<span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;dump_sdr&#39;</span><span class="p">)</span>
+<span class="k">def</span> <span class="nf">dump_sdr</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">file_path</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Dump SDR data to a file.</span>
+
+<span class="sd">    :param task: a TaskManager instance.</span>
+<span class="sd">    :param file_path: the path to SDR dump file.</span>
+<span class="sd">    :raises: IPMIFailure on an error from ipmitool.</span>
+<span class="sd">    :raises: MissingParameterValue if a required parameter is missing.</span>
+<span class="sd">    :raises: InvalidParameterValue when an invalid value is specified.</span>
+
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">node_uuid</span> <span class="o">=</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">uuid</span>
+    <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;Dump SDR data for node </span><span class="si">%(node)s</span><span class="s1"> to file </span><span class="si">%(name)s</span><span class="s1">&#39;</span><span class="p">,</span>
+              <span class="p">{</span><span class="s1">&#39;name&#39;</span><span class="p">:</span> <span class="n">file_path</span><span class="p">,</span> <span class="s1">&#39;node&#39;</span><span class="p">:</span> <span class="n">node_uuid</span><span class="p">})</span>
+    <span class="n">driver_info</span> <span class="o">=</span> <span class="n">_parse_driver_info</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="p">)</span>
+    <span class="n">cmd</span> <span class="o">=</span> <span class="s1">&#39;sdr dump </span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="n">file_path</span>
+
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">out</span><span class="p">,</span> <span class="n">err</span> <span class="o">=</span> <span class="n">_exec_ipmitool</span><span class="p">(</span><span class="n">driver_info</span><span class="p">,</span> <span class="n">cmd</span><span class="p">)</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;dump SDR returned stdout: </span><span class="si">%(stdout)s</span><span class="s1">, stderr:&#39;</span>
+                  <span class="s1">&#39; </span><span class="si">%(stderr)s</span><span class="s1">&#39;</span><span class="p">,</span> <span class="p">{</span><span class="s1">&#39;stdout&#39;</span><span class="p">:</span> <span class="n">out</span><span class="p">,</span> <span class="s1">&#39;stderr&#39;</span><span class="p">:</span> <span class="n">err</span><span class="p">})</span>
+    <span class="k">except</span> <span class="p">(</span><span class="n">exception</span><span class="o">.</span><span class="n">PasswordFileFailedToCreate</span><span class="p">,</span>
+            <span class="n">processutils</span><span class="o">.</span><span class="n">ProcessExecutionError</span><span class="p">)</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">exception</span><span class="p">(</span><span class="n">_LE</span><span class="p">(</span><span class="s1">&#39;IPMI &quot;sdr dump&quot; failed for node </span><span class="si">%(node_id)s</span><span class="s1"> &#39;</span>
+                      <span class="s1">&#39;with error: </span><span class="si">%(error)s</span><span class="s1">.&#39;</span><span class="p">),</span>
+                      <span class="p">{</span><span class="s1">&#39;node_id&#39;</span><span class="p">:</span> <span class="n">node_uuid</span><span class="p">,</span> <span class="s1">&#39;error&#39;</span><span class="p">:</span> <span class="n">e</span><span class="p">})</span>
+        <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">IPMIFailure</span><span class="p">(</span><span class="n">cmd</span><span class="o">=</span><span class="n">cmd</span><span class="p">)</span>
+
+
+<span class="k">def</span> <span class="nf">_check_temp_dir</span><span class="p">():</span>
+    <span class="sd">&quot;&quot;&quot;Check for Valid temp directory.&quot;&quot;&quot;</span>
+    <span class="k">global</span> <span class="n">TMP_DIR_CHECKED</span>
+    <span class="c1"># because a temporary file is used to pass the password to ipmitool,</span>
+    <span class="c1"># we should check the directory</span>
+    <span class="k">if</span> <span class="n">TMP_DIR_CHECKED</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">utils</span><span class="o">.</span><span class="n">check_dir</span><span class="p">()</span>
+        <span class="k">except</span> <span class="p">(</span><span class="n">exception</span><span class="o">.</span><span class="n">PathNotFound</span><span class="p">,</span>
+                <span class="n">exception</span><span class="o">.</span><span class="n">DirectoryNotWritable</span><span class="p">,</span>
+                <span class="n">exception</span><span class="o">.</span><span class="n">InsufficientDiskSpace</span><span class="p">)</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+            <span class="k">with</span> <span class="n">excutils</span><span class="o">.</span><span class="n">save_and_reraise_exception</span><span class="p">():</span>
+                <span class="n">TMP_DIR_CHECKED</span> <span class="o">=</span> <span class="bp">False</span>
+                <span class="n">err_msg</span> <span class="o">=</span> <span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s2">&quot;Ipmitool drivers need to be able to create &quot;</span>
+                             <span class="s2">&quot;temporary files to pass password to ipmitool. &quot;</span>
+                             <span class="s2">&quot;Encountered error: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">)</span> <span class="o">%</span> <span class="n">e</span><span class="p">)</span>
+                <span class="n">e</span><span class="o">.</span><span class="n">message</span> <span class="o">=</span> <span class="n">err_msg</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">err_msg</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">TMP_DIR_CHECKED</span> <span class="o">=</span> <span class="bp">True</span>
+
+
+<span class="k">def</span> <span class="nf">_constructor_checks</span><span class="p">(</span><span class="n">driver</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Common checks to be performed when instantiating an ipmitool class.&quot;&quot;&quot;</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">_check_option_support</span><span class="p">([</span><span class="s1">&#39;timing&#39;</span><span class="p">,</span> <span class="s1">&#39;single_bridge&#39;</span><span class="p">,</span> <span class="s1">&#39;dual_bridge&#39;</span><span class="p">])</span>
+    <span class="k">except</span> <span class="ne">OSError</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">DriverLoadError</span><span class="p">(</span>
+            <span class="n">driver</span><span class="o">=</span><span class="n">driver</span><span class="p">,</span>
+            <span class="n">reason</span><span class="o">=</span><span class="n">_</span><span class="p">(</span><span class="s2">&quot;Unable to locate usable ipmitool command in &quot;</span>
+                     <span class="s2">&quot;the system path when checking ipmitool version&quot;</span><span class="p">))</span>
+    <span class="n">_check_temp_dir</span><span class="p">()</span>
+
+
+<div class="viewcode-block" id="IPMIPower"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.ipmitool.html#ironic.drivers.modules.ipmitool.IPMIPower">[docs]</a><span class="k">class</span> <span class="nc">IPMIPower</span><span class="p">(</span><span class="n">base</span><span class="o">.</span><span class="n">PowerInterface</span><span class="p">):</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">_constructor_checks</span><span class="p">(</span><span class="n">driver</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="vm">__name__</span><span class="p">)</span>
+
+<div class="viewcode-block" id="IPMIPower.get_properties"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.ipmitool.html#ironic.drivers.modules.ipmitool.IPMIPower.get_properties">[docs]</a>    <span class="k">def</span> <span class="nf">get_properties</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">COMMON_PROPERTIES</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IPMIPower.validate&#39;</span><span class="p">)</span>
+<div class="viewcode-block" id="IPMIPower.validate"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.ipmitool.html#ironic.drivers.modules.ipmitool.IPMIPower.validate">[docs]</a>    <span class="k">def</span> <span class="nf">validate</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Validate driver_info for ipmitool driver.</span>
+
+<span class="sd">        Check that node[&#39;driver_info&#39;] contains IPMI credentials.</span>
+
+<span class="sd">        :param task: a TaskManager instance containing the node to act on.</span>
+<span class="sd">        :raises: InvalidParameterValue if required ipmi parameters are missing.</span>
+<span class="sd">        :raises: MissingParameterValue if a required parameter is missing.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">_parse_driver_info</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="p">)</span></div>
+        <span class="c1"># NOTE(deva): don&#39;t actually touch the BMC in validate because it is</span>
+        <span class="c1">#             called too often, and BMCs are too fragile.</span>
+        <span class="c1">#             This is a temporary measure to mitigate problems while</span>
+        <span class="c1">#             1314954 and 1314961 are resolved.</span>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IPMIPower.get_power_state&#39;</span><span class="p">)</span>
+<div class="viewcode-block" id="IPMIPower.get_power_state"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.ipmitool.html#ironic.drivers.modules.ipmitool.IPMIPower.get_power_state">[docs]</a>    <span class="k">def</span> <span class="nf">get_power_state</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get the current power state of the task&#39;s node.</span>
+
+<span class="sd">        :param task: a TaskManager instance containing the node to act on.</span>
+<span class="sd">        :returns: one of ironic.common.states POWER_OFF, POWER_ON or ERROR.</span>
+<span class="sd">        :raises: InvalidParameterValue if required ipmi parameters are missing.</span>
+<span class="sd">        :raises: MissingParameterValue if a required parameter is missing.</span>
+<span class="sd">        :raises: IPMIFailure on an error from ipmitool (from _power_status</span>
+<span class="sd">            call).</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">driver_info</span> <span class="o">=</span> <span class="n">_parse_driver_info</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">_power_status</span><span class="p">(</span><span class="n">driver_info</span><span class="p">)</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IPMIPower.set_power_state&#39;</span><span class="p">)</span>
+    <span class="nd">@task_manager.require_exclusive_lock</span>
+<div class="viewcode-block" id="IPMIPower.set_power_state"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.ipmitool.html#ironic.drivers.modules.ipmitool.IPMIPower.set_power_state">[docs]</a>    <span class="k">def</span> <span class="nf">set_power_state</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">,</span> <span class="n">power_state</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Turn the power on, off, soft reboot, or soft power off.</span>
+
+<span class="sd">        :param task: a TaskManager instance containing the node to act on.</span>
+<span class="sd">        :param power_state: desired power state.</span>
+<span class="sd">          one of ironic.common.states, POWER_ON, POWER_OFF, SOFT_POWER_OFF,</span>
+<span class="sd">          or SOFT_REBOOT.</span>
+<span class="sd">        :param timeout: timeout (in seconds) positive integer (&gt; 0) for any</span>
+<span class="sd">          power state. The timeout is counted once during power off and once</span>
+<span class="sd">          during power on for reboots. ``None`` indicates that the default</span>
+<span class="sd">          timeout will be used.</span>
+<span class="sd">        :raises: InvalidParameterValue if an invalid power state was specified.</span>
+<span class="sd">        :raises: MissingParameterValue if required ipmi parameters are missing</span>
+<span class="sd">        :raises: PowerStateFailure if the power couldn&#39;t be set to pstate.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">driver_info</span> <span class="o">=</span> <span class="n">_parse_driver_info</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">power_state</span> <span class="o">==</span> <span class="n">states</span><span class="o">.</span><span class="n">POWER_ON</span><span class="p">:</span>
+            <span class="n">driver_utils</span><span class="o">.</span><span class="n">ensure_next_boot_device</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">driver_info</span><span class="p">)</span>
+            <span class="n">target_state</span> <span class="o">=</span> <span class="n">states</span><span class="o">.</span><span class="n">POWER_ON</span>
+            <span class="n">state</span> <span class="o">=</span> <span class="n">_power_on</span><span class="p">(</span><span class="n">driver_info</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span>
+        <span class="k">elif</span> <span class="n">power_state</span> <span class="o">==</span> <span class="n">states</span><span class="o">.</span><span class="n">POWER_OFF</span><span class="p">:</span>
+            <span class="n">target_state</span> <span class="o">=</span> <span class="n">states</span><span class="o">.</span><span class="n">POWER_OFF</span>
+            <span class="n">state</span> <span class="o">=</span> <span class="n">_power_off</span><span class="p">(</span><span class="n">driver_info</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span>
+        <span class="k">elif</span> <span class="n">power_state</span> <span class="o">==</span> <span class="n">states</span><span class="o">.</span><span class="n">SOFT_POWER_OFF</span><span class="p">:</span>
+            <span class="n">target_state</span> <span class="o">=</span> <span class="n">states</span><span class="o">.</span><span class="n">POWER_OFF</span>
+            <span class="n">state</span> <span class="o">=</span> <span class="n">_soft_power_off</span><span class="p">(</span><span class="n">driver_info</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span>
+        <span class="k">elif</span> <span class="n">power_state</span> <span class="o">==</span> <span class="n">states</span><span class="o">.</span><span class="n">SOFT_REBOOT</span><span class="p">:</span>
+            <span class="n">intermediate_state</span> <span class="o">=</span> <span class="n">_soft_power_off</span><span class="p">(</span><span class="n">driver_info</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span>
+            <span class="n">intermediate_target_state</span> <span class="o">=</span> <span class="n">states</span><span class="o">.</span><span class="n">POWER_OFF</span>
+            <span class="k">if</span> <span class="n">intermediate_state</span> <span class="o">!=</span> <span class="n">intermediate_target_state</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">PowerStateFailure</span><span class="p">(</span>
+                    <span class="n">pstate</span><span class="o">=</span><span class="p">(</span><span class="n">_</span><span class="p">(</span>
+                        <span class="s2">&quot;</span><span class="si">%(intermediate)s</span><span class="s2"> while on </span><span class="si">%(power_state)s</span><span class="s2">&quot;</span><span class="p">)</span> <span class="o">%</span>
+                        <span class="p">{</span><span class="s1">&#39;intermediate&#39;</span><span class="p">:</span> <span class="n">intermediate_target_state</span><span class="p">,</span>
+                         <span class="s1">&#39;power_state&#39;</span><span class="p">:</span> <span class="n">power_state</span><span class="p">}))</span>
+            <span class="n">driver_utils</span><span class="o">.</span><span class="n">ensure_next_boot_device</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">driver_info</span><span class="p">)</span>
+            <span class="n">target_state</span> <span class="o">=</span> <span class="n">states</span><span class="o">.</span><span class="n">POWER_ON</span>
+            <span class="n">state</span> <span class="o">=</span> <span class="n">_power_on</span><span class="p">(</span><span class="n">driver_info</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">InvalidParameterValue</span><span class="p">(</span>
+                <span class="n">_</span><span class="p">(</span><span class="s2">&quot;set_power_state called &quot;</span>
+                  <span class="s2">&quot;with invalid power state </span><span class="si">%s</span><span class="s2">.&quot;</span><span class="p">)</span> <span class="o">%</span> <span class="n">power_state</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">state</span> <span class="o">!=</span> <span class="n">target_state</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">PowerStateFailure</span><span class="p">(</span><span class="n">pstate</span><span class="o">=</span><span class="n">target_state</span><span class="p">)</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IPMIPower.reboot&#39;</span><span class="p">)</span>
+    <span class="nd">@task_manager.require_exclusive_lock</span>
+<div class="viewcode-block" id="IPMIPower.reboot"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.ipmitool.html#ironic.drivers.modules.ipmitool.IPMIPower.reboot">[docs]</a>    <span class="k">def</span> <span class="nf">reboot</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Cycles the power to the task&#39;s node.</span>
+
+<span class="sd">        :param task: a TaskManager instance containing the node to act on.</span>
+<span class="sd">        :param timeout: timeout (in seconds) positive integer (&gt; 0) for any</span>
+<span class="sd">          power state. The timeout is counted once during power off and once</span>
+<span class="sd">          during power on for reboots. ``None`` indicates that the default</span>
+<span class="sd">          timeout will be used.</span>
+<span class="sd">        :raises: MissingParameterValue if required ipmi parameters are missing.</span>
+<span class="sd">        :raises: InvalidParameterValue if an invalid power state was specified.</span>
+<span class="sd">        :raises: PowerStateFailure if the final state of the node is not</span>
+<span class="sd">          POWER_ON or the intermediate state of the node is not POWER_OFF.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">driver_info</span> <span class="o">=</span> <span class="n">_parse_driver_info</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="p">)</span>
+        <span class="n">intermediate_state</span> <span class="o">=</span> <span class="n">_power_off</span><span class="p">(</span><span class="n">driver_info</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">intermediate_state</span> <span class="o">!=</span> <span class="n">states</span><span class="o">.</span><span class="n">POWER_OFF</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">PowerStateFailure</span><span class="p">(</span>
+                <span class="n">pstate</span><span class="o">=</span><span class="p">(</span><span class="n">_</span><span class="p">(</span>
+                    <span class="s2">&quot;</span><span class="si">%(power_off)s</span><span class="s2"> while on </span><span class="si">%(reboot)s</span><span class="s2">&quot;</span><span class="p">)</span> <span class="o">%</span>
+                    <span class="p">{</span><span class="s1">&#39;power_off&#39;</span><span class="p">:</span> <span class="n">states</span><span class="o">.</span><span class="n">POWER_OFF</span><span class="p">,</span>
+                     <span class="s1">&#39;reboot&#39;</span><span class="p">:</span> <span class="n">states</span><span class="o">.</span><span class="n">REBOOT</span><span class="p">}))</span>
+        <span class="n">driver_utils</span><span class="o">.</span><span class="n">ensure_next_boot_device</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">driver_info</span><span class="p">)</span>
+        <span class="n">state</span> <span class="o">=</span> <span class="n">_power_on</span><span class="p">(</span><span class="n">driver_info</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">state</span> <span class="o">!=</span> <span class="n">states</span><span class="o">.</span><span class="n">POWER_ON</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">PowerStateFailure</span><span class="p">(</span><span class="n">pstate</span><span class="o">=</span><span class="n">states</span><span class="o">.</span><span class="n">POWER_ON</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="IPMIPower.get_supported_power_states"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.ipmitool.html#ironic.drivers.modules.ipmitool.IPMIPower.get_supported_power_states">[docs]</a>    <span class="k">def</span> <span class="nf">get_supported_power_states</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get a list of the supported power states.</span>
+
+<span class="sd">        :param task: A TaskManager instance containing the node to act on.</span>
+<span class="sd">            currently not used.</span>
+<span class="sd">        :returns: A list with the supported power states defined</span>
+<span class="sd">                  in :mod:`ironic.common.states`.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="p">[</span><span class="n">states</span><span class="o">.</span><span class="n">POWER_ON</span><span class="p">,</span> <span class="n">states</span><span class="o">.</span><span class="n">POWER_OFF</span><span class="p">,</span> <span class="n">states</span><span class="o">.</span><span class="n">REBOOT</span><span class="p">,</span>
+                <span class="n">states</span><span class="o">.</span><span class="n">SOFT_REBOOT</span><span class="p">,</span> <span class="n">states</span><span class="o">.</span><span class="n">SOFT_POWER_OFF</span><span class="p">]</span></div></div>
+
+
+<div class="viewcode-block" id="IPMIManagement"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.ipmitool.html#ironic.drivers.modules.ipmitool.IPMIManagement">[docs]</a><span class="k">class</span> <span class="nc">IPMIManagement</span><span class="p">(</span><span class="n">base</span><span class="o">.</span><span class="n">ManagementInterface</span><span class="p">):</span>
+
+<div class="viewcode-block" id="IPMIManagement.get_properties"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.ipmitool.html#ironic.drivers.modules.ipmitool.IPMIManagement.get_properties">[docs]</a>    <span class="k">def</span> <span class="nf">get_properties</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">COMMON_PROPERTIES</span></div>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">_constructor_checks</span><span class="p">(</span><span class="n">driver</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="vm">__name__</span><span class="p">)</span>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IPMIManagement.validate&#39;</span><span class="p">)</span>
+<div class="viewcode-block" id="IPMIManagement.validate"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.ipmitool.html#ironic.drivers.modules.ipmitool.IPMIManagement.validate">[docs]</a>    <span class="k">def</span> <span class="nf">validate</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Check that &#39;driver_info&#39; contains IPMI credentials.</span>
+
+<span class="sd">        Validates whether the &#39;driver_info&#39; property of the supplied</span>
+<span class="sd">        task&#39;s node contains the required credentials information.</span>
+
+<span class="sd">        :param task: a task from TaskManager.</span>
+<span class="sd">        :raises: InvalidParameterValue if required IPMI parameters</span>
+<span class="sd">            are missing.</span>
+<span class="sd">        :raises: MissingParameterValue if a required parameter is missing.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">_parse_driver_info</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="IPMIManagement.get_supported_boot_devices"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.ipmitool.html#ironic.drivers.modules.ipmitool.IPMIManagement.get_supported_boot_devices">[docs]</a>    <span class="k">def</span> <span class="nf">get_supported_boot_devices</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get a list of the supported boot devices.</span>
+
+<span class="sd">        :param task: a task from TaskManager.</span>
+<span class="sd">        :returns: A list with the supported boot devices defined</span>
+<span class="sd">                  in :mod:`ironic.common.boot_devices`.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="nb">list</span><span class="p">(</span><span class="n">BOOT_DEVICE_HEXA_MAP</span><span class="p">)</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IPMIManagement.set_boot_device&#39;</span><span class="p">)</span>
+    <span class="nd">@task_manager.require_exclusive_lock</span>
+<div class="viewcode-block" id="IPMIManagement.set_boot_device"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.ipmitool.html#ironic.drivers.modules.ipmitool.IPMIManagement.set_boot_device">[docs]</a>    <span class="k">def</span> <span class="nf">set_boot_device</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">,</span> <span class="n">device</span><span class="p">,</span> <span class="n">persistent</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Set the boot device for the task&#39;s node.</span>
+
+<span class="sd">        Set the boot device to use on next reboot of the node.</span>
+
+<span class="sd">        :param task: a task from TaskManager.</span>
+<span class="sd">        :param device: the boot device, one of</span>
+<span class="sd">                       :mod:`ironic.common.boot_devices`.</span>
+<span class="sd">        :param persistent: Boolean value. True if the boot device will</span>
+<span class="sd">                           persist to all future boots, False if not.</span>
+<span class="sd">                           Default: False.</span>
+<span class="sd">        :raises: InvalidParameterValue if an invalid boot device is specified</span>
+<span class="sd">        :raises: MissingParameterValue if required ipmi parameters are missing.</span>
+<span class="sd">        :raises: IPMIFailure on an error from ipmitool.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="n">device</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_supported_boot_devices</span><span class="p">(</span><span class="n">task</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">InvalidParameterValue</span><span class="p">(</span><span class="n">_</span><span class="p">(</span>
+                <span class="s2">&quot;Invalid boot device </span><span class="si">%s</span><span class="s2"> specified.&quot;</span><span class="p">)</span> <span class="o">%</span> <span class="n">device</span><span class="p">)</span>
+
+        <span class="c1"># note(JayF): IPMI spec indicates unless you send these raw bytes the</span>
+        <span class="c1"># boot device setting times out after 60s. Since it&#39;s possible it</span>
+        <span class="c1"># could be &gt;60s before a node is rebooted, we should always send them.</span>
+        <span class="c1"># This mimics pyghmi&#39;s current behavior, and the &quot;option=timeout&quot;</span>
+        <span class="c1"># setting on newer ipmitool binaries.</span>
+        <span class="n">timeout_disable</span> <span class="o">=</span> <span class="s2">&quot;0x00 0x08 0x03 0x08&quot;</span>
+        <span class="n">send_raw</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">timeout_disable</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">driver_info</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;ipmi_force_boot_device&#39;</span><span class="p">,</span> <span class="bp">False</span><span class="p">):</span>
+            <span class="n">driver_utils</span><span class="o">.</span><span class="n">force_persistent_boot</span><span class="p">(</span><span class="n">task</span><span class="p">,</span>
+                                               <span class="n">device</span><span class="p">,</span>
+                                               <span class="n">persistent</span><span class="p">)</span>
+            <span class="c1"># Reset persistent to False, in case of BMC does not support</span>
+            <span class="c1"># persistent or we do not have admin rights.</span>
+            <span class="n">persistent</span> <span class="o">=</span> <span class="bp">False</span>
+
+        <span class="c1"># FIXME(lucasagomes): Older versions of the ipmitool utility</span>
+        <span class="c1"># are not able to set the options &quot;efiboot&quot; and &quot;persistent&quot;</span>
+        <span class="c1"># at the same time, combining other options seems to work fine,</span>
+        <span class="c1"># except efiboot. Newer versions of ipmitool (1.8.17) does fix</span>
+        <span class="c1"># this problem but (some) distros still packaging an older version.</span>
+        <span class="c1"># To workaround this problem for now we can make use of sending</span>
+        <span class="c1"># raw bytes to set the boot device for a node in persistent +</span>
+        <span class="c1"># uefi mode, this will work with newer and older versions of the</span>
+        <span class="c1"># ipmitool utility. Also see:</span>
+        <span class="c1"># https://bugs.launchpad.net/ironic/+bug/1611306</span>
+        <span class="n">boot_mode</span> <span class="o">=</span> <span class="n">deploy_utils</span><span class="o">.</span><span class="n">get_boot_mode_for_deploy</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">persistent</span> <span class="ow">and</span> <span class="n">boot_mode</span> <span class="o">==</span> <span class="s1">&#39;uefi&#39;</span><span class="p">:</span>
+            <span class="n">raw_cmd</span> <span class="o">=</span> <span class="p">(</span><span class="s1">&#39;0x00 0x08 0x05 0xe0 </span><span class="si">%s</span><span class="s1"> 0x00 0x00 0x00&#39;</span> <span class="o">%</span>
+                       <span class="n">BOOT_DEVICE_HEXA_MAP</span><span class="p">[</span><span class="n">device</span><span class="p">])</span>
+            <span class="n">send_raw</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">raw_cmd</span><span class="p">)</span>
+            <span class="k">return</span>
+
+        <span class="n">options</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">if</span> <span class="n">persistent</span><span class="p">:</span>
+            <span class="n">options</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s1">&#39;persistent&#39;</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">boot_mode</span> <span class="o">==</span> <span class="s1">&#39;uefi&#39;</span><span class="p">:</span>
+            <span class="n">options</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s1">&#39;efiboot&#39;</span><span class="p">)</span>
+
+        <span class="n">cmd</span> <span class="o">=</span> <span class="s2">&quot;chassis bootdev </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="n">device</span>
+        <span class="k">if</span> <span class="n">options</span><span class="p">:</span>
+            <span class="n">cmd</span> <span class="o">=</span> <span class="n">cmd</span> <span class="o">+</span> <span class="s2">&quot; options=</span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="s1">&#39;,&#39;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">options</span><span class="p">)</span>
+        <span class="n">driver_info</span> <span class="o">=</span> <span class="n">_parse_driver_info</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="p">)</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">out</span><span class="p">,</span> <span class="n">err</span> <span class="o">=</span> <span class="n">_exec_ipmitool</span><span class="p">(</span><span class="n">driver_info</span><span class="p">,</span> <span class="n">cmd</span><span class="p">)</span>
+        <span class="k">except</span> <span class="p">(</span><span class="n">exception</span><span class="o">.</span><span class="n">PasswordFileFailedToCreate</span><span class="p">,</span>
+                <span class="n">processutils</span><span class="o">.</span><span class="n">ProcessExecutionError</span><span class="p">)</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s1">&#39;IPMI set boot device failed for node </span><span class="si">%(node)s</span><span class="s1"> &#39;</span>
+                            <span class="s1">&#39;when executing &quot;ipmitool </span><span class="si">%(cmd)s</span><span class="s1">&quot;. &#39;</span>
+                            <span class="s1">&#39;Error: </span><span class="si">%(error)s</span><span class="s1">&#39;</span><span class="p">),</span>
+                        <span class="p">{</span><span class="s1">&#39;node&#39;</span><span class="p">:</span> <span class="n">driver_info</span><span class="p">[</span><span class="s1">&#39;uuid&#39;</span><span class="p">],</span> <span class="s1">&#39;cmd&#39;</span><span class="p">:</span> <span class="n">cmd</span><span class="p">,</span> <span class="s1">&#39;error&#39;</span><span class="p">:</span> <span class="n">e</span><span class="p">})</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">IPMIFailure</span><span class="p">(</span><span class="n">cmd</span><span class="o">=</span><span class="n">cmd</span><span class="p">)</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IPMIManagement.get_boot_device&#39;</span><span class="p">)</span>
+<div class="viewcode-block" id="IPMIManagement.get_boot_device"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.ipmitool.html#ironic.drivers.modules.ipmitool.IPMIManagement.get_boot_device">[docs]</a>    <span class="k">def</span> <span class="nf">get_boot_device</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get the current boot device for the task&#39;s node.</span>
+
+<span class="sd">        Returns the current boot device of the node.</span>
+
+<span class="sd">        :param task: a task from TaskManager.</span>
+<span class="sd">        :raises: InvalidParameterValue if required IPMI parameters</span>
+<span class="sd">            are missing.</span>
+<span class="sd">        :raises: IPMIFailure on an error from ipmitool.</span>
+<span class="sd">        :raises: MissingParameterValue if a required parameter is missing.</span>
+<span class="sd">        :returns: a dictionary containing:</span>
+
+<span class="sd">            :boot_device: the boot device, one of</span>
+<span class="sd">                :mod:`ironic.common.boot_devices` or None if it is unknown.</span>
+<span class="sd">            :persistent: Whether the boot device will persist to all</span>
+<span class="sd">                future boots or not, None if it is unknown.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">driver_info</span> <span class="o">=</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">driver_info</span>
+        <span class="n">driver_internal_info</span> <span class="o">=</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">driver_internal_info</span>
+
+        <span class="k">if</span> <span class="p">(</span><span class="n">driver_info</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;ipmi_force_boot_device&#39;</span><span class="p">,</span> <span class="bp">False</span><span class="p">)</span> <span class="ow">and</span>
+                <span class="n">driver_internal_info</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;persistent_boot_device&#39;</span><span class="p">)</span> <span class="ow">and</span>
+                <span class="n">driver_internal_info</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;is_next_boot_persistent&#39;</span><span class="p">,</span> <span class="bp">True</span><span class="p">)):</span>
+            <span class="k">return</span> <span class="p">{</span>
+                <span class="s1">&#39;boot_device&#39;</span><span class="p">:</span> <span class="n">driver_internal_info</span><span class="p">[</span><span class="s1">&#39;persistent_boot_device&#39;</span><span class="p">],</span>
+                <span class="s1">&#39;persistent&#39;</span><span class="p">:</span> <span class="bp">True</span>
+            <span class="p">}</span>
+
+        <span class="n">cmd</span> <span class="o">=</span> <span class="s2">&quot;chassis bootparam get 5&quot;</span>
+        <span class="n">driver_info</span> <span class="o">=</span> <span class="n">_parse_driver_info</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="p">)</span>
+        <span class="n">response</span> <span class="o">=</span> <span class="p">{</span><span class="s1">&#39;boot_device&#39;</span><span class="p">:</span> <span class="bp">None</span><span class="p">,</span> <span class="s1">&#39;persistent&#39;</span><span class="p">:</span> <span class="bp">None</span><span class="p">}</span>
+
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">out</span><span class="p">,</span> <span class="n">err</span> <span class="o">=</span> <span class="n">_exec_ipmitool</span><span class="p">(</span><span class="n">driver_info</span><span class="p">,</span> <span class="n">cmd</span><span class="p">)</span>
+        <span class="k">except</span> <span class="p">(</span><span class="n">exception</span><span class="o">.</span><span class="n">PasswordFileFailedToCreate</span><span class="p">,</span>
+                <span class="n">processutils</span><span class="o">.</span><span class="n">ProcessExecutionError</span><span class="p">)</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s1">&#39;IPMI get boot device failed for node </span><span class="si">%(node)s</span><span class="s1"> &#39;</span>
+                            <span class="s1">&#39;when executing &quot;ipmitool </span><span class="si">%(cmd)s</span><span class="s1">&quot;. &#39;</span>
+                            <span class="s1">&#39;Error: </span><span class="si">%(error)s</span><span class="s1">&#39;</span><span class="p">),</span>
+                        <span class="p">{</span><span class="s1">&#39;node&#39;</span><span class="p">:</span> <span class="n">driver_info</span><span class="p">[</span><span class="s1">&#39;uuid&#39;</span><span class="p">],</span> <span class="s1">&#39;cmd&#39;</span><span class="p">:</span> <span class="n">cmd</span><span class="p">,</span> <span class="s1">&#39;error&#39;</span><span class="p">:</span> <span class="n">e</span><span class="p">})</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">IPMIFailure</span><span class="p">(</span><span class="n">cmd</span><span class="o">=</span><span class="n">cmd</span><span class="p">)</span>
+
+        <span class="n">re_obj</span> <span class="o">=</span> <span class="n">re</span><span class="o">.</span><span class="n">search</span><span class="p">(</span><span class="s1">&#39;Boot Device Selector : (.+)?</span><span class="se">\n</span><span class="s1">&#39;</span><span class="p">,</span> <span class="n">out</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">re_obj</span><span class="p">:</span>
+            <span class="n">boot_selector</span> <span class="o">=</span> <span class="n">re_obj</span><span class="o">.</span><span class="n">groups</span><span class="p">(</span><span class="s1">&#39;&#39;</span><span class="p">)[</span><span class="mi">0</span><span class="p">]</span>
+            <span class="k">if</span> <span class="s1">&#39;PXE&#39;</span> <span class="ow">in</span> <span class="n">boot_selector</span><span class="p">:</span>
+                <span class="n">response</span><span class="p">[</span><span class="s1">&#39;boot_device&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">boot_devices</span><span class="o">.</span><span class="n">PXE</span>
+            <span class="k">elif</span> <span class="s1">&#39;Hard-Drive&#39;</span> <span class="ow">in</span> <span class="n">boot_selector</span><span class="p">:</span>
+                <span class="k">if</span> <span class="s1">&#39;Safe-Mode&#39;</span> <span class="ow">in</span> <span class="n">boot_selector</span><span class="p">:</span>
+                    <span class="n">response</span><span class="p">[</span><span class="s1">&#39;boot_device&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">boot_devices</span><span class="o">.</span><span class="n">SAFE</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="n">response</span><span class="p">[</span><span class="s1">&#39;boot_device&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">boot_devices</span><span class="o">.</span><span class="n">DISK</span>
+            <span class="k">elif</span> <span class="s1">&#39;BIOS&#39;</span> <span class="ow">in</span> <span class="n">boot_selector</span><span class="p">:</span>
+                <span class="n">response</span><span class="p">[</span><span class="s1">&#39;boot_device&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">boot_devices</span><span class="o">.</span><span class="n">BIOS</span>
+            <span class="k">elif</span> <span class="s1">&#39;CD/DVD&#39;</span> <span class="ow">in</span> <span class="n">boot_selector</span><span class="p">:</span>
+                <span class="n">response</span><span class="p">[</span><span class="s1">&#39;boot_device&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">boot_devices</span><span class="o">.</span><span class="n">CDROM</span>
+
+        <span class="n">response</span><span class="p">[</span><span class="s1">&#39;persistent&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="s1">&#39;Options apply to all future boots&#39;</span> <span class="ow">in</span> <span class="n">out</span>
+        <span class="k">return</span> <span class="n">response</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IPMIManagement.get_sensors_data&#39;</span><span class="p">)</span>
+<div class="viewcode-block" id="IPMIManagement.get_sensors_data"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.ipmitool.html#ironic.drivers.modules.ipmitool.IPMIManagement.get_sensors_data">[docs]</a>    <span class="k">def</span> <span class="nf">get_sensors_data</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get sensors data.</span>
+
+<span class="sd">        :param task: a TaskManager instance.</span>
+<span class="sd">        :raises: FailedToGetSensorData when getting the sensor data fails.</span>
+<span class="sd">        :raises: FailedToParseSensorData when parsing sensor data fails.</span>
+<span class="sd">        :raises: InvalidParameterValue if required ipmi parameters are missing</span>
+<span class="sd">        :raises: MissingParameterValue if a required parameter is missing.</span>
+<span class="sd">        :returns: returns a dict of sensor data group by sensor type.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">driver_info</span> <span class="o">=</span> <span class="n">_parse_driver_info</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="p">)</span>
+        <span class="c1"># with &#39;-v&#39; option, we can get the entire sensor data including the</span>
+        <span class="c1"># extended sensor informations</span>
+        <span class="n">cmd</span> <span class="o">=</span> <span class="s2">&quot;sdr -v&quot;</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">out</span><span class="p">,</span> <span class="n">err</span> <span class="o">=</span> <span class="n">_exec_ipmitool</span><span class="p">(</span><span class="n">driver_info</span><span class="p">,</span> <span class="n">cmd</span><span class="p">)</span>
+        <span class="k">except</span> <span class="p">(</span><span class="n">exception</span><span class="o">.</span><span class="n">PasswordFileFailedToCreate</span><span class="p">,</span>
+                <span class="n">processutils</span><span class="o">.</span><span class="n">ProcessExecutionError</span><span class="p">)</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">FailedToGetSensorData</span><span class="p">(</span><span class="n">node</span><span class="o">=</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span>
+                                                  <span class="n">error</span><span class="o">=</span><span class="n">e</span><span class="p">)</span>
+
+        <span class="k">return</span> <span class="n">_parse_ipmi_sensors_data</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="p">,</span> <span class="n">out</span><span class="p">)</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IPMIManagement.inject_nmi&#39;</span><span class="p">)</span>
+    <span class="nd">@task_manager.require_exclusive_lock</span>
+<div class="viewcode-block" id="IPMIManagement.inject_nmi"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.ipmitool.html#ironic.drivers.modules.ipmitool.IPMIManagement.inject_nmi">[docs]</a>    <span class="k">def</span> <span class="nf">inject_nmi</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Inject NMI, Non Maskable Interrupt.</span>
+
+<span class="sd">        Inject NMI (Non Maskable Interrupt) for a node immediately.</span>
+
+<span class="sd">        :param task: A TaskManager instance containing the node to act on.</span>
+<span class="sd">        :raises: IPMIFailure on an error from ipmitool.</span>
+<span class="sd">        :returns: None</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">driver_info</span> <span class="o">=</span> <span class="n">_parse_driver_info</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="p">)</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">_exec_ipmitool</span><span class="p">(</span><span class="n">driver_info</span><span class="p">,</span> <span class="s2">&quot;power diag&quot;</span><span class="p">)</span>
+        <span class="k">except</span> <span class="p">(</span><span class="n">exception</span><span class="o">.</span><span class="n">PasswordFileFailedToCreate</span><span class="p">,</span>
+                <span class="n">processutils</span><span class="o">.</span><span class="n">ProcessExecutionError</span><span class="p">)</span> <span class="k">as</span> <span class="n">err</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">_LE</span><span class="p">(</span><span class="s1">&#39;Inject NMI failed for node </span><span class="si">%(node)s</span><span class="s1">: </span><span class="si">%(err)s</span><span class="s1">.&#39;</span><span class="p">),</span>
+                      <span class="p">{</span><span class="s1">&#39;node&#39;</span><span class="p">:</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="s1">&#39;err&#39;</span><span class="p">:</span> <span class="n">err</span><span class="p">})</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">IPMIFailure</span><span class="p">(</span><span class="n">cmd</span><span class="o">=</span><span class="s2">&quot;power diag&quot;</span><span class="p">)</span></div></div>
+
+
+<div class="viewcode-block" id="VendorPassthru"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.ipmitool.html#ironic.drivers.modules.ipmitool.VendorPassthru">[docs]</a><span class="k">class</span> <span class="nc">VendorPassthru</span><span class="p">(</span><span class="n">base</span><span class="o">.</span><span class="n">VendorInterface</span><span class="p">):</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">_constructor_checks</span><span class="p">(</span><span class="n">driver</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="vm">__name__</span><span class="p">)</span>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;VendorPassthru.send_raw&#39;</span><span class="p">)</span>
+    <span class="nd">@base.passthru</span><span class="p">([</span><span class="s1">&#39;POST&#39;</span><span class="p">],</span>
+                   <span class="n">description</span><span class="o">=</span><span class="n">_</span><span class="p">(</span><span class="s2">&quot;Send raw bytes to the BMC. Required &quot;</span>
+                                 <span class="s2">&quot;argument: &#39;raw_bytes&#39; - a string of raw &quot;</span>
+                                 <span class="s2">&quot;bytes (e.g. &#39;0x00 0x01&#39;).&quot;</span><span class="p">))</span>
+    <span class="nd">@task_manager.require_exclusive_lock</span>
+<div class="viewcode-block" id="VendorPassthru.send_raw"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.ipmitool.html#ironic.drivers.modules.ipmitool.VendorPassthru.send_raw">[docs]</a>    <span class="k">def</span> <span class="nf">send_raw</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">,</span> <span class="n">http_method</span><span class="p">,</span> <span class="n">raw_bytes</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Send raw bytes to the BMC. Bytes should be a string of bytes.</span>
+
+<span class="sd">        :param task: a TaskManager instance.</span>
+<span class="sd">        :param http_method: the HTTP method used on the request.</span>
+<span class="sd">        :param raw_bytes: a string of raw bytes to send, e.g. &#39;0x00 0x01&#39;</span>
+<span class="sd">        :raises: IPMIFailure on an error from ipmitool.</span>
+<span class="sd">        :raises: MissingParameterValue if a required parameter is missing.</span>
+<span class="sd">        :raises:  InvalidParameterValue when an invalid value is specified.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">send_raw</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">raw_bytes</span><span class="p">)</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;VendorPassthru.bmc_reset&#39;</span><span class="p">)</span>
+    <span class="nd">@base.passthru</span><span class="p">([</span><span class="s1">&#39;POST&#39;</span><span class="p">],</span>
+                   <span class="n">description</span><span class="o">=</span><span class="n">_</span><span class="p">(</span><span class="s2">&quot;Reset the BMC. Required argument: &#39;warm&#39; &quot;</span>
+                                 <span class="s2">&quot;(Boolean) - for warm (True) or cold (False) &quot;</span>
+                                 <span class="s2">&quot;reset.&quot;</span><span class="p">))</span>
+    <span class="nd">@task_manager.require_exclusive_lock</span>
+<div class="viewcode-block" id="VendorPassthru.bmc_reset"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.ipmitool.html#ironic.drivers.modules.ipmitool.VendorPassthru.bmc_reset">[docs]</a>    <span class="k">def</span> <span class="nf">bmc_reset</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">,</span> <span class="n">http_method</span><span class="p">,</span> <span class="n">warm</span><span class="o">=</span><span class="bp">True</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Reset BMC with IPMI command &#39;bmc reset (warm|cold)&#39;.</span>
+
+<span class="sd">        :param task: a TaskManager instance.</span>
+<span class="sd">        :param http_method: the HTTP method used on the request.</span>
+<span class="sd">        :param warm: boolean parameter to decide on warm or cold reset.</span>
+<span class="sd">        :raises: IPMIFailure on an error from ipmitool.</span>
+<span class="sd">        :raises: MissingParameterValue if a required parameter is missing.</span>
+<span class="sd">        :raises: InvalidParameterValue when an invalid value is specified</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">node_uuid</span> <span class="o">=</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">uuid</span>
+
+        <span class="n">warm</span> <span class="o">=</span> <span class="n">strutils</span><span class="o">.</span><span class="n">bool_from_string</span><span class="p">(</span><span class="n">warm</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">warm</span><span class="p">:</span>
+            <span class="n">warm_param</span> <span class="o">=</span> <span class="s1">&#39;warm&#39;</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">warm_param</span> <span class="o">=</span> <span class="s1">&#39;cold&#39;</span>
+
+        <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;Doing </span><span class="si">%(warm)s</span><span class="s1"> BMC reset on node </span><span class="si">%(node)s</span><span class="s1">&#39;</span><span class="p">,</span>
+                  <span class="p">{</span><span class="s1">&#39;warm&#39;</span><span class="p">:</span> <span class="n">warm_param</span><span class="p">,</span> <span class="s1">&#39;node&#39;</span><span class="p">:</span> <span class="n">node_uuid</span><span class="p">})</span>
+        <span class="n">driver_info</span> <span class="o">=</span> <span class="n">_parse_driver_info</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="p">)</span>
+        <span class="n">cmd</span> <span class="o">=</span> <span class="s1">&#39;bmc reset </span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="n">warm_param</span>
+
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">out</span><span class="p">,</span> <span class="n">err</span> <span class="o">=</span> <span class="n">_exec_ipmitool</span><span class="p">(</span><span class="n">driver_info</span><span class="p">,</span> <span class="n">cmd</span><span class="p">)</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;bmc reset returned stdout: </span><span class="si">%(stdout)s</span><span class="s1">, stderr:&#39;</span>
+                      <span class="s1">&#39; </span><span class="si">%(stderr)s</span><span class="s1">&#39;</span><span class="p">,</span> <span class="p">{</span><span class="s1">&#39;stdout&#39;</span><span class="p">:</span> <span class="n">out</span><span class="p">,</span> <span class="s1">&#39;stderr&#39;</span><span class="p">:</span> <span class="n">err</span><span class="p">})</span>
+        <span class="k">except</span> <span class="p">(</span><span class="n">exception</span><span class="o">.</span><span class="n">PasswordFileFailedToCreate</span><span class="p">,</span>
+                <span class="n">processutils</span><span class="o">.</span><span class="n">ProcessExecutionError</span><span class="p">)</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">exception</span><span class="p">(</span><span class="n">_LE</span><span class="p">(</span><span class="s1">&#39;IPMI &quot;bmc reset&quot; failed for node </span><span class="si">%(node_id)s</span><span class="s1"> &#39;</span>
+                          <span class="s1">&#39;with error: </span><span class="si">%(error)s</span><span class="s1">.&#39;</span><span class="p">),</span>
+                          <span class="p">{</span><span class="s1">&#39;node_id&#39;</span><span class="p">:</span> <span class="n">node_uuid</span><span class="p">,</span> <span class="s1">&#39;error&#39;</span><span class="p">:</span> <span class="n">e</span><span class="p">})</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">IPMIFailure</span><span class="p">(</span><span class="n">cmd</span><span class="o">=</span><span class="n">cmd</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="VendorPassthru.get_properties"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.ipmitool.html#ironic.drivers.modules.ipmitool.VendorPassthru.get_properties">[docs]</a>    <span class="k">def</span> <span class="nf">get_properties</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">COMMON_PROPERTIES</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;VendorPassthru.validate&#39;</span><span class="p">)</span>
+<div class="viewcode-block" id="VendorPassthru.validate"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.ipmitool.html#ironic.drivers.modules.ipmitool.VendorPassthru.validate">[docs]</a>    <span class="k">def</span> <span class="nf">validate</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">,</span> <span class="n">method</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Validate vendor-specific actions.</span>
+
+<span class="sd">        If invalid, raises an exception; otherwise returns None.</span>
+
+<span class="sd">        Valid methods:</span>
+<span class="sd">          * send_raw</span>
+<span class="sd">          * bmc_reset</span>
+
+<span class="sd">        :param task: a task from TaskManager.</span>
+<span class="sd">        :param method: method to be validated</span>
+<span class="sd">        :param kwargs: info for action.</span>
+<span class="sd">        :raises: InvalidParameterValue when an invalid parameter value is</span>
+<span class="sd">                 specified.</span>
+<span class="sd">        :raises: MissingParameterValue if a required parameter is missing.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="n">method</span> <span class="o">==</span> <span class="s1">&#39;send_raw&#39;</span><span class="p">:</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">kwargs</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;raw_bytes&#39;</span><span class="p">):</span>
+                <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">MissingParameterValue</span><span class="p">(</span><span class="n">_</span><span class="p">(</span>
+                    <span class="s1">&#39;Parameter raw_bytes (string of bytes) was not &#39;</span>
+                    <span class="s1">&#39;specified.&#39;</span><span class="p">))</span>
+
+        <span class="n">_parse_driver_info</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="p">)</span></div></div>
+
+
+<div class="viewcode-block" id="IPMIConsole"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.ipmitool.html#ironic.drivers.modules.ipmitool.IPMIConsole">[docs]</a><span class="k">class</span> <span class="nc">IPMIConsole</span><span class="p">(</span><span class="n">base</span><span class="o">.</span><span class="n">ConsoleInterface</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A base ConsoleInterface that uses ipmitool.&quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">_constructor_checks</span><span class="p">(</span><span class="n">driver</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="vm">__name__</span><span class="p">)</span>
+
+<div class="viewcode-block" id="IPMIConsole.get_properties"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.ipmitool.html#ironic.drivers.modules.ipmitool.IPMIConsole.get_properties">[docs]</a>    <span class="k">def</span> <span class="nf">get_properties</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">d</span> <span class="o">=</span> <span class="n">COMMON_PROPERTIES</span><span class="o">.</span><span class="n">copy</span><span class="p">()</span>
+        <span class="n">d</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">CONSOLE_PROPERTIES</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">d</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IPMIConsole.validate&#39;</span><span class="p">)</span>
+<div class="viewcode-block" id="IPMIConsole.validate"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.ipmitool.html#ironic.drivers.modules.ipmitool.IPMIConsole.validate">[docs]</a>    <span class="k">def</span> <span class="nf">validate</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Validate the Node console info.</span>
+
+<span class="sd">        :param task: a task from TaskManager.</span>
+<span class="sd">        :raises: InvalidParameterValue</span>
+<span class="sd">        :raises: MissingParameterValue when a required parameter is missing</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">driver_info</span> <span class="o">=</span> <span class="n">_parse_driver_info</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">driver_info</span><span class="p">[</span><span class="s1">&#39;port&#39;</span><span class="p">]:</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">MissingParameterValue</span><span class="p">(</span><span class="n">_</span><span class="p">(</span>
+                <span class="s2">&quot;Missing &#39;ipmi_terminal_port&#39; parameter in node&#39;s&quot;</span>
+                <span class="s2">&quot; driver_info.&quot;</span><span class="p">))</span>
+
+        <span class="k">if</span> <span class="n">driver_info</span><span class="p">[</span><span class="s1">&#39;protocol_version&#39;</span><span class="p">]</span> <span class="o">!=</span> <span class="s1">&#39;2.0&#39;</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">InvalidParameterValue</span><span class="p">(</span><span class="n">_</span><span class="p">(</span>
+                <span class="s2">&quot;Serial over lan only works with IPMI protocol version 2.0. &quot;</span>
+                <span class="s2">&quot;Check the &#39;ipmi_protocol_version&#39; parameter in &quot;</span>
+                <span class="s2">&quot;node&#39;s driver_info&quot;</span><span class="p">))</span></div>
+
+    <span class="k">def</span> <span class="nf">_get_ipmi_cmd</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">driver_info</span><span class="p">,</span> <span class="n">pw_file</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get ipmi command for ipmitool usage.</span>
+
+<span class="sd">        :param driver_info: driver info with the ipmitool parameters</span>
+<span class="sd">        :param pw_file: password file to be used in ipmitool command</span>
+<span class="sd">        :returns: returns a command string for ipmitool</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">user</span> <span class="o">=</span> <span class="n">driver_info</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;username&#39;</span><span class="p">)</span>
+        <span class="n">user</span> <span class="o">=</span> <span class="s1">&#39; -U {}&#39;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">user</span><span class="p">)</span> <span class="k">if</span> <span class="n">user</span> <span class="k">else</span> <span class="s1">&#39;&#39;</span>
+        <span class="k">return</span> <span class="p">(</span><span class="s2">&quot;ipmitool -H </span><span class="si">%(address)s</span><span class="s2"> -I lanplus&quot;</span>
+                <span class="s2">&quot;</span><span class="si">%(user)s</span><span class="s2"> -f </span><span class="si">%(pwfile)s</span><span class="s2">&quot;</span>
+                <span class="o">%</span> <span class="p">{</span><span class="s1">&#39;address&#39;</span><span class="p">:</span> <span class="n">driver_info</span><span class="p">[</span><span class="s1">&#39;address&#39;</span><span class="p">],</span>
+                   <span class="s1">&#39;user&#39;</span><span class="p">:</span> <span class="n">user</span><span class="p">,</span>
+                   <span class="s1">&#39;pwfile&#39;</span><span class="p">:</span> <span class="n">pw_file</span><span class="p">})</span>
+
+    <span class="k">def</span> <span class="nf">_start_console</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">driver_info</span><span class="p">,</span> <span class="n">start_method</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Start a remote console for the node.</span>
+
+<span class="sd">        :param driver_info: the parameters for accessing a node</span>
+<span class="sd">        :param start_method: console_utils method to start console</span>
+<span class="sd">        :raises: InvalidParameterValue if required ipmi parameters are missing</span>
+<span class="sd">        :raises: PasswordFileFailedToCreate if unable to create a file</span>
+<span class="sd">                 containing the password</span>
+<span class="sd">        :raises: ConsoleError if the directory for the PID file cannot be</span>
+<span class="sd">                 created</span>
+<span class="sd">        :raises: ConsoleSubprocessFailed when invoking the subprocess failed</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">path</span> <span class="o">=</span> <span class="n">_console_pwfile_path</span><span class="p">(</span><span class="n">driver_info</span><span class="p">[</span><span class="s1">&#39;uuid&#39;</span><span class="p">])</span>
+        <span class="n">pw_file</span> <span class="o">=</span> <span class="n">console_utils</span><span class="o">.</span><span class="n">make_persistent_password_file</span><span class="p">(</span>
+            <span class="n">path</span><span class="p">,</span> <span class="n">driver_info</span><span class="p">[</span><span class="s1">&#39;password&#39;</span><span class="p">]</span> <span class="ow">or</span> <span class="s1">&#39;</span><span class="se">\0</span><span class="s1">&#39;</span><span class="p">)</span>
+        <span class="n">ipmi_cmd</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_ipmi_cmd</span><span class="p">(</span><span class="n">driver_info</span><span class="p">,</span> <span class="n">pw_file</span><span class="p">)</span>
+
+        <span class="k">for</span> <span class="n">name</span><span class="p">,</span> <span class="n">option</span> <span class="ow">in</span> <span class="n">BRIDGING_OPTIONS</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">driver_info</span><span class="p">[</span><span class="n">name</span><span class="p">]</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="n">ipmi_cmd</span> <span class="o">=</span> <span class="s2">&quot; &quot;</span><span class="o">.</span><span class="n">join</span><span class="p">([</span><span class="n">ipmi_cmd</span><span class="p">,</span>
+                                     <span class="n">option</span><span class="p">,</span> <span class="n">driver_info</span><span class="p">[</span><span class="n">name</span><span class="p">]])</span>
+
+        <span class="k">if</span> <span class="n">CONF</span><span class="o">.</span><span class="n">debug</span><span class="p">:</span>
+            <span class="n">ipmi_cmd</span> <span class="o">+=</span> <span class="s2">&quot; -v&quot;</span>
+        <span class="n">ipmi_cmd</span> <span class="o">+=</span> <span class="s2">&quot; sol activate&quot;</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">start_method</span><span class="p">(</span><span class="n">driver_info</span><span class="p">[</span><span class="s1">&#39;uuid&#39;</span><span class="p">],</span> <span class="n">driver_info</span><span class="p">[</span><span class="s1">&#39;port&#39;</span><span class="p">],</span> <span class="n">ipmi_cmd</span><span class="p">)</span>
+        <span class="k">except</span> <span class="p">(</span><span class="n">exception</span><span class="o">.</span><span class="n">ConsoleError</span><span class="p">,</span> <span class="n">exception</span><span class="o">.</span><span class="n">ConsoleSubprocessFailed</span><span class="p">):</span>
+            <span class="k">with</span> <span class="n">excutils</span><span class="o">.</span><span class="n">save_and_reraise_exception</span><span class="p">():</span>
+                <span class="n">ironic_utils</span><span class="o">.</span><span class="n">unlink_without_raise</span><span class="p">(</span><span class="n">path</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="IPMIShellinaboxConsole"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.ipmitool.html#ironic.drivers.modules.ipmitool.IPMIShellinaboxConsole">[docs]</a><span class="k">class</span> <span class="nc">IPMIShellinaboxConsole</span><span class="p">(</span><span class="n">IPMIConsole</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A ConsoleInterface that uses ipmitool and shellinabox.&quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="nf">_get_ipmi_cmd</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">driver_info</span><span class="p">,</span> <span class="n">pw_file</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get ipmi command for ipmitool usage.</span>
+
+<span class="sd">        :param driver_info: driver info with the ipmitool parameters</span>
+<span class="sd">        :param pw_file: password file to be used in ipmitool command</span>
+<span class="sd">        :returns: returns a command string for ipmitool</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">command</span> <span class="o">=</span> <span class="nb">super</span><span class="p">(</span><span class="n">IPMIShellinaboxConsole</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">_get_ipmi_cmd</span><span class="p">(</span>
+            <span class="n">driver_info</span><span class="p">,</span> <span class="n">pw_file</span><span class="p">)</span>
+        <span class="k">return</span> <span class="p">(</span><span class="s2">&quot;/:</span><span class="si">%(uid)s</span><span class="s2">:</span><span class="si">%(gid)s</span><span class="s2">:HOME:</span><span class="si">%(basic_command)s</span><span class="s2">&quot;</span>
+                <span class="o">%</span> <span class="p">{</span><span class="s1">&#39;uid&#39;</span><span class="p">:</span> <span class="n">os</span><span class="o">.</span><span class="n">getuid</span><span class="p">(),</span>
+                   <span class="s1">&#39;gid&#39;</span><span class="p">:</span> <span class="n">os</span><span class="o">.</span><span class="n">getgid</span><span class="p">(),</span>
+                   <span class="s1">&#39;basic_command&#39;</span><span class="p">:</span> <span class="n">command</span><span class="p">})</span>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IPMIShellinaboxConsole.start_console&#39;</span><span class="p">)</span>
+<div class="viewcode-block" id="IPMIShellinaboxConsole.start_console"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.ipmitool.html#ironic.drivers.modules.ipmitool.IPMIShellinaboxConsole.start_console">[docs]</a>    <span class="k">def</span> <span class="nf">start_console</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Start a remote console for the node.</span>
+
+<span class="sd">        :param task: a task from TaskManager</span>
+<span class="sd">        :raises: InvalidParameterValue if required ipmi parameters are missing</span>
+<span class="sd">        :raises: PasswordFileFailedToCreate if unable to create a file</span>
+<span class="sd">                 containing the password</span>
+<span class="sd">        :raises: ConsoleError if the directory for the PID file cannot be</span>
+<span class="sd">                 created</span>
+<span class="sd">        :raises: ConsoleSubprocessFailed when invoking the subprocess failed</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">driver_info</span> <span class="o">=</span> <span class="n">_parse_driver_info</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_start_console</span><span class="p">(</span><span class="n">driver_info</span><span class="p">,</span>
+                            <span class="n">console_utils</span><span class="o">.</span><span class="n">start_shellinabox_console</span><span class="p">)</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IPMIShellinaboxConsole.stop_console&#39;</span><span class="p">)</span>
+<div class="viewcode-block" id="IPMIShellinaboxConsole.stop_console"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.ipmitool.html#ironic.drivers.modules.ipmitool.IPMIShellinaboxConsole.stop_console">[docs]</a>    <span class="k">def</span> <span class="nf">stop_console</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Stop the remote console session for the node.</span>
+
+<span class="sd">        :param task: a task from TaskManager</span>
+<span class="sd">        :raises: ConsoleError if unable to stop the console</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">console_utils</span><span class="o">.</span><span class="n">stop_shellinabox_console</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+        <span class="k">finally</span><span class="p">:</span>
+            <span class="n">ironic_utils</span><span class="o">.</span><span class="n">unlink_without_raise</span><span class="p">(</span>
+                <span class="n">_console_pwfile_path</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">))</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IPMIShellinaboxConsole.get_console&#39;</span><span class="p">)</span>
+<div class="viewcode-block" id="IPMIShellinaboxConsole.get_console"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.ipmitool.html#ironic.drivers.modules.ipmitool.IPMIShellinaboxConsole.get_console">[docs]</a>    <span class="k">def</span> <span class="nf">get_console</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get the type and connection information about the console.&quot;&quot;&quot;</span>
+        <span class="n">driver_info</span> <span class="o">=</span> <span class="n">_parse_driver_info</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="p">)</span>
+        <span class="n">url</span> <span class="o">=</span> <span class="n">console_utils</span><span class="o">.</span><span class="n">get_shellinabox_console_url</span><span class="p">(</span><span class="n">driver_info</span><span class="p">[</span><span class="s1">&#39;port&#39;</span><span class="p">])</span>
+        <span class="k">return</span> <span class="p">{</span><span class="s1">&#39;type&#39;</span><span class="p">:</span> <span class="s1">&#39;shellinabox&#39;</span><span class="p">,</span> <span class="s1">&#39;url&#39;</span><span class="p">:</span> <span class="n">url</span><span class="p">}</span></div></div>
+
+
+<div class="viewcode-block" id="IPMISocatConsole"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.ipmitool.html#ironic.drivers.modules.ipmitool.IPMISocatConsole">[docs]</a><span class="k">class</span> <span class="nc">IPMISocatConsole</span><span class="p">(</span><span class="n">IPMIConsole</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A ConsoleInterface that uses ipmitool and socat.&quot;&quot;&quot;</span>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IPMISocatConsole.start_console&#39;</span><span class="p">)</span>
+<div class="viewcode-block" id="IPMISocatConsole.start_console"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.ipmitool.html#ironic.drivers.modules.ipmitool.IPMISocatConsole.start_console">[docs]</a>    <span class="k">def</span> <span class="nf">start_console</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Start a remote console for the node.</span>
+
+<span class="sd">        :param task: a task from TaskManager</span>
+<span class="sd">        :raises: InvalidParameterValue if required ipmi parameters are missing</span>
+<span class="sd">        :raises: PasswordFileFailedToCreate if unable to create a file</span>
+<span class="sd">                 containing the password</span>
+<span class="sd">        :raises: ConsoleError if the directory for the PID file cannot be</span>
+<span class="sd">                 created</span>
+<span class="sd">        :raises: ConsoleSubprocessFailed when invoking the subprocess failed</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">driver_info</span> <span class="o">=</span> <span class="n">_parse_driver_info</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="p">)</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_exec_stop_console</span><span class="p">(</span><span class="n">driver_info</span><span class="p">)</span>
+        <span class="k">except</span> <span class="ne">OSError</span><span class="p">:</span>
+            <span class="c1"># We need to drop any existing sol sessions with sol deactivate.</span>
+            <span class="c1"># OSError is raised when sol session is already deactivated,</span>
+            <span class="c1"># so we can ignore it.</span>
+            <span class="k">pass</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_start_console</span><span class="p">(</span><span class="n">driver_info</span><span class="p">,</span> <span class="n">console_utils</span><span class="o">.</span><span class="n">start_socat_console</span><span class="p">)</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IPMISocatConsole.stop_console&#39;</span><span class="p">)</span>
+<div class="viewcode-block" id="IPMISocatConsole.stop_console"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.ipmitool.html#ironic.drivers.modules.ipmitool.IPMISocatConsole.stop_console">[docs]</a>    <span class="k">def</span> <span class="nf">stop_console</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Stop the remote console session for the node.</span>
+
+<span class="sd">        :param task: a task from TaskManager</span>
+<span class="sd">        :raises: ConsoleError if unable to stop the console</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">driver_info</span> <span class="o">=</span> <span class="n">_parse_driver_info</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="p">)</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">console_utils</span><span class="o">.</span><span class="n">stop_socat_console</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+        <span class="k">finally</span><span class="p">:</span>
+            <span class="n">ironic_utils</span><span class="o">.</span><span class="n">unlink_without_raise</span><span class="p">(</span>
+                <span class="n">_console_pwfile_path</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">))</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_exec_stop_console</span><span class="p">(</span><span class="n">driver_info</span><span class="p">)</span></div>
+
+    <span class="k">def</span> <span class="nf">_exec_stop_console</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">driver_info</span><span class="p">):</span>
+        <span class="n">cmd</span> <span class="o">=</span> <span class="s2">&quot;sol deactivate&quot;</span>
+        <span class="n">_exec_ipmitool</span><span class="p">(</span><span class="n">driver_info</span><span class="p">,</span> <span class="n">cmd</span><span class="p">,</span> <span class="n">check_exit_code</span><span class="o">=</span><span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">])</span>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IPMISocatConsole.get_console&#39;</span><span class="p">)</span>
+<div class="viewcode-block" id="IPMISocatConsole.get_console"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.ipmitool.html#ironic.drivers.modules.ipmitool.IPMISocatConsole.get_console">[docs]</a>    <span class="k">def</span> <span class="nf">get_console</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get the type and connection information about the console.</span>
+
+<span class="sd">        :param task: a task from TaskManager</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">driver_info</span> <span class="o">=</span> <span class="n">_parse_driver_info</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="p">)</span>
+        <span class="n">url</span> <span class="o">=</span> <span class="n">console_utils</span><span class="o">.</span><span class="n">get_socat_console_url</span><span class="p">(</span><span class="n">driver_info</span><span class="p">[</span><span class="s1">&#39;port&#39;</span><span class="p">])</span>
+        <span class="k">return</span> <span class="p">{</span><span class="s1">&#39;type&#39;</span><span class="p">:</span> <span class="s1">&#39;socat&#39;</span><span class="p">,</span> <span class="s1">&#39;url&#39;</span><span class="p">:</span> <span class="n">url</span><span class="p">}</span></div></div>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/ironic
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../../../index.html">Ironic 7.0.1.dev7 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../../../index.html" accesskey="U">Module code</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright OpenStack Foundation.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/Ironic");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

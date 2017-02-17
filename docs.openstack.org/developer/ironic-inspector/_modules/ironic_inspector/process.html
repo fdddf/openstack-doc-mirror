@@ -1,0 +1,557 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>ironic_inspector.process &mdash; Ironic Inspector 5.0.1.dev1 documentation</title>
+    
+    <link rel="stylesheet" href="../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../',
+        VERSION:     '5.0.1.dev1',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../_static/doctools.js"></script>
+    <link rel="top" title="Ironic Inspector 5.0.1.dev1 documentation" href="../../index.html" />
+    <link rel="up" title="Module code" href="../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for ironic_inspector.process</h1><div class="highlight"><pre>
+<span></span><span class="c1"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);</span>
+<span class="c1"># you may not use this file except in compliance with the License.</span>
+<span class="c1"># You may obtain a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#    http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1"># Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,</span>
+<span class="c1"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or</span>
+<span class="c1"># implied.</span>
+<span class="c1"># See the License for the specific language governing permissions and</span>
+<span class="c1"># limitations under the License.</span>
+
+<span class="sd">&quot;&quot;&quot;Handling introspection data from the ramdisk.&quot;&quot;&quot;</span>
+
+<span class="kn">import</span> <span class="nn">copy</span>
+<span class="kn">import</span> <span class="nn">datetime</span>
+<span class="kn">import</span> <span class="nn">os</span>
+
+<span class="kn">import</span> <span class="nn">eventlet</span>
+<span class="kn">import</span> <span class="nn">json</span>
+
+<span class="kn">from</span> <span class="nn">oslo_config</span> <span class="kn">import</span> <span class="n">cfg</span>
+<span class="kn">from</span> <span class="nn">oslo_serialization</span> <span class="kn">import</span> <span class="n">base64</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">excutils</span>
+
+<span class="kn">from</span> <span class="nn">ironic_inspector.common.i18n</span> <span class="kn">import</span> <span class="n">_</span><span class="p">,</span> <span class="n">_LE</span><span class="p">,</span> <span class="n">_LI</span><span class="p">,</span> <span class="n">_LW</span>
+<span class="kn">from</span> <span class="nn">ironic_inspector.common</span> <span class="kn">import</span> <span class="n">ironic</span> <span class="k">as</span> <span class="n">ir_utils</span>
+<span class="kn">from</span> <span class="nn">ironic_inspector.common</span> <span class="kn">import</span> <span class="n">swift</span>
+<span class="kn">from</span> <span class="nn">ironic_inspector</span> <span class="kn">import</span> <span class="n">firewall</span>
+<span class="kn">from</span> <span class="nn">ironic_inspector</span> <span class="kn">import</span> <span class="n">introspection_state</span> <span class="k">as</span> <span class="n">istate</span>
+<span class="kn">from</span> <span class="nn">ironic_inspector</span> <span class="kn">import</span> <span class="n">node_cache</span>
+<span class="kn">from</span> <span class="nn">ironic_inspector.plugins</span> <span class="kn">import</span> <span class="n">base</span> <span class="k">as</span> <span class="n">plugins_base</span>
+<span class="kn">from</span> <span class="nn">ironic_inspector</span> <span class="kn">import</span> <span class="n">rules</span>
+<span class="kn">from</span> <span class="nn">ironic_inspector</span> <span class="kn">import</span> <span class="n">utils</span>
+
+<span class="n">CONF</span> <span class="o">=</span> <span class="n">cfg</span><span class="o">.</span><span class="n">CONF</span>
+
+<span class="n">LOG</span> <span class="o">=</span> <span class="n">utils</span><span class="o">.</span><span class="n">getProcessingLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+<span class="n">_CREDENTIALS_WAIT_RETRIES</span> <span class="o">=</span> <span class="mi">10</span>
+<span class="n">_CREDENTIALS_WAIT_PERIOD</span> <span class="o">=</span> <span class="mi">3</span>
+<span class="n">_STORAGE_EXCLUDED_KEYS</span> <span class="o">=</span> <span class="p">{</span><span class="s1">&#39;logs&#39;</span><span class="p">}</span>
+<span class="n">_UNPROCESSED_DATA_STORE_SUFFIX</span> <span class="o">=</span> <span class="s1">&#39;UNPROCESSED&#39;</span>
+
+
+<span class="k">def</span> <span class="nf">_store_logs</span><span class="p">(</span><span class="n">introspection_data</span><span class="p">,</span> <span class="n">node_info</span><span class="p">):</span>
+    <span class="n">logs</span> <span class="o">=</span> <span class="n">introspection_data</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;logs&#39;</span><span class="p">)</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">logs</span><span class="p">:</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s1">&#39;No logs were passed by the ramdisk&#39;</span><span class="p">),</span>
+                    <span class="n">data</span><span class="o">=</span><span class="n">introspection_data</span><span class="p">,</span> <span class="n">node_info</span><span class="o">=</span><span class="n">node_info</span><span class="p">)</span>
+        <span class="k">return</span>
+
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">CONF</span><span class="o">.</span><span class="n">processing</span><span class="o">.</span><span class="n">ramdisk_logs_dir</span><span class="p">:</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s1">&#39;Failed to store logs received from the ramdisk &#39;</span>
+                        <span class="s1">&#39;because ramdisk_logs_dir configuration option &#39;</span>
+                        <span class="s1">&#39;is not set&#39;</span><span class="p">),</span>
+                    <span class="n">data</span><span class="o">=</span><span class="n">introspection_data</span><span class="p">,</span> <span class="n">node_info</span><span class="o">=</span><span class="n">node_info</span><span class="p">)</span>
+        <span class="k">return</span>
+
+    <span class="n">fmt_args</span> <span class="o">=</span> <span class="p">{</span>
+        <span class="s1">&#39;uuid&#39;</span><span class="p">:</span> <span class="n">node_info</span><span class="o">.</span><span class="n">uuid</span> <span class="k">if</span> <span class="n">node_info</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span> <span class="k">else</span> <span class="s1">&#39;unknown&#39;</span><span class="p">,</span>
+        <span class="s1">&#39;mac&#39;</span><span class="p">:</span> <span class="p">(</span><span class="n">utils</span><span class="o">.</span><span class="n">get_pxe_mac</span><span class="p">(</span><span class="n">introspection_data</span><span class="p">)</span> <span class="ow">or</span>
+                <span class="s1">&#39;unknown&#39;</span><span class="p">)</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span><span class="s1">&#39;:&#39;</span><span class="p">,</span> <span class="s1">&#39;&#39;</span><span class="p">),</span>
+        <span class="s1">&#39;dt&#39;</span><span class="p">:</span> <span class="n">datetime</span><span class="o">.</span><span class="n">datetime</span><span class="o">.</span><span class="n">utcnow</span><span class="p">(),</span>
+        <span class="s1">&#39;bmc&#39;</span><span class="p">:</span> <span class="p">(</span><span class="n">utils</span><span class="o">.</span><span class="n">get_ipmi_address_from_data</span><span class="p">(</span><span class="n">introspection_data</span><span class="p">)</span> <span class="ow">or</span>
+                <span class="s1">&#39;unknown&#39;</span><span class="p">)</span>
+    <span class="p">}</span>
+
+    <span class="n">file_name</span> <span class="o">=</span> <span class="n">CONF</span><span class="o">.</span><span class="n">processing</span><span class="o">.</span><span class="n">ramdisk_logs_filename_format</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="o">**</span><span class="n">fmt_args</span><span class="p">)</span>
+
+    <span class="k">try</span><span class="p">:</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">exists</span><span class="p">(</span><span class="n">CONF</span><span class="o">.</span><span class="n">processing</span><span class="o">.</span><span class="n">ramdisk_logs_dir</span><span class="p">):</span>
+            <span class="n">os</span><span class="o">.</span><span class="n">makedirs</span><span class="p">(</span><span class="n">CONF</span><span class="o">.</span><span class="n">processing</span><span class="o">.</span><span class="n">ramdisk_logs_dir</span><span class="p">)</span>
+        <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">CONF</span><span class="o">.</span><span class="n">processing</span><span class="o">.</span><span class="n">ramdisk_logs_dir</span><span class="p">,</span> <span class="n">file_name</span><span class="p">),</span>
+                  <span class="s1">&#39;wb&#39;</span><span class="p">)</span> <span class="k">as</span> <span class="n">fp</span><span class="p">:</span>
+            <span class="n">fp</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="n">base64</span><span class="o">.</span><span class="n">decode_as_bytes</span><span class="p">(</span><span class="n">logs</span><span class="p">))</span>
+    <span class="k">except</span> <span class="ne">EnvironmentError</span><span class="p">:</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">exception</span><span class="p">(</span><span class="n">_LE</span><span class="p">(</span><span class="s1">&#39;Could not store the ramdisk logs&#39;</span><span class="p">),</span>
+                      <span class="n">data</span><span class="o">=</span><span class="n">introspection_data</span><span class="p">,</span> <span class="n">node_info</span><span class="o">=</span><span class="n">node_info</span><span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">_LI</span><span class="p">(</span><span class="s1">&#39;Ramdisk logs were stored in file </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">),</span> <span class="n">file_name</span><span class="p">,</span>
+                 <span class="n">data</span><span class="o">=</span><span class="n">introspection_data</span><span class="p">,</span> <span class="n">node_info</span><span class="o">=</span><span class="n">node_info</span><span class="p">)</span>
+
+
+<span class="k">def</span> <span class="nf">_find_node_info</span><span class="p">(</span><span class="n">introspection_data</span><span class="p">,</span> <span class="n">failures</span><span class="p">):</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">node_cache</span><span class="o">.</span><span class="n">find_node</span><span class="p">(</span>
+            <span class="n">bmc_address</span><span class="o">=</span><span class="n">introspection_data</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;ipmi_address&#39;</span><span class="p">),</span>
+            <span class="n">mac</span><span class="o">=</span><span class="n">utils</span><span class="o">.</span><span class="n">get_valid_macs</span><span class="p">(</span><span class="n">introspection_data</span><span class="p">))</span>
+    <span class="k">except</span> <span class="n">utils</span><span class="o">.</span><span class="n">NotFoundInCacheError</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+        <span class="n">not_found_hook</span> <span class="o">=</span> <span class="n">plugins_base</span><span class="o">.</span><span class="n">node_not_found_hook_manager</span><span class="p">()</span>
+        <span class="k">if</span> <span class="n">not_found_hook</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">failures</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Look up error: </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="n">exc</span><span class="p">)</span>
+            <span class="k">return</span>
+
+        <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;Running node_not_found_hook </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">,</span>
+                  <span class="n">CONF</span><span class="o">.</span><span class="n">processing</span><span class="o">.</span><span class="n">node_not_found_hook</span><span class="p">,</span>
+                  <span class="n">data</span><span class="o">=</span><span class="n">introspection_data</span><span class="p">)</span>
+
+        <span class="c1"># NOTE(sambetts): If not_found_hook is not none it means that we were</span>
+        <span class="c1"># unable to find the node in the node cache and there is a node not</span>
+        <span class="c1"># found hook defined so we should try to send the introspection data</span>
+        <span class="c1"># to that hook to generate the node info before bubbling up the error.</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">node_info</span> <span class="o">=</span> <span class="n">not_found_hook</span><span class="o">.</span><span class="n">driver</span><span class="p">(</span><span class="n">introspection_data</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">node_info</span><span class="p">:</span>
+                <span class="k">return</span> <span class="n">node_info</span>
+            <span class="n">failures</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s2">&quot;Node not found hook returned nothing&quot;</span><span class="p">))</span>
+        <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+            <span class="n">failures</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s2">&quot;Node not found hook failed: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">)</span> <span class="o">%</span> <span class="n">exc</span><span class="p">)</span>
+    <span class="k">except</span> <span class="n">utils</span><span class="o">.</span><span class="n">Error</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+        <span class="n">failures</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Look up error: </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="n">exc</span><span class="p">)</span>
+
+
+<span class="k">def</span> <span class="nf">_run_pre_hooks</span><span class="p">(</span><span class="n">introspection_data</span><span class="p">,</span> <span class="n">failures</span><span class="p">):</span>
+    <span class="n">hooks</span> <span class="o">=</span> <span class="n">plugins_base</span><span class="o">.</span><span class="n">processing_hooks_manager</span><span class="p">()</span>
+    <span class="k">for</span> <span class="n">hook_ext</span> <span class="ow">in</span> <span class="n">hooks</span><span class="p">:</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;Running pre-processing hook </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">,</span> <span class="n">hook_ext</span><span class="o">.</span><span class="n">name</span><span class="p">,</span>
+                  <span class="n">data</span><span class="o">=</span><span class="n">introspection_data</span><span class="p">)</span>
+        <span class="c1"># NOTE(dtantsur): catch exceptions, so that we have changes to update</span>
+        <span class="c1"># node introspection status after look up</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">hook_ext</span><span class="o">.</span><span class="n">obj</span><span class="o">.</span><span class="n">before_processing</span><span class="p">(</span><span class="n">introspection_data</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">utils</span><span class="o">.</span><span class="n">Error</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">_LE</span><span class="p">(</span><span class="s1">&#39;Hook </span><span class="si">%(hook)s</span><span class="s1"> failed, delaying error report &#39;</span>
+                          <span class="s1">&#39;until node look up: </span><span class="si">%(error)s</span><span class="s1">&#39;</span><span class="p">),</span>
+                      <span class="p">{</span><span class="s1">&#39;hook&#39;</span><span class="p">:</span> <span class="n">hook_ext</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="s1">&#39;error&#39;</span><span class="p">:</span> <span class="n">exc</span><span class="p">},</span>
+                      <span class="n">data</span><span class="o">=</span><span class="n">introspection_data</span><span class="p">)</span>
+            <span class="n">failures</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s1">&#39;Preprocessing hook </span><span class="si">%(hook)s</span><span class="s1">: </span><span class="si">%(error)s</span><span class="s1">&#39;</span> <span class="o">%</span>
+                            <span class="p">{</span><span class="s1">&#39;hook&#39;</span><span class="p">:</span> <span class="n">hook_ext</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="s1">&#39;error&#39;</span><span class="p">:</span> <span class="n">exc</span><span class="p">})</span>
+        <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">exception</span><span class="p">(</span><span class="n">_LE</span><span class="p">(</span><span class="s1">&#39;Hook </span><span class="si">%(hook)s</span><span class="s1"> failed, delaying error report &#39;</span>
+                              <span class="s1">&#39;until node look up: </span><span class="si">%(error)s</span><span class="s1">&#39;</span><span class="p">),</span>
+                          <span class="p">{</span><span class="s1">&#39;hook&#39;</span><span class="p">:</span> <span class="n">hook_ext</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="s1">&#39;error&#39;</span><span class="p">:</span> <span class="n">exc</span><span class="p">},</span>
+                          <span class="n">data</span><span class="o">=</span><span class="n">introspection_data</span><span class="p">)</span>
+            <span class="n">failures</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Unexpected exception </span><span class="si">%(exc_class)s</span><span class="s1"> during &#39;</span>
+                              <span class="s1">&#39;preprocessing in hook </span><span class="si">%(hook)s</span><span class="s1">: </span><span class="si">%(error)s</span><span class="s1">&#39;</span><span class="p">)</span> <span class="o">%</span>
+                            <span class="p">{</span><span class="s1">&#39;hook&#39;</span><span class="p">:</span> <span class="n">hook_ext</span><span class="o">.</span><span class="n">name</span><span class="p">,</span>
+                             <span class="s1">&#39;exc_class&#39;</span><span class="p">:</span> <span class="n">exc</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="vm">__name__</span><span class="p">,</span>
+                             <span class="s1">&#39;error&#39;</span><span class="p">:</span> <span class="n">exc</span><span class="p">})</span>
+
+
+<span class="k">def</span> <span class="nf">_filter_data_excluded_keys</span><span class="p">(</span><span class="n">data</span><span class="p">):</span>
+    <span class="k">return</span> <span class="p">{</span><span class="n">k</span><span class="p">:</span> <span class="n">v</span> <span class="k">for</span> <span class="n">k</span><span class="p">,</span> <span class="n">v</span> <span class="ow">in</span> <span class="n">data</span><span class="o">.</span><span class="n">items</span><span class="p">()</span>
+            <span class="k">if</span> <span class="n">k</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">_STORAGE_EXCLUDED_KEYS</span><span class="p">}</span>
+
+
+<span class="k">def</span> <span class="nf">_store_data</span><span class="p">(</span><span class="n">node_info</span><span class="p">,</span> <span class="n">data</span><span class="p">,</span> <span class="n">suffix</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+    <span class="k">if</span> <span class="n">CONF</span><span class="o">.</span><span class="n">processing</span><span class="o">.</span><span class="n">store_data</span> <span class="o">!=</span> <span class="s1">&#39;swift&#39;</span><span class="p">:</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Swift support is disabled, introspection data &quot;</span>
+                  <span class="s2">&quot;won&#39;t be stored&quot;</span><span class="p">,</span> <span class="n">node_info</span><span class="o">=</span><span class="n">node_info</span><span class="p">)</span>
+        <span class="k">return</span>
+
+    <span class="n">swift_object_name</span> <span class="o">=</span> <span class="n">swift</span><span class="o">.</span><span class="n">store_introspection_data</span><span class="p">(</span>
+        <span class="n">_filter_data_excluded_keys</span><span class="p">(</span><span class="n">data</span><span class="p">),</span>
+        <span class="n">node_info</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span>
+        <span class="n">suffix</span><span class="o">=</span><span class="n">suffix</span>
+    <span class="p">)</span>
+    <span class="n">LOG</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">_LI</span><span class="p">(</span><span class="s1">&#39;Introspection data was stored in Swift in object &#39;</span>
+                 <span class="s1">&#39;</span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">),</span> <span class="n">swift_object_name</span><span class="p">,</span> <span class="n">node_info</span><span class="o">=</span><span class="n">node_info</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">CONF</span><span class="o">.</span><span class="n">processing</span><span class="o">.</span><span class="n">store_data_location</span><span class="p">:</span>
+        <span class="n">node_info</span><span class="o">.</span><span class="n">patch</span><span class="p">([{</span><span class="s1">&#39;op&#39;</span><span class="p">:</span> <span class="s1">&#39;add&#39;</span><span class="p">,</span> <span class="s1">&#39;path&#39;</span><span class="p">:</span> <span class="s1">&#39;/extra/</span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span>
+                          <span class="n">CONF</span><span class="o">.</span><span class="n">processing</span><span class="o">.</span><span class="n">store_data_location</span><span class="p">,</span>
+                          <span class="s1">&#39;value&#39;</span><span class="p">:</span> <span class="n">swift_object_name</span><span class="p">}])</span>
+
+
+<span class="k">def</span> <span class="nf">_store_unprocessed_data</span><span class="p">(</span><span class="n">node_info</span><span class="p">,</span> <span class="n">data</span><span class="p">):</span>
+    <span class="c1"># runs in background</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">_store_data</span><span class="p">(</span><span class="n">node_info</span><span class="p">,</span> <span class="n">data</span><span class="p">,</span>
+                    <span class="n">suffix</span><span class="o">=</span><span class="n">_UNPROCESSED_DATA_STORE_SUFFIX</span><span class="p">)</span>
+    <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">exception</span><span class="p">(</span><span class="n">_LE</span><span class="p">(</span><span class="s1">&#39;Encountered exception saving unprocessed &#39;</span>
+                          <span class="s1">&#39;introspection data&#39;</span><span class="p">),</span> <span class="n">node_info</span><span class="o">=</span><span class="n">node_info</span><span class="p">,</span>
+                      <span class="n">data</span><span class="o">=</span><span class="n">data</span><span class="p">)</span>
+
+
+<span class="k">def</span> <span class="nf">_get_unprocessed_data</span><span class="p">(</span><span class="n">uuid</span><span class="p">):</span>
+    <span class="k">if</span> <span class="n">CONF</span><span class="o">.</span><span class="n">processing</span><span class="o">.</span><span class="n">store_data</span> <span class="o">==</span> <span class="s1">&#39;swift&#39;</span><span class="p">:</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;Fetching unprocessed introspection data from &#39;</span>
+                  <span class="s1">&#39;Swift for </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">,</span> <span class="n">uuid</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">json</span><span class="o">.</span><span class="n">loads</span><span class="p">(</span>
+            <span class="n">swift</span><span class="o">.</span><span class="n">get_introspection_data</span><span class="p">(</span>
+                <span class="n">uuid</span><span class="p">,</span>
+                <span class="n">suffix</span><span class="o">=</span><span class="n">_UNPROCESSED_DATA_STORE_SUFFIX</span>
+            <span class="p">)</span>
+        <span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">utils</span><span class="o">.</span><span class="n">Error</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Swift support is disabled&#39;</span><span class="p">),</span> <span class="n">code</span><span class="o">=</span><span class="mi">400</span><span class="p">)</span>
+
+
+<div class="viewcode-block" id="process"><a class="viewcode-back" href="../../api/ironic_inspector.process.html#ironic_inspector.process.process">[docs]</a><span class="k">def</span> <span class="nf">process</span><span class="p">(</span><span class="n">introspection_data</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Process data from the ramdisk.</span>
+
+<span class="sd">    This function heavily relies on the hooks to do the actual data processing.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">unprocessed_data</span> <span class="o">=</span> <span class="n">copy</span><span class="o">.</span><span class="n">deepcopy</span><span class="p">(</span><span class="n">introspection_data</span><span class="p">)</span>
+    <span class="n">failures</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="n">_run_pre_hooks</span><span class="p">(</span><span class="n">introspection_data</span><span class="p">,</span> <span class="n">failures</span><span class="p">)</span>
+    <span class="n">node_info</span> <span class="o">=</span> <span class="n">_find_node_info</span><span class="p">(</span><span class="n">introspection_data</span><span class="p">,</span> <span class="n">failures</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">node_info</span><span class="p">:</span>
+        <span class="c1"># Locking is already done in find_node() but may be not done in a</span>
+        <span class="c1"># node_not_found hook</span>
+        <span class="n">node_info</span><span class="o">.</span><span class="n">acquire_lock</span><span class="p">()</span>
+
+    <span class="k">if</span> <span class="n">failures</span> <span class="ow">or</span> <span class="n">node_info</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+        <span class="n">msg</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;The following failures happened during running &#39;</span>
+                <span class="s1">&#39;pre-processing hooks:</span><span class="se">\n</span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="s1">&#39;</span><span class="se">\n</span><span class="s1">&#39;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">failures</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">node_info</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">node_info</span><span class="o">.</span><span class="n">finished</span><span class="p">(</span><span class="n">error</span><span class="o">=</span><span class="s1">&#39;</span><span class="se">\n</span><span class="s1">&#39;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">failures</span><span class="p">))</span>
+        <span class="n">_store_logs</span><span class="p">(</span><span class="n">introspection_data</span><span class="p">,</span> <span class="n">node_info</span><span class="p">)</span>
+        <span class="k">raise</span> <span class="n">utils</span><span class="o">.</span><span class="n">Error</span><span class="p">(</span><span class="n">msg</span><span class="p">,</span> <span class="n">node_info</span><span class="o">=</span><span class="n">node_info</span><span class="p">,</span> <span class="n">data</span><span class="o">=</span><span class="n">introspection_data</span><span class="p">)</span>
+
+    <span class="n">LOG</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">_LI</span><span class="p">(</span><span class="s1">&#39;Matching node is </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">),</span> <span class="n">node_info</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span>
+             <span class="n">node_info</span><span class="o">=</span><span class="n">node_info</span><span class="p">,</span> <span class="n">data</span><span class="o">=</span><span class="n">introspection_data</span><span class="p">)</span>
+
+    <span class="k">if</span> <span class="n">node_info</span><span class="o">.</span><span class="n">finished_at</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+        <span class="c1"># race condition or introspection canceled</span>
+        <span class="k">raise</span> <span class="n">utils</span><span class="o">.</span><span class="n">Error</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Node processing already finished with &#39;</span>
+                            <span class="s1">&#39;error: </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="n">node_info</span><span class="o">.</span><span class="n">error</span><span class="p">,</span>
+                          <span class="n">node_info</span><span class="o">=</span><span class="n">node_info</span><span class="p">,</span> <span class="n">code</span><span class="o">=</span><span class="mi">400</span><span class="p">)</span>
+
+    <span class="c1"># Note(mkovacik): store data now when we&#39;re sure that a background</span>
+    <span class="c1"># thread won&#39;t race with other process() or introspect.abort()</span>
+    <span class="c1"># call</span>
+    <span class="n">utils</span><span class="o">.</span><span class="n">executor</span><span class="p">()</span><span class="o">.</span><span class="n">submit</span><span class="p">(</span><span class="n">_store_unprocessed_data</span><span class="p">,</span> <span class="n">node_info</span><span class="p">,</span>
+                            <span class="n">unprocessed_data</span><span class="p">)</span>
+
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">node</span> <span class="o">=</span> <span class="n">node_info</span><span class="o">.</span><span class="n">node</span><span class="p">()</span>
+    <span class="k">except</span> <span class="n">ir_utils</span><span class="o">.</span><span class="n">NotFound</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+        <span class="k">with</span> <span class="n">excutils</span><span class="o">.</span><span class="n">save_and_reraise_exception</span><span class="p">():</span>
+            <span class="n">node_info</span><span class="o">.</span><span class="n">finished</span><span class="p">(</span><span class="n">error</span><span class="o">=</span><span class="nb">str</span><span class="p">(</span><span class="n">exc</span><span class="p">))</span>
+            <span class="n">_store_logs</span><span class="p">(</span><span class="n">introspection_data</span><span class="p">,</span> <span class="n">node_info</span><span class="p">)</span>
+
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">result</span> <span class="o">=</span> <span class="n">_process_node</span><span class="p">(</span><span class="n">node_info</span><span class="p">,</span> <span class="n">node</span><span class="p">,</span> <span class="n">introspection_data</span><span class="p">)</span>
+    <span class="k">except</span> <span class="n">utils</span><span class="o">.</span><span class="n">Error</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+        <span class="n">node_info</span><span class="o">.</span><span class="n">finished</span><span class="p">(</span><span class="n">error</span><span class="o">=</span><span class="nb">str</span><span class="p">(</span><span class="n">exc</span><span class="p">))</span>
+        <span class="k">with</span> <span class="n">excutils</span><span class="o">.</span><span class="n">save_and_reraise_exception</span><span class="p">():</span>
+            <span class="n">_store_logs</span><span class="p">(</span><span class="n">introspection_data</span><span class="p">,</span> <span class="n">node_info</span><span class="p">)</span>
+    <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">exception</span><span class="p">(</span><span class="n">_LE</span><span class="p">(</span><span class="s1">&#39;Unexpected exception during processing&#39;</span><span class="p">))</span>
+        <span class="n">msg</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;Unexpected exception </span><span class="si">%(exc_class)s</span><span class="s1"> during processing: &#39;</span>
+                <span class="s1">&#39;</span><span class="si">%(error)s</span><span class="s1">&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="p">{</span><span class="s1">&#39;exc_class&#39;</span><span class="p">:</span> <span class="n">exc</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="vm">__name__</span><span class="p">,</span>
+                                <span class="s1">&#39;error&#39;</span><span class="p">:</span> <span class="n">exc</span><span class="p">}</span>
+        <span class="n">node_info</span><span class="o">.</span><span class="n">finished</span><span class="p">(</span><span class="n">error</span><span class="o">=</span><span class="n">msg</span><span class="p">)</span>
+        <span class="n">_store_logs</span><span class="p">(</span><span class="n">introspection_data</span><span class="p">,</span> <span class="n">node_info</span><span class="p">)</span>
+        <span class="k">raise</span> <span class="n">utils</span><span class="o">.</span><span class="n">Error</span><span class="p">(</span><span class="n">msg</span><span class="p">,</span> <span class="n">node_info</span><span class="o">=</span><span class="n">node_info</span><span class="p">,</span> <span class="n">data</span><span class="o">=</span><span class="n">introspection_data</span><span class="p">,</span>
+                          <span class="n">code</span><span class="o">=</span><span class="mi">500</span><span class="p">)</span>
+
+    <span class="k">if</span> <span class="n">CONF</span><span class="o">.</span><span class="n">processing</span><span class="o">.</span><span class="n">always_store_ramdisk_logs</span><span class="p">:</span>
+        <span class="n">_store_logs</span><span class="p">(</span><span class="n">introspection_data</span><span class="p">,</span> <span class="n">node_info</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">result</span></div>
+
+
+<span class="k">def</span> <span class="nf">_run_post_hooks</span><span class="p">(</span><span class="n">node_info</span><span class="p">,</span> <span class="n">introspection_data</span><span class="p">):</span>
+    <span class="n">hooks</span> <span class="o">=</span> <span class="n">plugins_base</span><span class="o">.</span><span class="n">processing_hooks_manager</span><span class="p">()</span>
+
+    <span class="k">for</span> <span class="n">hook_ext</span> <span class="ow">in</span> <span class="n">hooks</span><span class="p">:</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;Running post-processing hook </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">,</span> <span class="n">hook_ext</span><span class="o">.</span><span class="n">name</span><span class="p">,</span>
+                  <span class="n">node_info</span><span class="o">=</span><span class="n">node_info</span><span class="p">,</span> <span class="n">data</span><span class="o">=</span><span class="n">introspection_data</span><span class="p">)</span>
+        <span class="n">hook_ext</span><span class="o">.</span><span class="n">obj</span><span class="o">.</span><span class="n">before_update</span><span class="p">(</span><span class="n">introspection_data</span><span class="p">,</span> <span class="n">node_info</span><span class="p">)</span>
+
+
+<span class="nd">@node_cache.fsm_transition</span><span class="p">(</span><span class="n">istate</span><span class="o">.</span><span class="n">Events</span><span class="o">.</span><span class="n">process</span><span class="p">,</span> <span class="n">reentrant</span><span class="o">=</span><span class="bp">False</span><span class="p">)</span>
+<span class="k">def</span> <span class="nf">_process_node</span><span class="p">(</span><span class="n">node_info</span><span class="p">,</span> <span class="n">node</span><span class="p">,</span> <span class="n">introspection_data</span><span class="p">):</span>
+    <span class="c1"># NOTE(dtantsur): repeat the check in case something changed</span>
+    <span class="n">ir_utils</span><span class="o">.</span><span class="n">check_provision_state</span><span class="p">(</span><span class="n">node</span><span class="p">)</span>
+    <span class="n">interfaces</span> <span class="o">=</span> <span class="n">introspection_data</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;interfaces&#39;</span><span class="p">)</span>
+    <span class="n">node_info</span><span class="o">.</span><span class="n">create_ports</span><span class="p">(</span><span class="nb">list</span><span class="p">(</span><span class="n">interfaces</span><span class="o">.</span><span class="n">values</span><span class="p">()))</span>
+    <span class="n">_run_post_hooks</span><span class="p">(</span><span class="n">node_info</span><span class="p">,</span> <span class="n">introspection_data</span><span class="p">)</span>
+    <span class="n">_store_data</span><span class="p">(</span><span class="n">node_info</span><span class="p">,</span> <span class="n">introspection_data</span><span class="p">)</span>
+
+    <span class="n">ironic</span> <span class="o">=</span> <span class="n">ir_utils</span><span class="o">.</span><span class="n">get_client</span><span class="p">()</span>
+    <span class="n">firewall</span><span class="o">.</span><span class="n">update_filters</span><span class="p">(</span><span class="n">ironic</span><span class="p">)</span>
+
+    <span class="n">node_info</span><span class="o">.</span><span class="n">invalidate_cache</span><span class="p">()</span>
+    <span class="n">rules</span><span class="o">.</span><span class="n">apply</span><span class="p">(</span><span class="n">node_info</span><span class="p">,</span> <span class="n">introspection_data</span><span class="p">)</span>
+
+    <span class="n">resp</span> <span class="o">=</span> <span class="p">{</span><span class="s1">&#39;uuid&#39;</span><span class="p">:</span> <span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">}</span>
+
+    <span class="k">if</span> <span class="n">node_info</span><span class="o">.</span><span class="n">options</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;new_ipmi_credentials&#39;</span><span class="p">):</span>
+        <span class="n">new_username</span><span class="p">,</span> <span class="n">new_password</span> <span class="o">=</span> <span class="p">(</span>
+            <span class="n">node_info</span><span class="o">.</span><span class="n">options</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;new_ipmi_credentials&#39;</span><span class="p">))</span>
+        <span class="n">utils</span><span class="o">.</span><span class="n">executor</span><span class="p">()</span><span class="o">.</span><span class="n">submit</span><span class="p">(</span><span class="n">_finish_set_ipmi_credentials</span><span class="p">,</span>
+                                <span class="n">node_info</span><span class="p">,</span> <span class="n">ironic</span><span class="p">,</span> <span class="n">node</span><span class="p">,</span> <span class="n">introspection_data</span><span class="p">,</span>
+                                <span class="n">new_username</span><span class="p">,</span> <span class="n">new_password</span><span class="p">)</span>
+        <span class="n">resp</span><span class="p">[</span><span class="s1">&#39;ipmi_setup_credentials&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="bp">True</span>
+        <span class="n">resp</span><span class="p">[</span><span class="s1">&#39;ipmi_username&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">new_username</span>
+        <span class="n">resp</span><span class="p">[</span><span class="s1">&#39;ipmi_password&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">new_password</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">utils</span><span class="o">.</span><span class="n">executor</span><span class="p">()</span><span class="o">.</span><span class="n">submit</span><span class="p">(</span><span class="n">_finish</span><span class="p">,</span> <span class="n">node_info</span><span class="p">,</span> <span class="n">ironic</span><span class="p">,</span> <span class="n">introspection_data</span><span class="p">,</span>
+                                <span class="n">power_off</span><span class="o">=</span><span class="n">CONF</span><span class="o">.</span><span class="n">processing</span><span class="o">.</span><span class="n">power_off</span><span class="p">)</span>
+
+    <span class="k">return</span> <span class="n">resp</span>
+
+
+<span class="nd">@node_cache.fsm_transition</span><span class="p">(</span><span class="n">istate</span><span class="o">.</span><span class="n">Events</span><span class="o">.</span><span class="n">finish</span><span class="p">)</span>
+<span class="k">def</span> <span class="nf">_finish_set_ipmi_credentials</span><span class="p">(</span><span class="n">node_info</span><span class="p">,</span> <span class="n">ironic</span><span class="p">,</span> <span class="n">node</span><span class="p">,</span> <span class="n">introspection_data</span><span class="p">,</span>
+                                 <span class="n">new_username</span><span class="p">,</span> <span class="n">new_password</span><span class="p">):</span>
+    <span class="n">patch</span> <span class="o">=</span> <span class="p">[{</span><span class="s1">&#39;op&#39;</span><span class="p">:</span> <span class="s1">&#39;add&#39;</span><span class="p">,</span> <span class="s1">&#39;path&#39;</span><span class="p">:</span> <span class="s1">&#39;/driver_info/ipmi_username&#39;</span><span class="p">,</span>
+              <span class="s1">&#39;value&#39;</span><span class="p">:</span> <span class="n">new_username</span><span class="p">},</span>
+             <span class="p">{</span><span class="s1">&#39;op&#39;</span><span class="p">:</span> <span class="s1">&#39;add&#39;</span><span class="p">,</span> <span class="s1">&#39;path&#39;</span><span class="p">:</span> <span class="s1">&#39;/driver_info/ipmi_password&#39;</span><span class="p">,</span>
+              <span class="s1">&#39;value&#39;</span><span class="p">:</span> <span class="n">new_password</span><span class="p">}]</span>
+    <span class="n">new_ipmi_address</span> <span class="o">=</span> <span class="n">utils</span><span class="o">.</span><span class="n">get_ipmi_address_from_data</span><span class="p">(</span><span class="n">introspection_data</span><span class="p">)</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">ir_utils</span><span class="o">.</span><span class="n">get_ipmi_address</span><span class="p">(</span><span class="n">node</span><span class="p">)</span> <span class="ow">and</span> <span class="n">new_ipmi_address</span><span class="p">:</span>
+        <span class="n">patch</span><span class="o">.</span><span class="n">append</span><span class="p">({</span><span class="s1">&#39;op&#39;</span><span class="p">:</span> <span class="s1">&#39;add&#39;</span><span class="p">,</span> <span class="s1">&#39;path&#39;</span><span class="p">:</span> <span class="s1">&#39;/driver_info/ipmi_address&#39;</span><span class="p">,</span>
+                      <span class="s1">&#39;value&#39;</span><span class="p">:</span> <span class="n">new_ipmi_address</span><span class="p">})</span>
+    <span class="n">node_info</span><span class="o">.</span><span class="n">patch</span><span class="p">(</span><span class="n">patch</span><span class="p">)</span>
+
+    <span class="k">for</span> <span class="n">attempt</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">_CREDENTIALS_WAIT_RETRIES</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="c1"># We use this call because it requires valid credentials.</span>
+            <span class="c1"># We don&#39;t care about boot device, obviously.</span>
+            <span class="n">ironic</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">get_boot_device</span><span class="p">(</span><span class="n">node_info</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+        <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">_LI</span><span class="p">(</span><span class="s1">&#39;Waiting for credentials update, attempt </span><span class="si">%(attempt)d</span><span class="s1"> &#39;</span>
+                         <span class="s1">&#39;current error is </span><span class="si">%(exc)s</span><span class="s1">&#39;</span><span class="p">),</span>
+                     <span class="p">{</span><span class="s1">&#39;attempt&#39;</span><span class="p">:</span> <span class="n">attempt</span><span class="p">,</span> <span class="s1">&#39;exc&#39;</span><span class="p">:</span> <span class="n">exc</span><span class="p">},</span>
+                     <span class="n">node_info</span><span class="o">=</span><span class="n">node_info</span><span class="p">,</span> <span class="n">data</span><span class="o">=</span><span class="n">introspection_data</span><span class="p">)</span>
+            <span class="n">eventlet</span><span class="o">.</span><span class="n">greenthread</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="n">_CREDENTIALS_WAIT_PERIOD</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">_finish_common</span><span class="p">(</span><span class="n">node_info</span><span class="p">,</span> <span class="n">ironic</span><span class="p">,</span> <span class="n">introspection_data</span><span class="p">)</span>
+            <span class="k">return</span>
+
+    <span class="n">msg</span> <span class="o">=</span> <span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Failed to validate updated IPMI credentials for node &#39;</span>
+             <span class="s1">&#39;</span><span class="si">%s</span><span class="s1">, node might require maintenance&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="n">node_info</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+    <span class="n">node_info</span><span class="o">.</span><span class="n">finished</span><span class="p">(</span><span class="n">error</span><span class="o">=</span><span class="n">msg</span><span class="p">)</span>
+    <span class="k">raise</span> <span class="n">utils</span><span class="o">.</span><span class="n">Error</span><span class="p">(</span><span class="n">msg</span><span class="p">,</span> <span class="n">node_info</span><span class="o">=</span><span class="n">node_info</span><span class="p">,</span> <span class="n">data</span><span class="o">=</span><span class="n">introspection_data</span><span class="p">)</span>
+
+
+<span class="k">def</span> <span class="nf">_finish_common</span><span class="p">(</span><span class="n">node_info</span><span class="p">,</span> <span class="n">ironic</span><span class="p">,</span> <span class="n">introspection_data</span><span class="p">,</span> <span class="n">power_off</span><span class="o">=</span><span class="bp">True</span><span class="p">):</span>
+    <span class="k">if</span> <span class="n">power_off</span><span class="p">:</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;Forcing power off of node </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">,</span> <span class="n">node_info</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">ironic</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">set_power_state</span><span class="p">(</span><span class="n">node_info</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="s1">&#39;off&#39;</span><span class="p">)</span>
+        <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">node_info</span><span class="o">.</span><span class="n">node</span><span class="p">()</span><span class="o">.</span><span class="n">provision_state</span> <span class="o">==</span> <span class="s1">&#39;enroll&#39;</span><span class="p">:</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">_LI</span><span class="p">(</span><span class="s2">&quot;Failed to power off the node in&quot;</span>
+                             <span class="s2">&quot;&#39;enroll&#39; state, ignoring; error was &quot;</span>
+                             <span class="s2">&quot;</span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">),</span> <span class="n">exc</span><span class="p">,</span> <span class="n">node_info</span><span class="o">=</span><span class="n">node_info</span><span class="p">,</span>
+                         <span class="n">data</span><span class="o">=</span><span class="n">introspection_data</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">msg</span> <span class="o">=</span> <span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Failed to power off node </span><span class="si">%(node)s</span><span class="s1">, check &#39;</span>
+                         <span class="s1">&#39;its power management configuration: &#39;</span>
+                         <span class="s1">&#39;</span><span class="si">%(exc)s</span><span class="s1">&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="p">{</span><span class="s1">&#39;node&#39;</span><span class="p">:</span> <span class="n">node_info</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="s1">&#39;exc&#39;</span><span class="p">:</span>
+                                       <span class="n">exc</span><span class="p">})</span>
+                <span class="n">node_info</span><span class="o">.</span><span class="n">finished</span><span class="p">(</span><span class="n">error</span><span class="o">=</span><span class="n">msg</span><span class="p">)</span>
+                <span class="k">raise</span> <span class="n">utils</span><span class="o">.</span><span class="n">Error</span><span class="p">(</span><span class="n">msg</span><span class="p">,</span> <span class="n">node_info</span><span class="o">=</span><span class="n">node_info</span><span class="p">,</span>
+                                  <span class="n">data</span><span class="o">=</span><span class="n">introspection_data</span><span class="p">)</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">_LI</span><span class="p">(</span><span class="s1">&#39;Node powered-off&#39;</span><span class="p">),</span> <span class="n">node_info</span><span class="o">=</span><span class="n">node_info</span><span class="p">,</span>
+                 <span class="n">data</span><span class="o">=</span><span class="n">introspection_data</span><span class="p">)</span>
+
+    <span class="n">node_info</span><span class="o">.</span><span class="n">finished</span><span class="p">()</span>
+    <span class="n">LOG</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">_LI</span><span class="p">(</span><span class="s1">&#39;Introspection finished successfully&#39;</span><span class="p">),</span>
+             <span class="n">node_info</span><span class="o">=</span><span class="n">node_info</span><span class="p">,</span> <span class="n">data</span><span class="o">=</span><span class="n">introspection_data</span><span class="p">)</span>
+
+
+<span class="n">_finish</span> <span class="o">=</span> <span class="n">node_cache</span><span class="o">.</span><span class="n">fsm_transition</span><span class="p">(</span><span class="n">istate</span><span class="o">.</span><span class="n">Events</span><span class="o">.</span><span class="n">finish</span><span class="p">)(</span><span class="n">_finish_common</span><span class="p">)</span>
+
+
+<div class="viewcode-block" id="reapply"><a class="viewcode-back" href="../../api/ironic_inspector.process.html#ironic_inspector.process.reapply">[docs]</a><span class="k">def</span> <span class="nf">reapply</span><span class="p">(</span><span class="n">node_ident</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Re-apply introspection steps.</span>
+
+<span class="sd">    Re-apply preprocessing, postprocessing and introspection rules on</span>
+<span class="sd">    stored data.</span>
+
+<span class="sd">    :param node_ident: node UUID or name</span>
+<span class="sd">    :raises: utils.Error</span>
+
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;Processing re-apply introspection request for node &#39;</span>
+              <span class="s1">&#39;UUID: </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">,</span> <span class="n">node_ident</span><span class="p">)</span>
+    <span class="n">node_info</span> <span class="o">=</span> <span class="n">node_cache</span><span class="o">.</span><span class="n">get_node</span><span class="p">(</span><span class="n">node_ident</span><span class="p">,</span> <span class="n">locked</span><span class="o">=</span><span class="bp">False</span><span class="p">)</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">node_info</span><span class="o">.</span><span class="n">acquire_lock</span><span class="p">(</span><span class="n">blocking</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+        <span class="c1"># Note (mkovacik): it should be sufficient to check data</span>
+        <span class="c1"># presence &amp; locking. If either introspection didn&#39;t start</span>
+        <span class="c1"># yet, was in waiting state or didn&#39;t finish yet, either data</span>
+        <span class="c1"># won&#39;t be available or locking would fail</span>
+        <span class="k">raise</span> <span class="n">utils</span><span class="o">.</span><span class="n">Error</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Node locked, please, try again later&#39;</span><span class="p">),</span>
+                          <span class="n">node_info</span><span class="o">=</span><span class="n">node_info</span><span class="p">,</span> <span class="n">code</span><span class="o">=</span><span class="mi">409</span><span class="p">)</span>
+
+    <span class="n">utils</span><span class="o">.</span><span class="n">executor</span><span class="p">()</span><span class="o">.</span><span class="n">submit</span><span class="p">(</span><span class="n">_reapply</span><span class="p">,</span> <span class="n">node_info</span><span class="p">)</span></div>
+
+
+<span class="k">def</span> <span class="nf">_reapply</span><span class="p">(</span><span class="n">node_info</span><span class="p">):</span>
+    <span class="c1"># runs in background</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">introspection_data</span> <span class="o">=</span> <span class="n">_get_unprocessed_data</span><span class="p">(</span><span class="n">node_info</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+    <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">exception</span><span class="p">(</span><span class="n">_LE</span><span class="p">(</span><span class="s1">&#39;Encountered exception while fetching &#39;</span>
+                          <span class="s1">&#39;stored introspection data&#39;</span><span class="p">),</span>
+                      <span class="n">node_info</span><span class="o">=</span><span class="n">node_info</span><span class="p">)</span>
+        <span class="n">msg</span> <span class="o">=</span> <span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Unexpected exception </span><span class="si">%(exc_class)s</span><span class="s1"> while fetching &#39;</span>
+                 <span class="s1">&#39;unprocessed introspection data from Swift: </span><span class="si">%(error)s</span><span class="s1">&#39;</span><span class="p">)</span> <span class="o">%</span>
+               <span class="p">{</span><span class="s1">&#39;exc_class&#39;</span><span class="p">:</span> <span class="n">exc</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="vm">__name__</span><span class="p">,</span> <span class="s1">&#39;error&#39;</span><span class="p">:</span> <span class="n">exc</span><span class="p">})</span>
+        <span class="n">node_info</span><span class="o">.</span><span class="n">finished</span><span class="p">(</span><span class="n">error</span><span class="o">=</span><span class="n">msg</span><span class="p">)</span>
+        <span class="k">return</span>
+
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">ironic</span> <span class="o">=</span> <span class="n">ir_utils</span><span class="o">.</span><span class="n">get_client</span><span class="p">()</span>
+    <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+        <span class="n">msg</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;Encountered an exception while getting the Ironic client: &#39;</span>
+                <span class="s1">&#39;</span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="n">exc</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">msg</span><span class="p">,</span> <span class="n">node_info</span><span class="o">=</span><span class="n">node_info</span><span class="p">,</span> <span class="n">data</span><span class="o">=</span><span class="n">introspection_data</span><span class="p">)</span>
+        <span class="n">node_info</span><span class="o">.</span><span class="n">fsm_event</span><span class="p">(</span><span class="n">istate</span><span class="o">.</span><span class="n">Events</span><span class="o">.</span><span class="n">error</span><span class="p">)</span>
+        <span class="n">node_info</span><span class="o">.</span><span class="n">finished</span><span class="p">(</span><span class="n">error</span><span class="o">=</span><span class="n">msg</span><span class="p">)</span>
+        <span class="k">return</span>
+
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">_reapply_with_data</span><span class="p">(</span><span class="n">node_info</span><span class="p">,</span> <span class="n">introspection_data</span><span class="p">)</span>
+    <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+        <span class="n">node_info</span><span class="o">.</span><span class="n">finished</span><span class="p">(</span><span class="n">error</span><span class="o">=</span><span class="nb">str</span><span class="p">(</span><span class="n">exc</span><span class="p">))</span>
+        <span class="k">return</span>
+
+    <span class="n">_finish</span><span class="p">(</span><span class="n">node_info</span><span class="p">,</span> <span class="n">ironic</span><span class="p">,</span> <span class="n">introspection_data</span><span class="p">,</span>
+            <span class="n">power_off</span><span class="o">=</span><span class="bp">False</span><span class="p">)</span>
+
+    <span class="n">LOG</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">_LI</span><span class="p">(</span><span class="s1">&#39;Successfully reapplied introspection on stored &#39;</span>
+                 <span class="s1">&#39;data&#39;</span><span class="p">),</span> <span class="n">node_info</span><span class="o">=</span><span class="n">node_info</span><span class="p">,</span> <span class="n">data</span><span class="o">=</span><span class="n">introspection_data</span><span class="p">)</span>
+
+
+<span class="nd">@node_cache.fsm_event_before</span><span class="p">(</span><span class="n">istate</span><span class="o">.</span><span class="n">Events</span><span class="o">.</span><span class="n">reapply</span><span class="p">)</span>
+<span class="nd">@node_cache.triggers_fsm_error_transition</span><span class="p">()</span>
+<span class="k">def</span> <span class="nf">_reapply_with_data</span><span class="p">(</span><span class="n">node_info</span><span class="p">,</span> <span class="n">introspection_data</span><span class="p">):</span>
+    <span class="n">failures</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="n">_run_pre_hooks</span><span class="p">(</span><span class="n">introspection_data</span><span class="p">,</span> <span class="n">failures</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">failures</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">utils</span><span class="o">.</span><span class="n">Error</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Pre-processing failures detected reapplying &#39;</span>
+                            <span class="s1">&#39;introspection on stored data:</span><span class="se">\n</span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">)</span> <span class="o">%</span>
+                          <span class="s1">&#39;</span><span class="se">\n</span><span class="s1">&#39;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">failures</span><span class="p">),</span> <span class="n">node_info</span><span class="o">=</span><span class="n">node_info</span><span class="p">)</span>
+
+    <span class="n">interfaces</span> <span class="o">=</span> <span class="n">introspection_data</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;interfaces&#39;</span><span class="p">)</span>
+    <span class="n">node_info</span><span class="o">.</span><span class="n">create_ports</span><span class="p">(</span><span class="nb">list</span><span class="p">(</span><span class="n">interfaces</span><span class="o">.</span><span class="n">values</span><span class="p">()))</span>
+    <span class="n">_run_post_hooks</span><span class="p">(</span><span class="n">node_info</span><span class="p">,</span> <span class="n">introspection_data</span><span class="p">)</span>
+    <span class="n">_store_data</span><span class="p">(</span><span class="n">node_info</span><span class="p">,</span> <span class="n">introspection_data</span><span class="p">)</span>
+    <span class="n">node_info</span><span class="o">.</span><span class="n">invalidate_cache</span><span class="p">()</span>
+    <span class="n">rules</span><span class="o">.</span><span class="n">apply</span><span class="p">(</span><span class="n">node_info</span><span class="p">,</span> <span class="n">introspection_data</span><span class="p">)</span>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/ironic-inspector
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../index.html">Ironic Inspector 5.0.1.dev1 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../index.html" accesskey="U">Module code</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright OpenStack Foundation.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/Ironic Inspector");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

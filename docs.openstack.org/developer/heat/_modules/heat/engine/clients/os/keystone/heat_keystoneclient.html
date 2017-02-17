@@ -1,0 +1,679 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>heat.engine.clients.os.keystone.heat_keystoneclient &mdash; heat 8.0.0.0rc2.dev38 documentation</title>
+    
+    <link rel="stylesheet" href="../../../../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../../../../',
+        VERSION:     '8.0.0.0rc2.dev38',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../../../../_static/doctools.js"></script>
+    <link rel="top" title="heat 8.0.0.0rc2.dev38 documentation" href="../../../../../../index.html" />
+    <link rel="up" title="Module code" href="../../../../../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for heat.engine.clients.os.keystone.heat_keystoneclient</h1><div class="highlight"><pre>
+<span></span><span class="c1">#</span>
+<span class="c1">#    Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may</span>
+<span class="c1">#    not use this file except in compliance with the License. You may obtain</span>
+<span class="c1">#    a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#         http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1">#    Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1">#    distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="c1">#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="c1">#    License for the specific language governing permissions and limitations</span>
+<span class="c1">#    under the License.</span>
+
+<span class="sd">&quot;&quot;&quot;Keystone Client functionality for use by resources.&quot;&quot;&quot;</span>
+
+<span class="kn">import</span> <span class="nn">collections</span>
+<span class="kn">import</span> <span class="nn">uuid</span>
+<span class="kn">import</span> <span class="nn">weakref</span>
+
+<span class="kn">from</span> <span class="nn">keystoneauth1</span> <span class="kn">import</span> <span class="n">exceptions</span> <span class="k">as</span> <span class="n">ks_exception</span>
+<span class="kn">from</span> <span class="nn">keystoneauth1.identity</span> <span class="kn">import</span> <span class="n">generic</span> <span class="k">as</span> <span class="n">ks_auth</span>
+
+<span class="kn">from</span> <span class="nn">keystoneclient.v3</span> <span class="kn">import</span> <span class="n">client</span> <span class="k">as</span> <span class="n">kc_v3</span>
+<span class="kn">from</span> <span class="nn">oslo_config</span> <span class="kn">import</span> <span class="n">cfg</span>
+<span class="kn">from</span> <span class="nn">oslo_log</span> <span class="kn">import</span> <span class="n">log</span> <span class="k">as</span> <span class="n">logging</span>
+<span class="kn">from</span> <span class="nn">oslo_serialization</span> <span class="kn">import</span> <span class="n">jsonutils</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">importutils</span>
+
+<span class="kn">from</span> <span class="nn">heat.common</span> <span class="kn">import</span> <span class="n">context</span>
+<span class="kn">from</span> <span class="nn">heat.common</span> <span class="kn">import</span> <span class="n">exception</span>
+<span class="kn">from</span> <span class="nn">heat.common.i18n</span> <span class="kn">import</span> <span class="n">_</span>
+<span class="kn">from</span> <span class="nn">heat.common.i18n</span> <span class="kn">import</span> <span class="n">_LE</span>
+<span class="kn">from</span> <span class="nn">heat.common.i18n</span> <span class="kn">import</span> <span class="n">_LW</span>
+
+<span class="n">LOG</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="s1">&#39;heat.engine.clients.keystoneclient&#39;</span><span class="p">)</span>
+
+<span class="n">AccessKey</span> <span class="o">=</span> <span class="n">collections</span><span class="o">.</span><span class="n">namedtuple</span><span class="p">(</span><span class="s1">&#39;AccessKey&#39;</span><span class="p">,</span> <span class="p">[</span><span class="s1">&#39;id&#39;</span><span class="p">,</span> <span class="s1">&#39;access&#39;</span><span class="p">,</span> <span class="s1">&#39;secret&#39;</span><span class="p">])</span>
+
+<span class="n">_default_keystone_backend</span> <span class="o">=</span> <span class="p">(</span>
+    <span class="s1">&#39;heat.engine.clients.os.keystone.heat_keystoneclient.KsClientWrapper&#39;</span><span class="p">)</span>
+
+<span class="n">keystone_opts</span> <span class="o">=</span> <span class="p">[</span>
+    <span class="n">cfg</span><span class="o">.</span><span class="n">StrOpt</span><span class="p">(</span><span class="s1">&#39;keystone_backend&#39;</span><span class="p">,</span>
+               <span class="n">default</span><span class="o">=</span><span class="n">_default_keystone_backend</span><span class="p">,</span>
+               <span class="n">help</span><span class="o">=</span><span class="n">_</span><span class="p">(</span><span class="s2">&quot;Fully qualified class name to use as a &quot;</span>
+                      <span class="s2">&quot;keystone backend.&quot;</span><span class="p">))</span>
+<span class="p">]</span>
+<span class="n">cfg</span><span class="o">.</span><span class="n">CONF</span><span class="o">.</span><span class="n">register_opts</span><span class="p">(</span><span class="n">keystone_opts</span><span class="p">)</span>
+
+
+<div class="viewcode-block" id="KsClientWrapper"><a class="viewcode-back" href="../../../../../../api/heat.engine.clients.os.keystone.heat_keystoneclient.html#heat.engine.clients.os.keystone.heat_keystoneclient.KsClientWrapper">[docs]</a><span class="k">class</span> <span class="nc">KsClientWrapper</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Wrap keystone client so we can encapsulate logic used in resources.</span>
+
+<span class="sd">    Note this is intended to be initialized from a resource on a per-session</span>
+<span class="sd">    basis, so the session context is passed in on initialization</span>
+<span class="sd">    Also note that an instance of this is created in each request context as</span>
+<span class="sd">    part of a lazy-loaded cloud backend and it can be easily referenced in</span>
+<span class="sd">    each resource as ``self.keystone()``, so there should not be any need to</span>
+<span class="sd">    directly instantiate instances of this class inside resources themselves.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">):</span>
+        <span class="c1"># If a trust_id is specified in the context, we immediately</span>
+        <span class="c1"># authenticate so we can populate the context with a trust token</span>
+        <span class="c1"># otherwise, we delay client authentication until needed to avoid</span>
+        <span class="c1"># unnecessary calls to keystone.</span>
+        <span class="c1">#</span>
+        <span class="c1"># Note that when you obtain a token using a trust, it cannot be</span>
+        <span class="c1"># used to reauthenticate and get another token, so we have to</span>
+        <span class="c1"># get a new trust-token even if context.auth_token is set.</span>
+        <span class="c1">#</span>
+        <span class="c1"># - context.auth_url is expected to contain a versioned keystone</span>
+        <span class="c1">#   path, we will work with either a v2.0 or v3 path</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_context</span> <span class="o">=</span> <span class="n">weakref</span><span class="o">.</span><span class="n">ref</span><span class="p">(</span><span class="n">context</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_client</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_admin_auth</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_domain_admin_auth</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_domain_admin_client</span> <span class="o">=</span> <span class="bp">None</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">session</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">context</span><span class="o">.</span><span class="n">keystone_session</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">v3_endpoint</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">context</span><span class="o">.</span><span class="n">keystone_v3_endpoint</span>
+
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">context</span><span class="o">.</span><span class="n">trust_id</span><span class="p">:</span>
+            <span class="c1"># Create a client with the specified trust_id, this</span>
+            <span class="c1"># populates self.context.auth_token with a trust-scoped token</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_client</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_v3_client_init</span><span class="p">()</span>
+
+        <span class="c1"># The stack domain user ID should be set in heat.conf</span>
+        <span class="c1"># It can be created via python-openstackclient</span>
+        <span class="c1"># openstack --os-identity-api-version=3 domain create heat</span>
+        <span class="c1"># If the domain is specified, then you must specify a domain</span>
+        <span class="c1"># admin user.  If no domain is specified, we fall back to</span>
+        <span class="c1"># legacy behavior with warnings.</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_stack_domain_id</span> <span class="o">=</span> <span class="n">cfg</span><span class="o">.</span><span class="n">CONF</span><span class="o">.</span><span class="n">stack_user_domain_id</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">stack_domain_name</span> <span class="o">=</span> <span class="n">cfg</span><span class="o">.</span><span class="n">CONF</span><span class="o">.</span><span class="n">stack_user_domain_name</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">domain_admin_user</span> <span class="o">=</span> <span class="n">cfg</span><span class="o">.</span><span class="n">CONF</span><span class="o">.</span><span class="n">stack_domain_admin</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">domain_admin_password</span> <span class="o">=</span> <span class="n">cfg</span><span class="o">.</span><span class="n">CONF</span><span class="o">.</span><span class="n">stack_domain_admin_password</span>
+
+        <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;Using stack domain </span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">stack_domain</span><span class="p">)</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">context</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">ctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_context</span><span class="p">()</span>
+        <span class="k">assert</span> <span class="n">ctxt</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">,</span> <span class="s2">&quot;Need a reference to the context&quot;</span>
+        <span class="k">return</span> <span class="n">ctxt</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">stack_domain</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Domain scope data.</span>
+
+<span class="sd">        This is only used for checking for scoping data, not using the value.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_stack_domain_id</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">stack_domain_name</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">client</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="p">:</span>
+            <span class="c1"># Create connection to v3 API</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_client</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_v3_client_init</span><span class="p">()</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">region_name</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">context</span><span class="o">.</span><span class="n">region_name</span> <span class="ow">or</span> <span class="n">cfg</span><span class="o">.</span><span class="n">CONF</span><span class="o">.</span><span class="n">region_name_for_services</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">domain_admin_auth</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_domain_admin_auth</span><span class="p">:</span>
+            <span class="c1"># Note we must specify the domain when getting the token</span>
+            <span class="c1"># as only a domain scoped token can create projects in the domain</span>
+            <span class="n">auth</span> <span class="o">=</span> <span class="n">ks_auth</span><span class="o">.</span><span class="n">Password</span><span class="p">(</span><span class="n">username</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">domain_admin_user</span><span class="p">,</span>
+                                    <span class="n">password</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">domain_admin_password</span><span class="p">,</span>
+                                    <span class="n">auth_url</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">v3_endpoint</span><span class="p">,</span>
+                                    <span class="n">domain_id</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_stack_domain_id</span><span class="p">,</span>
+                                    <span class="n">domain_name</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">stack_domain_name</span><span class="p">,</span>
+                                    <span class="n">user_domain_id</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_stack_domain_id</span><span class="p">,</span>
+                                    <span class="n">user_domain_name</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">stack_domain_name</span><span class="p">)</span>
+
+            <span class="c1"># NOTE(jamielennox): just do something to ensure a valid token</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">auth</span><span class="o">.</span><span class="n">get_token</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">session</span><span class="p">)</span>
+            <span class="k">except</span> <span class="n">ks_exception</span><span class="o">.</span><span class="n">Unauthorized</span><span class="p">:</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">_LE</span><span class="p">(</span><span class="s2">&quot;Domain admin client authentication failed&quot;</span><span class="p">))</span>
+                <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">AuthorizationFailure</span><span class="p">()</span>
+
+            <span class="bp">self</span><span class="o">.</span><span class="n">_domain_admin_auth</span> <span class="o">=</span> <span class="n">auth</span>
+
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_domain_admin_auth</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">domain_admin_client</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_domain_admin_client</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_domain_admin_client</span> <span class="o">=</span> <span class="n">kc_v3</span><span class="o">.</span><span class="n">Client</span><span class="p">(</span>
+                <span class="n">session</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">session</span><span class="p">,</span>
+                <span class="n">auth</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">domain_admin_auth</span><span class="p">,</span>
+                <span class="n">region_name</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">region_name</span><span class="p">)</span>
+
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_domain_admin_client</span>
+
+    <span class="k">def</span> <span class="nf">_v3_client_init</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">client</span> <span class="o">=</span> <span class="n">kc_v3</span><span class="o">.</span><span class="n">Client</span><span class="p">(</span><span class="n">session</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">session</span><span class="p">,</span>
+                              <span class="n">region_name</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">region_name</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="nb">hasattr</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">context</span><span class="o">.</span><span class="n">auth_plugin</span><span class="p">,</span> <span class="s1">&#39;get_access&#39;</span><span class="p">):</span>
+            <span class="c1"># NOTE(jamielennox): get_access returns the current token without</span>
+            <span class="c1"># reauthenticating if it&#39;s present and valid.</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">auth_ref</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">context</span><span class="o">.</span><span class="n">auth_plugin</span><span class="o">.</span><span class="n">get_access</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">session</span><span class="p">)</span>
+            <span class="k">except</span> <span class="n">ks_exception</span><span class="o">.</span><span class="n">Unauthorized</span><span class="p">:</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">_LE</span><span class="p">(</span><span class="s2">&quot;Keystone client authentication failed&quot;</span><span class="p">))</span>
+                <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">AuthorizationFailure</span><span class="p">()</span>
+
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">context</span><span class="o">.</span><span class="n">trust_id</span><span class="p">:</span>
+                <span class="c1"># Sanity check</span>
+                <span class="k">if</span> <span class="ow">not</span> <span class="n">auth_ref</span><span class="o">.</span><span class="n">trust_scoped</span><span class="p">:</span>
+                    <span class="n">LOG</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">_LE</span><span class="p">(</span><span class="s2">&quot;trust token re-scoping failed!&quot;</span><span class="p">))</span>
+                    <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">AuthorizationFailure</span><span class="p">()</span>
+                <span class="c1"># Sanity check that impersonation is effective</span>
+                <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">context</span><span class="o">.</span><span class="n">trustor_user_id</span> <span class="o">!=</span> <span class="n">auth_ref</span><span class="o">.</span><span class="n">user_id</span><span class="p">:</span>
+                    <span class="n">LOG</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">_LE</span><span class="p">(</span><span class="s2">&quot;Trust impersonation failed&quot;</span><span class="p">))</span>
+                    <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">AuthorizationFailure</span><span class="p">()</span>
+
+        <span class="k">return</span> <span class="n">client</span>
+
+<div class="viewcode-block" id="KsClientWrapper.create_trust_context"><a class="viewcode-back" href="../../../../../../api/heat.engine.clients.os.keystone.heat_keystoneclient.html#heat.engine.clients.os.keystone.heat_keystoneclient.KsClientWrapper.create_trust_context">[docs]</a>    <span class="k">def</span> <span class="nf">create_trust_context</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Create a trust using the trustor identity in the current context.</span>
+
+<span class="sd">        The trust is created with the trustee as the heat service user.</span>
+
+<span class="sd">        If the current context already contains a trust_id, we do nothing</span>
+<span class="sd">        and return the current context.</span>
+
+<span class="sd">        Returns a context containing the new trust_id.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">context</span><span class="o">.</span><span class="n">trust_id</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">context</span>
+
+        <span class="c1"># We need the service admin user ID (not name), as the trustor user</span>
+        <span class="c1"># can&#39;t lookup the ID in keystoneclient unless they&#39;re admin</span>
+        <span class="c1"># workaround this by getting the user_id from admin_client</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">trustee_user_id</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">context</span><span class="o">.</span><span class="n">trusts_auth_plugin</span><span class="o">.</span><span class="n">get_user_id</span><span class="p">(</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">session</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">ks_exception</span><span class="o">.</span><span class="n">Unauthorized</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">_LE</span><span class="p">(</span><span class="s2">&quot;Domain admin client authentication failed&quot;</span><span class="p">))</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">AuthorizationFailure</span><span class="p">()</span>
+
+        <span class="n">trustor_user_id</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">context</span><span class="o">.</span><span class="n">auth_plugin</span><span class="o">.</span><span class="n">get_user_id</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">session</span><span class="p">)</span>
+        <span class="n">trustor_proj_id</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">context</span><span class="o">.</span><span class="n">auth_plugin</span><span class="o">.</span><span class="n">get_project_id</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">session</span><span class="p">)</span>
+
+        <span class="c1"># inherit the roles of the trustor, unless set trusts_delegated_roles</span>
+        <span class="k">if</span> <span class="n">cfg</span><span class="o">.</span><span class="n">CONF</span><span class="o">.</span><span class="n">trusts_delegated_roles</span><span class="p">:</span>
+            <span class="n">roles</span> <span class="o">=</span> <span class="n">cfg</span><span class="o">.</span><span class="n">CONF</span><span class="o">.</span><span class="n">trusts_delegated_roles</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">roles</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">context</span><span class="o">.</span><span class="n">roles</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">trust</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">trusts</span><span class="o">.</span><span class="n">create</span><span class="p">(</span><span class="n">trustor_user</span><span class="o">=</span><span class="n">trustor_user_id</span><span class="p">,</span>
+                                              <span class="n">trustee_user</span><span class="o">=</span><span class="n">trustee_user_id</span><span class="p">,</span>
+                                              <span class="n">project</span><span class="o">=</span><span class="n">trustor_proj_id</span><span class="p">,</span>
+                                              <span class="n">impersonation</span><span class="o">=</span><span class="bp">True</span><span class="p">,</span>
+                                              <span class="n">role_names</span><span class="o">=</span><span class="n">roles</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">ks_exception</span><span class="o">.</span><span class="n">NotFound</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Failed to find roles </span><span class="si">%s</span><span class="s2"> for user </span><span class="si">%s</span><span class="s2">&quot;</span>
+                      <span class="o">%</span> <span class="p">(</span><span class="n">roles</span><span class="p">,</span> <span class="n">trustor_user_id</span><span class="p">))</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">MissingCredentialError</span><span class="p">(</span>
+                <span class="n">required</span><span class="o">=</span><span class="n">_</span><span class="p">(</span><span class="s2">&quot;roles </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">)</span> <span class="o">%</span> <span class="n">roles</span><span class="p">)</span>
+
+        <span class="n">context_data</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">context</span><span class="o">.</span><span class="n">to_dict</span><span class="p">()</span>
+        <span class="n">context_data</span><span class="p">[</span><span class="s1">&#39;overwrite&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="bp">False</span>
+        <span class="n">trust_context</span> <span class="o">=</span> <span class="n">context</span><span class="o">.</span><span class="n">RequestContext</span><span class="o">.</span><span class="n">from_dict</span><span class="p">(</span><span class="n">context_data</span><span class="p">)</span>
+        <span class="n">trust_context</span><span class="o">.</span><span class="n">trust_id</span> <span class="o">=</span> <span class="n">trust</span><span class="o">.</span><span class="n">id</span>
+        <span class="n">trust_context</span><span class="o">.</span><span class="n">trustor_user_id</span> <span class="o">=</span> <span class="n">trustor_user_id</span>
+        <span class="k">return</span> <span class="n">trust_context</span></div>
+
+<div class="viewcode-block" id="KsClientWrapper.delete_trust"><a class="viewcode-back" href="../../../../../../api/heat.engine.clients.os.keystone.heat_keystoneclient.html#heat.engine.clients.os.keystone.heat_keystoneclient.KsClientWrapper.delete_trust">[docs]</a>    <span class="k">def</span> <span class="nf">delete_trust</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">trust_id</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Delete the specified trust.&quot;&quot;&quot;</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">trusts</span><span class="o">.</span><span class="n">delete</span><span class="p">(</span><span class="n">trust_id</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">ks_exception</span><span class="o">.</span><span class="n">NotFound</span><span class="p">:</span>
+            <span class="k">pass</span></div>
+
+    <span class="k">def</span> <span class="nf">_get_username</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">username</span><span class="p">):</span>
+        <span class="k">if</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">username</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">64</span><span class="p">):</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s2">&quot;Truncating the username </span><span class="si">%s</span><span class="s2"> to the last 64 &quot;</span>
+                            <span class="s2">&quot;characters.&quot;</span><span class="p">),</span> <span class="n">username</span><span class="p">)</span>
+        <span class="c1"># get the last 64 characters of the username</span>
+        <span class="k">return</span> <span class="n">username</span><span class="p">[</span><span class="o">-</span><span class="mi">64</span><span class="p">:]</span>
+
+<div class="viewcode-block" id="KsClientWrapper.create_stack_user"><a class="viewcode-back" href="../../../../../../api/heat.engine.clients.os.keystone.heat_keystoneclient.html#heat.engine.clients.os.keystone.heat_keystoneclient.KsClientWrapper.create_stack_user">[docs]</a>    <span class="k">def</span> <span class="nf">create_stack_user</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">username</span><span class="p">,</span> <span class="n">password</span><span class="o">=</span><span class="s1">&#39;&#39;</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Create a user defined as part of a stack.</span>
+
+<span class="sd">        The user is defined either via template or created internally by a</span>
+<span class="sd">        resource.  This user will be added to the heat_stack_user_role as</span>
+<span class="sd">        defined in the config.</span>
+
+<span class="sd">        Returns the keystone ID of the resulting user.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="c1"># FIXME(shardy): There&#39;s duplicated logic between here and</span>
+        <span class="c1"># create_stack_domain user, but this function is expected to</span>
+        <span class="c1"># be removed after the transition of all resources to domain</span>
+        <span class="c1"># users has been completed</span>
+        <span class="n">stack_user_role</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">roles</span><span class="o">.</span><span class="n">list</span><span class="p">(</span>
+            <span class="n">name</span><span class="o">=</span><span class="n">cfg</span><span class="o">.</span><span class="n">CONF</span><span class="o">.</span><span class="n">heat_stack_user_role</span><span class="p">)</span>
+        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">stack_user_role</span><span class="p">)</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
+            <span class="n">role_id</span> <span class="o">=</span> <span class="n">stack_user_role</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">id</span>
+            <span class="c1"># Create the user</span>
+            <span class="n">user</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">users</span><span class="o">.</span><span class="n">create</span><span class="p">(</span>
+                <span class="n">name</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_get_username</span><span class="p">(</span><span class="n">username</span><span class="p">),</span> <span class="n">password</span><span class="o">=</span><span class="n">password</span><span class="p">,</span>
+                <span class="n">default_project</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">context</span><span class="o">.</span><span class="n">tenant_id</span><span class="p">)</span>
+            <span class="c1"># Add user to heat_stack_user_role</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Adding user </span><span class="si">%(user)s</span><span class="s2"> to role </span><span class="si">%(role)s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">{</span>
+                      <span class="s1">&#39;user&#39;</span><span class="p">:</span> <span class="n">user</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="s1">&#39;role&#39;</span><span class="p">:</span> <span class="n">role_id</span><span class="p">})</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">roles</span><span class="o">.</span><span class="n">grant</span><span class="p">(</span><span class="n">role</span><span class="o">=</span><span class="n">role_id</span><span class="p">,</span> <span class="n">user</span><span class="o">=</span><span class="n">user</span><span class="o">.</span><span class="n">id</span><span class="p">,</span>
+                                    <span class="n">project</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">context</span><span class="o">.</span><span class="n">tenant_id</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">_LE</span><span class="p">(</span><span class="s2">&quot;Failed to add user </span><span class="si">%(user)s</span><span class="s2"> to role </span><span class="si">%(role)s</span><span class="s2">, &quot;</span>
+                          <span class="s2">&quot;check role exists!&quot;</span><span class="p">),</span> <span class="p">{</span>
+                      <span class="s1">&#39;user&#39;</span><span class="p">:</span> <span class="n">username</span><span class="p">,</span>
+                      <span class="s1">&#39;role&#39;</span><span class="p">:</span> <span class="n">cfg</span><span class="o">.</span><span class="n">CONF</span><span class="o">.</span><span class="n">heat_stack_user_role</span><span class="p">})</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">Error</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s2">&quot;Can&#39;t find role </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">)</span>
+                                  <span class="o">%</span> <span class="n">cfg</span><span class="o">.</span><span class="n">CONF</span><span class="o">.</span><span class="n">heat_stack_user_role</span><span class="p">)</span>
+
+        <span class="k">return</span> <span class="n">user</span><span class="o">.</span><span class="n">id</span></div>
+
+<div class="viewcode-block" id="KsClientWrapper.stack_domain_user_token"><a class="viewcode-back" href="../../../../../../api/heat.engine.clients.os.keystone.heat_keystoneclient.html#heat.engine.clients.os.keystone.heat_keystoneclient.KsClientWrapper.stack_domain_user_token">[docs]</a>    <span class="k">def</span> <span class="nf">stack_domain_user_token</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">user_id</span><span class="p">,</span> <span class="n">project_id</span><span class="p">,</span> <span class="n">password</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get a token for a stack domain user.&quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">stack_domain</span><span class="p">:</span>
+            <span class="c1"># Note, no legacy fallback path as we don&#39;t want to deploy</span>
+            <span class="c1"># tokens for non stack-domain users inside instances</span>
+            <span class="n">msg</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;Cannot get stack domain user token, no stack domain id &#39;</span>
+                    <span class="s1">&#39;configured, please fix your heat.conf&#39;</span><span class="p">)</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">Error</span><span class="p">(</span><span class="n">msg</span><span class="p">)</span>
+
+        <span class="c1"># Create a keystone session, then request a token with no</span>
+        <span class="c1"># catalog (the token is expected to be used inside an instance</span>
+        <span class="c1"># where a specific endpoint will be specified, and user-data</span>
+        <span class="c1"># space is limited..)</span>
+        <span class="c1"># TODO(rabi): generic auth plugins don&#39;t support `include_catalog&#39;</span>
+        <span class="c1"># flag yet. We&#39;ll add it once it&#39;s supported..</span>
+        <span class="n">auth</span> <span class="o">=</span> <span class="n">ks_auth</span><span class="o">.</span><span class="n">Password</span><span class="p">(</span><span class="n">auth_url</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">v3_endpoint</span><span class="p">,</span>
+                                <span class="n">user_id</span><span class="o">=</span><span class="n">user_id</span><span class="p">,</span>
+                                <span class="n">password</span><span class="o">=</span><span class="n">password</span><span class="p">,</span>
+                                <span class="n">project_id</span><span class="o">=</span><span class="n">project_id</span><span class="p">)</span>
+
+        <span class="k">return</span> <span class="n">auth</span><span class="o">.</span><span class="n">get_token</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">session</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="KsClientWrapper.create_stack_domain_user"><a class="viewcode-back" href="../../../../../../api/heat.engine.clients.os.keystone.heat_keystoneclient.html#heat.engine.clients.os.keystone.heat_keystoneclient.KsClientWrapper.create_stack_domain_user">[docs]</a>    <span class="k">def</span> <span class="nf">create_stack_domain_user</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">username</span><span class="p">,</span> <span class="n">project_id</span><span class="p">,</span> <span class="n">password</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Create a domain user defined as part of a stack.</span>
+
+<span class="sd">        The user is defined either via template or created internally by a</span>
+<span class="sd">        resource.  This user will be added to the heat_stack_user_role as</span>
+<span class="sd">        defined in the config, and created in the specified project (which is</span>
+<span class="sd">        expected to be in the stack_domain).</span>
+
+<span class="sd">        Returns the keystone ID of the resulting user.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">stack_domain</span><span class="p">:</span>
+            <span class="c1"># FIXME(shardy): Legacy fallback for folks using old heat.conf</span>
+            <span class="c1"># files which lack domain configuration</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">create_stack_user</span><span class="p">(</span><span class="n">username</span><span class="o">=</span><span class="n">username</span><span class="p">,</span> <span class="n">password</span><span class="o">=</span><span class="n">password</span><span class="p">)</span>
+        <span class="c1"># We add the new user to a special keystone role</span>
+        <span class="c1"># This role is designed to allow easier differentiation of the</span>
+        <span class="c1"># heat-generated &quot;stack users&quot; which will generally have credentials</span>
+        <span class="c1"># deployed on an instance (hence are implicitly untrusted)</span>
+        <span class="n">stack_user_role</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">domain_admin_client</span><span class="o">.</span><span class="n">roles</span><span class="o">.</span><span class="n">list</span><span class="p">(</span>
+            <span class="n">name</span><span class="o">=</span><span class="n">cfg</span><span class="o">.</span><span class="n">CONF</span><span class="o">.</span><span class="n">heat_stack_user_role</span><span class="p">)</span>
+        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">stack_user_role</span><span class="p">)</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
+            <span class="n">role_id</span> <span class="o">=</span> <span class="n">stack_user_role</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">id</span>
+            <span class="c1"># Create user</span>
+            <span class="n">user</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">domain_admin_client</span><span class="o">.</span><span class="n">users</span><span class="o">.</span><span class="n">create</span><span class="p">(</span>
+                <span class="n">name</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_get_username</span><span class="p">(</span><span class="n">username</span><span class="p">),</span> <span class="n">password</span><span class="o">=</span><span class="n">password</span><span class="p">,</span>
+                <span class="n">default_project</span><span class="o">=</span><span class="n">project_id</span><span class="p">,</span> <span class="n">domain</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">stack_domain_id</span><span class="p">)</span>
+            <span class="c1"># Add to stack user role</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Adding user </span><span class="si">%(user)s</span><span class="s2"> to role </span><span class="si">%(role)s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">{</span>
+                      <span class="s1">&#39;user&#39;</span><span class="p">:</span> <span class="n">user</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="s1">&#39;role&#39;</span><span class="p">:</span> <span class="n">role_id</span><span class="p">})</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">domain_admin_client</span><span class="o">.</span><span class="n">roles</span><span class="o">.</span><span class="n">grant</span><span class="p">(</span><span class="n">role</span><span class="o">=</span><span class="n">role_id</span><span class="p">,</span> <span class="n">user</span><span class="o">=</span><span class="n">user</span><span class="o">.</span><span class="n">id</span><span class="p">,</span>
+                                                 <span class="n">project</span><span class="o">=</span><span class="n">project_id</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">_LE</span><span class="p">(</span><span class="s2">&quot;Failed to add user </span><span class="si">%(user)s</span><span class="s2"> to role </span><span class="si">%(role)s</span><span class="s2">, &quot;</span>
+                          <span class="s2">&quot;check role exists!&quot;</span><span class="p">),</span>
+                      <span class="p">{</span><span class="s1">&#39;user&#39;</span><span class="p">:</span> <span class="n">username</span><span class="p">,</span>
+                       <span class="s1">&#39;role&#39;</span><span class="p">:</span> <span class="n">cfg</span><span class="o">.</span><span class="n">CONF</span><span class="o">.</span><span class="n">heat_stack_user_role</span><span class="p">})</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">Error</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s2">&quot;Can&#39;t find role </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">)</span>
+                                  <span class="o">%</span> <span class="n">cfg</span><span class="o">.</span><span class="n">CONF</span><span class="o">.</span><span class="n">heat_stack_user_role</span><span class="p">)</span>
+
+        <span class="k">return</span> <span class="n">user</span><span class="o">.</span><span class="n">id</span></div>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">stack_domain_id</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_stack_domain_id</span><span class="p">:</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">access</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">domain_admin_auth</span><span class="o">.</span><span class="n">get_access</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">session</span><span class="p">)</span>
+            <span class="k">except</span> <span class="n">ks_exception</span><span class="o">.</span><span class="n">Unauthorized</span><span class="p">:</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">_LE</span><span class="p">(</span><span class="s2">&quot;Keystone client authentication failed&quot;</span><span class="p">))</span>
+                <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">AuthorizationFailure</span><span class="p">()</span>
+
+            <span class="bp">self</span><span class="o">.</span><span class="n">_stack_domain_id</span> <span class="o">=</span> <span class="n">access</span><span class="o">.</span><span class="n">domain_id</span>
+
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_stack_domain_id</span>
+
+    <span class="k">def</span> <span class="nf">_check_stack_domain_user</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">user_id</span><span class="p">,</span> <span class="n">project_id</span><span class="p">,</span> <span class="n">action</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Sanity check that domain/project is correct.&quot;&quot;&quot;</span>
+        <span class="n">user</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">domain_admin_client</span><span class="o">.</span><span class="n">users</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">user_id</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">user</span><span class="o">.</span><span class="n">domain_id</span> <span class="o">!=</span> <span class="bp">self</span><span class="o">.</span><span class="n">stack_domain_id</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;User </span><span class="si">%s</span><span class="s1"> in invalid domain&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="n">action</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">user</span><span class="o">.</span><span class="n">default_project_id</span> <span class="o">!=</span> <span class="n">project_id</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;User </span><span class="si">%s</span><span class="s1"> in invalid project&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="n">action</span><span class="p">)</span>
+
+<div class="viewcode-block" id="KsClientWrapper.delete_stack_domain_user"><a class="viewcode-back" href="../../../../../../api/heat.engine.clients.os.keystone.heat_keystoneclient.html#heat.engine.clients.os.keystone.heat_keystoneclient.KsClientWrapper.delete_stack_domain_user">[docs]</a>    <span class="k">def</span> <span class="nf">delete_stack_domain_user</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">user_id</span><span class="p">,</span> <span class="n">project_id</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">stack_domain</span><span class="p">:</span>
+            <span class="c1"># FIXME(shardy): Legacy fallback for folks using old heat.conf</span>
+            <span class="c1"># files which lack domain configuration</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">delete_stack_user</span><span class="p">(</span><span class="n">user_id</span><span class="p">)</span>
+
+        <span class="k">try</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_check_stack_domain_user</span><span class="p">(</span><span class="n">user_id</span><span class="p">,</span> <span class="n">project_id</span><span class="p">,</span> <span class="s1">&#39;delete&#39;</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">domain_admin_client</span><span class="o">.</span><span class="n">users</span><span class="o">.</span><span class="n">delete</span><span class="p">(</span><span class="n">user_id</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">ks_exception</span><span class="o">.</span><span class="n">NotFound</span><span class="p">:</span>
+            <span class="k">pass</span></div>
+
+<div class="viewcode-block" id="KsClientWrapper.delete_stack_user"><a class="viewcode-back" href="../../../../../../api/heat.engine.clients.os.keystone.heat_keystoneclient.html#heat.engine.clients.os.keystone.heat_keystoneclient.KsClientWrapper.delete_stack_user">[docs]</a>    <span class="k">def</span> <span class="nf">delete_stack_user</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">user_id</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">users</span><span class="o">.</span><span class="n">delete</span><span class="p">(</span><span class="n">user</span><span class="o">=</span><span class="n">user_id</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">ks_exception</span><span class="o">.</span><span class="n">NotFound</span><span class="p">:</span>
+            <span class="k">pass</span></div>
+
+<div class="viewcode-block" id="KsClientWrapper.create_stack_domain_project"><a class="viewcode-back" href="../../../../../../api/heat.engine.clients.os.keystone.heat_keystoneclient.html#heat.engine.clients.os.keystone.heat_keystoneclient.KsClientWrapper.create_stack_domain_project">[docs]</a>    <span class="k">def</span> <span class="nf">create_stack_domain_project</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">stack_id</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Create a project in the heat stack-user domain.&quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">stack_domain</span><span class="p">:</span>
+            <span class="c1"># FIXME(shardy): Legacy fallback for folks using old heat.conf</span>
+            <span class="c1"># files which lack domain configuration</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">context</span><span class="o">.</span><span class="n">tenant_id</span>
+        <span class="c1"># Note we use the tenant ID not name to ensure uniqueness in a multi-</span>
+        <span class="c1"># domain environment (where the tenant name may not be globally unique)</span>
+        <span class="n">project_name</span> <span class="o">=</span> <span class="p">(</span><span class="s1">&#39;</span><span class="si">%s</span><span class="s1">-</span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">context</span><span class="o">.</span><span class="n">tenant_id</span><span class="p">,</span> <span class="n">stack_id</span><span class="p">))[:</span><span class="mi">64</span><span class="p">]</span>
+        <span class="n">desc</span> <span class="o">=</span> <span class="s2">&quot;Heat stack user project&quot;</span>
+        <span class="n">domain_project</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">domain_admin_client</span><span class="o">.</span><span class="n">projects</span><span class="o">.</span><span class="n">create</span><span class="p">(</span>
+            <span class="n">name</span><span class="o">=</span><span class="n">project_name</span><span class="p">,</span>
+            <span class="n">domain</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">stack_domain_id</span><span class="p">,</span>
+            <span class="n">description</span><span class="o">=</span><span class="n">desc</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">domain_project</span><span class="o">.</span><span class="n">id</span></div>
+
+<div class="viewcode-block" id="KsClientWrapper.delete_stack_domain_project"><a class="viewcode-back" href="../../../../../../api/heat.engine.clients.os.keystone.heat_keystoneclient.html#heat.engine.clients.os.keystone.heat_keystoneclient.KsClientWrapper.delete_stack_domain_project">[docs]</a>    <span class="k">def</span> <span class="nf">delete_stack_domain_project</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">project_id</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">stack_domain</span><span class="p">:</span>
+            <span class="c1"># FIXME(shardy): Legacy fallback for folks using old heat.conf</span>
+            <span class="c1"># files which lack domain configuration</span>
+            <span class="k">return</span>
+
+        <span class="c1"># If stacks are created before configuring the heat domain, they</span>
+        <span class="c1"># exist in the default domain, in the user&#39;s project, which we</span>
+        <span class="c1"># do *not* want to delete!  However, if the keystone v3cloudsample</span>
+        <span class="c1"># policy is used, it&#39;s possible that we&#39;ll get Forbidden when trying</span>
+        <span class="c1"># to get the project, so again we should do nothing</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">project</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">domain_admin_client</span><span class="o">.</span><span class="n">projects</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">project</span><span class="o">=</span><span class="n">project_id</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">ks_exception</span><span class="o">.</span><span class="n">NotFound</span><span class="p">:</span>
+            <span class="k">return</span>
+        <span class="k">except</span> <span class="n">ks_exception</span><span class="o">.</span><span class="n">Forbidden</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s1">&#39;Unable to get details for project </span><span class="si">%s</span><span class="s1">, &#39;</span>
+                            <span class="s1">&#39;not deleting&#39;</span><span class="p">),</span> <span class="n">project_id</span><span class="p">)</span>
+            <span class="k">return</span>
+
+        <span class="k">if</span> <span class="n">project</span><span class="o">.</span><span class="n">domain_id</span> <span class="o">!=</span> <span class="bp">self</span><span class="o">.</span><span class="n">stack_domain_id</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s1">&#39;Not deleting non heat-domain project&#39;</span><span class="p">))</span>
+            <span class="k">return</span>
+
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">project</span><span class="o">.</span><span class="n">delete</span><span class="p">()</span>
+        <span class="k">except</span> <span class="n">ks_exception</span><span class="o">.</span><span class="n">NotFound</span><span class="p">:</span>
+            <span class="k">pass</span></div>
+
+    <span class="k">def</span> <span class="nf">_find_ec2_keypair</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">access</span><span class="p">,</span> <span class="n">user_id</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Lookup an ec2 keypair by access ID.&quot;&quot;&quot;</span>
+        <span class="c1"># FIXME(shardy): add filtering for user_id when keystoneclient</span>
+        <span class="c1"># extensible-crud-manager-operations bp lands</span>
+        <span class="n">credentials</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">list</span><span class="p">()</span>
+        <span class="k">for</span> <span class="n">cr</span> <span class="ow">in</span> <span class="n">credentials</span><span class="p">:</span>
+            <span class="n">ec2_creds</span> <span class="o">=</span> <span class="n">jsonutils</span><span class="o">.</span><span class="n">loads</span><span class="p">(</span><span class="n">cr</span><span class="o">.</span><span class="n">blob</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">ec2_creds</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;access&#39;</span><span class="p">)</span> <span class="o">==</span> <span class="n">access</span><span class="p">:</span>
+                <span class="k">return</span> <span class="n">AccessKey</span><span class="p">(</span><span class="nb">id</span><span class="o">=</span><span class="n">cr</span><span class="o">.</span><span class="n">id</span><span class="p">,</span>
+                                 <span class="n">access</span><span class="o">=</span><span class="n">ec2_creds</span><span class="p">[</span><span class="s1">&#39;access&#39;</span><span class="p">],</span>
+                                 <span class="n">secret</span><span class="o">=</span><span class="n">ec2_creds</span><span class="p">[</span><span class="s1">&#39;secret&#39;</span><span class="p">])</span>
+
+<div class="viewcode-block" id="KsClientWrapper.delete_ec2_keypair"><a class="viewcode-back" href="../../../../../../api/heat.engine.clients.os.keystone.heat_keystoneclient.html#heat.engine.clients.os.keystone.heat_keystoneclient.KsClientWrapper.delete_ec2_keypair">[docs]</a>    <span class="k">def</span> <span class="nf">delete_ec2_keypair</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">credential_id</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">access</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+                           <span class="n">user_id</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Delete credential containing ec2 keypair.&quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="n">credential_id</span><span class="p">:</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">delete</span><span class="p">(</span><span class="n">credential_id</span><span class="p">)</span>
+            <span class="k">except</span> <span class="n">ks_exception</span><span class="o">.</span><span class="n">NotFound</span><span class="p">:</span>
+                <span class="k">pass</span>
+        <span class="k">elif</span> <span class="n">access</span><span class="p">:</span>
+            <span class="n">cred</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_find_ec2_keypair</span><span class="p">(</span><span class="n">access</span><span class="o">=</span><span class="n">access</span><span class="p">,</span> <span class="n">user_id</span><span class="o">=</span><span class="n">user_id</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">cred</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">delete</span><span class="p">(</span><span class="n">cred</span><span class="o">.</span><span class="n">id</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;Must specify either credential_id or access&quot;</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="KsClientWrapper.get_ec2_keypair"><a class="viewcode-back" href="../../../../../../api/heat.engine.clients.os.keystone.heat_keystoneclient.html#heat.engine.clients.os.keystone.heat_keystoneclient.KsClientWrapper.get_ec2_keypair">[docs]</a>    <span class="k">def</span> <span class="nf">get_ec2_keypair</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">credential_id</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">access</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">user_id</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get an ec2 keypair via v3/credentials, by id or access.&quot;&quot;&quot;</span>
+        <span class="c1"># Note v3/credentials does not support filtering by access</span>
+        <span class="c1"># because it&#39;s stored in the credential blob, so we expect</span>
+        <span class="c1"># all resources to pass credential_id except where backwards</span>
+        <span class="c1"># compatibility is required (resource only has access stored)</span>
+        <span class="c1"># then we&#39;ll have to do a brute-force lookup locally</span>
+        <span class="k">if</span> <span class="n">credential_id</span><span class="p">:</span>
+            <span class="n">cred</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">credential_id</span><span class="p">)</span>
+            <span class="n">ec2_creds</span> <span class="o">=</span> <span class="n">jsonutils</span><span class="o">.</span><span class="n">loads</span><span class="p">(</span><span class="n">cred</span><span class="o">.</span><span class="n">blob</span><span class="p">)</span>
+            <span class="k">return</span> <span class="n">AccessKey</span><span class="p">(</span><span class="nb">id</span><span class="o">=</span><span class="n">cred</span><span class="o">.</span><span class="n">id</span><span class="p">,</span>
+                             <span class="n">access</span><span class="o">=</span><span class="n">ec2_creds</span><span class="p">[</span><span class="s1">&#39;access&#39;</span><span class="p">],</span>
+                             <span class="n">secret</span><span class="o">=</span><span class="n">ec2_creds</span><span class="p">[</span><span class="s1">&#39;secret&#39;</span><span class="p">])</span>
+        <span class="k">elif</span> <span class="n">access</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_find_ec2_keypair</span><span class="p">(</span><span class="n">access</span><span class="o">=</span><span class="n">access</span><span class="p">,</span> <span class="n">user_id</span><span class="o">=</span><span class="n">user_id</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;Must specify either credential_id or access&quot;</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="KsClientWrapper.create_ec2_keypair"><a class="viewcode-back" href="../../../../../../api/heat.engine.clients.os.keystone.heat_keystoneclient.html#heat.engine.clients.os.keystone.heat_keystoneclient.KsClientWrapper.create_ec2_keypair">[docs]</a>    <span class="k">def</span> <span class="nf">create_ec2_keypair</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">user_id</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="n">user_id</span> <span class="o">=</span> <span class="n">user_id</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">context</span><span class="o">.</span><span class="n">get_access</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">session</span><span class="p">)</span><span class="o">.</span><span class="n">user_id</span>
+        <span class="n">project_id</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">context</span><span class="o">.</span><span class="n">tenant_id</span>
+        <span class="n">data_blob</span> <span class="o">=</span> <span class="p">{</span><span class="s1">&#39;access&#39;</span><span class="p">:</span> <span class="n">uuid</span><span class="o">.</span><span class="n">uuid4</span><span class="p">()</span><span class="o">.</span><span class="n">hex</span><span class="p">,</span>
+                     <span class="s1">&#39;secret&#39;</span><span class="p">:</span> <span class="n">uuid</span><span class="o">.</span><span class="n">uuid4</span><span class="p">()</span><span class="o">.</span><span class="n">hex</span><span class="p">}</span>
+        <span class="n">ec2_creds</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">create</span><span class="p">(</span>
+            <span class="n">user</span><span class="o">=</span><span class="n">user_id</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="s1">&#39;ec2&#39;</span><span class="p">,</span> <span class="n">blob</span><span class="o">=</span><span class="n">jsonutils</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span><span class="n">data_blob</span><span class="p">),</span>
+            <span class="n">project</span><span class="o">=</span><span class="n">project_id</span><span class="p">)</span>
+
+        <span class="c1"># Return a AccessKey namedtuple for easier access to the blob contents</span>
+        <span class="c1"># We return the id as the v3 api provides no way to filter by</span>
+        <span class="c1"># access in the blob contents, so it will be much more efficient</span>
+        <span class="c1"># if we manage credentials by ID instead</span>
+        <span class="k">return</span> <span class="n">AccessKey</span><span class="p">(</span><span class="nb">id</span><span class="o">=</span><span class="n">ec2_creds</span><span class="o">.</span><span class="n">id</span><span class="p">,</span>
+                         <span class="n">access</span><span class="o">=</span><span class="n">data_blob</span><span class="p">[</span><span class="s1">&#39;access&#39;</span><span class="p">],</span>
+                         <span class="n">secret</span><span class="o">=</span><span class="n">data_blob</span><span class="p">[</span><span class="s1">&#39;secret&#39;</span><span class="p">])</span></div>
+
+<div class="viewcode-block" id="KsClientWrapper.create_stack_domain_user_keypair"><a class="viewcode-back" href="../../../../../../api/heat.engine.clients.os.keystone.heat_keystoneclient.html#heat.engine.clients.os.keystone.heat_keystoneclient.KsClientWrapper.create_stack_domain_user_keypair">[docs]</a>    <span class="k">def</span> <span class="nf">create_stack_domain_user_keypair</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">user_id</span><span class="p">,</span> <span class="n">project_id</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">stack_domain</span><span class="p">:</span>
+            <span class="c1"># FIXME(shardy): Legacy fallback for folks using old heat.conf</span>
+            <span class="c1"># files which lack domain configuration</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">create_ec2_keypair</span><span class="p">(</span><span class="n">user_id</span><span class="p">)</span>
+        <span class="n">data_blob</span> <span class="o">=</span> <span class="p">{</span><span class="s1">&#39;access&#39;</span><span class="p">:</span> <span class="n">uuid</span><span class="o">.</span><span class="n">uuid4</span><span class="p">()</span><span class="o">.</span><span class="n">hex</span><span class="p">,</span>
+                     <span class="s1">&#39;secret&#39;</span><span class="p">:</span> <span class="n">uuid</span><span class="o">.</span><span class="n">uuid4</span><span class="p">()</span><span class="o">.</span><span class="n">hex</span><span class="p">}</span>
+        <span class="n">creds</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">domain_admin_client</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">create</span><span class="p">(</span>
+            <span class="n">user</span><span class="o">=</span><span class="n">user_id</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="s1">&#39;ec2&#39;</span><span class="p">,</span> <span class="n">blob</span><span class="o">=</span><span class="n">jsonutils</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span><span class="n">data_blob</span><span class="p">),</span>
+            <span class="n">project</span><span class="o">=</span><span class="n">project_id</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">AccessKey</span><span class="p">(</span><span class="nb">id</span><span class="o">=</span><span class="n">creds</span><span class="o">.</span><span class="n">id</span><span class="p">,</span>
+                         <span class="n">access</span><span class="o">=</span><span class="n">data_blob</span><span class="p">[</span><span class="s1">&#39;access&#39;</span><span class="p">],</span>
+                         <span class="n">secret</span><span class="o">=</span><span class="n">data_blob</span><span class="p">[</span><span class="s1">&#39;secret&#39;</span><span class="p">])</span></div>
+
+<div class="viewcode-block" id="KsClientWrapper.delete_stack_domain_user_keypair"><a class="viewcode-back" href="../../../../../../api/heat.engine.clients.os.keystone.heat_keystoneclient.html#heat.engine.clients.os.keystone.heat_keystoneclient.KsClientWrapper.delete_stack_domain_user_keypair">[docs]</a>    <span class="k">def</span> <span class="nf">delete_stack_domain_user_keypair</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">user_id</span><span class="p">,</span> <span class="n">project_id</span><span class="p">,</span>
+                                         <span class="n">credential_id</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">stack_domain</span><span class="p">:</span>
+            <span class="c1"># FIXME(shardy): Legacy fallback for folks using old heat.conf</span>
+            <span class="c1"># files which lack domain configuration</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">delete_ec2_keypair</span><span class="p">(</span><span class="n">credential_id</span><span class="o">=</span><span class="n">credential_id</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_check_stack_domain_user</span><span class="p">(</span><span class="n">user_id</span><span class="p">,</span> <span class="n">project_id</span><span class="p">,</span> <span class="s1">&#39;delete_keypair&#39;</span><span class="p">)</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">domain_admin_client</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">delete</span><span class="p">(</span><span class="n">credential_id</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">ks_exception</span><span class="o">.</span><span class="n">NotFound</span><span class="p">:</span>
+            <span class="k">pass</span></div>
+
+<div class="viewcode-block" id="KsClientWrapper.disable_stack_user"><a class="viewcode-back" href="../../../../../../api/heat.engine.clients.os.keystone.heat_keystoneclient.html#heat.engine.clients.os.keystone.heat_keystoneclient.KsClientWrapper.disable_stack_user">[docs]</a>    <span class="k">def</span> <span class="nf">disable_stack_user</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">user_id</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">users</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">user</span><span class="o">=</span><span class="n">user_id</span><span class="p">,</span> <span class="n">enabled</span><span class="o">=</span><span class="bp">False</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="KsClientWrapper.enable_stack_user"><a class="viewcode-back" href="../../../../../../api/heat.engine.clients.os.keystone.heat_keystoneclient.html#heat.engine.clients.os.keystone.heat_keystoneclient.KsClientWrapper.enable_stack_user">[docs]</a>    <span class="k">def</span> <span class="nf">enable_stack_user</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">user_id</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">users</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">user</span><span class="o">=</span><span class="n">user_id</span><span class="p">,</span> <span class="n">enabled</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="KsClientWrapper.disable_stack_domain_user"><a class="viewcode-back" href="../../../../../../api/heat.engine.clients.os.keystone.heat_keystoneclient.html#heat.engine.clients.os.keystone.heat_keystoneclient.KsClientWrapper.disable_stack_domain_user">[docs]</a>    <span class="k">def</span> <span class="nf">disable_stack_domain_user</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">user_id</span><span class="p">,</span> <span class="n">project_id</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">stack_domain</span><span class="p">:</span>
+            <span class="c1"># FIXME(shardy): Legacy fallback for folks using old heat.conf</span>
+            <span class="c1"># files which lack domain configuration</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">disable_stack_user</span><span class="p">(</span><span class="n">user_id</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_check_stack_domain_user</span><span class="p">(</span><span class="n">user_id</span><span class="p">,</span> <span class="n">project_id</span><span class="p">,</span> <span class="s1">&#39;disable&#39;</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">domain_admin_client</span><span class="o">.</span><span class="n">users</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">user</span><span class="o">=</span><span class="n">user_id</span><span class="p">,</span> <span class="n">enabled</span><span class="o">=</span><span class="bp">False</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="KsClientWrapper.enable_stack_domain_user"><a class="viewcode-back" href="../../../../../../api/heat.engine.clients.os.keystone.heat_keystoneclient.html#heat.engine.clients.os.keystone.heat_keystoneclient.KsClientWrapper.enable_stack_domain_user">[docs]</a>    <span class="k">def</span> <span class="nf">enable_stack_domain_user</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">user_id</span><span class="p">,</span> <span class="n">project_id</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">stack_domain</span><span class="p">:</span>
+            <span class="c1"># FIXME(shardy): Legacy fallback for folks using old heat.conf</span>
+            <span class="c1"># files which lack domain configuration</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">enable_stack_user</span><span class="p">(</span><span class="n">user_id</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_check_stack_domain_user</span><span class="p">(</span><span class="n">user_id</span><span class="p">,</span> <span class="n">project_id</span><span class="p">,</span> <span class="s1">&#39;enable&#39;</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">domain_admin_client</span><span class="o">.</span><span class="n">users</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">user</span><span class="o">=</span><span class="n">user_id</span><span class="p">,</span> <span class="n">enabled</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span></div></div>
+
+
+<div class="viewcode-block" id="KeystoneClient"><a class="viewcode-back" href="../../../../../../api/heat.engine.clients.os.keystone.heat_keystoneclient.html#heat.engine.clients.os.keystone.heat_keystoneclient.KeystoneClient">[docs]</a><span class="k">class</span> <span class="nc">KeystoneClient</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Keystone Auth Client.</span>
+
+<span class="sd">    Delay choosing the backend client module until the client&#39;s class</span>
+<span class="sd">    needs to be initialized.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__new__</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">context</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">cfg</span><span class="o">.</span><span class="n">CONF</span><span class="o">.</span><span class="n">keystone_backend</span> <span class="o">==</span> <span class="n">_default_keystone_backend</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">KsClientWrapper</span><span class="p">(</span><span class="n">context</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">importutils</span><span class="o">.</span><span class="n">import_object</span><span class="p">(</span>
+                <span class="n">cfg</span><span class="o">.</span><span class="n">CONF</span><span class="o">.</span><span class="n">keystone_backend</span><span class="p">,</span>
+                <span class="n">context</span>
+            <span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="list_opts"><a class="viewcode-back" href="../../../../../../api/heat.engine.clients.os.keystone.heat_keystoneclient.html#heat.engine.clients.os.keystone.heat_keystoneclient.list_opts">[docs]</a><span class="k">def</span> <span class="nf">list_opts</span><span class="p">():</span>
+    <span class="k">yield</span> <span class="bp">None</span><span class="p">,</span> <span class="n">keystone_opts</span></div>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/heat
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../../../../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../../../../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../../../../../index.html">heat 8.0.0.0rc2.dev38 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../../../../../index.html" accesskey="U">Module code</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2012,2013 Heat Developers.
+      Last updated on &#39;Tue Feb 14 11:42:51 2017, commit 3ffc97c&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/heat");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

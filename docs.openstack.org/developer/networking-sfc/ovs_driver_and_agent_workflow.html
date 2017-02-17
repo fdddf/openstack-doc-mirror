@@ -1,0 +1,431 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>OVS Driver and Agent Workflow &mdash; networking-sfc 3.0.1.dev96 documentation</title>
+    
+    <link rel="stylesheet" href="_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '3.0.1.dev96',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <link rel="top" title="networking-sfc 3.0.1.dev96 documentation" href="index.html" />
+    <link rel="next" title="Command extension" href="command_extensions.html" />
+    <link rel="prev" title="System Design and Workflow" href="system_design and_workflow.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="ovs-driver-and-agent-workflow">
+<h1>OVS Driver and Agent Workflow<a class="headerlink" href="#ovs-driver-and-agent-workflow" title="Permalink to this headline">¶</a></h1>
+<p>Blueprint about <a class="reference external" href="https://blueprints.launchpad.net/neutron/+spec/common-service-chaining-driver-api">Common Service chaining driver</a> describes the OVS driver and agent necessity for realizing service function chaining.</p>
+<div class="section" id="problem-description">
+<h2>Problem Description<a class="headerlink" href="#problem-description" title="Permalink to this headline">¶</a></h2>
+<p>The service chain OVS driver and agents are used to configure back-end
+Openvswitch devices to render service chaining in the data-plane. The driver
+manager controls a common service chain API which provides a consistent interface
+between the service chain manager and different device drivers.</p>
+</div>
+<div class="section" id="proposed-change">
+<h2>Proposed Change<a class="headerlink" href="#proposed-change" title="Permalink to this headline">¶</a></h2>
+<p>Design:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span> Port Chain Plugin
++-------------------------------+
+|  +-------------------------+  |
+|  |    Port Chain API       |  |
+|  +-------------------------+  |
+|  |    Port Chain Database  |  |
+|  +-------------------------+  |
+|  |    Driver Manager       |  |
+|  +-------------------------+  |
+|  |    Common Driver API    |  |
+|  +-------------------------+  |
+|               |               |
+|  +-------------------------+  |
+|  |        OVS Driver       |  |
+|  +-------------------------+  |
++-------|----------------|------+
+        |rpc             |rpc
+   +-----------+   +-----------+
+   | OVS Agent |   | OVS Agent |
+   +-----------+   +-----------+
+</pre></div>
+</div>
+<p>A OVS service chain driver and agents communicate via rpc.</p>
+<div class="section" id="ovs-driver">
+<h3>OVS Driver<a class="headerlink" href="#ovs-driver" title="Permalink to this headline">¶</a></h3>
+<p>The OVS Driver is extended to support service chaining. The driver interfaces
+with the OVS agents that reside on each Compute node. The OVS driver is responsible
+for the following:</p>
+<ul class="simple">
+<li>Identify the OVS agents that directly connects to the SF instances and establish
+communication with OVS agents on the Compute nodes.</li>
+<li>Send commands to the OVS agents to create bridges, flow tables and flows to steer
+chain traffic to the SF instances.</li>
+</ul>
+</div>
+<div class="section" id="ovs-agent">
+<h3>OVS Agent<a class="headerlink" href="#ovs-agent" title="Permalink to this headline">¶</a></h3>
+<p>The OVS agent will manage the OVS using OVSDB commands to create bridges and tables,
+and install flows to steer chain traffic to the SF instances.</p>
+<p>Existing tunnels between the Tunnel bridges on each Compute node are used to
+transport Port Chain traffic between the CNs.</p>
+<p>The OVS Agent will create these tunnels to transport SFC traffic between Compute
+nodes on which there are SFs. Each tunnel port has the following attributes:</p>
+<ul class="simple">
+<li>Name</li>
+<li>Local tunnel IP address</li>
+<li>Remote tunnel IP address</li>
+<li>Tunnel Type: VXLAN, GRE</li>
+</ul>
+<p>The OVS agent installs additional flows on the Integration bridge and the Tunnel bridge
+to perform the following functions:</p>
+<ul class="simple">
+<li>Traffic classification. The Integration bridge classifies traffic from a VM port or
+Service VM port attached to the Integration bridge. The flow classification is based on
+the n-tuple rules.</li>
+<li>Service function forwarding. The Tunnel bridge forwards service chain
+packets to the next-hop Compute node via tunnels, or to the next Service VM port
+on that Compute node. Integration bridge will terminate a Service Function Path.</li>
+</ul>
+<p>The OVS Agent will use the MPLS header to transport the chain path identifier
+and chain hop index. The MPLS label will transport the chain path identifier,
+and the MPLS ttl will transport the chain hop index. The following packet encapsulation
+will be used:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>IPv4 Packet:
++----------+------------------------+-------+
+|L2 header | IP + UDP dst port=4790 | VXLAN |
++----------+------------------------+-------+
+-----------------------------+---------------+--------------------+
+Original Ethernet, ET=0x8847 | MPLS header   | Original IP Packet |
+-----------------------------+---------------+--------------------+
+</pre></div>
+</div>
+<p>This is not intended as a general purpose MPLS implementation but rather as a
+temporary internal mechanism. It is anticipated that the MPLS label will be
+replaced with an NSH encapsulation
+(<a class="reference external" href="https://datatracker.ietf.org/doc/draft-ietf-sfc-nsh/">https://datatracker.ietf.org/doc/draft-ietf-sfc-nsh/</a>) once NSH support is
+available upstream in Open vSwitch. If the service function does not support
+the header, then the vSwitch will act as Service Function Forwarder (SFF)
+Proxy which will strip off the header when forwarding the packet to the SF
+and re-add the header when receiving the packet from the SF.</p>
+</div>
+<div class="section" id="ovs-bridge-and-tunnel">
+<h3>OVS Bridge and Tunnel<a class="headerlink" href="#ovs-bridge-and-tunnel" title="Permalink to this headline">¶</a></h3>
+<p>Existing tunnels between the Tunnel bridges on each Compute node are used to
+transport Port Chain traffic between the CNs:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span> CN1                                 CN2
++--------------------------+        +-------------------------+
+|  +-----+       +-----+   |        |  +-----+      +-----+   |
+|  | VM1 |       | SF1 |   |        |  | SF2 |      | SF3 |   |
+|  +-----+       +-----+   |        |  +-----+      +-----+   |
+|     |.           ^|.     |        |   ^| |.         ^|.     |
+| +----.-----------.-.--+  |        | +-.---.---------.-.---+ |
+| |    ............. .. |  |        | | .   ........... .   | |
+| | Integration Bridge. |  |        | | .Integration Bridge | |
+| |           ......... |  |        | | ......   ........   | |
+| +-----------.---------+  |        | +-------.--.----------+ |
+|            |.            |        |         .| .            |
+| +-----------.---------+  |        | +-------.--.----------+ |
+| |           .................................  ..................&gt;
+| |    Tunnel Bridge    |-------------|   Tunnel Bridge     | |
+| +---------------------+  | Tunnel | +---------------------+ |
+|                          |        |                         |
++--------------------=-----+        +-------------------------+
+</pre></div>
+</div>
+</div>
+<div class="section" id="flow-tables-and-flow-rules">
+<h3>Flow Tables and Flow Rules<a class="headerlink" href="#flow-tables-and-flow-rules" title="Permalink to this headline">¶</a></h3>
+<p>The OVS Agent adds additional flows (shown above) on the Integration bridge to support
+Port Chains:</p>
+<ol class="arabic simple">
+<li>Egress Port Chain flows to steer traffic from SFs attached to the Integration bridge to a
+Tunnel bridge to the next-hop Compute node. These flows may be handled using the OpenFlow
+Group in the case where there are multiple port-pairs in the next-hop port-pair group.</li>
+<li>Ingress Port Chain flows on the Tunnel bridge to steer service chain traffic from a
+tunnel from a previous Compute node to SFs attached to the Integration bridge.</li>
+<li>Internal Port Chain flows are used to steer service chain traffic from one SF to another SF
+on the same Compute Node.</li>
+</ol>
+<p>The Port Chain flow rules have the higher priority, and will not impact
+the existing flow rules on the Integration bridge. If traffic from SF is not part of
+a service chain, e.g.,  DHCP messages, ARP packets etc., it will match the existing
+flow rules on the Integration bridge.</p>
+<p>The following tables are used to process Port Chain traffic:</p>
+<ul class="simple">
+<li>Local Switching Table (Table 0). This existing table has two new flows to handle
+incoming traffic from the SF egress port and the tunnel port between Compute nodes.</li>
+<li>Group Table. This new table is used to select multiple paths for load-balancing across
+multiple port-pairs in a port-pair group. There are multiple buckets in the group if the next
+hop is a port-pair group with multiple port-pairs. The group actions will be to send the packet
+to next hop SF instance.
+If the next hop port-pair is on another Compute node, the action output to the tunnel port to the
+next hop Compute node. If the next hop port-pair is on the same Compute node, then the
+action will be to resubmit to the TUN_TABLE for local chaining process.</li>
+</ul>
+</div>
+<div class="section" id="local-switching-table-table-0-flows">
+<h3>Local Switching Table (Table 0) Flows<a class="headerlink" href="#local-switching-table-table-0-flows" title="Permalink to this headline">¶</a></h3>
+<p>Traffic from SF Egress port: classify for chain and direct to group:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>priority=10,in_port=SF_EGRESS_port,traffic_match_field,
+ actions=strip_vlan,set_tunnel:VNI,group:gid.
+</pre></div>
+</div>
+<p>Traffic from Tunnel port:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>priority=10,in_port=TUNNEL_port,
+ actions=resubmit(,TUN_TABLE[type]).
+</pre></div>
+</div>
+</div>
+<div class="section" id="group-table-flows">
+<h3>Group Table Flows<a class="headerlink" href="#group-table-flows" title="Permalink to this headline">¶</a></h3>
+<p>The Group table is used for load distribution to spread the traffic load across a port-pair group of
+multiple port-pairs (SFs of the same type). This uses the hashing of several fields in the packet.
+There are multiple buckets in the group if the next hop is a port-pair group with multiple port-pairs.</p>
+<p>The group actions will be to send the packet to next hop SF instances. If the next hop port-pair
+is on another Compute node, the action output to the tunnel port to the next hop Compute node.
+If the next hop port-pair is on the same Compute node, then the action will be to resubmit
+to the TUN_TABLE for local chaining process.</p>
+<p>The OVSDB command to create a group of type Select with a hash selection method and two buckets
+is shown below. This is existing OVS functionality. The ip_src,nw_proto,tp_src packet fields are
+used for the hash:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>group_id=gid,type=select,selection_method=hash,fields=ip_src,nw_proto,tp_src
+ bucket=set_field:10.1.1.3-&gt;ip_dst,output:10,
+ bucket=set_field:10.1.1.4-&gt;ip_dst,output:10
+</pre></div>
+</div>
+</div>
+<div class="section" id="data-model-impact">
+<h3>Data Model Impact<a class="headerlink" href="#data-model-impact" title="Permalink to this headline">¶</a></h3>
+<p>None</p>
+</div>
+<div class="section" id="alternatives">
+<h3>Alternatives<a class="headerlink" href="#alternatives" title="Permalink to this headline">¶</a></h3>
+<p>None</p>
+</div>
+<div class="section" id="security-impact">
+<h3>Security Impact<a class="headerlink" href="#security-impact" title="Permalink to this headline">¶</a></h3>
+<p>None.</p>
+</div>
+<div class="section" id="notifications-impact">
+<h3>Notifications Impact<a class="headerlink" href="#notifications-impact" title="Permalink to this headline">¶</a></h3>
+<p>There will be logging to trouble-shoot and verify correct operation.</p>
+</div>
+<div class="section" id="other-end-user-impact">
+<h3>Other End User Impact<a class="headerlink" href="#other-end-user-impact" title="Permalink to this headline">¶</a></h3>
+<p>None.</p>
+</div>
+<div class="section" id="performance-impact">
+<h3>Performance Impact<a class="headerlink" href="#performance-impact" title="Permalink to this headline">¶</a></h3>
+<p>It is not expected that these flows will have a significant performance impact.</p>
+</div>
+<div class="section" id="ipv6-impact">
+<h3>IPv6 Impact<a class="headerlink" href="#ipv6-impact" title="Permalink to this headline">¶</a></h3>
+<p>None.</p>
+</div>
+<div class="section" id="other-deployer-impact">
+<h3>Other Deployer Impact<a class="headerlink" href="#other-deployer-impact" title="Permalink to this headline">¶</a></h3>
+<p>None</p>
+</div>
+<div class="section" id="developer-impact">
+<h3>Developer Impact<a class="headerlink" href="#developer-impact" title="Permalink to this headline">¶</a></h3>
+<p>None</p>
+</div>
+<div class="section" id="community-impact">
+<h3>Community Impact<a class="headerlink" href="#community-impact" title="Permalink to this headline">¶</a></h3>
+<p>Existing OVS driver and agent functionality will not be affected.</p>
+</div>
+</div>
+<div class="section" id="implementation">
+<h2>Implementation<a class="headerlink" href="#implementation" title="Permalink to this headline">¶</a></h2>
+<div class="section" id="assignee-s">
+<h3>Assignee(s)<a class="headerlink" href="#assignee-s" title="Permalink to this headline">¶</a></h3>
+<ul class="simple">
+<li>Cathy Zhang (<a class="reference external" href="mailto:cathy&#46;h&#46;zhang&#37;&#52;&#48;huawei&#46;com">cathy<span>&#46;</span>h<span>&#46;</span>zhang<span>&#64;</span>huawei<span>&#46;</span>com</a>)</li>
+<li>Louis Fourie (<a class="reference external" href="mailto:louis&#46;fourie&#37;&#52;&#48;huawei&#46;com">louis<span>&#46;</span>fourie<span>&#64;</span>huawei<span>&#46;</span>com</a>)</li>
+<li>Stephen Wong (<a class="reference external" href="mailto:stephen&#46;kf&#46;wong&#37;&#52;&#48;gmail&#46;com">stephen<span>&#46;</span>kf<span>&#46;</span>wong<span>&#64;</span>gmail<span>&#46;</span>com</a>)</li>
+</ul>
+</div>
+<div class="section" id="work-items">
+<h3>Work Items<a class="headerlink" href="#work-items" title="Permalink to this headline">¶</a></h3>
+<ul class="simple">
+<li>Port Chain OVS driver.</li>
+<li>Port Chain OVS agent.</li>
+<li>Unit test.</li>
+</ul>
+</div>
+</div>
+<div class="section" id="dependencies">
+<h2>Dependencies<a class="headerlink" href="#dependencies" title="Permalink to this headline">¶</a></h2>
+<p>This design depends upon the proposed <a class="reference external" href="https://blueprints.launchpad.net/neutron/+spec/neutron-api-extension-for-service-chaining">Neutron Service Chaining API extensions</a></p>
+<p>Openvswitch.</p>
+</div>
+<div class="section" id="testing">
+<h2>Testing<a class="headerlink" href="#testing" title="Permalink to this headline">¶</a></h2>
+<p>Tempest and functional tests will be created.</p>
+</div>
+<div class="section" id="documentation-impact">
+<h2>Documentation Impact<a class="headerlink" href="#documentation-impact" title="Permalink to this headline">¶</a></h2>
+<p>Documented as extension.</p>
+<div class="section" id="user-documentation">
+<h3>User Documentation<a class="headerlink" href="#user-documentation" title="Permalink to this headline">¶</a></h3>
+<p>Update networking API reference.
+Update admin guide.</p>
+</div>
+<div class="section" id="developer-documentation">
+<h3>Developer Documentation<a class="headerlink" href="#developer-documentation" title="Permalink to this headline">¶</a></h3>
+<p>None</p>
+</div>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">OVS Driver and Agent Workflow</a><ul>
+<li><a class="reference internal" href="#problem-description">Problem Description</a></li>
+<li><a class="reference internal" href="#proposed-change">Proposed Change</a><ul>
+<li><a class="reference internal" href="#ovs-driver">OVS Driver</a></li>
+<li><a class="reference internal" href="#ovs-agent">OVS Agent</a></li>
+<li><a class="reference internal" href="#ovs-bridge-and-tunnel">OVS Bridge and Tunnel</a></li>
+<li><a class="reference internal" href="#flow-tables-and-flow-rules">Flow Tables and Flow Rules</a></li>
+<li><a class="reference internal" href="#local-switching-table-table-0-flows">Local Switching Table (Table 0) Flows</a></li>
+<li><a class="reference internal" href="#group-table-flows">Group Table Flows</a></li>
+<li><a class="reference internal" href="#data-model-impact">Data Model Impact</a></li>
+<li><a class="reference internal" href="#alternatives">Alternatives</a></li>
+<li><a class="reference internal" href="#security-impact">Security Impact</a></li>
+<li><a class="reference internal" href="#notifications-impact">Notifications Impact</a></li>
+<li><a class="reference internal" href="#other-end-user-impact">Other End User Impact</a></li>
+<li><a class="reference internal" href="#performance-impact">Performance Impact</a></li>
+<li><a class="reference internal" href="#ipv6-impact">IPv6 Impact</a></li>
+<li><a class="reference internal" href="#other-deployer-impact">Other Deployer Impact</a></li>
+<li><a class="reference internal" href="#developer-impact">Developer Impact</a></li>
+<li><a class="reference internal" href="#community-impact">Community Impact</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#implementation">Implementation</a><ul>
+<li><a class="reference internal" href="#assignee-s">Assignee(s)</a></li>
+<li><a class="reference internal" href="#work-items">Work Items</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#dependencies">Dependencies</a></li>
+<li><a class="reference internal" href="#testing">Testing</a></li>
+<li><a class="reference internal" href="#documentation-impact">Documentation Impact</a><ul>
+<li><a class="reference internal" href="#user-documentation">User Documentation</a></li>
+<li><a class="reference internal" href="#developer-documentation">Developer Documentation</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="system_design and_workflow.html"
+                                  title="previous chapter">System Design and Workflow</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="command_extensions.html"
+                                  title="next chapter">Command extension</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/networking-sfc
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="_sources/ovs_driver_and_agent_workflow.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="command_extensions.html" title="Command extension"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="system_design and_workflow.html" title="System Design and Workflow"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="index.html">networking-sfc 3.0.1.dev96 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2013, OpenStack Foundation.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/networking-sfc");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

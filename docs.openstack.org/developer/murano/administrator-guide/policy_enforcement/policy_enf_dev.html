@@ -1,0 +1,322 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Murano policy enforcement internals &mdash; Murano</title>
+    
+    <link rel="stylesheet" href="../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../',
+        VERSION:     '3.1.1.dev17',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../_static/doctools.js"></script>
+    <link rel="top" title="Murano" href="../../index.html" />
+    <link rel="up" title="Policy enforcement" href="../policy_enf.html" />
+    <link rel="next" title="Using policy for the base modification of an environment" href="policy_enf_modify.html" />
+    <link rel="prev" title="Creating policy enforcement rules" href="policy_enf_rules.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="murano-policy-enforcement-internals">
+<span id="policyenf-dev"></span><h1>Murano policy enforcement internals<a class="headerlink" href="#murano-policy-enforcement-internals" title="Permalink to this headline">¶</a></h1>
+<p>This section describes internals of the murano policy enforcement
+feature.</p>
+<div class="section" id="model-decomposition">
+<h2>Model decomposition<a class="headerlink" href="#model-decomposition" title="Permalink to this headline">¶</a></h2>
+<p>The data for the policy validation comes from the models of Murano
+applications. These models are transformed to a set of rules that are
+processed by Congress.</p>
+<p>There are several <em>tables</em> created in murano policy for different kinds
+of rules that are as follows:</p>
+<ul class="simple">
+<li><code class="docutils literal"><span class="pre">murano:objects(object_id,</span> <span class="pre">parent_id,</span> <span class="pre">type_name)</span></code></li>
+<li><code class="docutils literal"><span class="pre">murano:properties(object_id,</span> <span class="pre">property_name,</span> <span class="pre">property_value)</span></code></li>
+<li><code class="docutils literal"><span class="pre">murano:relationships(source,</span> <span class="pre">target,</span> <span class="pre">name)</span></code></li>
+<li><code class="docutils literal"><span class="pre">murano:connected(source,</span> <span class="pre">target)</span></code></li>
+<li><code class="docutils literal"><span class="pre">murano:parent_types(object_id,</span> <span class="pre">parent_type_name)</span></code></li>
+<li><code class="docutils literal"><span class="pre">murano:states(environment_id,</span> <span class="pre">state)</span></code></li>
+</ul>
+<p><strong>murano:objects(object_id, parent_id, type_name)</strong></p>
+<blockquote>
+<div><p>This rule is used for representation of all objects in Murano model,
+such as environment, application, instance, and other.</p>
+<p>Value of the <code class="docutils literal"><span class="pre">type</span></code> property is used as the <code class="docutils literal"><span class="pre">type_name</span></code> parameter:</p>
+<div class="highlight-yaml"><div class="highlight"><pre><span></span><span class="l l-Scalar l-Scalar-Plain">name</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">wordpress-env</span>
+<span class="s">&#39;?&#39;</span><span class="p p-Indicator">:</span> <span class="p p-Indicator">{</span><span class="nv">type</span><span class="p p-Indicator">:</span> <span class="nv">io.murano.Environment</span><span class="p p-Indicator">,</span> <span class="nv">id</span><span class="p p-Indicator">:</span> <span class="nv">83bff5ac</span><span class="p p-Indicator">}</span>
+<span class="l l-Scalar l-Scalar-Plain">applications</span><span class="p p-Indicator">:</span>
+<span class="p p-Indicator">-</span> <span class="s">&#39;?&#39;</span><span class="p p-Indicator">:</span> <span class="p p-Indicator">{</span><span class="nv">id</span><span class="p p-Indicator">:</span> <span class="nv">e7a13d3c</span><span class="p p-Indicator">,</span> <span class="nv">type</span><span class="p p-Indicator">:</span> <span class="nv">com.example.databases.MySql</span><span class="p p-Indicator">}</span>
+</pre></div>
+</div>
+<p>The model above transforms to the following rules:</p>
+<ul class="simple">
+<li><code class="docutils literal"><span class="pre">murano:objects+(&quot;83bff5ac&quot;,</span> <span class="pre">&quot;tenant_id&quot;,</span> <span class="pre">&quot;io.murano.Environment&quot;)</span></code></li>
+<li><code class="docutils literal"><span class="pre">murano:objects+(&quot;83bff5ac&quot;,</span> <span class="pre">&quot;e7a13d3c&quot;,</span> <span class="pre">&quot;com.example.databases.MySql&quot;)</span></code></li>
+</ul>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">The owner of the environment is a project (tenant).</p>
+</div>
+</div></blockquote>
+<p><strong>murano:properties(object_id, property_name, property_value)</strong></p>
+<blockquote>
+<div><p>Each object may have properties. In this example we have an application
+with one property:</p>
+<div class="highlight-yaml"><div class="highlight"><pre><span></span><span class="l l-Scalar l-Scalar-Plain">applications</span><span class="p p-Indicator">:</span>
+<span class="p p-Indicator">-</span> <span class="s">&#39;?&#39;</span><span class="p p-Indicator">:</span> <span class="p p-Indicator">{</span><span class="nv">id</span><span class="p p-Indicator">:</span> <span class="nv">e7a13d3c</span><span class="p p-Indicator">,</span> <span class="nv">type</span><span class="p p-Indicator">:</span> <span class="nv">com.example.databases.MySql</span><span class="p p-Indicator">}</span>
+<span class="l l-Scalar l-Scalar-Plain">database</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">wordpress</span>
+</pre></div>
+</div>
+<p>The model above transforms to the following rule:</p>
+<ul class="simple">
+<li><code class="docutils literal"><span class="pre">murano:properties+(&quot;e7a13d3c&quot;,</span> <span class="pre">&quot;database&quot;,</span> <span class="pre">&quot;wordpress&quot;)</span></code></li>
+</ul>
+<p>Inner properties are also supported using dot notation:</p>
+<div class="highlight-yaml"><div class="highlight"><pre><span></span><span class="l l-Scalar l-Scalar-Plain">instance</span><span class="p p-Indicator">:</span>
+<span class="s">&#39;?&#39;</span><span class="p p-Indicator">:</span> <span class="p p-Indicator">{</span><span class="nv">id</span><span class="p p-Indicator">:</span> <span class="nv">825dc61d</span><span class="p p-Indicator">,</span> <span class="nv">type</span><span class="p p-Indicator">:</span> <span class="nv">io.murano.resources.LinuxMuranoInstance</span><span class="p p-Indicator">}</span>
+<span class="l l-Scalar l-Scalar-Plain">networks</span><span class="p p-Indicator">:</span>
+  <span class="l l-Scalar l-Scalar-Plain">useFlatNetwork</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">false</span>
+</pre></div>
+</div>
+<p>The model above transforms to the following rule:</p>
+<ul class="simple">
+<li><code class="docutils literal"><span class="pre">murano:properties+(&quot;825dc61d&quot;,</span> <span class="pre">&quot;networks.useFlatNetwork&quot;,</span> <span class="pre">&quot;False&quot;)</span></code></li>
+</ul>
+<p>If a model contains list of values, it is represented as a set of multiple
+rules:</p>
+<div class="highlight-yaml"><div class="highlight"><pre><span></span><span class="l l-Scalar l-Scalar-Plain">instances</span><span class="p p-Indicator">:</span>
+ <span class="p p-Indicator">-</span> <span class="s">&#39;?&#39;</span><span class="p p-Indicator">:</span> <span class="p p-Indicator">{</span><span class="nv">id</span><span class="p p-Indicator">:</span> <span class="nv">be3c5155</span><span class="p p-Indicator">,</span> <span class="nv">type</span><span class="p p-Indicator">:</span> <span class="nv">io.murano.resources.LinuxMuranoInstance</span><span class="p p-Indicator">}</span>
+ <span class="l l-Scalar l-Scalar-Plain">networks</span><span class="p p-Indicator">:</span>
+   <span class="l l-Scalar l-Scalar-Plain">customNetworks</span><span class="p p-Indicator">:</span> <span class="p p-Indicator">[</span><span class="nv">10.0.1.0</span><span class="p p-Indicator">,</span> <span class="nv">10.0.2.0</span><span class="p p-Indicator">]</span>
+</pre></div>
+</div>
+<p>The model above transforms to the following rules:</p>
+<ul class="simple">
+<li><code class="docutils literal"><span class="pre">murano:properties+(&quot;be3c5155&quot;,</span> <span class="pre">&quot;networks.customNetworks&quot;,</span> <span class="pre">&quot;10.0.1.0&quot;)</span></code></li>
+<li><code class="docutils literal"><span class="pre">murano:properties+(&quot;be3c5155&quot;,</span> <span class="pre">&quot;networks.customNetworks&quot;,</span> <span class="pre">&quot;10.0.2.0&quot;)</span></code></li>
+</ul>
+</div></blockquote>
+<p><strong>murano:relationships(source, target, name)</strong></p>
+<blockquote>
+<div><p>Murano application models may contain references to other applications.
+In this example, the WordPress application references MySQL in
+the <code class="docutils literal"><span class="pre">database</span></code> property:</p>
+<div class="highlight-yaml"><div class="highlight"><pre><span></span><span class="l l-Scalar l-Scalar-Plain">applications</span><span class="p p-Indicator">:</span>
+<span class="p p-Indicator">-</span> <span class="s">&#39;?&#39;</span><span class="p p-Indicator">:</span>
+    <span class="l l-Scalar l-Scalar-Plain">id</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">0aafd67e</span>
+    <span class="l l-Scalar l-Scalar-Plain">type</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">com.example.databases.MySql</span>
+<span class="p p-Indicator">-</span> <span class="s">&#39;?&#39;</span><span class="p p-Indicator">:</span>
+    <span class="l l-Scalar l-Scalar-Plain">id</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">50fa68ff</span>
+    <span class="l l-Scalar l-Scalar-Plain">type</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">com.example.WordPress</span>
+  <span class="l l-Scalar l-Scalar-Plain">database</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">0aafd67e</span>
+</pre></div>
+</div>
+<p>The model above transforms to the following rule:</p>
+<ul class="simple">
+<li><code class="docutils literal"><span class="pre">murano:relationships+(&quot;50fa68ff&quot;,</span> <span class="pre">&quot;0aafd67e&quot;,</span> <span class="pre">&quot;database&quot;)</span></code></li>
+</ul>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">For the <code class="docutils literal"><span class="pre">database</span></code> property we do not create
+the <code class="docutils literal"><span class="pre">murano:properties+</span></code> rule.</p>
+</div>
+<p>If we define an object within other object, they will have relationships
+between them:</p>
+<div class="highlight-yaml"><div class="highlight"><pre><span></span><span class="l l-Scalar l-Scalar-Plain">applications</span><span class="p p-Indicator">:</span>
+<span class="p p-Indicator">-</span> <span class="s">&#39;?&#39;</span><span class="p p-Indicator">:</span>
+    <span class="l l-Scalar l-Scalar-Plain">id</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">0aafd67e</span>
+    <span class="l l-Scalar l-Scalar-Plain">type</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">com.example.databases.MySql</span>
+  <span class="l l-Scalar l-Scalar-Plain">instance</span><span class="p p-Indicator">:</span>
+    <span class="s">&#39;?&#39;</span><span class="p p-Indicator">:</span> <span class="p p-Indicator">{</span><span class="nv">id</span><span class="p p-Indicator">:</span> <span class="nv">ed8df2b0</span><span class="p p-Indicator">,</span> <span class="nv">type</span><span class="p p-Indicator">:</span> <span class="nv">io.murano.resources.LinuxMuranoInstance</span><span class="p p-Indicator">}</span>
+</pre></div>
+</div>
+<p>The model above transforms to the following rule:</p>
+<ul class="simple">
+<li><code class="docutils literal"><span class="pre">murano:relationships+(&quot;0aafd67e&quot;,</span> <span class="pre">&quot;ed8df2b0&quot;,</span> <span class="pre">&quot;instance&quot;)</span></code></li>
+</ul>
+<p>There are special relationships of <code class="docutils literal"><span class="pre">services</span></code> from the environment
+to its applications: <code class="docutils literal"><span class="pre">murano:relationships+(&quot;env_id&quot;,</span> <span class="pre">&quot;app_id&quot;,</span>
+<span class="pre">&quot;services&quot;)</span></code></p>
+</div></blockquote>
+<p><strong>murano:connected(source, target)</strong></p>
+<blockquote>
+<div><p>This table stores both direct and indirect connections between instances.
+It is derived from <code class="docutils literal"><span class="pre">murano:relationships</span></code>:</p>
+<div class="highlight-yaml"><div class="highlight"><pre><span></span><span class="l l-Scalar l-Scalar-Plain">applications</span><span class="p p-Indicator">:</span>
+<span class="p p-Indicator">-</span> <span class="s">&#39;?&#39;</span><span class="p p-Indicator">:</span>
+    <span class="l l-Scalar l-Scalar-Plain">id</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">0aafd67e</span>
+    <span class="l l-Scalar l-Scalar-Plain">type</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">com.example.databases.MySql</span>
+  <span class="l l-Scalar l-Scalar-Plain">instance</span><span class="p p-Indicator">:</span>
+    <span class="s">&#39;?&#39;</span><span class="p p-Indicator">:</span> <span class="p p-Indicator">{</span><span class="nv">id</span><span class="p p-Indicator">:</span> <span class="nv">ed8df2b0</span><span class="p p-Indicator">,</span> <span class="nv">type</span><span class="p p-Indicator">:</span> <span class="nv">io.murano.resources.LinuxMuranoInstance</span><span class="p p-Indicator">}</span>
+<span class="p p-Indicator">-</span> <span class="s">&#39;?&#39;</span><span class="p p-Indicator">:</span>
+    <span class="l l-Scalar l-Scalar-Plain">id</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">50fa68ff</span>
+    <span class="l l-Scalar l-Scalar-Plain">type</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">com.example.WordPress</span>
+  <span class="l l-Scalar l-Scalar-Plain">database</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">0aafd67e</span>
+</pre></div>
+</div>
+<p>The model above transforms to the following rules:</p>
+<ul class="simple">
+<li><code class="docutils literal"><span class="pre">murano:connected+(&quot;50fa68ff&quot;,</span> <span class="pre">&quot;0aafd67e&quot;)</span></code> # WordPress to MySql</li>
+<li><code class="docutils literal"><span class="pre">murano:connected+(&quot;50fa68ff&quot;,</span> <span class="pre">&quot;ed8df2b0&quot;)</span></code> # WordPress to LinuxMuranoInstance</li>
+<li><code class="docutils literal"><span class="pre">murano:connected+(&quot;0aafd67e&quot;,</span> <span class="pre">&quot;ed8df2b0&quot;)</span></code> # MySql to LinuxMuranoInstance</li>
+</ul>
+</div></blockquote>
+<p><strong>murano:parent_types(object_id, parent_name)</strong></p>
+<blockquote>
+<div><p>Each object in murano has a class type. These classes may inherit from one
+or more parents. For example, <code class="docutils literal"><span class="pre">LinuxMuranoInstance</span> <span class="pre">&gt;</span> <span class="pre">LinuxInstance</span> <span class="pre">&gt;</span>
+<span class="pre">Instance</span></code>:</p>
+<div class="highlight-yaml"><div class="highlight"><pre><span></span><span class="l l-Scalar l-Scalar-Plain">instances</span><span class="p p-Indicator">:</span>
+<span class="p p-Indicator">-</span> <span class="s">&#39;?&#39;</span><span class="p p-Indicator">:</span> <span class="p p-Indicator">{</span><span class="nv">id</span><span class="p p-Indicator">:</span> <span class="nv">be3c5155</span><span class="p p-Indicator">,</span> <span class="nv">type</span><span class="p p-Indicator">:</span> <span class="nv">LinuxMuranoInstance</span><span class="p p-Indicator">}</span>
+</pre></div>
+</div>
+<p>The model above transforms to the following rules:</p>
+<ul class="simple">
+<li><code class="docutils literal"><span class="pre">murano:objects+(&quot;...&quot;,</span> <span class="pre">&quot;be3c5155&quot;,</span> <span class="pre">&quot;LinuxMuranoInstance&quot;)</span></code></li>
+<li><code class="docutils literal"><span class="pre">murano:parent_types+(&quot;be3c5155&quot;,</span> <span class="pre">&quot;LinuxMuranoInstance&quot;)</span></code></li>
+<li><code class="docutils literal"><span class="pre">murano:parent_types+(&quot;be3c5155&quot;,</span> <span class="pre">&quot;LinuxInstance&quot;)</span></code></li>
+<li><code class="docutils literal"><span class="pre">murano:parent_types+(&quot;be3c5155&quot;,</span> <span class="pre">&quot;Instance&quot;)</span></code></li>
+</ul>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">The type of an object is also repeated in its parent types
+(<code class="docutils literal"><span class="pre">LinuxMuranoInstance</span></code> in the example) for easier handling of
+user-created rules.</p>
+</div>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">If a type inherits from more than one parent, and these parents inherit
+from one common type, the <code class="docutils literal"><span class="pre">parent_type</span></code> rule is included only once in
+the common type.</p>
+</div>
+</div></blockquote>
+<p><strong>murano:states(environment_id, state)</strong></p>
+<blockquote>
+<div><p>Currently only one record for environment is created:</p>
+<ul class="simple">
+<li><code class="docutils literal"><span class="pre">murano:states+(&quot;uugi324&quot;,</span> <span class="pre">&quot;pending&quot;)</span></code></li>
+</ul>
+</div></blockquote>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="../../index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Murano policy enforcement internals</a><ul>
+<li><a class="reference internal" href="#model-decomposition">Model decomposition</a></li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="policy_enf_rules.html"
+                                  title="previous chapter">Creating policy enforcement rules</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="policy_enf_modify.html"
+                                  title="next chapter">Using policy for the base modification of an environment</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/murano
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="../../_sources/administrator-guide/policy_enforcement/policy_enf_dev.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="policy_enf_modify.html" title="Using policy for the base modification of an environment"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="policy_enf_rules.html" title="Creating policy enforcement rules"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../index.html">Murano</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../admin_index.html" >Deploying Murano</a> &raquo;</li>
+          <li class="nav-item nav-item-2"><a href="../policy_enf.html" accesskey="U">Policy enforcement</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright .
+      Last updated on &#39;Fri Feb 10 03:18:12 2017, commit fbee404&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/Murano");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

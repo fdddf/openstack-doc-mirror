@@ -1,0 +1,627 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>tooz.drivers.file &mdash; tooz 1.48.1.dev1 documentation</title>
+    
+    <link rel="stylesheet" href="../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../',
+        VERSION:     '1.48.1.dev1',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../_static/doctools.js"></script>
+    <link rel="top" title="tooz 1.48.1.dev1 documentation" href="../../../index.html" />
+    <link rel="up" title="tooz" href="../../tooz.html" /> 
+  </head>
+  <body>
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body">
+            
+  <h1>Source code for tooz.drivers.file</h1><div class="highlight"><pre>
+<span></span><span class="c1"># -*- coding: utf-8 -*-</span>
+<span class="c1">#</span>
+<span class="c1"># Copyright © 2015 eNovance</span>
+<span class="c1">#</span>
+<span class="c1"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may</span>
+<span class="c1"># not use this file except in compliance with the License. You may obtain</span>
+<span class="c1"># a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#      http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1"># Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="c1"># WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="c1"># License for the specific language governing permissions and limitations</span>
+<span class="c1"># under the License.</span>
+
+<span class="kn">import</span> <span class="nn">contextlib</span>
+<span class="kn">import</span> <span class="nn">datetime</span>
+<span class="kn">import</span> <span class="nn">errno</span>
+<span class="kn">import</span> <span class="nn">hashlib</span>
+<span class="kn">import</span> <span class="nn">logging</span>
+<span class="kn">import</span> <span class="nn">os</span>
+<span class="kn">import</span> <span class="nn">re</span>
+<span class="kn">import</span> <span class="nn">shutil</span>
+<span class="kn">import</span> <span class="nn">sys</span>
+<span class="kn">import</span> <span class="nn">tempfile</span>
+<span class="kn">import</span> <span class="nn">threading</span>
+<span class="kn">import</span> <span class="nn">weakref</span>
+
+<span class="kn">from</span> <span class="nn">concurrent</span> <span class="kn">import</span> <span class="n">futures</span>
+
+<span class="kn">import</span> <span class="nn">fasteners</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">encodeutils</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">fileutils</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">timeutils</span>
+<span class="kn">import</span> <span class="nn">six</span>
+<span class="kn">import</span> <span class="nn">voluptuous</span>
+
+<span class="kn">import</span> <span class="nn">tooz</span>
+<span class="kn">from</span> <span class="nn">tooz</span> <span class="kn">import</span> <span class="n">coordination</span>
+<span class="kn">from</span> <span class="nn">tooz</span> <span class="kn">import</span> <span class="n">locking</span>
+<span class="kn">from</span> <span class="nn">tooz</span> <span class="kn">import</span> <span class="n">utils</span>
+
+<span class="n">LOG</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+
+<span class="k">class</span> <span class="nc">_Barrier</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">cond</span> <span class="o">=</span> <span class="n">threading</span><span class="o">.</span><span class="n">Condition</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">owner</span> <span class="o">=</span> <span class="bp">None</span>
+
+
+<span class="nd">@contextlib.contextmanager</span>
+<span class="k">def</span> <span class="nf">_translate_failures</span><span class="p">():</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="k">yield</span>
+    <span class="k">except</span> <span class="p">(</span><span class="ne">EnvironmentError</span><span class="p">,</span> <span class="n">voluptuous</span><span class="o">.</span><span class="n">Invalid</span><span class="p">)</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+        <span class="n">utils</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">tooz</span><span class="o">.</span><span class="n">ToozError</span><span class="p">,</span>
+                               <span class="n">encodeutils</span><span class="o">.</span><span class="n">exception_to_unicode</span><span class="p">(</span><span class="n">e</span><span class="p">),</span>
+                               <span class="n">cause</span><span class="o">=</span><span class="n">e</span><span class="p">)</span>
+
+
+<span class="k">def</span> <span class="nf">_convert_from_old_format</span><span class="p">(</span><span class="n">data</span><span class="p">):</span>
+    <span class="c1"># NOTE(sileht): previous version of the driver was storing str as-is</span>
+    <span class="c1"># making impossible to read from python3 something written with python2</span>
+    <span class="c1"># version of the lib.</span>
+    <span class="c1"># Now everything is stored with explicit type bytes or unicode. This</span>
+    <span class="c1"># convert the old format to the new one to maintain compat of already</span>
+    <span class="c1"># deployed file.</span>
+    <span class="c1"># example of potential old python2 payload:</span>
+    <span class="c1"># {b&quot;member_id&quot;: b&quot;member&quot;}</span>
+    <span class="c1"># {b&quot;member_id&quot;: u&quot;member&quot;}</span>
+    <span class="c1"># example of potential old python3 payload:</span>
+    <span class="c1"># {u&quot;member_id&quot;: b&quot;member&quot;}</span>
+    <span class="c1"># {u&quot;member_id&quot;: u&quot;member&quot;}</span>
+    <span class="k">if</span> <span class="n">six</span><span class="o">.</span><span class="n">PY3</span> <span class="ow">and</span> <span class="sa">b</span><span class="s2">&quot;member_id&quot;</span> <span class="ow">in</span> <span class="n">data</span> <span class="ow">or</span> <span class="sa">b</span><span class="s2">&quot;group_id&quot;</span> <span class="ow">in</span> <span class="n">data</span><span class="p">:</span>
+        <span class="n">data</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">((</span><span class="n">k</span><span class="o">.</span><span class="n">decode</span><span class="p">(</span><span class="s2">&quot;utf8&quot;</span><span class="p">),</span> <span class="n">v</span><span class="p">)</span> <span class="k">for</span> <span class="n">k</span><span class="p">,</span> <span class="n">v</span> <span class="ow">in</span> <span class="n">data</span><span class="o">.</span><span class="n">items</span><span class="p">())</span>
+        <span class="c1"># About member_id and group_id valuse if the file have been written</span>
+        <span class="c1"># with python2 and in the old format, we can&#39;t known with python3</span>
+        <span class="c1"># if we need to decode the value or not. Python3 see bytes blob</span>
+        <span class="c1"># We keep it as-is and pray, this have a good change to break if</span>
+        <span class="c1"># the application was using str in python2 and unicode in python3</span>
+        <span class="c1"># The member file is often overridden so it&#39;s should be fine</span>
+        <span class="c1"># But the group file can be very old, so we</span>
+        <span class="c1"># now have to update it each time create_group is called</span>
+    <span class="k">return</span> <span class="n">data</span>
+
+
+<span class="k">def</span> <span class="nf">_lock_me</span><span class="p">(</span><span class="n">lock</span><span class="p">):</span>
+
+    <span class="k">def</span> <span class="nf">wrapper</span><span class="p">(</span><span class="n">func</span><span class="p">):</span>
+
+        <span class="nd">@six.wraps</span><span class="p">(</span><span class="n">func</span><span class="p">)</span>
+        <span class="k">def</span> <span class="nf">decorator</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+            <span class="k">with</span> <span class="n">lock</span><span class="p">:</span>
+                <span class="k">return</span> <span class="n">func</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+
+        <span class="k">return</span> <span class="n">decorator</span>
+
+    <span class="k">return</span> <span class="n">wrapper</span>
+
+
+<span class="k">class</span> <span class="nc">FileLock</span><span class="p">(</span><span class="n">locking</span><span class="o">.</span><span class="n">Lock</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A file based lock.&quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="p">,</span> <span class="n">barrier</span><span class="p">,</span> <span class="n">member_id</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">FileLock</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">acquired</span> <span class="o">=</span> <span class="bp">False</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_lock</span> <span class="o">=</span> <span class="n">fasteners</span><span class="o">.</span><span class="n">InterProcessLock</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_barrier</span> <span class="o">=</span> <span class="n">barrier</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_member_id</span> <span class="o">=</span> <span class="n">member_id</span>
+
+    <span class="k">def</span> <span class="nf">is_still_owner</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">acquired</span>
+
+    <span class="k">def</span> <span class="nf">acquire</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">blocking</span><span class="o">=</span><span class="bp">True</span><span class="p">):</span>
+        <span class="n">blocking</span><span class="p">,</span> <span class="n">timeout</span> <span class="o">=</span> <span class="n">utils</span><span class="o">.</span><span class="n">convert_blocking</span><span class="p">(</span><span class="n">blocking</span><span class="p">)</span>
+        <span class="n">watch</span> <span class="o">=</span> <span class="n">timeutils</span><span class="o">.</span><span class="n">StopWatch</span><span class="p">(</span><span class="n">duration</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span>
+        <span class="n">watch</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+
+        <span class="c1"># Make the shared barrier ours first.</span>
+        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_barrier</span><span class="o">.</span><span class="n">cond</span><span class="p">:</span>
+            <span class="k">while</span> <span class="bp">self</span><span class="o">.</span><span class="n">_barrier</span><span class="o">.</span><span class="n">owner</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="k">if</span> <span class="ow">not</span> <span class="n">blocking</span> <span class="ow">or</span> <span class="n">watch</span><span class="o">.</span><span class="n">expired</span><span class="p">():</span>
+                    <span class="k">return</span> <span class="bp">False</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_barrier</span><span class="o">.</span><span class="n">cond</span><span class="o">.</span><span class="n">wait</span><span class="p">(</span><span class="n">watch</span><span class="o">.</span><span class="n">leftover</span><span class="p">(</span><span class="n">return_none</span><span class="o">=</span><span class="bp">True</span><span class="p">))</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_barrier</span><span class="o">.</span><span class="n">owner</span> <span class="o">=</span> <span class="p">(</span><span class="n">threading</span><span class="o">.</span><span class="n">current_thread</span><span class="p">()</span><span class="o">.</span><span class="n">ident</span><span class="p">,</span>
+                                   <span class="n">os</span><span class="o">.</span><span class="n">getpid</span><span class="p">(),</span> <span class="bp">self</span><span class="o">.</span><span class="n">_member_id</span><span class="p">)</span>
+
+        <span class="c1"># Ok at this point we are now working in a thread safe manner,</span>
+        <span class="c1"># and now we can try to get the actual lock...</span>
+        <span class="n">gotten</span> <span class="o">=</span> <span class="bp">False</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">gotten</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_lock</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span>
+                <span class="n">blocking</span><span class="o">=</span><span class="n">blocking</span><span class="p">,</span>
+                <span class="c1"># Since the barrier waiting may have</span>
+                <span class="c1"># taken a long time, we have to use</span>
+                <span class="c1"># the leftover (and not the original).</span>
+                <span class="n">timeout</span><span class="o">=</span><span class="n">watch</span><span class="o">.</span><span class="n">leftover</span><span class="p">(</span><span class="n">return_none</span><span class="o">=</span><span class="bp">True</span><span class="p">))</span>
+        <span class="k">finally</span><span class="p">:</span>
+            <span class="c1"># NOTE(harlowja): do this in a finally block to **ensure** that</span>
+            <span class="c1"># we release the barrier if something bad happens...</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">gotten</span><span class="p">:</span>
+                <span class="c1"># Release the barrier to let someone else have a go at it...</span>
+                <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_barrier</span><span class="o">.</span><span class="n">cond</span><span class="p">:</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_barrier</span><span class="o">.</span><span class="n">owner</span> <span class="o">=</span> <span class="bp">None</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_barrier</span><span class="o">.</span><span class="n">cond</span><span class="o">.</span><span class="n">notify_all</span><span class="p">()</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">acquired</span> <span class="o">=</span> <span class="n">gotten</span>
+        <span class="k">return</span> <span class="n">gotten</span>
+
+    <span class="k">def</span> <span class="nf">release</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">acquired</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">False</span>
+        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_barrier</span><span class="o">.</span><span class="n">cond</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">acquired</span> <span class="o">=</span> <span class="bp">False</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_barrier</span><span class="o">.</span><span class="n">owner</span> <span class="o">=</span> <span class="bp">None</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_barrier</span><span class="o">.</span><span class="n">cond</span><span class="o">.</span><span class="n">notify_all</span><span class="p">()</span>
+        <span class="k">return</span> <span class="bp">True</span>
+
+    <span class="k">def</span> <span class="fm">__del__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">acquired</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">&quot;Unreleased lock </span><span class="si">%s</span><span class="s2"> garbage collected&quot;</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">name</span><span class="p">)</span>
+
+
+<div class="viewcode-block" id="FileDriver"><a class="viewcode-back" href="../../../developers.html#tooz.drivers.file.FileDriver">[docs]</a><span class="k">class</span> <span class="nc">FileDriver</span><span class="p">(</span><span class="n">coordination</span><span class="o">.</span><span class="n">CoordinationDriverCachedRunWatchers</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A file based driver.</span>
+
+<span class="sd">    This driver uses files and directories (and associated file locks) to</span>
+<span class="sd">    provide the coordination driver semantics and required API(s). It **is**</span>
+<span class="sd">    missing some functionality but in the future these not implemented API(s)</span>
+<span class="sd">    will be filled in.</span>
+
+<span class="sd">    General recommendations/usage considerations:</span>
+
+<span class="sd">    - It does **not** automatically delete members from</span>
+<span class="sd">      groups of processes that have died, manual cleanup will be needed</span>
+<span class="sd">      for those types of failures.</span>
+
+<span class="sd">    - It is **not** distributed (or recommended to be used in those</span>
+<span class="sd">      situations, so the developer using this should really take that into</span>
+<span class="sd">      account when applying this driver in there app).</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">CHARACTERISTICS</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="n">coordination</span><span class="o">.</span><span class="n">Characteristics</span><span class="o">.</span><span class="n">NON_TIMEOUT_BASED</span><span class="p">,</span>
+        <span class="n">coordination</span><span class="o">.</span><span class="n">Characteristics</span><span class="o">.</span><span class="n">DISTRIBUTED_ACROSS_THREADS</span><span class="p">,</span>
+        <span class="n">coordination</span><span class="o">.</span><span class="n">Characteristics</span><span class="o">.</span><span class="n">DISTRIBUTED_ACROSS_PROCESSES</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Tuple of :py:class:`~tooz.coordination.Characteristics` introspectable</span>
+<span class="sd">    enum member(s) that can be used to interogate how this driver works.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">HASH_ROUTINE</span> <span class="o">=</span> <span class="s1">&#39;sha1&#39;</span>
+    <span class="sd">&quot;&quot;&quot;This routine is used to hash a member (or group) id into a filesystem</span>
+<span class="sd">       safe name that can be used for member lookup and group joining.&quot;&quot;&quot;</span>
+
+    <span class="n">_barriers</span> <span class="o">=</span> <span class="n">weakref</span><span class="o">.</span><span class="n">WeakValueDictionary</span><span class="p">()</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Barriers shared among all file driver locks, this is required</span>
+<span class="sd">    since interprocess locking is not thread aware, so we must add the</span>
+<span class="sd">    thread awareness on-top of it instead.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+<div class="viewcode-block" id="FileDriver.__init__"><a class="viewcode-back" href="../../../developers.html#tooz.drivers.file.FileDriver.__init__">[docs]</a>    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">member_id</span><span class="p">,</span> <span class="n">parsed_url</span><span class="p">,</span> <span class="n">options</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Initialize the file driver.&quot;&quot;&quot;</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">FileDriver</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">member_id</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_dir</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_normalize_path</span><span class="p">(</span><span class="n">parsed_url</span><span class="o">.</span><span class="n">path</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_executor</span> <span class="o">=</span> <span class="n">utils</span><span class="o">.</span><span class="n">ProxyExecutor</span><span class="o">.</span><span class="n">build</span><span class="p">(</span><span class="s2">&quot;File&quot;</span><span class="p">,</span> <span class="n">options</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_group_dir</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_dir</span><span class="p">,</span> <span class="s1">&#39;groups&#39;</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_tmpdir</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_dir</span><span class="p">,</span> <span class="s1">&#39;tmp&#39;</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_driver_lock_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_dir</span><span class="p">,</span> <span class="s1">&#39;.driver_lock&#39;</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_driver_lock</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_raw_lock</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_driver_lock_path</span><span class="p">,</span>
+                                               <span class="bp">self</span><span class="o">.</span><span class="n">_member_id</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_reserved_dirs</span> <span class="o">=</span> <span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">_dir</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_group_dir</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_tmpdir</span><span class="p">]</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_reserved_paths</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_reserved_dirs</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_reserved_paths</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_driver_lock_path</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_safe_member_id</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_make_filesystem_safe</span><span class="p">(</span><span class="n">member_id</span><span class="p">)</span>
+</div>
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span> <span class="nf">_normalize_path</span><span class="p">(</span><span class="n">path</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">sys</span><span class="o">.</span><span class="n">platform</span> <span class="o">==</span> <span class="s1">&#39;win32&#39;</span><span class="p">:</span>
+            <span class="c1"># Replace slashes with backslashes and make sure we don&#39;t</span>
+            <span class="c1"># have any at the beginning of paths that include drive letters.</span>
+            <span class="c1">#</span>
+            <span class="c1"># Expected url format:</span>
+            <span class="c1"># file:////share_address/share_name</span>
+            <span class="c1"># file:///C:/path</span>
+            <span class="k">return</span> <span class="n">re</span><span class="o">.</span><span class="n">sub</span><span class="p">(</span><span class="sa">r</span><span class="s1">&#39;</span><span class="se">\\</span><span class="s1">(?=\w:</span><span class="se">\\</span><span class="s1">)&#39;</span><span class="p">,</span> <span class="s1">&#39;&#39;</span><span class="p">,</span>
+                          <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">normpath</span><span class="p">(</span><span class="n">path</span><span class="p">))</span>
+        <span class="k">return</span> <span class="n">path</span>
+
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span> <span class="nf">_get_raw_lock</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">path</span><span class="p">,</span> <span class="n">member_id</span><span class="p">):</span>
+        <span class="n">lock_barrier</span> <span class="o">=</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_barriers</span><span class="o">.</span><span class="n">setdefault</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="n">_Barrier</span><span class="p">())</span>
+        <span class="k">return</span> <span class="n">FileLock</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="n">lock_barrier</span><span class="p">,</span> <span class="n">member_id</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">get_lock</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">name</span><span class="p">):</span>
+        <span class="n">path</span> <span class="o">=</span> <span class="n">utils</span><span class="o">.</span><span class="n">safe_abs_path</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_dir</span><span class="p">,</span> <span class="n">name</span><span class="o">.</span><span class="n">decode</span><span class="p">())</span>
+        <span class="k">if</span> <span class="n">path</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_reserved_paths</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;Unable to create a lock using&quot;</span>
+                             <span class="s2">&quot; reserved path &#39;</span><span class="si">%s</span><span class="s2">&#39; for lock&quot;</span>
+                             <span class="s2">&quot; with name &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="n">name</span><span class="p">))</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_raw_lock</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_member_id</span><span class="p">)</span>
+
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span> <span class="nf">_make_filesystem_safe</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">item</span><span class="p">):</span>
+        <span class="n">item</span> <span class="o">=</span> <span class="n">utils</span><span class="o">.</span><span class="n">to_binary</span><span class="p">(</span><span class="n">item</span><span class="p">,</span> <span class="n">encoding</span><span class="o">=</span><span class="s2">&quot;utf8&quot;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">hashlib</span><span class="o">.</span><span class="n">new</span><span class="p">(</span><span class="bp">cls</span><span class="o">.</span><span class="n">HASH_ROUTINE</span><span class="p">,</span> <span class="n">item</span><span class="p">)</span><span class="o">.</span><span class="n">hexdigest</span><span class="p">()</span>
+
+    <span class="k">def</span> <span class="nf">_start</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">for</span> <span class="n">a_dir</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_reserved_dirs</span><span class="p">:</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">fileutils</span><span class="o">.</span><span class="n">ensure_tree</span><span class="p">(</span><span class="n">a_dir</span><span class="p">)</span>
+            <span class="k">except</span> <span class="ne">OSError</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="n">coordination</span><span class="o">.</span><span class="n">ToozConnectionError</span><span class="p">(</span><span class="n">e</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_executor</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+
+    <span class="k">def</span> <span class="nf">_stop</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_executor</span><span class="o">.</span><span class="n">stop</span><span class="p">()</span>
+
+    <span class="k">def</span> <span class="nf">_update_group_metadata</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="p">,</span> <span class="n">group_id</span><span class="p">):</span>
+        <span class="n">details</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="sa">u</span><span class="s1">&#39;group_id&#39;</span><span class="p">:</span> <span class="n">utils</span><span class="o">.</span><span class="n">to_binary</span><span class="p">(</span><span class="n">group_id</span><span class="p">,</span> <span class="n">encoding</span><span class="o">=</span><span class="s2">&quot;utf8&quot;</span><span class="p">)</span>
+        <span class="p">}</span>
+        <span class="n">details</span><span class="p">[</span><span class="sa">u</span><span class="s1">&#39;encoded&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">details</span><span class="p">[</span><span class="sa">u</span><span class="s2">&quot;group_id&quot;</span><span class="p">]</span> <span class="o">!=</span> <span class="n">group_id</span>
+        <span class="n">details_blob</span> <span class="o">=</span> <span class="n">utils</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span><span class="n">details</span><span class="p">)</span>
+        <span class="n">fd</span><span class="p">,</span> <span class="n">name</span> <span class="o">=</span> <span class="n">tempfile</span><span class="o">.</span><span class="n">mkstemp</span><span class="p">(</span><span class="s2">&quot;tooz&quot;</span><span class="p">,</span> <span class="nb">dir</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_tmpdir</span><span class="p">)</span>
+        <span class="k">with</span> <span class="n">os</span><span class="o">.</span><span class="n">fdopen</span><span class="p">(</span><span class="n">fd</span><span class="p">,</span> <span class="s2">&quot;wb&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">fh</span><span class="p">:</span>
+            <span class="n">fh</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="n">details_blob</span><span class="p">)</span>
+        <span class="n">os</span><span class="o">.</span><span class="n">rename</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">path</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">create_group</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">group_id</span><span class="p">):</span>
+        <span class="n">safe_group_id</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_make_filesystem_safe</span><span class="p">(</span><span class="n">group_id</span><span class="p">)</span>
+        <span class="n">group_dir</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_group_dir</span><span class="p">,</span> <span class="n">safe_group_id</span><span class="p">)</span>
+        <span class="n">group_meta_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">group_dir</span><span class="p">,</span> <span class="s1">&#39;.metadata&#39;</span><span class="p">)</span>
+
+        <span class="k">def</span> <span class="nf">_do_create_group</span><span class="p">():</span>
+            <span class="k">if</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">exists</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">group_dir</span><span class="p">,</span> <span class="s2">&quot;.metadata&quot;</span><span class="p">)):</span>
+                <span class="c1"># NOTE(sileht): We update the group metadata even</span>
+                <span class="c1"># they are already good, so ensure dict key are convert</span>
+                <span class="c1"># to unicode in case of the file have been written with</span>
+                <span class="c1"># tooz &lt; 1.36</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_update_group_metadata</span><span class="p">(</span><span class="n">group_meta_path</span><span class="p">,</span> <span class="n">group_id</span><span class="p">)</span>
+                <span class="k">raise</span> <span class="n">coordination</span><span class="o">.</span><span class="n">GroupAlreadyExist</span><span class="p">(</span><span class="n">group_id</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">fileutils</span><span class="o">.</span><span class="n">ensure_tree</span><span class="p">(</span><span class="n">group_dir</span><span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_update_group_metadata</span><span class="p">(</span><span class="n">group_meta_path</span><span class="p">,</span> <span class="n">group_id</span><span class="p">)</span>
+        <span class="n">fut</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_executor</span><span class="o">.</span><span class="n">submit</span><span class="p">(</span><span class="n">_do_create_group</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">FileFutureResult</span><span class="p">(</span><span class="n">fut</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">join_group</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">group_id</span><span class="p">,</span> <span class="n">capabilities</span><span class="o">=</span><span class="sa">b</span><span class="s2">&quot;&quot;</span><span class="p">):</span>
+        <span class="n">safe_group_id</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_make_filesystem_safe</span><span class="p">(</span><span class="n">group_id</span><span class="p">)</span>
+        <span class="n">group_dir</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_group_dir</span><span class="p">,</span> <span class="n">safe_group_id</span><span class="p">)</span>
+        <span class="n">me_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">group_dir</span><span class="p">,</span> <span class="s2">&quot;</span><span class="si">%s</span><span class="s2">.raw&quot;</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">_safe_member_id</span><span class="p">)</span>
+
+        <span class="nd">@_lock_me</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_driver_lock</span><span class="p">)</span>
+        <span class="k">def</span> <span class="nf">_do_join_group</span><span class="p">():</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">exists</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">group_dir</span><span class="p">,</span> <span class="s2">&quot;.metadata&quot;</span><span class="p">)):</span>
+                <span class="k">raise</span> <span class="n">coordination</span><span class="o">.</span><span class="n">GroupNotCreated</span><span class="p">(</span><span class="n">group_id</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">isfile</span><span class="p">(</span><span class="n">me_path</span><span class="p">):</span>
+                <span class="k">raise</span> <span class="n">coordination</span><span class="o">.</span><span class="n">MemberAlreadyExist</span><span class="p">(</span><span class="n">group_id</span><span class="p">,</span>
+                                                      <span class="bp">self</span><span class="o">.</span><span class="n">_member_id</span><span class="p">)</span>
+            <span class="n">details</span> <span class="o">=</span> <span class="p">{</span>
+                <span class="sa">u</span><span class="s1">&#39;capabilities&#39;</span><span class="p">:</span> <span class="n">capabilities</span><span class="p">,</span>
+                <span class="sa">u</span><span class="s1">&#39;joined_on&#39;</span><span class="p">:</span> <span class="n">datetime</span><span class="o">.</span><span class="n">datetime</span><span class="o">.</span><span class="n">now</span><span class="p">(),</span>
+                <span class="sa">u</span><span class="s1">&#39;member_id&#39;</span><span class="p">:</span> <span class="n">utils</span><span class="o">.</span><span class="n">to_binary</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_member_id</span><span class="p">,</span>
+                                              <span class="n">encoding</span><span class="o">=</span><span class="s2">&quot;utf-8&quot;</span><span class="p">)</span>
+            <span class="p">}</span>
+            <span class="n">details</span><span class="p">[</span><span class="sa">u</span><span class="s1">&#39;encoded&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">details</span><span class="p">[</span><span class="sa">u</span><span class="s2">&quot;member_id&quot;</span><span class="p">]</span> <span class="o">!=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_member_id</span>
+            <span class="n">details_blob</span> <span class="o">=</span> <span class="n">utils</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span><span class="n">details</span><span class="p">)</span>
+            <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">me_path</span><span class="p">,</span> <span class="s2">&quot;wb&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">fh</span><span class="p">:</span>
+                <span class="n">fh</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="n">details_blob</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_joined_groups</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">group_id</span><span class="p">)</span>
+
+        <span class="n">fut</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_executor</span><span class="o">.</span><span class="n">submit</span><span class="p">(</span><span class="n">_do_join_group</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">FileFutureResult</span><span class="p">(</span><span class="n">fut</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">leave_group</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">group_id</span><span class="p">):</span>
+        <span class="n">safe_group_id</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_make_filesystem_safe</span><span class="p">(</span><span class="n">group_id</span><span class="p">)</span>
+        <span class="n">group_dir</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_group_dir</span><span class="p">,</span> <span class="n">safe_group_id</span><span class="p">)</span>
+        <span class="n">me_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">group_dir</span><span class="p">,</span> <span class="s2">&quot;</span><span class="si">%s</span><span class="s2">.raw&quot;</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">_safe_member_id</span><span class="p">)</span>
+
+        <span class="nd">@_lock_me</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_driver_lock</span><span class="p">)</span>
+        <span class="k">def</span> <span class="nf">_do_leave_group</span><span class="p">():</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">exists</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">group_dir</span><span class="p">,</span> <span class="s2">&quot;.metadata&quot;</span><span class="p">)):</span>
+                <span class="k">raise</span> <span class="n">coordination</span><span class="o">.</span><span class="n">GroupNotCreated</span><span class="p">(</span><span class="n">group_id</span><span class="p">)</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">os</span><span class="o">.</span><span class="n">unlink</span><span class="p">(</span><span class="n">me_path</span><span class="p">)</span>
+            <span class="k">except</span> <span class="ne">EnvironmentError</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+                <span class="k">if</span> <span class="n">e</span><span class="o">.</span><span class="n">errno</span> <span class="o">!=</span> <span class="n">errno</span><span class="o">.</span><span class="n">ENOENT</span><span class="p">:</span>
+                    <span class="k">raise</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="k">raise</span> <span class="n">coordination</span><span class="o">.</span><span class="n">MemberNotJoined</span><span class="p">(</span><span class="n">group_id</span><span class="p">,</span>
+                                                       <span class="bp">self</span><span class="o">.</span><span class="n">_member_id</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_joined_groups</span><span class="o">.</span><span class="n">discard</span><span class="p">(</span><span class="n">group_id</span><span class="p">)</span>
+
+        <span class="n">fut</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_executor</span><span class="o">.</span><span class="n">submit</span><span class="p">(</span><span class="n">_do_leave_group</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">FileFutureResult</span><span class="p">(</span><span class="n">fut</span><span class="p">)</span>
+
+    <span class="n">_SCHEMAS</span> <span class="o">=</span> <span class="p">{</span>
+        <span class="s1">&#39;group&#39;</span><span class="p">:</span> <span class="n">voluptuous</span><span class="o">.</span><span class="n">Schema</span><span class="p">({</span>
+            <span class="n">voluptuous</span><span class="o">.</span><span class="n">Required</span><span class="p">(</span><span class="s1">&#39;group_id&#39;</span><span class="p">):</span> <span class="n">voluptuous</span><span class="o">.</span><span class="n">Any</span><span class="p">(</span><span class="n">six</span><span class="o">.</span><span class="n">text_type</span><span class="p">,</span>
+                                                            <span class="n">six</span><span class="o">.</span><span class="n">binary_type</span><span class="p">),</span>
+            <span class="c1"># NOTE(sileht): tooz &lt;1.36 was creating file without this</span>
+            <span class="n">voluptuous</span><span class="o">.</span><span class="n">Optional</span><span class="p">(</span><span class="s1">&#39;encoded&#39;</span><span class="p">):</span> <span class="nb">bool</span><span class="p">,</span>
+        <span class="p">}),</span>
+        <span class="s1">&#39;member&#39;</span><span class="p">:</span> <span class="n">voluptuous</span><span class="o">.</span><span class="n">Schema</span><span class="p">({</span>
+            <span class="n">voluptuous</span><span class="o">.</span><span class="n">Required</span><span class="p">(</span><span class="s1">&#39;member_id&#39;</span><span class="p">):</span> <span class="n">voluptuous</span><span class="o">.</span><span class="n">Any</span><span class="p">(</span><span class="n">six</span><span class="o">.</span><span class="n">text_type</span><span class="p">,</span>
+                                                             <span class="n">six</span><span class="o">.</span><span class="n">binary_type</span><span class="p">),</span>
+            <span class="n">voluptuous</span><span class="o">.</span><span class="n">Required</span><span class="p">(</span><span class="s1">&#39;joined_on&#39;</span><span class="p">):</span> <span class="n">datetime</span><span class="o">.</span><span class="n">datetime</span><span class="p">,</span>
+            <span class="c1"># NOTE(sileht): tooz &lt;1.36 was creating file without this</span>
+            <span class="n">voluptuous</span><span class="o">.</span><span class="n">Optional</span><span class="p">(</span><span class="s1">&#39;encoded&#39;</span><span class="p">):</span> <span class="nb">bool</span><span class="p">,</span>
+        <span class="p">},</span> <span class="n">extra</span><span class="o">=</span><span class="n">voluptuous</span><span class="o">.</span><span class="n">ALLOW_EXTRA</span><span class="p">),</span>
+    <span class="p">}</span>
+
+    <span class="k">def</span> <span class="nf">_load_and_validate</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">blob</span><span class="p">,</span> <span class="n">schema_key</span><span class="p">):</span>
+        <span class="n">data</span> <span class="o">=</span> <span class="n">utils</span><span class="o">.</span><span class="n">loads</span><span class="p">(</span><span class="n">blob</span><span class="p">)</span>
+        <span class="n">data</span> <span class="o">=</span> <span class="n">_convert_from_old_format</span><span class="p">(</span><span class="n">data</span><span class="p">)</span>
+        <span class="n">schema</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_SCHEMAS</span><span class="p">[</span><span class="n">schema_key</span><span class="p">]</span>
+        <span class="k">return</span> <span class="n">schema</span><span class="p">(</span><span class="n">data</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_read_member_id</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="p">):</span>
+        <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="s1">&#39;rb&#39;</span><span class="p">)</span> <span class="k">as</span> <span class="n">fh</span><span class="p">:</span>
+            <span class="n">details</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_load_and_validate</span><span class="p">(</span><span class="n">fh</span><span class="o">.</span><span class="n">read</span><span class="p">(),</span> <span class="s1">&#39;member&#39;</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">details</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;encoded&quot;</span><span class="p">):</span>
+                <span class="k">return</span> <span class="n">details</span><span class="p">[</span><span class="sa">u</span><span class="s1">&#39;member_id&#39;</span><span class="p">]</span><span class="o">.</span><span class="n">decode</span><span class="p">(</span><span class="s2">&quot;utf-8&quot;</span><span class="p">)</span>
+            <span class="k">return</span> <span class="n">details</span><span class="p">[</span><span class="sa">u</span><span class="s1">&#39;member_id&#39;</span><span class="p">]</span>
+
+    <span class="k">def</span> <span class="nf">get_members</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">group_id</span><span class="p">):</span>
+        <span class="n">safe_group_id</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_make_filesystem_safe</span><span class="p">(</span><span class="n">group_id</span><span class="p">)</span>
+        <span class="n">group_dir</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_group_dir</span><span class="p">,</span> <span class="n">safe_group_id</span><span class="p">)</span>
+
+        <span class="nd">@_lock_me</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_driver_lock</span><span class="p">)</span>
+        <span class="k">def</span> <span class="nf">_do_get_members</span><span class="p">():</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">isdir</span><span class="p">(</span><span class="n">group_dir</span><span class="p">):</span>
+                <span class="k">raise</span> <span class="n">coordination</span><span class="o">.</span><span class="n">GroupNotCreated</span><span class="p">(</span><span class="n">group_id</span><span class="p">)</span>
+            <span class="n">members</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">entries</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">listdir</span><span class="p">(</span><span class="n">group_dir</span><span class="p">)</span>
+            <span class="k">except</span> <span class="ne">EnvironmentError</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+                <span class="c1"># Did someone manage to remove it before we got here...</span>
+                <span class="k">if</span> <span class="n">e</span><span class="o">.</span><span class="n">errno</span> <span class="o">!=</span> <span class="n">errno</span><span class="o">.</span><span class="n">ENOENT</span><span class="p">:</span>
+                    <span class="k">raise</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">for</span> <span class="n">entry</span> <span class="ow">in</span> <span class="n">entries</span><span class="p">:</span>
+                    <span class="k">if</span> <span class="ow">not</span> <span class="n">entry</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="s1">&#39;.raw&#39;</span><span class="p">):</span>
+                        <span class="k">continue</span>
+                    <span class="n">entry_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">group_dir</span><span class="p">,</span> <span class="n">entry</span><span class="p">)</span>
+                    <span class="k">try</span><span class="p">:</span>
+                        <span class="n">member_id</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_read_member_id</span><span class="p">(</span><span class="n">entry_path</span><span class="p">)</span>
+                    <span class="k">except</span> <span class="ne">EnvironmentError</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+                        <span class="k">if</span> <span class="n">e</span><span class="o">.</span><span class="n">errno</span> <span class="o">!=</span> <span class="n">errno</span><span class="o">.</span><span class="n">ENOENT</span><span class="p">:</span>
+                            <span class="k">raise</span>
+                    <span class="k">else</span><span class="p">:</span>
+                        <span class="n">members</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">member_id</span><span class="p">)</span>
+            <span class="k">return</span> <span class="n">members</span>
+
+        <span class="n">fut</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_executor</span><span class="o">.</span><span class="n">submit</span><span class="p">(</span><span class="n">_do_get_members</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">FileFutureResult</span><span class="p">(</span><span class="n">fut</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">get_member_capabilities</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">group_id</span><span class="p">,</span> <span class="n">member_id</span><span class="p">):</span>
+        <span class="n">safe_group_id</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_make_filesystem_safe</span><span class="p">(</span><span class="n">group_id</span><span class="p">)</span>
+        <span class="n">group_dir</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_group_dir</span><span class="p">,</span> <span class="n">safe_group_id</span><span class="p">)</span>
+        <span class="n">safe_member_id</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_make_filesystem_safe</span><span class="p">(</span><span class="n">member_id</span><span class="p">)</span>
+        <span class="n">member_path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">group_dir</span><span class="p">,</span> <span class="s2">&quot;</span><span class="si">%s</span><span class="s2">.raw&quot;</span> <span class="o">%</span> <span class="n">safe_member_id</span><span class="p">)</span>
+
+        <span class="nd">@_lock_me</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_driver_lock</span><span class="p">)</span>
+        <span class="k">def</span> <span class="nf">_do_get_member_capabilities</span><span class="p">():</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">member_path</span><span class="p">,</span> <span class="s2">&quot;rb&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">fh</span><span class="p">:</span>
+                    <span class="n">contents</span> <span class="o">=</span> <span class="n">fh</span><span class="o">.</span><span class="n">read</span><span class="p">()</span>
+            <span class="k">except</span> <span class="ne">EnvironmentError</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+                <span class="k">if</span> <span class="n">e</span><span class="o">.</span><span class="n">errno</span> <span class="o">==</span> <span class="n">errno</span><span class="o">.</span><span class="n">ENOENT</span><span class="p">:</span>
+                    <span class="k">if</span> <span class="ow">not</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">isdir</span><span class="p">(</span><span class="n">group_dir</span><span class="p">):</span>
+                        <span class="k">raise</span> <span class="n">coordination</span><span class="o">.</span><span class="n">GroupNotCreated</span><span class="p">(</span><span class="n">group_id</span><span class="p">)</span>
+                    <span class="k">else</span><span class="p">:</span>
+                        <span class="k">raise</span> <span class="n">coordination</span><span class="o">.</span><span class="n">MemberNotJoined</span><span class="p">(</span><span class="n">group_id</span><span class="p">,</span>
+                                                           <span class="n">member_id</span><span class="p">)</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="k">raise</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">details</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_load_and_validate</span><span class="p">(</span><span class="n">contents</span><span class="p">,</span> <span class="s1">&#39;member&#39;</span><span class="p">)</span>
+                <span class="k">return</span> <span class="n">details</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="sa">u</span><span class="s2">&quot;capabilities&quot;</span><span class="p">)</span>
+
+        <span class="n">fut</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_executor</span><span class="o">.</span><span class="n">submit</span><span class="p">(</span><span class="n">_do_get_member_capabilities</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">FileFutureResult</span><span class="p">(</span><span class="n">fut</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">delete_group</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">group_id</span><span class="p">):</span>
+        <span class="n">safe_group_id</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_make_filesystem_safe</span><span class="p">(</span><span class="n">group_id</span><span class="p">)</span>
+        <span class="n">group_dir</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_group_dir</span><span class="p">,</span> <span class="n">safe_group_id</span><span class="p">)</span>
+
+        <span class="nd">@_lock_me</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_driver_lock</span><span class="p">)</span>
+        <span class="k">def</span> <span class="nf">_do_delete_group</span><span class="p">():</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">entries</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">listdir</span><span class="p">(</span><span class="n">group_dir</span><span class="p">)</span>
+            <span class="k">except</span> <span class="ne">EnvironmentError</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+                <span class="k">if</span> <span class="n">e</span><span class="o">.</span><span class="n">errno</span> <span class="o">==</span> <span class="n">errno</span><span class="o">.</span><span class="n">ENOENT</span><span class="p">:</span>
+                    <span class="k">raise</span> <span class="n">coordination</span><span class="o">.</span><span class="n">GroupNotCreated</span><span class="p">(</span><span class="n">group_id</span><span class="p">)</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="k">raise</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">entries</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">1</span><span class="p">:</span>
+                    <span class="k">raise</span> <span class="n">coordination</span><span class="o">.</span><span class="n">GroupNotEmpty</span><span class="p">(</span><span class="n">group_id</span><span class="p">)</span>
+                <span class="k">elif</span> <span class="nb">len</span><span class="p">(</span><span class="n">entries</span><span class="p">)</span> <span class="o">==</span> <span class="mi">1</span> <span class="ow">and</span> <span class="n">entries</span> <span class="o">!=</span> <span class="p">[</span><span class="s1">&#39;.metadata&#39;</span><span class="p">]:</span>
+                    <span class="k">raise</span> <span class="n">tooz</span><span class="o">.</span><span class="n">ToozError</span><span class="p">(</span>
+                        <span class="s2">&quot;Unexpected path &#39;</span><span class="si">%s</span><span class="s2">&#39; found in&quot;</span>
+                        <span class="s2">&quot; group directory &#39;</span><span class="si">%s</span><span class="s2">&#39; (expected to only find&quot;</span>
+                        <span class="s2">&quot; a &#39;.metadata&#39; path)&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">entries</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">group_dir</span><span class="p">))</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="k">try</span><span class="p">:</span>
+                        <span class="n">shutil</span><span class="o">.</span><span class="n">rmtree</span><span class="p">(</span><span class="n">group_dir</span><span class="p">)</span>
+                    <span class="k">except</span> <span class="ne">EnvironmentError</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+                        <span class="k">if</span> <span class="n">e</span><span class="o">.</span><span class="n">errno</span> <span class="o">!=</span> <span class="n">errno</span><span class="o">.</span><span class="n">ENOENT</span><span class="p">:</span>
+                            <span class="k">raise</span>
+
+        <span class="n">fut</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_executor</span><span class="o">.</span><span class="n">submit</span><span class="p">(</span><span class="n">_do_delete_group</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">FileFutureResult</span><span class="p">(</span><span class="n">fut</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_read_group_id</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="p">):</span>
+        <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="s1">&#39;rb&#39;</span><span class="p">)</span> <span class="k">as</span> <span class="n">fh</span><span class="p">:</span>
+            <span class="n">details</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_load_and_validate</span><span class="p">(</span><span class="n">fh</span><span class="o">.</span><span class="n">read</span><span class="p">(),</span> <span class="s1">&#39;group&#39;</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">details</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;encoded&quot;</span><span class="p">):</span>
+                <span class="k">return</span> <span class="n">details</span><span class="p">[</span><span class="sa">u</span><span class="s1">&#39;group_id&#39;</span><span class="p">]</span><span class="o">.</span><span class="n">decode</span><span class="p">(</span><span class="s2">&quot;utf-8&quot;</span><span class="p">)</span>
+            <span class="k">return</span> <span class="n">details</span><span class="p">[</span><span class="sa">u</span><span class="s1">&#39;group_id&#39;</span><span class="p">]</span>
+
+    <span class="k">def</span> <span class="nf">get_groups</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+
+        <span class="k">def</span> <span class="nf">_do_get_groups</span><span class="p">():</span>
+            <span class="n">groups</span> <span class="o">=</span> <span class="p">[]</span>
+            <span class="k">for</span> <span class="n">entry</span> <span class="ow">in</span> <span class="n">os</span><span class="o">.</span><span class="n">listdir</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_group_dir</span><span class="p">):</span>
+                <span class="n">path</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_group_dir</span><span class="p">,</span> <span class="n">entry</span><span class="p">,</span> <span class="s1">&#39;.metadata&#39;</span><span class="p">)</span>
+                <span class="k">try</span><span class="p">:</span>
+                    <span class="n">groups</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_read_group_id</span><span class="p">(</span><span class="n">path</span><span class="p">))</span>
+                <span class="k">except</span> <span class="ne">EnvironmentError</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+                    <span class="k">if</span> <span class="n">e</span><span class="o">.</span><span class="n">errno</span> <span class="o">!=</span> <span class="n">errno</span><span class="o">.</span><span class="n">ENOENT</span><span class="p">:</span>
+                        <span class="k">raise</span>
+            <span class="k">return</span> <span class="n">groups</span>
+
+        <span class="n">fut</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_executor</span><span class="o">.</span><span class="n">submit</span><span class="p">(</span><span class="n">_do_get_groups</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">FileFutureResult</span><span class="p">(</span><span class="n">fut</span><span class="p">)</span>
+
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span> <span class="nf">watch_elected_as_leader</span><span class="p">(</span><span class="n">group_id</span><span class="p">,</span> <span class="n">callback</span><span class="p">):</span>
+        <span class="k">raise</span> <span class="n">tooz</span><span class="o">.</span><span class="n">NotImplemented</span>
+
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span> <span class="nf">unwatch_elected_as_leader</span><span class="p">(</span><span class="n">group_id</span><span class="p">,</span> <span class="n">callback</span><span class="p">):</span>
+        <span class="k">raise</span> <span class="n">tooz</span><span class="o">.</span><span class="n">NotImplemented</span>
+
+</div>
+<span class="k">class</span> <span class="nc">FileFutureResult</span><span class="p">(</span><span class="n">coordination</span><span class="o">.</span><span class="n">CoordAsyncResult</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;File asynchronous result that references a future.&quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">fut</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_fut</span> <span class="o">=</span> <span class="n">fut</span>
+
+    <span class="k">def</span> <span class="nf">get</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="c1"># Late translate the common failures since the file driver</span>
+            <span class="c1"># may throw things that we can not catch in the callbacks where</span>
+            <span class="c1"># it is used.</span>
+            <span class="k">with</span> <span class="n">_translate_failures</span><span class="p">():</span>
+                <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_fut</span><span class="o">.</span><span class="n">result</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">futures</span><span class="o">.</span><span class="n">TimeoutError</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+            <span class="n">utils</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">coordination</span><span class="o">.</span><span class="n">OperationTimedOut</span><span class="p">,</span>
+                                   <span class="n">encodeutils</span><span class="o">.</span><span class="n">exception_to_unicode</span><span class="p">(</span><span class="n">e</span><span class="p">),</span>
+                                   <span class="n">cause</span><span class="o">=</span><span class="n">e</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">done</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_fut</span><span class="o">.</span><span class="n">done</span><span class="p">()</span>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/tooz
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li><a href="../../../index.html">tooz 1.48.1.dev1 documentation</a> &raquo;</li>
+          <li><a href="../../index.html" >Module code</a> &raquo;</li>
+          <li><a href="../../tooz.html" accesskey="U">tooz</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer">
+        &copy; Copyright 2017, OpenStack Foundation.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.2.3.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/tooz");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

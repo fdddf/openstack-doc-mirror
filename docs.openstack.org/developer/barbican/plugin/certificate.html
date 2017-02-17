@@ -1,0 +1,647 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Certificate Plugin Development &mdash; barbican 4.0.0.0rc2.dev3 documentation</title>
+    
+    <link rel="stylesheet" href="../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../',
+        VERSION:     '4.0.0.0rc2.dev3',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../_static/jquery.js"></script>
+    <script type="text/javascript" src="../_static/underscore.js"></script>
+    <script type="text/javascript" src="../_static/doctools.js"></script>
+    <link rel="top" title="barbican 4.0.0.0rc2.dev3 documentation" href="../index.html" />
+    <link rel="up" title="Plugin Developers Guide" href="index.html" />
+    <link rel="next" title="Writing and Running Barbican Tests" href="../testing.html" />
+    <link rel="prev" title="Cryptographic Plugin Development" href="crypto.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <span class="target" id="module-barbican.plugin.interface.certificate_manager"></span><div class="section" id="certificate-plugin-development">
+<h1>Certificate Plugin Development<a class="headerlink" href="#certificate-plugin-development" title="Permalink to this headline">¶</a></h1>
+<div class="admonition warning">
+<p class="first admonition-title">Warning</p>
+<p class="last">DEPRECATION WARNING: The Certificates Plugin has been deprecated and will
+be removed in the P release.</p>
+</div>
+<p>This guide describes how to develop a custom certificate plugin for use by
+Barbican.</p>
+<p>Barbican core orchestrates generating SSL certificates, delegating to
+certificate plugins any required actions. Certificate actions include
+initiating a certificate order, checking for order updates, and retrieving
+generated certificates. Barbican plans to include the following certificate
+plugins:</p>
+<ol class="arabic simple">
+<li>A Red Hat Dogtag certificate authority (CA) plugin capable of generating
+certificates once the order is initiated.</li>
+<li>A Symantec plugin able to interact with the Symantec CA service, requiring
+periodic status updates to see if certificates are ready.</li>
+<li>A DigiCert plugin able to interact with the DigiCert CA service, with a
+similar interactions as with Symantec.</li>
+</ol>
+<div class="section" id="certificate-manager-module">
+<h2><code class="docutils literal"><span class="pre">certificate_manager</span></code> Module<a class="headerlink" href="#certificate-manager-module" title="Permalink to this headline">¶</a></h2>
+<p>The <code class="docutils literal"><span class="pre">barbican.plugin.interface.certificate_manager</span></code> module contains the
+classes needed to implement a custom plugin.  These classes include the
+<code class="docutils literal"><span class="pre">CertificatePluginBase</span></code> abstract base class which custom plugins should
+inherit from, as well as any Data Transfer Object (DTO) classes used to pass
+information into and from plugin methods.</p>
+</div>
+<div class="section" id="data-transfer-objects">
+<h2>Data Transfer Objects<a class="headerlink" href="#data-transfer-objects" title="Permalink to this headline">¶</a></h2>
+<p>The DTO classes are used to wrap data that is passed from Barbican to the
+plugin as well as data that is returned from the plugin back to Barbican.
+They provide a level of isolation between the plugins and Barbican&#8217;s internal
+data models.</p>
+<dl class="class">
+<dt id="barbican.plugin.interface.certificate_manager.ResultDTO">
+<em class="property">class </em><code class="descclassname">barbican.plugin.interface.certificate_manager.</code><code class="descname">ResultDTO</code><span class="sig-paren">(</span><em>status</em>, <em>status_message=None</em>, <em>certificate=None</em>, <em>intermediates=None</em>, <em>retry_msec=3600000</em>, <em>retry_method=None</em><span class="sig-paren">)</span><a class="headerlink" href="#barbican.plugin.interface.certificate_manager.ResultDTO" title="Permalink to this definition">¶</a></dt>
+<dd><p>Result data transfer object (DTO).</p>
+<p>An object of this type is returned by most certificate plugin methods, and
+is used to guide follow on processing and to provide status feedback to
+clients.</p>
+</dd></dl>
+
+</div>
+<div class="section" id="certificate-status-class">
+<span id="plugin-certificate-status-label"></span><h2>Certificate Status Class<a class="headerlink" href="#certificate-status-class" title="Permalink to this headline">¶</a></h2>
+<p>When certificate plugin methods are invoked, they return a <code class="docutils literal"><span class="pre">ResultDTO</span></code> that
+includes one of the status response constants defined by the
+<code class="docutils literal"><span class="pre">CertificateStatus</span></code> class. As detailed in the
+<a class="reference internal" href="#plugin-certificate-sequence-label"><span>Barbican Core Plugin Sequence</span></a> section below Barbican core directs
+follow on processing for a certificate order based on these returned status
+constants.</p>
+<dl class="class">
+<dt id="barbican.plugin.interface.certificate_manager.CertificateStatus">
+<em class="property">class </em><code class="descclassname">barbican.plugin.interface.certificate_manager.</code><code class="descname">CertificateStatus</code><a class="headerlink" href="#barbican.plugin.interface.certificate_manager.CertificateStatus" title="Permalink to this definition">¶</a></dt>
+<dd><p>Defines statuses for certificate request process.</p>
+<p>In particular:</p>
+<p>CERTIFICATE_GENERATED - Indicates a certificate was created</p>
+<p>WAITING_FOR_CA - Waiting for Certificate authority (CA) to complete order</p>
+<p>CLIENT_DATA_ISSUE_SEEN - Problem was seen with client-provided data</p>
+<p>CA_UNAVAILABLE_FOR_REQUEST - CA was not available, will try again later</p>
+<p>REQUEST_CANCELED - The client or CA cancelled this order</p>
+<p>INVALID_OPERATION - Unexpected error seen processing order</p>
+</dd></dl>
+
+</div>
+<div class="section" id="certificate-parameter-objects">
+<h2>Certificate Parameter Objects<a class="headerlink" href="#certificate-parameter-objects" title="Permalink to this headline">¶</a></h2>
+<p>Two dictionaries are available to most certificate plugin methods:</p>
+<ol class="arabic">
+<li><p class="first"><code class="docutils literal"><span class="pre">order_meta</span></code> - A dictionary of values provided by the client when they
+initiated the Barbican certificate order, including information needed to
+create a certificate, such as CSR.</p>
+</li>
+<li><p class="first"><code class="docutils literal"><span class="pre">plugin_meta</span></code> - A dictionary of values determined by the plugin itself
+on behalf of a specific certificate order. Barbican core persists this
+dictionary into the Barbican data store for a given order, and then provides
+this data back plugin method invocations thereafter.</p>
+<p>Plugins are free to update this data as required, or else ignore to it if not
+required. For example, plugins that interact with remote CAs could store the
+CA&#8217;s unique order ID, for use with future interactions with that CA.</p>
+</li>
+</ol>
+</div>
+<div class="section" id="plugin-base-class">
+<h2>Plugin Base Class<a class="headerlink" href="#plugin-base-class" title="Permalink to this headline">¶</a></h2>
+<p>Barbican secret store plugins should implement the abstract base class
+<code class="docutils literal"><span class="pre">CertificatePluginBase</span></code>. Concrete plugin implementations of
+<code class="docutils literal"><span class="pre">CertificatePluginBase</span></code> should be exposed to Barbican using <code class="docutils literal"><span class="pre">stevedore</span></code>
+mechanisms explained in the configuration portion of this guide.</p>
+<dl class="class">
+<dt id="barbican.plugin.interface.certificate_manager.CertificatePluginBase">
+<em class="property">class </em><code class="descclassname">barbican.plugin.interface.certificate_manager.</code><code class="descname">CertificatePluginBase</code><a class="headerlink" href="#barbican.plugin.interface.certificate_manager.CertificatePluginBase" title="Permalink to this definition">¶</a></dt>
+<dd><p>Base class for certificate plugins.</p>
+<p>This class is the base plugin contract for certificates.</p>
+<dl class="method">
+<dt id="barbican.plugin.interface.certificate_manager.CertificatePluginBase.cancel_certificate_request">
+<code class="descname">cancel_certificate_request</code><span class="sig-paren">(</span><em>order_id</em>, <em>order_meta</em>, <em>plugin_meta</em>, <em>barbican_meta_dto</em><span class="sig-paren">)</span><a class="headerlink" href="#barbican.plugin.interface.certificate_manager.CertificatePluginBase.cancel_certificate_request" title="Permalink to this definition">¶</a></dt>
+<dd><p>Cancel the order</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><ul class="first simple">
+<li><strong>order_id</strong> &#8211; ID associated with the order</li>
+<li><strong>order_meta</strong> &#8211; Dict of meta-data associated with the order.</li>
+<li><strong>plugin_meta</strong> &#8211; Plugin meta-data previously set by calls to
+this plugin. Plugins may also update/add
+information here which Barbican will persist
+on their behalf</li>
+<li><strong>barbican_meta_dto</strong> &#8211; Data transfer object <code class="xref py py-class docutils literal"><span class="pre">BarbicanMetaDTO</span></code> containing data
+added to the request by the Barbican server to provide additional
+context for processing, but which are not in
+the original request.  For example, the plugin_ca_id</li>
+</ul>
+</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Returns:</th><td class="field-body"><p class="first">A <a class="reference internal" href="#barbican.plugin.interface.certificate_manager.ResultDTO" title="barbican.plugin.interface.certificate_manager.ResultDTO"><code class="xref py py-class docutils literal"><span class="pre">ResultDTO</span></code></a> instance containing the result
+populated by the plugin implementation</p>
+</td>
+</tr>
+<tr class="field-odd field"><th class="field-name">Return type:</th><td class="field-body"><p class="first last"><a class="reference internal" href="#barbican.plugin.interface.certificate_manager.ResultDTO" title="barbican.plugin.interface.certificate_manager.ResultDTO"><code class="xref py py-class docutils literal"><span class="pre">ResultDTO</span></code></a></p>
+</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="barbican.plugin.interface.certificate_manager.CertificatePluginBase.check_certificate_status">
+<code class="descname">check_certificate_status</code><span class="sig-paren">(</span><em>order_id</em>, <em>order_meta</em>, <em>plugin_meta</em>, <em>barbican_meta_dto</em><span class="sig-paren">)</span><a class="headerlink" href="#barbican.plugin.interface.certificate_manager.CertificatePluginBase.check_certificate_status" title="Permalink to this definition">¶</a></dt>
+<dd><p>Check status of the order</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><ul class="first simple">
+<li><strong>order_id</strong> &#8211; ID associated with the order</li>
+<li><strong>order_meta</strong> &#8211; Dict of meta-data associated with the order</li>
+<li><strong>plugin_meta</strong> &#8211; Plugin meta-data previously set by calls to
+this plugin. Plugins may also update/add
+information here which Barbican will persist
+on their behalf</li>
+<li><strong>barbican_meta_dto</strong> &#8211; Data transfer object <code class="xref py py-class docutils literal"><span class="pre">BarbicanMetaDTO</span></code> containing data
+added to the request by the Barbican server to provide additional
+context for processing, but which are not in
+the original request.  For example, the plugin_ca_id</li>
+</ul>
+</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Returns:</th><td class="field-body"><p class="first">A <a class="reference internal" href="#barbican.plugin.interface.certificate_manager.ResultDTO" title="barbican.plugin.interface.certificate_manager.ResultDTO"><code class="xref py py-class docutils literal"><span class="pre">ResultDTO</span></code></a> instance containing the result
+populated by the plugin implementation</p>
+</td>
+</tr>
+<tr class="field-odd field"><th class="field-name">Return type:</th><td class="field-body"><p class="first last"><a class="reference internal" href="#barbican.plugin.interface.certificate_manager.ResultDTO" title="barbican.plugin.interface.certificate_manager.ResultDTO"><code class="xref py py-class docutils literal"><span class="pre">ResultDTO</span></code></a></p>
+</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="barbican.plugin.interface.certificate_manager.CertificatePluginBase.create_ca">
+<code class="descname">create_ca</code><span class="sig-paren">(</span><em>ca_create_dto</em><span class="sig-paren">)</span><a class="headerlink" href="#barbican.plugin.interface.certificate_manager.CertificatePluginBase.create_ca" title="Permalink to this definition">¶</a></dt>
+<dd><p>Creates a subordinate CA upon request</p>
+<p>This call should only be made if a plugin returns True for
+supports_create_ca().</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><strong>ca_create_dto</strong> &#8211; Data transfer object <code class="xref py py-class docutils literal"><span class="pre">CACreateDTO</span></code> containing data
+required to generate a subordinate CA.  This data includes
+the subject DN of the new CA signing certificate, a name for
+the new CA and a reference to the CA that will issue the new
+subordinate CA&#8217;s signing certificate,</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Returns:</th><td class="field-body">ca_info:
+Dictionary containing the data needed to create a
+models.CertificateAuthority object</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="barbican.plugin.interface.certificate_manager.CertificatePluginBase.delete_ca">
+<code class="descname">delete_ca</code><span class="sig-paren">(</span><em>ca_id</em><span class="sig-paren">)</span><a class="headerlink" href="#barbican.plugin.interface.certificate_manager.CertificatePluginBase.delete_ca" title="Permalink to this definition">¶</a></dt>
+<dd><p>Deletes a subordinate CA</p>
+<p>Like the create_ca call, this should only be made if the plugin
+returns True for supports_create_ca()</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><strong>ca_id</strong> &#8211; id for the CA as specified by the plugin</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Returns:</th><td class="field-body">None</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="barbican.plugin.interface.certificate_manager.CertificatePluginBase.get_ca_info">
+<code class="descname">get_ca_info</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#barbican.plugin.interface.certificate_manager.CertificatePluginBase.get_ca_info" title="Permalink to this definition">¶</a></dt>
+<dd><p>Returns information about the CA(s) supported by this plugin.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Returns:</th><td class="field-body">dictionary indexed by plugin_ca_id.  Each entry consists
+of a dictionary of key-value pairs.</td>
+</tr>
+</tbody>
+</table>
+<p>An example dictionary containing the current supported attributes
+is shown below:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>{ &quot;plugin_ca_id1&quot;: {
+    INFO_NAME : &quot;CA name&quot;,
+    INFO_DESCRIPTION : &quot;CA user friendly description&quot;,
+    INFO_CA_SIGNING_CERT : &quot;base 64 encoded signing cert&quot;,
+    INFO_INTERMEDIATES = &quot;base 64 encoded certificate chain&quot;
+    INFO_EXPIRATION = &quot;ISO formatted UTC datetime for when this&quot;
+                      &quot;data will become stale&quot;
+    }
+}
+</pre></div>
+</div>
+</dd></dl>
+
+<dl class="method">
+<dt id="barbican.plugin.interface.certificate_manager.CertificatePluginBase.get_default_ca_name">
+<code class="descname">get_default_ca_name</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#barbican.plugin.interface.certificate_manager.CertificatePluginBase.get_default_ca_name" title="Permalink to this definition">¶</a></dt>
+<dd><p>Get the default CA name</p>
+<p>Provides a default CA name to be returned in the default
+get_ca_info() method.  If get_ca_info() is overridden (to
+support multiple CAs for instance), then this method may not
+be called.  In that case, just implement this method to return
+a dummy variable.</p>
+<p>If this value is used, it should be unique amongst all the CA
+plugins.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Returns:</th><td class="field-body">The default CA name</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Return type:</th><td class="field-body">str</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="barbican.plugin.interface.certificate_manager.CertificatePluginBase.get_default_intermediates">
+<code class="descname">get_default_intermediates</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#barbican.plugin.interface.certificate_manager.CertificatePluginBase.get_default_intermediates" title="Permalink to this definition">¶</a></dt>
+<dd><p>Get the default CA certificate chain</p>
+<p>Provides a default CA certificate to be returned in the default
+get_ca_info() method.  If get_ca_info() is overridden (to
+support multiple CAs for instance), then this method may not
+be called.  In that case, just implement this method to return
+a dummy variable.
+:return: The default CA certificate chain
+:rtype: str</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="barbican.plugin.interface.certificate_manager.CertificatePluginBase.get_default_signing_cert">
+<code class="descname">get_default_signing_cert</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#barbican.plugin.interface.certificate_manager.CertificatePluginBase.get_default_signing_cert" title="Permalink to this definition">¶</a></dt>
+<dd><p>Get the default CA signing cert</p>
+<p>Provides a default CA signing cert to be returned in the default
+get_ca_info() method.  If get_ca_info() is overridden (to
+support multiple CAs for instance), then this method may not
+be called.  In that case, just implement this method to return
+a dummy variable.
+:return: The default CA signing cert
+:rtype: str</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="barbican.plugin.interface.certificate_manager.CertificatePluginBase.issue_certificate_request">
+<code class="descname">issue_certificate_request</code><span class="sig-paren">(</span><em>order_id</em>, <em>order_meta</em>, <em>plugin_meta</em>, <em>barbican_meta_dto</em><span class="sig-paren">)</span><a class="headerlink" href="#barbican.plugin.interface.certificate_manager.CertificatePluginBase.issue_certificate_request" title="Permalink to this definition">¶</a></dt>
+<dd><p>Create the initial order</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><ul class="first simple">
+<li><strong>order_id</strong> &#8211; ID associated with the order</li>
+<li><strong>order_meta</strong> &#8211; Dict of meta-data associated with the order</li>
+<li><strong>plugin_meta</strong> &#8211; Plugin meta-data previously set by calls to
+this plugin. Plugins may also update/add
+information here which Barbican will persist
+on their behalf</li>
+<li><strong>barbican_meta_dto</strong> &#8211; Data transfer object <code class="xref py py-class docutils literal"><span class="pre">BarbicanMetaDTO</span></code> containing data
+added to the request by the Barbican server to provide additional
+context for processing, but which are not in
+the original request.  For example, the plugin_ca_id</li>
+</ul>
+</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Returns:</th><td class="field-body"><p class="first">A <a class="reference internal" href="#barbican.plugin.interface.certificate_manager.ResultDTO" title="barbican.plugin.interface.certificate_manager.ResultDTO"><code class="xref py py-class docutils literal"><span class="pre">ResultDTO</span></code></a> instance containing the result
+populated by the plugin implementation</p>
+</td>
+</tr>
+<tr class="field-odd field"><th class="field-name">Return type:</th><td class="field-body"><p class="first last"><a class="reference internal" href="#barbican.plugin.interface.certificate_manager.ResultDTO" title="barbican.plugin.interface.certificate_manager.ResultDTO"><code class="xref py py-class docutils literal"><span class="pre">ResultDTO</span></code></a></p>
+</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="barbican.plugin.interface.certificate_manager.CertificatePluginBase.modify_certificate_request">
+<code class="descname">modify_certificate_request</code><span class="sig-paren">(</span><em>order_id</em>, <em>order_meta</em>, <em>plugin_meta</em>, <em>barbican_meta_dto</em><span class="sig-paren">)</span><a class="headerlink" href="#barbican.plugin.interface.certificate_manager.CertificatePluginBase.modify_certificate_request" title="Permalink to this definition">¶</a></dt>
+<dd><p>Update the order meta-data</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><ul class="first simple">
+<li><strong>order_id</strong> &#8211; ID associated with the order</li>
+<li><strong>order_meta</strong> &#8211; Dict of meta-data associated with the order</li>
+<li><strong>plugin_meta</strong> &#8211; Plugin meta-data previously set by calls to
+this plugin. Plugins may also update/add
+information here which Barbican will persist
+on their behalf</li>
+<li><strong>barbican_meta_dto</strong> &#8211; Data transfer object <code class="xref py py-class docutils literal"><span class="pre">BarbicanMetaDTO</span></code> containing data
+added to the request by the Barbican server to provide additional
+context for processing, but which are not in
+the original request.  For example, the plugin_ca_id</li>
+</ul>
+</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Returns:</th><td class="field-body"><p class="first">A <a class="reference internal" href="#barbican.plugin.interface.certificate_manager.ResultDTO" title="barbican.plugin.interface.certificate_manager.ResultDTO"><code class="xref py py-class docutils literal"><span class="pre">ResultDTO</span></code></a> instance containing the result
+populated by the plugin implementation</p>
+</td>
+</tr>
+<tr class="field-odd field"><th class="field-name">Return type:</th><td class="field-body"><p class="first last"><a class="reference internal" href="#barbican.plugin.interface.certificate_manager.ResultDTO" title="barbican.plugin.interface.certificate_manager.ResultDTO"><code class="xref py py-class docutils literal"><span class="pre">ResultDTO</span></code></a></p>
+</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="barbican.plugin.interface.certificate_manager.CertificatePluginBase.supported_request_types">
+<code class="descname">supported_request_types</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#barbican.plugin.interface.certificate_manager.CertificatePluginBase.supported_request_types" title="Permalink to this definition">¶</a></dt>
+<dd><p>Returns the request_types supported by this plugin.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Returns:</th><td class="field-body">a list of the Barbican-core defined request_types
+supported by this plugin.</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="barbican.plugin.interface.certificate_manager.CertificatePluginBase.supports">
+<code class="descname">supports</code><span class="sig-paren">(</span><em>certificate_spec</em><span class="sig-paren">)</span><a class="headerlink" href="#barbican.plugin.interface.certificate_manager.CertificatePluginBase.supports" title="Permalink to this definition">¶</a></dt>
+<dd><p>Returns if the plugin supports the certificate type.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><strong>certificate_spec</strong> &#8211; Contains details on the certificate to
+generate the certificate order</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Returns:</th><td class="field-body">boolean indicating if the plugin supports the certificate
+type</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="barbican.plugin.interface.certificate_manager.CertificatePluginBase.supports_create_ca">
+<code class="descname">supports_create_ca</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#barbican.plugin.interface.certificate_manager.CertificatePluginBase.supports_create_ca" title="Permalink to this definition">¶</a></dt>
+<dd><p>Returns whether the plugin supports on-the-fly generation of subCAs</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Returns:</th><td class="field-body">boolean, True if supported, defaults to False</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+</dd></dl>
+
+</div>
+<div class="section" id="barbican-order-s-status-versus-resultdto-s-status">
+<h2>Barbican Order&#8217;s Status Versus ResultDTO&#8217;s Status<a class="headerlink" href="#barbican-order-s-status-versus-resultdto-s-status" title="Permalink to this headline">¶</a></h2>
+<p>When Barbican starts processing orders, it sets the order&#8217;s <code class="docutils literal"><span class="pre">status</span></code>
+attribute to <code class="docutils literal"><span class="pre">PENDING</span></code>. Barbican will invoke methods on the certificate
+plugin to process the order, and most of those methods return a <code class="docutils literal"><span class="pre">ResultDTO</span></code>
+result object, which also has a <code class="docutils literal"><span class="pre">status</span></code> field. Barbican core uses the
+result&#8217;s <code class="docutils literal"><span class="pre">status</span></code> to determine follow on processing for the order as
+detailed in <a class="reference internal" href="#plugin-certificate-sequence-label"><span>Barbican Core Plugin Sequence</span></a> below.</p>
+<p>The result&#8217;s <code class="docutils literal"><span class="pre">status</span></code> field should be set to one of the constants defined
+in <code class="docutils literal"><span class="pre">CertificateStatus</span></code>, per <a class="reference internal" href="#plugin-certificate-status-label"><span>Certificate Status Class</span></a> above. If
+the result&#8217;s <code class="docutils literal"><span class="pre">status</span></code> calls for terminating the order, Barbican core will set
+the order&#8217;s status to either <code class="docutils literal"><span class="pre">ACTIVE</span></code> or <code class="docutils literal"><span class="pre">ERROR</span></code>. Otherwise the order&#8217;s
+<code class="docutils literal"><span class="pre">status</span></code> will stay <code class="docutils literal"><span class="pre">PENDING</span></code>, and the order&#8217;s <code class="docutils literal"><span class="pre">sub_status</span></code> and
+<code class="docutils literal"><span class="pre">sub_status_message</span></code> will be updated with the result&#8217;s <code class="docutils literal"><span class="pre">status</span></code> and
+<code class="docutils literal"><span class="pre">status_message</span></code> respectively.</p>
+<p>Clients that wish to track the progress of potentially long running certificate
+orders can poll the order, using the <code class="docutils literal"><span class="pre">sub_status</span></code> and <code class="docutils literal"><span class="pre">sub_status_message</span></code>
+to track the results. Hence plugins should provide a meaningful
+message for <code class="docutils literal"><span class="pre">sub_status_message</span></code>, especially on error conditions.</p>
+</div>
+<div class="section" id="barbican-core-plugin-sequence">
+<span id="plugin-certificate-sequence-label"></span><h2>Barbican Core Plugin Sequence<a class="headerlink" href="#barbican-core-plugin-sequence" title="Permalink to this headline">¶</a></h2>
+<p>The sequence that Barbican invokes methods on <code class="docutils literal"><span class="pre">CertificatePluginBase</span></code> is
+detailed next. Note that these methods are invoked via the
+<code class="docutils literal"><span class="pre">barbican.tasks.certificate_resources</span></code> module, which in turn is invoked via
+Barbican&#8217;s Worker processes.</p>
+<p>Barbican core calls the following methods:</p>
+<ol class="arabic">
+<li><p class="first"><code class="docutils literal"><span class="pre">supports()</span></code> -  Asks the plugin if it can support generating a certificate
+based on the Barbican order&#8217;s <code class="docutils literal"><span class="pre">order_meta</span></code>.</p>
+</li>
+<li><p class="first"><code class="docutils literal"><span class="pre">issue_certificate_request()</span></code> - Asks the plugin to initiate a certificate
+order from the provided <code class="docutils literal"><span class="pre">order_meta</span></code> parameter information. An empty
+dictionary is passed in for the <code class="docutils literal"><span class="pre">plugin_meta</span></code> parameter, which the plugin
+can update as it sees fit. Barbican core will persist and then provide the
+<code class="docutils literal"><span class="pre">plugin_meta</span></code> for subsequent method calls for this order.</p>
+<p>The plugin method returns a <code class="docutils literal"><span class="pre">ResultDTO</span></code> instance which Barbican core uses
+to determine subsequent order processing based on its <code class="docutils literal"><span class="pre">status</span></code> field. This
+<code class="docutils literal"><span class="pre">status</span></code> field should be set to one of the constants defined in
+<code class="docutils literal"><span class="pre">CertificateStatus</span></code> per <a class="reference internal" href="#plugin-certificate-status-label"><span>Certificate Status Class</span></a> above.</p>
+<p>If <code class="docutils literal"><span class="pre">status</span></code> is <code class="docutils literal"><span class="pre">CertificateStatus.WAITING_FOR_CA</span></code> then Barbican core
+will invoke the <code class="docutils literal"><span class="pre">check_certificate_status</span></code> method after the delay
+specified in the result&#8217;s <code class="docutils literal"><span class="pre">retry_msec</span></code> field.</p>
+<p>If <code class="docutils literal"><span class="pre">status</span></code> is <code class="docutils literal"><span class="pre">CertificateStatus.CERTIFICATE_GENERATED</span></code> then Barbican
+core expects that this order is completed and sets its <code class="docutils literal"><span class="pre">status</span></code> to
+<code class="docutils literal"><span class="pre">ACTIVE</span></code>. Barbican also expects that the result&#8217;s <code class="docutils literal"><span class="pre">certificate</span></code> and
+(optionally) <code class="docutils literal"><span class="pre">intermediates</span></code> fields are filled out with PEM-formatted SSL
+certificate data. Barbican will then create a
+<code class="docutils literal"><span class="pre">barbican.model.models.Container</span></code> record with
+<code class="docutils literal"><span class="pre">barbican.model.models.Secret</span></code> records to hold the certificate data.</p>
+<p>If <code class="docutils literal"><span class="pre">status</span></code> is <code class="docutils literal"><span class="pre">CertificateStatus.CA_UNAVAILABLE_FOR_REQUEST</span></code> then
+Barbican core will invoke the same method after the delay specified in the
+result&#8217;s <code class="docutils literal"><span class="pre">retry_msec</span></code> field. This condition typically means that a remote
+CA was not available, so should be retried in the future.</p>
+<p>If <code class="docutils literal"><span class="pre">status</span></code> is set to <code class="docutils literal"><span class="pre">CertificateStatus.CLIENT_DATA_ISSUE_SEEN</span></code> then
+Barbican considers the order to have problems with the client-provided data,
+but otherwise the order is viable. Barbican will keep the order in the
+<code class="docutils literal"><span class="pre">PENDING</span></code> state, and update the order&#8217;s <code class="docutils literal"><span class="pre">sub_status</span></code> to
+<code class="docutils literal"><span class="pre">CertificateStatus.CLIENT_DATA_ISSUE_SEEN</span></code> and <code class="docutils literal"><span class="pre">sub_status_message</span></code> to
+the result&#8217;s <code class="docutils literal"><span class="pre">status_message</span></code>.</p>
+<p>Note that client data issues can include missing or incorrect information
+that the CA reports on. The CA still considers the order open, but clients
+must provide updates to correct the data. Since the client could either
+update this order via Barbican, or else work directly with a remote CA,
+Barbican will invoke the <code class="docutils literal"><span class="pre">check_certificate_status</span></code> method after the delay
+specified in the result&#8217;s <code class="docutils literal"><span class="pre">retry_msec</span></code> field.</p>
+<p>If <code class="docutils literal"><span class="pre">status</span></code> is set to <code class="docutils literal"><span class="pre">CertificateStatus.REQUEST_CANCELED</span></code> then Barbican
+core expects that this order is completed and sets its <code class="docutils literal"><span class="pre">status</span></code> to
+<code class="docutils literal"><span class="pre">ACTIVE</span></code>. It also updates the order&#8217;s <code class="docutils literal"><span class="pre">sub_status</span></code> and
+<code class="docutils literal"><span class="pre">sub_status_message</span></code> to the result&#8217;s status information. This condition
+could arise (for example) if a remote CA indicated that the certificate
+order is cancelled.</p>
+<p>If <code class="docutils literal"><span class="pre">status</span></code> is set to <code class="docutils literal"><span class="pre">CertificateStatus.INVALID_OPERATION</span></code> (or else
+the plugin raises an exception) then Barbican core considers this a failed
+order and sets the order&#8217;s <code class="docutils literal"><span class="pre">status</span></code> to <code class="docutils literal"><span class="pre">ERROR</span></code>. It also updates the
+order&#8217;s <code class="docutils literal"><span class="pre">sub_status</span></code> and <code class="docutils literal"><span class="pre">sub_status_message</span></code> to the result&#8217;s status
+information.</p>
+</li>
+<li><p class="first"><code class="docutils literal"><span class="pre">check_certificate_status()</span></code> - This method is called as needed after the
+<code class="docutils literal"><span class="pre">issue_certificate_request()</span></code> method and is intended to allow plugins to
+check to see if a certificate has been issued yet.</p>
+<p>The result&#8217;s <code class="docutils literal"><span class="pre">status</span></code> is processed similarly to the
+<code class="docutils literal"><span class="pre">issue_certificate_request()</span></code> method.</p>
+</li>
+<li><p class="first"><code class="docutils literal"><span class="pre">modify_certificate_request</span></code> - This method is invoked if clients provide
+updates to the order metadata after the certificate order has been
+initiated.</p>
+<p>The result&#8217;s <code class="docutils literal"><span class="pre">status</span></code> is processed similarly to the
+<code class="docutils literal"><span class="pre">issue_certificate_request()</span></code> method.</p>
+</li>
+<li><p class="first"><code class="docutils literal"><span class="pre">cancel_certificate_request</span></code> - This method is invoked if clients delete
+or cancel a certificate order.</p>
+<p>Note that if a remote CA is involved the cancellation may not be processed
+immediately, in which case Barbican core will invoke the
+<code class="docutils literal"><span class="pre">check_certificate_status</span></code> method after the delay specified in the
+result&#8217;s <code class="docutils literal"><span class="pre">retry_msec</span></code> field. Otherwise the result&#8217;s <code class="docutils literal"><span class="pre">status</span></code> is
+processed similarly to the <code class="docutils literal"><span class="pre">issue_certificate_request()</span></code> method.</p>
+</li>
+</ol>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="../index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Certificate Plugin Development</a><ul>
+<li><a class="reference internal" href="#certificate-manager-module"><code class="docutils literal"><span class="pre">certificate_manager</span></code> Module</a></li>
+<li><a class="reference internal" href="#data-transfer-objects">Data Transfer Objects</a></li>
+<li><a class="reference internal" href="#certificate-status-class">Certificate Status Class</a></li>
+<li><a class="reference internal" href="#certificate-parameter-objects">Certificate Parameter Objects</a></li>
+<li><a class="reference internal" href="#plugin-base-class">Plugin Base Class</a></li>
+<li><a class="reference internal" href="#barbican-order-s-status-versus-resultdto-s-status">Barbican Order&#8217;s Status Versus ResultDTO&#8217;s Status</a></li>
+<li><a class="reference internal" href="#barbican-core-plugin-sequence">Barbican Core Plugin Sequence</a></li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="crypto.html"
+                                  title="previous chapter">Cryptographic Plugin Development</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="../testing.html"
+                                  title="next chapter">Writing and Running Barbican Tests</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/barbican
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="../_sources/plugin/certificate.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="right" >
+          <a href="../testing.html" title="Writing and Running Barbican Tests"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="crypto.html" title="Cryptographic Plugin Development"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../index.html">barbican 4.0.0.0rc2.dev3 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="index.html" accesskey="U">Plugin Developers Guide</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2014, OpenStack Foundation.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/barbican");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

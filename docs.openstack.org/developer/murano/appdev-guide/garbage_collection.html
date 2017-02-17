@@ -1,0 +1,245 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Garbage collection system in MuranoPL &mdash; Murano</title>
+    
+    <link rel="stylesheet" href="../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../',
+        VERSION:     '3.1.1.dev17',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../_static/jquery.js"></script>
+    <script type="text/javascript" src="../_static/underscore.js"></script>
+    <script type="text/javascript" src="../_static/doctools.js"></script>
+    <link rel="top" title="Murano" href="../index.html" />
+    <link rel="up" title="Application Developer Guide" href="developer_index.html" />
+    <link rel="next" title="FAQ" href="faq.html" />
+    <link rel="prev" title="Application developer’s cookbook" href="app_debugging.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="garbage-collection-system-in-muranopl">
+<h1>Garbage collection system in MuranoPL<a class="headerlink" href="#garbage-collection-system-in-muranopl" title="Permalink to this headline">¶</a></h1>
+<p>A garbage collection system (GC) manages the deallocation of resources in
+murano. The garbage collection system implementation is based on the execution
+of special <code class="docutils literal"><span class="pre">.destroy()</span></code> methods that you may define in MuranoPL classes.
+These methods contain logic to deallocate any resources that were allocated
+by MuranoPL objects. During deployment all objects that are not referenced by
+any other object and that are not present in the object model anymore is deleted
+by GC.</p>
+<ul class="simple">
+<li>The <code class="docutils literal"><span class="pre">.destroy()</span></code> methods are executed for each class in the class hierarchy of
+the object that has this method. Child classes cannot prevent parent classes
+<code class="docutils literal"><span class="pre">.destroy</span></code> from being called and cannot call base classes
+implementation manually</li>
+<li><code class="docutils literal"><span class="pre">.destroy()</span></code> methods for class hierarchy are called in reversed order from that
+of <code class="docutils literal"><span class="pre">.init()</span></code> - starting from the actual object type and up to the
+<cite>io.murano.Object</cite> class</li>
+<li>If object <cite>Bar</cite> is owned (directly or indirectly) by object <cite>Foo</cite> then <cite>Bar</cite>
+is going to be destroyed before <cite>Foo</cite>. There is a way for <cite>Foo</cite> to get
+notified on <cite>Bar</cite>&#8216;s destruction so that it can prepare for it. See below for
+details.</li>
+<li>For objects that are not related to each other the destruction
+order is undefined. However objects may establish destruction dependency between
+them to establish the order.</li>
+<li>Unrelated objects might be destroyed in different green threads.</li>
+<li>Any exceptions thrown in the <code class="docutils literal"><span class="pre">.destroy()</span></code> methods are muted (but still logged).</li>
+</ul>
+<p>Destruction dependencies may be used to notify <cite>Foo</cite> of <cite>Bar</cite>&#8216;s destruction even if
+<cite>Bar</cite> is not owned by <cite>Foo</cite>. If you subscribe <cite>Foo</cite> to <cite>Bar</cite>&#8216;s destruction,
+the following will happen:</p>
+<ul class="simple">
+<li><cite>Foo</cite> will be notified when <cite>Bar</cite> is about to be destroyed.</li>
+<li>If both <cite>Foo</cite> and <cite>Bar</cite> are going to be destroyed in the same garbage
+collection execution, <cite>Bar</cite> will be destroyed before <cite>Foo</cite>.</li>
+</ul>
+<div class="section" id="garbage-collector-methods">
+<h2>Garbage collector methods<a class="headerlink" href="#garbage-collector-methods" title="Permalink to this headline">¶</a></h2>
+<p>Murano garbage collector class (<code class="docutils literal"><span class="pre">io.murano.system.GC</span></code>) has
+the following methods:</p>
+<dl class="docutils">
+<dt><code class="docutils literal"><span class="pre">collect()</span></code></dt>
+<dd>Initiates garbage collection of unreferenced objects of current deployment.
+Usually, it is called by murano <code class="docutils literal"><span class="pre">ObjectStore</span></code> object during deployment.
+However, it can be called from MuranoPL code like
+<code class="docutils literal"><span class="pre">io.murano.system.GC.collect()</span></code>.</dd>
+<dt><code class="docutils literal"><span class="pre">isDestroyed(object)</span></code></dt>
+<dd>Checks if the <code class="docutils literal"><span class="pre">object</span></code> was already destroyed during a GC session and thus
+its methods cannot be called.</dd>
+<dt><code class="docutils literal"><span class="pre">isDoomed(object)</span></code></dt>
+<dd>Can be used within the <code class="docutils literal"><span class="pre">.destroy()</span></code> method to check if another object is
+also going to be destroyed.</dd>
+<dt><code class="docutils literal"><span class="pre">subscribeDestruction(publisher,</span> <span class="pre">subscriber,</span> <span class="pre">handler=null)</span></code></dt>
+<dd><p class="first">Establishes a destruction dependency from the <code class="docutils literal"><span class="pre">subscriber</span></code> to the object
+passed as <code class="docutils literal"><span class="pre">publisher</span></code>. This method may be called several times with the same
+arguments. In this case, only a single destruction dependency will be established.
+However, the same amount of calls of <code class="docutils literal"><span class="pre">unsubscribeDestruction</span></code> will be required to
+remove it.</p>
+<p>The <code class="docutils literal"><span class="pre">handler</span></code> argument is optional. If passed, it should be the name of an
+instance method defined by the caller class to handle the notification of
+<code class="docutils literal"><span class="pre">publisher</span></code> destruction. The following argument will be passed to the
+<code class="docutils literal"><span class="pre">handler</span></code> method:</p>
+<blockquote class="last">
+<div><dl class="docutils">
+<dt><code class="docutils literal"><span class="pre">object</span></code></dt>
+<dd>A target object that is going to be destroyed. It is not recommended
+persisting the reference to this object anywhere. This will not prevent the
+object from being garbage collected but the object will be moved to the
+&#8220;destroyed&#8221; state. This is an advanced feature that should
+not be used unless it is absolutely necessary.</dd>
+</dl>
+</div></blockquote>
+</dd>
+<dt><code class="docutils literal"><span class="pre">unsubscribeDestruction(publisher,</span> <span class="pre">subscriber,</span> <span class="pre">handler=null)</span></code></dt>
+<dd><p class="first">Removes the destruction dependency from the <code class="docutils literal"><span class="pre">subscriber</span></code> to the object
+passed as <code class="docutils literal"><span class="pre">publisher</span></code>. The method may be called several times with the same
+arguments without any side effects. If <code class="docutils literal"><span class="pre">subscribeDestruction</span></code> was called more
+than once, the same (or more) amount of calls to <code class="docutils literal"><span class="pre">unsubscribeDestruction</span></code> is
+needed to remove the dependency.</p>
+<p class="last">The <code class="docutils literal"><span class="pre">handler</span></code> argument is optional and must correspond to the handler
+passed during subscription if it was provided.</p>
+</dd>
+</dl>
+</div>
+<div class="section" id="using-destruction-dependencies">
+<h2>Using destruction dependencies<a class="headerlink" href="#using-destruction-dependencies" title="Permalink to this headline">¶</a></h2>
+<p>To use direct destruction dependencies in your murano applications, use the
+methods from MuranoPL <code class="docutils literal"><span class="pre">io.murano.system.GC</span></code>. To establish a
+destruction dependency, call the
+<code class="docutils literal"><span class="pre">io.murano.system.GC.subscribeDestruction</span></code> method in you
+application code:</p>
+<div class="highlight-console"><div class="highlight"><pre><span></span><span class="go">.init:</span>
+<span class="go">   Body:</span>
+<span class="go">     - If: $.publisher</span>
+<span class="go">       Then:</span>
+<span class="go">         - sys:GC.subscribeDestruction($.publisher, $this, onPublisherDestruction)</span>
+</pre></div>
+</div>
+<p>In the example above, <code class="docutils literal"><span class="pre">onPublisherDestruction</span></code> is a <cite>Foo</cite> object method that
+will be called when <cite>Bar</cite> is destroyed. If you do not want to do something
+specific with the destroyed object omit the third parameter.
+The destruction dependencies will be persisted between deployments and
+deserialized from the objects model to murano object.</p>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="../index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Garbage collection system in MuranoPL</a><ul>
+<li><a class="reference internal" href="#garbage-collector-methods">Garbage collector methods</a></li>
+<li><a class="reference internal" href="#using-destruction-dependencies">Using destruction dependencies</a></li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="app_debugging.html"
+                                  title="previous chapter">Application developer&#8217;s cookbook</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="faq.html"
+                                  title="next chapter">FAQ</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/murano
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="../_sources/appdev-guide/garbage_collection.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="faq.html" title="FAQ"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="app_debugging.html" title="Application developer’s cookbook"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../index.html">Murano</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="developer_index.html" accesskey="U">Application Developer Guide</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright .
+      Last updated on &#39;Fri Feb 10 03:18:12 2017, commit fbee404&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/Murano");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

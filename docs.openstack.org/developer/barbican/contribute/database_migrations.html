@@ -1,0 +1,406 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Database Migrations &mdash; barbican 4.0.0.0rc2.dev3 documentation</title>
+    
+    <link rel="stylesheet" href="../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../',
+        VERSION:     '4.0.0.0rc2.dev3',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../_static/jquery.js"></script>
+    <script type="text/javascript" src="../_static/underscore.js"></script>
+    <script type="text/javascript" src="../_static/doctools.js"></script>
+    <link rel="top" title="barbican 4.0.0.0rc2.dev3 documentation" href="../index.html" />
+    <link rel="next" title="Plugin Developers Guide" href="../plugin/index.html" />
+    <link rel="prev" title="Adding/Updating Dependencies" href="dependencies.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="database-migrations">
+<h1>Database Migrations<a class="headerlink" href="#database-migrations" title="Permalink to this headline">¶</a></h1>
+<p>Database migrations are managed using the <a class="reference external" href="https://alembic.readthedocs.org/en/latest/">Alembic</a> library. The consensus for
+<a class="reference external" href="https://wiki.openstack.org/wiki/OpenStack_and_SQLAlchemy#Migrations">OpenStack and SQLAlchemy</a> is that this library is preferred over
+sqlalchemy-migrate.</p>
+<p>Database migrations can be performed two ways: (1) via the API startup
+process, and (2) via a separate script.</p>
+<p>Database migrations can be optionally enabled during the API startup process.
+Corollaries for this are that a new deployment should begin with only one node
+to avoid migration race conditions.</p>
+<p>Alternatively, the automatic update startup behavior can be disabled, forcing
+the use of the migration script. This latter mode is probably safer to use in
+production environments.</p>
+<div class="section" id="policy">
+<h2>Policy<a class="headerlink" href="#policy" title="Permalink to this headline">¶</a></h2>
+<p>A Barbican deployment goal is to update application and schema versions with
+zero downtime. The challenge is that at all times the database schema must be
+able to support two deployed application versions, so that a single migration
+does not break existing nodes running the previous deployment. For example,
+when deleting a column we would first deploy a new version that ignores the
+column. Once all nodes are ignoring the column, a second deployment would be
+made to remove the column from the database.</p>
+<p>To achieve this goal, the following rules will be observed for schema changes:</p>
+<ol class="arabic simple">
+<li>Do not remove columns or tables directly, but rather:<ol class="loweralpha">
+<li>Create a version of the application not dependent on the removed
+column/table</li>
+<li>Replace all nodes with this new application version</li>
+<li>Create an Alembic version file to remove the column/table</li>
+<li>Apply this change in production manually, or automatically with a future
+version of the application</li>
+</ol>
+</li>
+<li>Changing column attributes (types, names or widths) should be handled as
+follows:<ol class="loweralpha">
+<li>TODO: This Stack Overflow <a class="reference external" href="http://stackoverflow.com/questions/5329255/need-to-alter-column-types-in-production-database-sql-server-2005">Need to alter column types in production
+database</a> page and many others summarize the grief involved in doing
+these sorts of migrations</li>
+<li>TODO: What about old and new application versions happening
+simultaneously?<ol class="lowerroman">
+<li>Maybe have the new code perform migration to new column on each read
+...similar to how a no-sql db migration would occur?</li>
+</ol>
+</li>
+</ol>
+</li>
+<li>Transforming column attributes (ex: splitting one <code class="docutils literal"><span class="pre">name</span></code> column into a
+<code class="docutils literal"><span class="pre">first</span></code> and <code class="docutils literal"><span class="pre">last</span></code> name):<ol class="loweralpha">
+<li>TODO: An <a class="reference external" href="https://julo.ch/blog/migrating-content-with-alembic/">Alembic example</a>, but not robust for large datasets.</li>
+</ol>
+</li>
+</ol>
+</div>
+<div class="section" id="overview">
+<h2>Overview<a class="headerlink" href="#overview" title="Permalink to this headline">¶</a></h2>
+<p><em>Prior to invoking any migration steps below, change to your</em> <code class="docutils literal"><span class="pre">barbican</span></code> <em>project&#8217;s
+folder and activate your virtual environment per the</em> <a class="reference external" href="https://github.com/cloudkeep/barbican/wiki/Developer-Guide">Developer Guide</a>.</p>
+<p><strong>If you are using PostgreSQL, please ensure you are using SQLAlchemy version
+0.9.3 or higher, otherwise the generated version files will not be correct.</strong></p>
+<p><strong>You cannot use these migration tools and techniques with SQLite databases.</strong></p>
+<p>Consider taking a look at the <a class="reference external" href="https://alembic.readthedocs.org/en/latest/tutorial.html">Alembic tutorial</a>. As a brief summary: Alembic
+keeps track of a linked list of version files, each one applying a set of
+changes to the database schema that a previous version file in the linked list
+modified. Each version file has a unique Alembic-generated ID associated with
+it. Alembic generates a table in the project table space called
+<code class="docutils literal"><span class="pre">alembic_version</span></code> that keeps track of the unique ID of the last version file
+applied to the schema. During an update, Alembic uses this stored version ID
+to determine what if any follow on version files to process.</p>
+</div>
+<div class="section" id="generating-change-versions">
+<h2>Generating Change Versions<a class="headerlink" href="#generating-change-versions" title="Permalink to this headline">¶</a></h2>
+<p>To make schema changes, new version files need to be added to the
+<code class="docutils literal"><span class="pre">barbican/model/migration/alembic_migrations/versions/</span></code> folder. This section
+discusses two ways to add these files.</p>
+<div class="section" id="automatically">
+<h3>Automatically<a class="headerlink" href="#automatically" title="Permalink to this headline">¶</a></h3>
+<p>Alembic autogenerates a new script by comparing a clean database (i.e., one
+without your recent changes) with any modifications you make to the Models.py
+or other files. This being said, automatic generation may miss changes... it
+is more of an &#8216;automatic assist with expert review&#8217;. See <a class="reference external" href="http://alembic.readthedocs.org/en/latest/autogenerate.html#what-does-autogenerate-detect-and-what-does-it-not-detect">What does
+Autogenerate Detect</a> in the Alembic documentation for more details.</p>
+<p>First, you must start Barbican using a version of the code that does not
+include your changes, so that it creates a clean database. This example uses
+Barbican launched with DevStack (see <a class="reference external" href="http://docs.openstack.org/developer/barbican/setup/devstack.html">Barbican DevStack</a> wiki page for
+instructions).</p>
+<ol class="arabic simple">
+<li>Make changes to the &#8216;barbican/model/models.py&#8217; SQLAlchemy models or
+checkout your branch that includes your changes using git.</li>
+<li>Execute <code class="docutils literal"><span class="pre">barbican-db-manage</span> <span class="pre">-d</span> <span class="pre">&lt;Full</span> <span class="pre">URL</span> <span class="pre">to</span> <span class="pre">database,</span> <span class="pre">including</span>
+<span class="pre">user/pw&gt;</span> <span class="pre">revision</span> <span class="pre">-m</span> <span class="pre">'&lt;your-summary-of-changes&gt;'</span> <span class="pre">--autogenerate</span></code><ol class="loweralpha">
+<li>For example: <code class="docutils literal"><span class="pre">barbican-db-manage</span> <span class="pre">-d</span>
+<span class="pre">mysql+pymysql://root:password&#64;127.0.0.1/barbican?charset=utf8</span>
+<span class="pre">revision</span> <span class="pre">-m</span> <span class="pre">'Make</span> <span class="pre">unneeded</span> <span class="pre">verification</span> <span class="pre">columns</span> <span class="pre">nullable'</span> <span class="pre">--autogenerate</span></code></li>
+</ol>
+</li>
+<li>Examine the generated version file, found in
+<code class="docutils literal"><span class="pre">barbican/model/migration/alembic_migrations/versions/</span></code>:<ol class="loweralpha">
+<li><strong>Verify generated update/rollback steps, especially for modifications
+to existing columns/tables</strong></li>
+<li>Remove autogenerated comments such as:
+<code class="docutils literal"><span class="pre">###</span> <span class="pre">commands</span> <span class="pre">auto</span> <span class="pre">generated</span> <span class="pre">by</span> <span class="pre">Alembic</span> <span class="pre">-</span> <span class="pre">please</span> <span class="pre">adjust!</span> <span class="pre">###</span></code></li>
+<li><strong>If you added new columns, follow this guidance</strong>:<ol class="arabic">
+<li>For non-nullable columns you will need to add default values for the
+records already in the table, per what you configured in the
+<code class="docutils literal"><span class="pre">barbican.model.models.py</span></code> module. You can add the
+<code class="docutils literal"><span class="pre">server_default</span></code> keyword argument for the SQLAlchemy <code class="docutils literal"><span class="pre">Column</span></code> call
+per <a class="reference external" href="http://docs.sqlalchemy.org/en/latest/core/metadata.html?highlight=column#sqlalchemy.schema.Column.params.server_default">SQLAlchemy&#8217;s server_default</a>. For boolean attributes, use
+<cite>server_default=&#8216;0&#8217;</cite> for False, or <cite>server_default=&#8216;1&#8217;</cite> for True. For
+DateTime attributes, use <cite>server_default=str(timeutils.utcnow())</cite> to
+default to the current time.</li>
+<li>If you add <cite>any</cite> constraint, please <cite>always</cite> name them in the
+barbican.model.models.py module, and also in the Alembic version
+modules when creating/dropping constraints, otherwise MySQL migrations
+might crash.</li>
+</ol>
+</li>
+<li><strong>If you added new tables, follow this guidance</strong>:<ol class="arabic">
+<li>Make sure you added your new table to the <code class="docutils literal"><span class="pre">MODELS</span></code> element of the
+<code class="docutils literal"><span class="pre">barbican/model/models.py</span></code> module.</li>
+<li>Note that when Barbican boots up, it will add the new table to the
+database. It will also try to apply the database version (that also
+tries to add this table) via alembic. Therefore, please edit the
+generated script file to add these lines:<ol class="loweralpha">
+<li><code class="docutils literal"><span class="pre">ctx</span> <span class="pre">=</span> <span class="pre">op.get_context()</span></code> (to get the alembic migration context in
+current transaction)</li>
+<li><code class="docutils literal"><span class="pre">con</span> <span class="pre">=</span> <span class="pre">op.get_bind()</span></code> (get the database connection)</li>
+<li><code class="docutils literal"><span class="pre">table_exists</span> <span class="pre">=</span> <span class="pre">ctx.dialect.has_table(con.engine,</span>
+<span class="pre">'your-new-table-name-here')</span></code></li>
+<li><code class="docutils literal"><span class="pre">if</span> <span class="pre">not</span> <span class="pre">table_exists:</span></code></li>
+<li><code class="docutils literal"><span class="pre">...remaining</span> <span class="pre">create</span> <span class="pre">table</span> <span class="pre">logic</span> <span class="pre">here...</span></code></li>
+</ol>
+</li>
+</ol>
+</li>
+</ol>
+</li>
+</ol>
+<p><em>Note: For anything but trivial or brand new columns/tables, database backups
+and maintenance-window downtimes might be called for.</em></p>
+</div>
+<div class="section" id="manually">
+<h3>Manually<a class="headerlink" href="#manually" title="Permalink to this headline">¶</a></h3>
+<ol class="arabic simple">
+<li>Execute: <code class="docutils literal"><span class="pre">barbican-db-manage</span> <span class="pre">revision</span> <span class="pre">-m</span> <span class="pre">&quot;&lt;insert</span> <span class="pre">your</span> <span class="pre">change</span>
+<span class="pre">description</span> <span class="pre">here&gt;&quot;</span></code></li>
+<li>This will generate a new file in the
+<code class="docutils literal"><span class="pre">barbican/model/migration/alembic_migrations/versions/</span></code> folder, with this
+sort of file format:
+<code class="docutils literal"><span class="pre">&lt;unique-Alembic-ID&gt;_&lt;your-change-description-from-above-but-truncated&gt;.py</span></code>.
+Note that only the first 20 characters of the description are used.</li>
+<li>You can then edit this file per tutorial and the <a class="reference external" href="https://alembic.readthedocs.org/en/latest/ops.html">Alembic Operation
+Reference</a> page for available operations you may make from the version
+files. <strong>You must properly fill in the</strong> <code class="docutils literal"><span class="pre">upgrade()</span></code> <strong>methods.</strong></li>
+</ol>
+</div>
+</div>
+<div class="section" id="applying-changes">
+<h2>Applying Changes<a class="headerlink" href="#applying-changes" title="Permalink to this headline">¶</a></h2>
+<p>Barbican utilizes the Alembic version files as managing delta changes to the
+database. Therefore the first Alembic version file does <strong>not</strong> contain all
+time-zero database tables.</p>
+<p>To create the initial Barbican tables in the database, execute the Barbican
+application per the &#8216;Via Application&#8217; section.</p>
+<p>Thereafter, it is suggested that only the <code class="docutils literal"><span class="pre">barbican-db-manage</span></code> command
+above be used to update the database schema per the &#8216;Manually&#8217; section. Also,
+automatic database updates from the Barbican application should be disabled by
+adding/updating <code class="docutils literal"><span class="pre">db_auto_create</span> <span class="pre">=</span> <span class="pre">False</span></code> in the <code class="docutils literal"><span class="pre">barbican.conf</span></code>
+configuration file.</p>
+<p><strong>Note</strong> : Before attempting any upgrade, you should make a full database
+backup of your production data. As of Kilo, database downgrades are not
+supported in OpenStack, and the only method available to get back to a
+prior database version will be to restore from backup.</p>
+<div class="section" id="via-application">
+<h3>Via Application<a class="headerlink" href="#via-application" title="Permalink to this headline">¶</a></h3>
+<p>The last section of the <a class="reference external" href="https://alembic.readthedocs.org/en/latest/tutorial.html">Alembic tutorial</a> describes the process used by the
+Barbican application to create and update the database table space
+automatically.</p>
+<p>By default, when the Barbican API boots up it will try to create the Barbican
+database tables (using SQLAlchemy), and then try to apply the latest version
+files (using Alembic). In this mode, the latest version of the Barbican
+application can create a new database table space updated to the latest schema
+version, or else it can update an existing database table space to the latest
+schema revision (called <code class="docutils literal"><span class="pre">head</span></code> in the docs).</p>
+<p><em>To bypass this automatic behavior, add</em> <code class="docutils literal"><span class="pre">db_auto_create</span> <span class="pre">=</span> <span class="pre">False</span></code> <em>to the</em>
+<code class="docutils literal"><span class="pre">barbican.conf</span></code> <em>file</em>.</p>
+</div>
+<div class="section" id="id1">
+<h3>Manually<a class="headerlink" href="#id1" title="Permalink to this headline">¶</a></h3>
+<p>Run <code class="docutils literal"><span class="pre">barbican-db-manage</span> <span class="pre">-d</span> <span class="pre">&lt;Full</span> <span class="pre">URL</span> <span class="pre">to</span> <span class="pre">database,</span> <span class="pre">including</span> <span class="pre">user/pw&gt;</span>
+<span class="pre">upgrade</span> <span class="pre">-v</span> <span class="pre">head</span></code>, which will cause Alembic to apply the changes found in all
+version files after the version currently written in the target database, up
+until the latest version file in the linked chain of files.</p>
+<p>To upgrade to a specific version, run this command:
+<code class="docutils literal"><span class="pre">barbican-db-manage</span> <span class="pre">-d</span> <span class="pre">&lt;Full</span> <span class="pre">URL</span> <span class="pre">to</span> <span class="pre">database,</span> <span class="pre">including</span> <span class="pre">user/pw&gt;</span>
+<span class="pre">upgrade</span> <span class="pre">-v</span> <span class="pre">&lt;Alembic-ID-of-version&gt;</span></code>. The <code class="docutils literal"><span class="pre">Alembic-ID-of-version</span></code> is a
+unique ID assigned to the change such <code class="docutils literal"><span class="pre">as1a0c2cdafb38</span></code>.</p>
+</div>
+<div class="section" id="downgrade">
+<h3>Downgrade<a class="headerlink" href="#downgrade" title="Permalink to this headline">¶</a></h3>
+<p>Upgrades involve complex operations and can fail. Before attempting any upgrade,
+you should make a full database backup of your production data. As of Kilo,
+database downgrades are not supported, and the only method available to get back
+to a prior database version will be to restore from backup.</p>
+<p>You must complete these steps to successfully roll back your environment:</p>
+<ol class="arabic simple">
+<li>Roll back configuration files.</li>
+<li>Restore databases from backup.</li>
+<li>Roll back packages.</li>
+</ol>
+<p>Rolling back upgrades is a tricky process because distributions tend to put
+much more effort into testing upgrades than downgrades. Broken downgrades
+often take significantly more effort to troubleshoot and resolve than broken
+upgrades. Only you can weigh the risks of trying to push a failed upgrade
+forward versus rolling it back. Generally, consider rolling back as the
+very last option.</p>
+<p>The backup instructions provided in <a class="reference external" href="http://docs.openstack.org/openstack-ops/content/upgrade-icehouse-juno.html#upgrade-icehouse-juno-backup">Backup tutorial</a> ensure that you have
+proper backups of your databases and configuration files. Read through this
+section carefully and verify that you have the requisite backups to restore.</p>
+<p><strong>Note</strong> : The backup tutorial reference file only updated to Juno, DB backup
+operation will be similar for Kilo. The link will be updated when the reference
+has updated.</p>
+<p>For more information and examples about downgrade operation please
+see <a class="reference external" href="http://docs.openstack.org/openstack-ops/content/ops_upgrades-roll-back.html">Downgrade tutorial</a> as reference.</p>
+</div>
+</div>
+<div class="section" id="todo-items">
+<h2>TODO Items<a class="headerlink" href="#todo-items" title="Permalink to this headline">¶</a></h2>
+<ol class="arabic simple">
+<li><em>[Done - It works!]</em> Verify alembic works with the current SQLAlchemy model
+configuration in Barbican (which was borrowed from Glance).</li>
+<li><em>[Done - It works, I was able to add/remove columns while app was running]</em>
+Verify that SQLAlchemy is tolerant of schema miss-matches. For example, if
+a column is added to a table schema, will this break existing deployments
+that aren&#8217;t expecting this column?</li>
+<li><em>[Done - It works]</em> Add auto-migrate code to the boot up of models (see the
+<code class="docutils literal"><span class="pre">barbican\model\repositories.py</span></code> file).</li>
+<li><em>[Done - It works]</em> Add guard in Barbican model logic to guard against
+running migrations with SQLite databases.</li>
+<li>Add detailed deployment steps for production, so how new nodes are rolled
+in and old ones rolled out to complete move to new versions.</li>
+<li><em>[In Progress]</em> Add a best-practices checklist section to this page.<ol class="loweralpha">
+<li>This would provide guidance on safely migrating schemas, do&#8217;s and
+don&#8217;ts, etc.</li>
+<li>This could also provide code guidance, such as ensuring that new schema
+changes (eg. that new column) aren&#8217;t required for proper functionality
+of the previous version of the code.</li>
+<li>If a server bounce is needed, notification guidelines to the devop team
+would be spelled out here.</li>
+</ol>
+</li>
+</ol>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="../index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Database Migrations</a><ul>
+<li><a class="reference internal" href="#policy">Policy</a></li>
+<li><a class="reference internal" href="#overview">Overview</a></li>
+<li><a class="reference internal" href="#generating-change-versions">Generating Change Versions</a><ul>
+<li><a class="reference internal" href="#automatically">Automatically</a></li>
+<li><a class="reference internal" href="#manually">Manually</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#applying-changes">Applying Changes</a><ul>
+<li><a class="reference internal" href="#via-application">Via Application</a></li>
+<li><a class="reference internal" href="#id1">Manually</a></li>
+<li><a class="reference internal" href="#downgrade">Downgrade</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#todo-items">TODO Items</a></li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="dependencies.html"
+                                  title="previous chapter">Adding/Updating Dependencies</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="../plugin/index.html"
+                                  title="next chapter">Plugin Developers Guide</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/barbican
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="../_sources/contribute/database_migrations.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="right" >
+          <a href="../plugin/index.html" title="Plugin Developers Guide"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="dependencies.html" title="Adding/Updating Dependencies"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../index.html">barbican 4.0.0.0rc2.dev3 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2014, OpenStack Foundation.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/barbican");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

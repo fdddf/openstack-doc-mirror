@@ -1,0 +1,196 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>OVN Neutron Worker and Port status handling &mdash; networking-ovn 2.0.0.0rc2.dev12 documentation</title>
+    
+    <link rel="stylesheet" href="../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../',
+        VERSION:     '2.0.0.0rc2.dev12',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../_static/jquery.js"></script>
+    <script type="text/javascript" src="../_static/underscore.js"></script>
+    <script type="text/javascript" src="../_static/doctools.js"></script>
+    <link rel="top" title="networking-ovn 2.0.0.0rc2.dev12 documentation" href="../index.html" />
+    <link rel="prev" title="Using the native DHCP feature provided by OVN" href="native_dhcp.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="ovn-neutron-worker-and-port-status-handling">
+<h1>OVN Neutron Worker and Port status handling<a class="headerlink" href="#ovn-neutron-worker-and-port-status-handling" title="Permalink to this headline">¶</a></h1>
+<p>When the logical switch port&#8217;s VIF is attached or removed to/from the ovn
+integration bridge, ovn-northd updates the Logical_Switch_Port.up to &#8216;True&#8217;
+or &#8216;False&#8217; accordingly.</p>
+<p>In order for the OVN Neutron ML2 driver to update the corresponding neutron
+port&#8217;s status to &#8216;ACTIVE&#8217; or &#8216;DOWN&#8217; in the db, it needs to monitor the
+OVN Northbound db. A neutron worker is created for this purpose.</p>
+<p>The implementation of the ovn worker can be found here -
+&#8216;networking_ovn.ovsdb.ovsdb_monitor.OvnWorker&#8217;.</p>
+<p>Neutron service will create &#8216;n&#8217; api workers and &#8216;m&#8217; rpc workers and 1 ovn
+worker (all these workers are separate processes).</p>
+<p>Api workers and rpc workers will create ovsdb idl client object
+(&#8216;ovs.db.idl.Idl&#8217;) to connect to the OVN_Northbound db.
+See &#8216;networking_ovn.ovsdb.impl_idl_ovn.OvsdbNbOvnIdl&#8217; and
+&#8216;neutron.agent.ovsdb.native.connection.Connection&#8217; classes for more details.</p>
+<p>Ovn worker will create &#8216;networking_ovn.ovsdb.ovsdb_monitor.OvnIdl&#8217; class
+object (which inherits from &#8216;ovs.db.idl.Idl&#8217;) to connect to the
+OVN_Northbound db. On receiving the  OVN_Northbound db updates from the
+ovsdb-server, &#8216;notify&#8217; function of &#8216;OVnIdl&#8217; is called by the parent class
+object.</p>
+<p>OvnIdl.notify() function passes the received events to the
+ovsdb_monitor.OvnDbNotifyHandler class.
+ovsdb_monitor.OvnDbNotifyHandler checks for any changes in
+the &#8216;Logical_Switch_Port.up&#8217; and updates the neutron port&#8217;s status accordingly.</p>
+<p>If &#8216;notify_nova_on_port_status_changes&#8217; configuration is set, then neutron
+would notify nova on port status changes.</p>
+<div class="section" id="ovsdb-locks">
+<h2>ovsdb locks<a class="headerlink" href="#ovsdb-locks" title="Permalink to this headline">¶</a></h2>
+<p>If there are multiple neutron servers running, then each neutron server will
+have one ovn worker which listens for the notify events. When the
+&#8216;Logical_Switch_Port.up&#8217; is updated by ovn-northd, we do not want all the
+neutron servers to handle the event and update the neutron port status.
+In order for only one neutron server to handle the events, ovsdb locks are
+used.</p>
+<p>At start, each neutron server&#8217;s ovn worker will try to acquire a lock with id -
+&#8216;neutron_ovn_event_lock&#8217;. The ovn worker which has acquired the lock will
+handle the notify events.</p>
+<p>In case the neutron server with the lock dies, ovsdb-server will assign the
+lock to another neutron server in the queue.</p>
+<p>More details about the ovsdb locks can be found here [1] and [2]</p>
+<p>[1] - <a class="reference external" href="https://tools.ietf.org/html/draft-pfaff-ovsdb-proto-04#section-4.1.8">https://tools.ietf.org/html/draft-pfaff-ovsdb-proto-04#section-4.1.8</a>
+[2] - <a class="reference external" href="https://github.com/openvswitch/ovs/blob/branch-2.4/python/ovs/db/idl.py#L67">https://github.com/openvswitch/ovs/blob/branch-2.4/python/ovs/db/idl.py#L67</a></p>
+<p>One thing to note is the ovn worker (with OvnIdl) do not carry out any
+transactions to the OVN Northbound db.</p>
+<p>Since the api and rpc workers are not configured with any locks,
+using the ovsdb lock on the OVN_Northbound and OVN_Southbound DBs by the ovn
+workers will not have any side effects to the transactions done by these api
+and rpc workers.</p>
+</div>
+<div class="section" id="handling-port-status-changes-when-neutron-server-s-are-down">
+<h2>Handling port status changes when neutron server(s) are down<a class="headerlink" href="#handling-port-status-changes-when-neutron-server-s-are-down" title="Permalink to this headline">¶</a></h2>
+<p>When neutron server starts, ovn worker would receive a dump of all
+logical switch ports as events. &#8216;ovsdb_monitor.OvnDbNotifyHandler&#8217; would
+sync up if there are any inconsistencies in the port status.</p>
+</div>
+<div class="section" id="ovn-southbound-db-access">
+<h2>OVN Southbound DB Access<a class="headerlink" href="#ovn-southbound-db-access" title="Permalink to this headline">¶</a></h2>
+<p>The OVN Neutron ML2 driver has a need to acquire chassis information (hostname
+and physnets combinations). This is required initially to support routed
+networks. Thus, the plugin will initiate and maintain a connection to the OVN
+SB DB during startup.</p>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="../index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">OVN Neutron Worker and Port status handling</a><ul>
+<li><a class="reference internal" href="#ovsdb-locks">ovsdb locks</a></li>
+<li><a class="reference internal" href="#handling-port-status-changes-when-neutron-server-s-are-down">Handling port status changes when neutron server(s) are down</a></li>
+<li><a class="reference internal" href="#ovn-southbound-db-access">OVN Southbound DB Access</a></li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="native_dhcp.html"
+                                  title="previous chapter">Using the native DHCP feature provided by OVN</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/networking-ovn
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="../_sources/design/ovn_worker.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="native_dhcp.html" title="Using the native DHCP feature provided by OVN"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../index.html">networking-ovn 2.0.0.0rc2.dev12 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright .
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/networking-ovn");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

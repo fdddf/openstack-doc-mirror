@@ -1,0 +1,311 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>ironic_inspector.common.ironic &mdash; Ironic Inspector 5.0.1.dev1 documentation</title>
+    
+    <link rel="stylesheet" href="../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../',
+        VERSION:     '5.0.1.dev1',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../_static/doctools.js"></script>
+    <link rel="top" title="Ironic Inspector 5.0.1.dev1 documentation" href="../../../index.html" />
+    <link rel="up" title="Module code" href="../../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for ironic_inspector.common.ironic</h1><div class="highlight"><pre>
+<span></span><span class="c1"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);</span>
+<span class="c1"># you may not use this file except in compliance with the License.</span>
+<span class="c1"># You may obtain a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#    http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1"># Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,</span>
+<span class="c1"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or</span>
+<span class="c1"># implied.</span>
+<span class="c1"># See the License for the specific language governing permissions and</span>
+<span class="c1"># limitations under the License.</span>
+
+<span class="kn">import</span> <span class="nn">socket</span>
+
+<span class="kn">from</span> <span class="nn">ironicclient</span> <span class="kn">import</span> <span class="n">client</span>
+<span class="kn">from</span> <span class="nn">ironicclient</span> <span class="kn">import</span> <span class="n">exceptions</span> <span class="k">as</span> <span class="n">ironic_exc</span>
+<span class="kn">import</span> <span class="nn">netaddr</span>
+<span class="kn">from</span> <span class="nn">oslo_config</span> <span class="kn">import</span> <span class="n">cfg</span>
+
+<span class="kn">from</span> <span class="nn">ironic_inspector.common.i18n</span> <span class="kn">import</span> <span class="n">_</span><span class="p">,</span> <span class="n">_LW</span>
+<span class="kn">from</span> <span class="nn">ironic_inspector.common</span> <span class="kn">import</span> <span class="n">keystone</span>
+<span class="kn">from</span> <span class="nn">ironic_inspector</span> <span class="kn">import</span> <span class="n">utils</span>
+
+<span class="n">CONF</span> <span class="o">=</span> <span class="n">cfg</span><span class="o">.</span><span class="n">CONF</span>
+<span class="n">LOG</span> <span class="o">=</span> <span class="n">utils</span><span class="o">.</span><span class="n">getProcessingLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+<span class="c1"># See http://specs.openstack.org/openstack/ironic-specs/specs/kilo/new-ironic-state-machine.html  # noqa</span>
+<span class="n">VALID_STATES</span> <span class="o">=</span> <span class="p">{</span><span class="s1">&#39;enroll&#39;</span><span class="p">,</span> <span class="s1">&#39;manageable&#39;</span><span class="p">,</span> <span class="s1">&#39;inspecting&#39;</span><span class="p">,</span> <span class="s1">&#39;inspectfail&#39;</span><span class="p">}</span>
+<span class="n">SET_CREDENTIALS_VALID_STATES</span> <span class="o">=</span> <span class="p">{</span><span class="s1">&#39;enroll&#39;</span><span class="p">}</span>
+
+<span class="c1"># 1.11 is API version, which support &#39;enroll&#39; state</span>
+<span class="n">DEFAULT_IRONIC_API_VERSION</span> <span class="o">=</span> <span class="s1">&#39;1.11&#39;</span>
+
+<span class="n">IRONIC_GROUP</span> <span class="o">=</span> <span class="s1">&#39;ironic&#39;</span>
+
+<span class="n">IRONIC_OPTS</span> <span class="o">=</span> <span class="p">[</span>
+    <span class="n">cfg</span><span class="o">.</span><span class="n">StrOpt</span><span class="p">(</span><span class="s1">&#39;os_region&#39;</span><span class="p">,</span>
+               <span class="n">help</span><span class="o">=</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Keystone region used to get Ironic endpoints.&#39;</span><span class="p">)),</span>
+    <span class="n">cfg</span><span class="o">.</span><span class="n">StrOpt</span><span class="p">(</span><span class="s1">&#39;auth_strategy&#39;</span><span class="p">,</span>
+               <span class="n">default</span><span class="o">=</span><span class="s1">&#39;keystone&#39;</span><span class="p">,</span>
+               <span class="n">choices</span><span class="o">=</span><span class="p">(</span><span class="s1">&#39;keystone&#39;</span><span class="p">,</span> <span class="s1">&#39;noauth&#39;</span><span class="p">),</span>
+               <span class="n">help</span><span class="o">=</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Method to use for authentication: noauth or &#39;</span>
+                      <span class="s1">&#39;keystone.&#39;</span><span class="p">)),</span>
+    <span class="n">cfg</span><span class="o">.</span><span class="n">StrOpt</span><span class="p">(</span><span class="s1">&#39;ironic_url&#39;</span><span class="p">,</span>
+               <span class="n">default</span><span class="o">=</span><span class="s1">&#39;http://localhost:6385/&#39;</span><span class="p">,</span>
+               <span class="n">help</span><span class="o">=</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Ironic API URL, used to set Ironic API URL when &#39;</span>
+                      <span class="s1">&#39;auth_strategy option is noauth to work with standalone &#39;</span>
+                      <span class="s1">&#39;Ironic without keystone.&#39;</span><span class="p">)),</span>
+    <span class="n">cfg</span><span class="o">.</span><span class="n">StrOpt</span><span class="p">(</span><span class="s1">&#39;os_service_type&#39;</span><span class="p">,</span>
+               <span class="n">default</span><span class="o">=</span><span class="s1">&#39;baremetal&#39;</span><span class="p">,</span>
+               <span class="n">help</span><span class="o">=</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Ironic service type.&#39;</span><span class="p">)),</span>
+    <span class="n">cfg</span><span class="o">.</span><span class="n">StrOpt</span><span class="p">(</span><span class="s1">&#39;os_endpoint_type&#39;</span><span class="p">,</span>
+               <span class="n">default</span><span class="o">=</span><span class="s1">&#39;internalURL&#39;</span><span class="p">,</span>
+               <span class="n">help</span><span class="o">=</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Ironic endpoint type.&#39;</span><span class="p">)),</span>
+    <span class="n">cfg</span><span class="o">.</span><span class="n">IntOpt</span><span class="p">(</span><span class="s1">&#39;retry_interval&#39;</span><span class="p">,</span>
+               <span class="n">default</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
+               <span class="n">help</span><span class="o">=</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Interval between retries in case of conflict error &#39;</span>
+                      <span class="s1">&#39;(HTTP 409).&#39;</span><span class="p">)),</span>
+    <span class="n">cfg</span><span class="o">.</span><span class="n">IntOpt</span><span class="p">(</span><span class="s1">&#39;max_retries&#39;</span><span class="p">,</span>
+               <span class="n">default</span><span class="o">=</span><span class="mi">30</span><span class="p">,</span>
+               <span class="n">help</span><span class="o">=</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Maximum number of retries in case of conflict error &#39;</span>
+                      <span class="s1">&#39;(HTTP 409).&#39;</span><span class="p">)),</span>
+<span class="p">]</span>
+
+
+<span class="n">CONF</span><span class="o">.</span><span class="n">register_opts</span><span class="p">(</span><span class="n">IRONIC_OPTS</span><span class="p">,</span> <span class="n">group</span><span class="o">=</span><span class="n">IRONIC_GROUP</span><span class="p">)</span>
+<span class="n">keystone</span><span class="o">.</span><span class="n">register_auth_opts</span><span class="p">(</span><span class="n">IRONIC_GROUP</span><span class="p">)</span>
+
+<span class="n">IRONIC_SESSION</span> <span class="o">=</span> <span class="bp">None</span>
+
+
+<div class="viewcode-block" id="NotFound"><a class="viewcode-back" href="../../../api/ironic_inspector.common.ironic.html#ironic_inspector.common.ironic.NotFound">[docs]</a><span class="k">class</span> <span class="nc">NotFound</span><span class="p">(</span><span class="n">utils</span><span class="o">.</span><span class="n">Error</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Node not found in Ironic.&quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">node_ident</span><span class="p">,</span> <span class="n">code</span><span class="o">=</span><span class="mi">404</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="n">msg</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;Node </span><span class="si">%s</span><span class="s1"> was not found in Ironic&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="n">node_ident</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">NotFound</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">msg</span><span class="p">,</span> <span class="n">code</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="reset_ironic_session"><a class="viewcode-back" href="../../../api/ironic_inspector.common.ironic.html#ironic_inspector.common.ironic.reset_ironic_session">[docs]</a><span class="k">def</span> <span class="nf">reset_ironic_session</span><span class="p">():</span>
+    <span class="sd">&quot;&quot;&quot;Reset the global session variable.</span>
+
+<span class="sd">    Mostly useful for unit tests.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">global</span> <span class="n">IRONIC_SESSION</span>
+    <span class="n">IRONIC_SESSION</span> <span class="o">=</span> <span class="bp">None</span></div>
+
+
+<div class="viewcode-block" id="get_ipmi_address"><a class="viewcode-back" href="../../../api/ironic_inspector.common.ironic.html#ironic_inspector.common.ironic.get_ipmi_address">[docs]</a><span class="k">def</span> <span class="nf">get_ipmi_address</span><span class="p">(</span><span class="n">node</span><span class="p">):</span>
+    <span class="n">ipmi_fields</span> <span class="o">=</span> <span class="p">[</span><span class="s1">&#39;ipmi_address&#39;</span><span class="p">]</span> <span class="o">+</span> <span class="n">CONF</span><span class="o">.</span><span class="n">ipmi_address_fields</span>
+    <span class="c1"># NOTE(sambetts): IPMI Address is useless to us if bridging is enabled so</span>
+    <span class="c1"># just ignore it and return None</span>
+    <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">driver_info</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;ipmi_bridging&quot;</span><span class="p">,</span> <span class="s2">&quot;no&quot;</span><span class="p">)</span> <span class="o">!=</span> <span class="s2">&quot;no&quot;</span><span class="p">:</span>
+        <span class="k">return</span>
+    <span class="k">for</span> <span class="n">name</span> <span class="ow">in</span> <span class="n">ipmi_fields</span><span class="p">:</span>
+        <span class="n">value</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">driver_info</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">name</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">value</span><span class="p">:</span>
+            <span class="k">continue</span>
+
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">ip</span> <span class="o">=</span> <span class="n">socket</span><span class="o">.</span><span class="n">gethostbyname</span><span class="p">(</span><span class="n">value</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">socket</span><span class="o">.</span><span class="n">gaierror</span><span class="p">:</span>
+            <span class="n">msg</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;Failed to resolve the hostname (</span><span class="si">%(value)s</span><span class="s1">)&#39;</span>
+                    <span class="s1">&#39; for node </span><span class="si">%(uuid)s</span><span class="s1">&#39;</span><span class="p">)</span>
+            <span class="k">raise</span> <span class="n">utils</span><span class="o">.</span><span class="n">Error</span><span class="p">(</span><span class="n">msg</span> <span class="o">%</span> <span class="p">{</span><span class="s1">&#39;value&#39;</span><span class="p">:</span> <span class="n">value</span><span class="p">,</span>
+                                     <span class="s1">&#39;uuid&#39;</span><span class="p">:</span> <span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">},</span>
+                              <span class="n">node_info</span><span class="o">=</span><span class="n">node</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">netaddr</span><span class="o">.</span><span class="n">IPAddress</span><span class="p">(</span><span class="n">ip</span><span class="p">)</span><span class="o">.</span><span class="n">is_loopback</span><span class="p">():</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s1">&#39;Ignoring loopback BMC address </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">),</span> <span class="n">ip</span><span class="p">,</span>
+                        <span class="n">node_info</span><span class="o">=</span><span class="n">node</span><span class="p">)</span>
+            <span class="n">ip</span> <span class="o">=</span> <span class="bp">None</span>
+
+        <span class="k">return</span> <span class="n">ip</span></div>
+
+
+<div class="viewcode-block" id="get_client"><a class="viewcode-back" href="../../../api/ironic_inspector.common.ironic.html#ironic_inspector.common.ironic.get_client">[docs]</a><span class="k">def</span> <span class="nf">get_client</span><span class="p">(</span><span class="n">token</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+               <span class="n">api_version</span><span class="o">=</span><span class="n">DEFAULT_IRONIC_API_VERSION</span><span class="p">):</span>  <span class="c1"># pragma: no cover</span>
+    <span class="sd">&quot;&quot;&quot;Get Ironic client instance.&quot;&quot;&quot;</span>
+    <span class="c1"># NOTE: To support standalone ironic without keystone</span>
+    <span class="k">if</span> <span class="n">CONF</span><span class="o">.</span><span class="n">ironic</span><span class="o">.</span><span class="n">auth_strategy</span> <span class="o">==</span> <span class="s1">&#39;noauth&#39;</span><span class="p">:</span>
+        <span class="n">args</span> <span class="o">=</span> <span class="p">{</span><span class="s1">&#39;token&#39;</span><span class="p">:</span> <span class="s1">&#39;noauth&#39;</span><span class="p">,</span>
+                <span class="s1">&#39;endpoint&#39;</span><span class="p">:</span> <span class="n">CONF</span><span class="o">.</span><span class="n">ironic</span><span class="o">.</span><span class="n">ironic_url</span><span class="p">}</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="k">global</span> <span class="n">IRONIC_SESSION</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">IRONIC_SESSION</span><span class="p">:</span>
+            <span class="n">IRONIC_SESSION</span> <span class="o">=</span> <span class="n">keystone</span><span class="o">.</span><span class="n">get_session</span><span class="p">(</span><span class="n">IRONIC_GROUP</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">token</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">args</span> <span class="o">=</span> <span class="p">{</span><span class="s1">&#39;session&#39;</span><span class="p">:</span> <span class="n">IRONIC_SESSION</span><span class="p">,</span>
+                    <span class="s1">&#39;region_name&#39;</span><span class="p">:</span> <span class="n">CONF</span><span class="o">.</span><span class="n">ironic</span><span class="o">.</span><span class="n">os_region</span><span class="p">}</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">ironic_url</span> <span class="o">=</span> <span class="n">IRONIC_SESSION</span><span class="o">.</span><span class="n">get_endpoint</span><span class="p">(</span>
+                <span class="n">service_type</span><span class="o">=</span><span class="n">CONF</span><span class="o">.</span><span class="n">ironic</span><span class="o">.</span><span class="n">os_service_type</span><span class="p">,</span>
+                <span class="n">endpoint_type</span><span class="o">=</span><span class="n">CONF</span><span class="o">.</span><span class="n">ironic</span><span class="o">.</span><span class="n">os_endpoint_type</span><span class="p">,</span>
+                <span class="n">region_name</span><span class="o">=</span><span class="n">CONF</span><span class="o">.</span><span class="n">ironic</span><span class="o">.</span><span class="n">os_region</span>
+            <span class="p">)</span>
+            <span class="n">args</span> <span class="o">=</span> <span class="p">{</span><span class="s1">&#39;token&#39;</span><span class="p">:</span> <span class="n">token</span><span class="p">,</span>
+                    <span class="s1">&#39;endpoint&#39;</span><span class="p">:</span> <span class="n">ironic_url</span><span class="p">}</span>
+    <span class="n">args</span><span class="p">[</span><span class="s1">&#39;os_ironic_api_version&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">api_version</span>
+    <span class="n">args</span><span class="p">[</span><span class="s1">&#39;max_retries&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">CONF</span><span class="o">.</span><span class="n">ironic</span><span class="o">.</span><span class="n">max_retries</span>
+    <span class="n">args</span><span class="p">[</span><span class="s1">&#39;retry_interval&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">CONF</span><span class="o">.</span><span class="n">ironic</span><span class="o">.</span><span class="n">retry_interval</span>
+    <span class="k">return</span> <span class="n">client</span><span class="o">.</span><span class="n">Client</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="o">**</span><span class="n">args</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="check_provision_state"><a class="viewcode-back" href="../../../api/ironic_inspector.common.ironic.html#ironic_inspector.common.ironic.check_provision_state">[docs]</a><span class="k">def</span> <span class="nf">check_provision_state</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">with_credentials</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+    <span class="n">state</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">provision_state</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span>
+    <span class="k">if</span> <span class="n">with_credentials</span> <span class="ow">and</span> <span class="n">state</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">SET_CREDENTIALS_VALID_STATES</span><span class="p">:</span>
+        <span class="n">msg</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;Invalid provision state for setting IPMI credentials: &#39;</span>
+                <span class="s1">&#39;&quot;</span><span class="si">%(state)s</span><span class="s1">&quot;, valid states are </span><span class="si">%(valid)s</span><span class="s1">&#39;</span><span class="p">)</span>
+        <span class="k">raise</span> <span class="n">utils</span><span class="o">.</span><span class="n">Error</span><span class="p">(</span><span class="n">msg</span> <span class="o">%</span> <span class="p">{</span><span class="s1">&#39;state&#39;</span><span class="p">:</span> <span class="n">state</span><span class="p">,</span>
+                                 <span class="s1">&#39;valid&#39;</span><span class="p">:</span> <span class="nb">list</span><span class="p">(</span><span class="n">SET_CREDENTIALS_VALID_STATES</span><span class="p">)},</span>
+                          <span class="n">node_info</span><span class="o">=</span><span class="n">node</span><span class="p">)</span>
+    <span class="k">elif</span> <span class="ow">not</span> <span class="n">with_credentials</span> <span class="ow">and</span> <span class="n">state</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">VALID_STATES</span><span class="p">:</span>
+        <span class="n">msg</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;Invalid provision state for introspection: &#39;</span>
+                <span class="s1">&#39;&quot;</span><span class="si">%(state)s</span><span class="s1">&quot;, valid states are &quot;</span><span class="si">%(valid)s</span><span class="s1">&quot;&#39;</span><span class="p">)</span>
+        <span class="k">raise</span> <span class="n">utils</span><span class="o">.</span><span class="n">Error</span><span class="p">(</span><span class="n">msg</span> <span class="o">%</span> <span class="p">{</span><span class="s1">&#39;state&#39;</span><span class="p">:</span> <span class="n">state</span><span class="p">,</span> <span class="s1">&#39;valid&#39;</span><span class="p">:</span> <span class="nb">list</span><span class="p">(</span><span class="n">VALID_STATES</span><span class="p">)},</span>
+                          <span class="n">node_info</span><span class="o">=</span><span class="n">node</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="capabilities_to_dict"><a class="viewcode-back" href="../../../api/ironic_inspector.common.ironic.html#ironic_inspector.common.ironic.capabilities_to_dict">[docs]</a><span class="k">def</span> <span class="nf">capabilities_to_dict</span><span class="p">(</span><span class="n">caps</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Convert the Node&#39;s capabilities into a dictionary.&quot;&quot;&quot;</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">caps</span><span class="p">:</span>
+        <span class="k">return</span> <span class="p">{}</span>
+    <span class="k">return</span> <span class="nb">dict</span><span class="p">([</span><span class="n">key</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s1">&#39;:&#39;</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span> <span class="k">for</span> <span class="n">key</span> <span class="ow">in</span> <span class="n">caps</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s1">&#39;,&#39;</span><span class="p">)])</span></div>
+
+
+<div class="viewcode-block" id="dict_to_capabilities"><a class="viewcode-back" href="../../../api/ironic_inspector.common.ironic.html#ironic_inspector.common.ironic.dict_to_capabilities">[docs]</a><span class="k">def</span> <span class="nf">dict_to_capabilities</span><span class="p">(</span><span class="n">caps_dict</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Convert a dictionary into a string with the capabilities syntax.&quot;&quot;&quot;</span>
+    <span class="k">return</span> <span class="s1">&#39;,&#39;</span><span class="o">.</span><span class="n">join</span><span class="p">([</span><span class="s2">&quot;</span><span class="si">%s</span><span class="s2">:</span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+                     <span class="k">for</span> <span class="n">key</span><span class="p">,</span> <span class="n">value</span> <span class="ow">in</span> <span class="n">caps_dict</span><span class="o">.</span><span class="n">items</span><span class="p">()</span>
+                     <span class="k">if</span> <span class="n">value</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">])</span></div>
+
+
+<div class="viewcode-block" id="get_node"><a class="viewcode-back" href="../../../api/ironic_inspector.common.ironic.html#ironic_inspector.common.ironic.get_node">[docs]</a><span class="k">def</span> <span class="nf">get_node</span><span class="p">(</span><span class="n">node_id</span><span class="p">,</span> <span class="n">ironic</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Get a node from Ironic.</span>
+
+<span class="sd">    :param node_id: node UUID or name.</span>
+<span class="sd">    :param ironic: ironic client instance.</span>
+<span class="sd">    :param kwargs: arguments to pass to Ironic client.</span>
+<span class="sd">    :raises: Error on failure</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">ironic</span> <span class="o">=</span> <span class="n">ironic</span> <span class="k">if</span> <span class="n">ironic</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span> <span class="k">else</span> <span class="n">get_client</span><span class="p">()</span>
+
+    <span class="k">try</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">ironic</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">node_id</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+    <span class="k">except</span> <span class="n">ironic_exc</span><span class="o">.</span><span class="n">NotFound</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">NotFound</span><span class="p">(</span><span class="n">node_id</span><span class="p">)</span>
+    <span class="k">except</span> <span class="n">ironic_exc</span><span class="o">.</span><span class="n">HttpError</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">utils</span><span class="o">.</span><span class="n">Error</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s2">&quot;Cannot get node </span><span class="si">%(node)s</span><span class="s2">: </span><span class="si">%(exc)s</span><span class="s2">&quot;</span><span class="p">)</span> <span class="o">%</span>
+                          <span class="p">{</span><span class="s1">&#39;node&#39;</span><span class="p">:</span> <span class="n">node_id</span><span class="p">,</span> <span class="s1">&#39;exc&#39;</span><span class="p">:</span> <span class="n">exc</span><span class="p">})</span></div>
+
+
+<div class="viewcode-block" id="list_opts"><a class="viewcode-back" href="../../../api/ironic_inspector.common.ironic.html#ironic_inspector.common.ironic.list_opts">[docs]</a><span class="k">def</span> <span class="nf">list_opts</span><span class="p">():</span>
+    <span class="k">return</span> <span class="n">keystone</span><span class="o">.</span><span class="n">add_auth_options</span><span class="p">(</span><span class="n">IRONIC_OPTS</span><span class="p">,</span> <span class="n">IRONIC_GROUP</span><span class="p">)</span></div>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/ironic-inspector
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../../index.html">Ironic Inspector 5.0.1.dev1 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../../index.html" accesskey="U">Module code</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright OpenStack Foundation.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/Ironic Inspector");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

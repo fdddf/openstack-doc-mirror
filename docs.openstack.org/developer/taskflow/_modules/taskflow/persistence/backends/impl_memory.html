@@ -1,0 +1,503 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>taskflow.persistence.backends.impl_memory &mdash; TaskFlow 2.9.1.dev9 documentation</title>
+    
+    <link rel="stylesheet" href="../../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../../',
+        VERSION:     '2.9.1.dev9',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../../_static/doctools.js"></script>
+    <link rel="top" title="TaskFlow 2.9.1.dev9 documentation" href="../../../../index.html" />
+    <link rel="up" title="taskflow.persistence.backends" href="../backends.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for taskflow.persistence.backends.impl_memory</h1><div class="highlight"><pre>
+<span></span><span class="c1"># -*- coding: utf-8 -*-</span>
+
+<span class="c1">#    Copyright (C) 2012 Yahoo! Inc. All Rights Reserved.</span>
+<span class="c1">#    Copyright (C) 2013 Rackspace Hosting All Rights Reserved.</span>
+<span class="c1">#</span>
+<span class="c1">#    Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may</span>
+<span class="c1">#    not use this file except in compliance with the License. You may obtain</span>
+<span class="c1">#    a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#         http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1">#    Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1">#    distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="c1">#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="c1">#    License for the specific language governing permissions and limitations</span>
+<span class="c1">#    under the License.</span>
+
+<span class="kn">import</span> <span class="nn">contextlib</span>
+<span class="kn">import</span> <span class="nn">copy</span>
+<span class="kn">import</span> <span class="nn">itertools</span>
+<span class="kn">import</span> <span class="nn">posixpath</span> <span class="kn">as</span> <span class="nn">pp</span>
+
+<span class="kn">import</span> <span class="nn">fasteners</span>
+<span class="kn">import</span> <span class="nn">six</span>
+
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">exceptions</span> <span class="k">as</span> <span class="n">exc</span>
+<span class="kn">from</span> <span class="nn">taskflow.persistence</span> <span class="kn">import</span> <span class="n">path_based</span>
+<span class="kn">from</span> <span class="nn">taskflow.types</span> <span class="kn">import</span> <span class="n">tree</span>
+
+
+<div class="viewcode-block" id="FakeInode"><a class="viewcode-back" href="../../../../persistence.html#taskflow.persistence.backends.impl_memory.FakeInode">[docs]</a><span class="k">class</span> <span class="nc">FakeInode</span><span class="p">(</span><span class="n">tree</span><span class="o">.</span><span class="n">Node</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A in-memory filesystem inode-like object.&quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">item</span><span class="p">,</span> <span class="n">path</span><span class="p">,</span> <span class="n">value</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">FakeInode</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">item</span><span class="p">,</span> <span class="n">path</span><span class="o">=</span><span class="n">path</span><span class="p">,</span> <span class="n">value</span><span class="o">=</span><span class="n">value</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="FakeFilesystem"><a class="viewcode-back" href="../../../../persistence.html#taskflow.persistence.backends.impl_memory.FakeFilesystem">[docs]</a><span class="k">class</span> <span class="nc">FakeFilesystem</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;An in-memory filesystem-like structure.</span>
+
+<span class="sd">    This filesystem uses posix style paths **only** so users must be careful</span>
+<span class="sd">    to use the ``posixpath`` module instead of the ``os.path`` one which will</span>
+<span class="sd">    vary depending on the operating system which the active python is running</span>
+<span class="sd">    in (the decision to use ``posixpath`` was to avoid the path variations</span>
+<span class="sd">    which are not relevant in an implementation of a in-memory fake</span>
+<span class="sd">    filesystem).</span>
+
+<span class="sd">    **Not** thread-safe when a single filesystem is mutated at the same</span>
+<span class="sd">    time by multiple threads. For example having multiple threads call into</span>
+<span class="sd">    :meth:`~taskflow.persistence.backends.impl_memory.FakeFilesystem.clear`</span>
+<span class="sd">    at the same time could potentially end badly. It is thread-safe when only</span>
+<span class="sd">    :meth:`~taskflow.persistence.backends.impl_memory.FakeFilesystem.get`</span>
+<span class="sd">    or other read-only actions (like calling into</span>
+<span class="sd">    :meth:`~taskflow.persistence.backends.impl_memory.FakeFilesystem.ls`)</span>
+<span class="sd">    are occurring at the same time.</span>
+
+<span class="sd">    Example usage:</span>
+
+<span class="sd">    &gt;&gt;&gt; from taskflow.persistence.backends import impl_memory</span>
+<span class="sd">    &gt;&gt;&gt; fs = impl_memory.FakeFilesystem()</span>
+<span class="sd">    &gt;&gt;&gt; fs.ensure_path(&#39;/a/b/c&#39;)</span>
+<span class="sd">    &gt;&gt;&gt; fs[&#39;/a/b/c&#39;] = &#39;d&#39;</span>
+<span class="sd">    &gt;&gt;&gt; print(fs[&#39;/a/b/c&#39;])</span>
+<span class="sd">    d</span>
+<span class="sd">    &gt;&gt;&gt; del fs[&#39;/a/b/c&#39;]</span>
+<span class="sd">    &gt;&gt;&gt; fs.ls(&quot;/a/b&quot;)</span>
+<span class="sd">    []</span>
+<span class="sd">    &gt;&gt;&gt; fs.get(&quot;/a/b/c&quot;, &#39;blob&#39;)</span>
+<span class="sd">    &#39;blob&#39;</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="c1">#: Root path of the in-memory filesystem.</span>
+    <span class="n">root_path</span> <span class="o">=</span> <span class="n">pp</span><span class="o">.</span><span class="n">sep</span>
+
+    <span class="nd">@classmethod</span>
+<div class="viewcode-block" id="FakeFilesystem.normpath"><a class="viewcode-back" href="../../../../persistence.html#taskflow.persistence.backends.impl_memory.FakeFilesystem.normpath">[docs]</a>    <span class="k">def</span> <span class="nf">normpath</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">path</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Return a normalized absolutized version of the pathname path.&quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">path</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;This filesystem can only normalize paths&quot;</span>
+                             <span class="s2">&quot; that are not empty&quot;</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">path</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="bp">cls</span><span class="o">.</span><span class="n">root_path</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;This filesystem can only normalize&quot;</span>
+                             <span class="s2">&quot; paths that start with </span><span class="si">%s</span><span class="s2">: &#39;</span><span class="si">%s</span><span class="s2">&#39; is not&quot;</span>
+                             <span class="s2">&quot; valid&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="bp">cls</span><span class="o">.</span><span class="n">root_path</span><span class="p">,</span> <span class="n">path</span><span class="p">))</span>
+        <span class="k">return</span> <span class="n">pp</span><span class="o">.</span><span class="n">normpath</span><span class="p">(</span><span class="n">path</span><span class="p">)</span></div>
+
+    <span class="c1">#: Split a pathname into a tuple of ``(head, tail)``.</span>
+    <span class="n">split</span> <span class="o">=</span> <span class="nb">staticmethod</span><span class="p">(</span><span class="n">pp</span><span class="o">.</span><span class="n">split</span><span class="p">)</span>
+
+    <span class="nd">@staticmethod</span>
+<div class="viewcode-block" id="FakeFilesystem.join"><a class="viewcode-back" href="../../../../persistence.html#taskflow.persistence.backends.impl_memory.FakeFilesystem.join">[docs]</a>    <span class="k">def</span> <span class="nf">join</span><span class="p">(</span><span class="o">*</span><span class="n">pieces</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Join many path segments together.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="n">pp</span><span class="o">.</span><span class="n">sep</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">pieces</span><span class="p">)</span></div>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">deep_copy</span><span class="o">=</span><span class="bp">True</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_root</span> <span class="o">=</span> <span class="n">FakeInode</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">root_path</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">root_path</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_reverse_mapping</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">root_path</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_root</span><span class="p">,</span>
+        <span class="p">}</span>
+        <span class="k">if</span> <span class="n">deep_copy</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_copier</span> <span class="o">=</span> <span class="n">copy</span><span class="o">.</span><span class="n">deepcopy</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_copier</span> <span class="o">=</span> <span class="n">copy</span><span class="o">.</span><span class="n">copy</span>
+
+<div class="viewcode-block" id="FakeFilesystem.ensure_path"><a class="viewcode-back" href="../../../../persistence.html#taskflow.persistence.backends.impl_memory.FakeFilesystem.ensure_path">[docs]</a>    <span class="k">def</span> <span class="nf">ensure_path</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Ensure the path (and parents) exists.&quot;&quot;&quot;</span>
+        <span class="n">path</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">normpath</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
+        <span class="c1"># Ignore the root path as we already checked for that; and it</span>
+        <span class="c1"># will always exist/can&#39;t be removed anyway...</span>
+        <span class="k">if</span> <span class="n">path</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">_root</span><span class="o">.</span><span class="n">item</span><span class="p">:</span>
+            <span class="k">return</span>
+        <span class="n">node</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_root</span>
+        <span class="k">for</span> <span class="n">piece</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_iter_pieces</span><span class="p">(</span><span class="n">path</span><span class="p">):</span>
+            <span class="n">child_node</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">find</span><span class="p">(</span><span class="n">piece</span><span class="p">,</span> <span class="n">only_direct</span><span class="o">=</span><span class="bp">True</span><span class="p">,</span>
+                                   <span class="n">include_self</span><span class="o">=</span><span class="bp">False</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">child_node</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="n">child_node</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_insert_child</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">piece</span><span class="p">)</span>
+            <span class="n">node</span> <span class="o">=</span> <span class="n">child_node</span></div>
+
+    <span class="k">def</span> <span class="nf">_insert_child</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">parent_node</span><span class="p">,</span> <span class="n">basename</span><span class="p">,</span> <span class="n">value</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="n">child_path</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">parent_node</span><span class="o">.</span><span class="n">metadata</span><span class="p">[</span><span class="s1">&#39;path&#39;</span><span class="p">],</span> <span class="n">basename</span><span class="p">)</span>
+        <span class="c1"># This avoids getting &#39;//a/b&#39; (duplicated sep at start)...</span>
+        <span class="c1">#</span>
+        <span class="c1"># Which can happen easily if something like the following is given.</span>
+        <span class="c1"># &gt;&gt;&gt; x = [&#39;/&#39;, &#39;b&#39;]</span>
+        <span class="c1"># &gt;&gt;&gt; pp.sep.join(x)</span>
+        <span class="c1"># &#39;//b&#39;</span>
+        <span class="k">if</span> <span class="n">child_path</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="n">pp</span><span class="o">.</span><span class="n">sep</span> <span class="o">*</span> <span class="mi">2</span><span class="p">):</span>
+            <span class="n">child_path</span> <span class="o">=</span> <span class="n">child_path</span><span class="p">[</span><span class="mi">1</span><span class="p">:]</span>
+        <span class="n">child_node</span> <span class="o">=</span> <span class="n">FakeInode</span><span class="p">(</span><span class="n">basename</span><span class="p">,</span> <span class="n">child_path</span><span class="p">,</span> <span class="n">value</span><span class="o">=</span><span class="n">value</span><span class="p">)</span>
+        <span class="n">parent_node</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">child_node</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_reverse_mapping</span><span class="p">[</span><span class="n">child_path</span><span class="p">]</span> <span class="o">=</span> <span class="n">child_node</span>
+        <span class="k">return</span> <span class="n">child_node</span>
+
+    <span class="k">def</span> <span class="nf">_fetch_node</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="p">,</span> <span class="n">normalized</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">normalized</span><span class="p">:</span>
+            <span class="n">normed_path</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">normpath</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">normed_path</span> <span class="o">=</span> <span class="n">path</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_reverse_mapping</span><span class="p">[</span><span class="n">normed_path</span><span class="p">]</span>
+        <span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">NotFound</span><span class="p">(</span><span class="s2">&quot;Path &#39;</span><span class="si">%s</span><span class="s2">&#39; not found&quot;</span> <span class="o">%</span> <span class="n">path</span><span class="p">)</span>
+
+<div class="viewcode-block" id="FakeFilesystem.get"><a class="viewcode-back" href="../../../../persistence.html#taskflow.persistence.backends.impl_memory.FakeFilesystem.get">[docs]</a>    <span class="k">def</span> <span class="nf">get</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Fetch the value of given path (and return default if not found).&quot;&quot;&quot;</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_item</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">normpath</span><span class="p">(</span><span class="n">path</span><span class="p">))</span>
+        <span class="k">except</span> <span class="n">exc</span><span class="o">.</span><span class="n">NotFound</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">default</span></div>
+
+    <span class="k">def</span> <span class="nf">_get_item</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="p">,</span> <span class="n">links</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="n">node</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_fetch_node</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="n">normalized</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+        <span class="k">if</span> <span class="s1">&#39;target&#39;</span> <span class="ow">in</span> <span class="n">node</span><span class="o">.</span><span class="n">metadata</span><span class="p">:</span>
+            <span class="c1"># Follow the link (and watch out for loops)...</span>
+            <span class="n">path</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">metadata</span><span class="p">[</span><span class="s1">&#39;target&#39;</span><span class="p">]</span>
+            <span class="k">if</span> <span class="n">links</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="n">links</span> <span class="o">=</span> <span class="p">[]</span>
+            <span class="k">if</span> <span class="n">path</span> <span class="ow">in</span> <span class="n">links</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;Recursive link following not&quot;</span>
+                                 <span class="s2">&quot; allowed (loop </span><span class="si">%s</span><span class="s2"> detected)&quot;</span>
+                                 <span class="o">%</span> <span class="p">(</span><span class="n">links</span> <span class="o">+</span> <span class="p">[</span><span class="n">path</span><span class="p">]))</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">links</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_item</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="n">links</span><span class="o">=</span><span class="n">links</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_copier</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">metadata</span><span class="p">[</span><span class="s1">&#39;value&#39;</span><span class="p">])</span>
+
+    <span class="k">def</span> <span class="nf">_up_to_root_selector</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">root_node</span><span class="p">,</span> <span class="n">child_node</span><span class="p">):</span>
+        <span class="c1"># Build the path from the child to the root and stop at the</span>
+        <span class="c1"># root, and then form a path string...</span>
+        <span class="n">path_pieces</span> <span class="o">=</span> <span class="p">[</span><span class="n">child_node</span><span class="o">.</span><span class="n">item</span><span class="p">]</span>
+        <span class="k">for</span> <span class="n">parent_node</span> <span class="ow">in</span> <span class="n">child_node</span><span class="o">.</span><span class="n">path_iter</span><span class="p">(</span><span class="n">include_self</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+            <span class="k">if</span> <span class="n">parent_node</span> <span class="ow">is</span> <span class="n">root_node</span><span class="p">:</span>
+                <span class="k">break</span>
+            <span class="n">path_pieces</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">parent_node</span><span class="o">.</span><span class="n">item</span><span class="p">)</span>
+        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">path_pieces</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">1</span><span class="p">:</span>
+            <span class="n">path_pieces</span><span class="o">.</span><span class="n">reverse</span><span class="p">()</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="o">*</span><span class="n">path_pieces</span><span class="p">)</span>
+
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span> <span class="nf">_metadata_path_selector</span><span class="p">(</span><span class="n">root_node</span><span class="p">,</span> <span class="n">child_node</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">child_node</span><span class="o">.</span><span class="n">metadata</span><span class="p">[</span><span class="s1">&#39;path&#39;</span><span class="p">]</span>
+
+<div class="viewcode-block" id="FakeFilesystem.ls_r"><a class="viewcode-back" href="../../../../persistence.html#taskflow.persistence.backends.impl_memory.FakeFilesystem.ls_r">[docs]</a>    <span class="k">def</span> <span class="nf">ls_r</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="p">,</span> <span class="n">absolute</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Return list of all children of the given path (recursively).&quot;&quot;&quot;</span>
+        <span class="n">node</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_fetch_node</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">absolute</span><span class="p">:</span>
+            <span class="n">selector_func</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_metadata_path_selector</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">selector_func</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_up_to_root_selector</span>
+        <span class="k">return</span> <span class="p">[</span><span class="n">selector_func</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">child_node</span><span class="p">)</span>
+                <span class="k">for</span> <span class="n">child_node</span> <span class="ow">in</span> <span class="n">node</span><span class="o">.</span><span class="n">bfs_iter</span><span class="p">()]</span></div>
+
+<div class="viewcode-block" id="FakeFilesystem.ls"><a class="viewcode-back" href="../../../../persistence.html#taskflow.persistence.backends.impl_memory.FakeFilesystem.ls">[docs]</a>    <span class="k">def</span> <span class="nf">ls</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="p">,</span> <span class="n">absolute</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Return list of all children of the given path (not recursive).&quot;&quot;&quot;</span>
+        <span class="n">node</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_fetch_node</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">absolute</span><span class="p">:</span>
+            <span class="n">selector_func</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_metadata_path_selector</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">selector_func</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_up_to_root_selector</span>
+        <span class="n">child_node_it</span> <span class="o">=</span> <span class="nb">iter</span><span class="p">(</span><span class="n">node</span><span class="p">)</span>
+        <span class="k">return</span> <span class="p">[</span><span class="n">selector_func</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">child_node</span><span class="p">)</span>
+                <span class="k">for</span> <span class="n">child_node</span> <span class="ow">in</span> <span class="n">child_node_it</span><span class="p">]</span></div>
+
+<div class="viewcode-block" id="FakeFilesystem.clear"><a class="viewcode-back" href="../../../../persistence.html#taskflow.persistence.backends.impl_memory.FakeFilesystem.clear">[docs]</a>    <span class="k">def</span> <span class="nf">clear</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Remove all nodes (except the root) from this filesystem.&quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_reverse_mapping</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">root_path</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_root</span><span class="p">,</span>
+        <span class="p">}</span>
+        <span class="k">for</span> <span class="n">node</span> <span class="ow">in</span> <span class="nb">list</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_root</span><span class="o">.</span><span class="n">reverse_iter</span><span class="p">()):</span>
+            <span class="n">node</span><span class="o">.</span><span class="n">disassociate</span><span class="p">()</span></div>
+
+<div class="viewcode-block" id="FakeFilesystem.delete"><a class="viewcode-back" href="../../../../persistence.html#taskflow.persistence.backends.impl_memory.FakeFilesystem.delete">[docs]</a>    <span class="k">def</span> <span class="nf">delete</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="p">,</span> <span class="n">recursive</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Deletes a node (optionally its children) from this filesystem.&quot;&quot;&quot;</span>
+        <span class="n">path</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">normpath</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
+        <span class="n">node</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_fetch_node</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="n">normalized</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">node</span> <span class="ow">is</span> <span class="bp">self</span><span class="o">.</span><span class="n">_root</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">recursive</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;Can not delete &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">_root</span><span class="o">.</span><span class="n">item</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">recursive</span><span class="p">:</span>
+            <span class="n">child_paths</span> <span class="o">=</span> <span class="p">(</span><span class="n">child</span><span class="o">.</span><span class="n">metadata</span><span class="p">[</span><span class="s1">&#39;path&#39;</span><span class="p">]</span> <span class="k">for</span> <span class="n">child</span> <span class="ow">in</span> <span class="n">node</span><span class="o">.</span><span class="n">bfs_iter</span><span class="p">())</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">node_child_count</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">child_count</span><span class="p">()</span>
+            <span class="k">if</span> <span class="n">node_child_count</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;Can not delete &#39;</span><span class="si">%s</span><span class="s2">&#39;, it has </span><span class="si">%s</span><span class="s2"> children&quot;</span>
+                                 <span class="o">%</span> <span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="n">node_child_count</span><span class="p">))</span>
+            <span class="n">child_paths</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">if</span> <span class="n">node</span> <span class="ow">is</span> <span class="bp">self</span><span class="o">.</span><span class="n">_root</span><span class="p">:</span>
+            <span class="c1"># Don&#39;t drop/pop the root...</span>
+            <span class="n">paths</span> <span class="o">=</span> <span class="n">child_paths</span>
+            <span class="n">drop_nodes</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">paths</span> <span class="o">=</span> <span class="n">itertools</span><span class="o">.</span><span class="n">chain</span><span class="p">([</span><span class="n">path</span><span class="p">],</span> <span class="n">child_paths</span><span class="p">)</span>
+            <span class="n">drop_nodes</span> <span class="o">=</span> <span class="p">[</span><span class="n">node</span><span class="p">]</span>
+        <span class="k">for</span> <span class="n">path</span> <span class="ow">in</span> <span class="n">paths</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_reverse_mapping</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="bp">None</span><span class="p">)</span>
+        <span class="k">for</span> <span class="n">node</span> <span class="ow">in</span> <span class="n">drop_nodes</span><span class="p">:</span>
+            <span class="n">node</span><span class="o">.</span><span class="n">disassociate</span><span class="p">()</span></div>
+
+    <span class="k">def</span> <span class="nf">_iter_pieces</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="p">,</span> <span class="n">include_root</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">path</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">_root</span><span class="o">.</span><span class="n">item</span><span class="p">:</span>
+            <span class="c1"># Check for this directly as the following doesn&#39;t work with</span>
+            <span class="c1"># split correctly:</span>
+            <span class="c1">#</span>
+            <span class="c1"># &gt;&gt;&gt; path = &quot;/&quot;</span>
+            <span class="c1"># path.split(pp.sep)</span>
+            <span class="c1"># [&#39;&#39;, &#39;&#39;]</span>
+            <span class="n">parts</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">parts</span> <span class="o">=</span> <span class="n">path</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="n">pp</span><span class="o">.</span><span class="n">sep</span><span class="p">)[</span><span class="mi">1</span><span class="p">:]</span>
+        <span class="k">if</span> <span class="n">include_root</span><span class="p">:</span>
+            <span class="n">parts</span><span class="o">.</span><span class="n">insert</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_root</span><span class="o">.</span><span class="n">item</span><span class="p">)</span>
+        <span class="k">for</span> <span class="n">piece</span> <span class="ow">in</span> <span class="n">parts</span><span class="p">:</span>
+            <span class="k">yield</span> <span class="n">piece</span>
+
+    <span class="k">def</span> <span class="fm">__delitem__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">delete</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="n">recursive</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span> <span class="nf">_stringify_node</span><span class="p">(</span><span class="n">node</span><span class="p">):</span>
+        <span class="k">if</span> <span class="s1">&#39;target&#39;</span> <span class="ow">in</span> <span class="n">node</span><span class="o">.</span><span class="n">metadata</span><span class="p">:</span>
+            <span class="k">return</span> <span class="s2">&quot;</span><span class="si">%s</span><span class="s2"> (link to </span><span class="si">%s</span><span class="s2">)&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">item</span><span class="p">,</span> <span class="n">node</span><span class="o">.</span><span class="n">metadata</span><span class="p">[</span><span class="s1">&#39;target&#39;</span><span class="p">])</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">six</span><span class="o">.</span><span class="n">text_type</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">item</span><span class="p">)</span>
+
+<div class="viewcode-block" id="FakeFilesystem.pformat"><a class="viewcode-back" href="../../../../persistence.html#taskflow.persistence.backends.impl_memory.FakeFilesystem.pformat">[docs]</a>    <span class="k">def</span> <span class="nf">pformat</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Pretty format this in-memory filesystem.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_root</span><span class="o">.</span><span class="n">pformat</span><span class="p">(</span><span class="n">stringify_node</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_stringify_node</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="FakeFilesystem.symlink"><a class="viewcode-back" href="../../../../persistence.html#taskflow.persistence.backends.impl_memory.FakeFilesystem.symlink">[docs]</a>    <span class="k">def</span> <span class="nf">symlink</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">src_path</span><span class="p">,</span> <span class="n">dest_path</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Link the destionation path to the source path.&quot;&quot;&quot;</span>
+        <span class="n">dest_path</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">normpath</span><span class="p">(</span><span class="n">dest_path</span><span class="p">)</span>
+        <span class="n">src_path</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">normpath</span><span class="p">(</span><span class="n">src_path</span><span class="p">)</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">dest_node</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_fetch_node</span><span class="p">(</span><span class="n">dest_path</span><span class="p">,</span> <span class="n">normalized</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">exc</span><span class="o">.</span><span class="n">NotFound</span><span class="p">:</span>
+            <span class="n">parent_path</span><span class="p">,</span> <span class="n">basename</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="n">dest_path</span><span class="p">)</span>
+            <span class="n">parent_node</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_fetch_node</span><span class="p">(</span><span class="n">parent_path</span><span class="p">,</span> <span class="n">normalized</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+            <span class="n">dest_node</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_insert_child</span><span class="p">(</span><span class="n">parent_node</span><span class="p">,</span> <span class="n">basename</span><span class="p">)</span>
+        <span class="n">dest_node</span><span class="o">.</span><span class="n">metadata</span><span class="p">[</span><span class="s1">&#39;target&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">src_path</span></div>
+
+    <span class="k">def</span> <span class="fm">__getitem__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_item</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">normpath</span><span class="p">(</span><span class="n">path</span><span class="p">))</span>
+
+    <span class="k">def</span> <span class="fm">__setitem__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="p">,</span> <span class="n">value</span><span class="p">):</span>
+        <span class="n">path</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">normpath</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
+        <span class="n">value</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_copier</span><span class="p">(</span><span class="n">value</span><span class="p">)</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">node</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_fetch_node</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="n">normalized</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+            <span class="n">node</span><span class="o">.</span><span class="n">metadata</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">value</span><span class="o">=</span><span class="n">value</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">exc</span><span class="o">.</span><span class="n">NotFound</span><span class="p">:</span>
+            <span class="n">parent_path</span><span class="p">,</span> <span class="n">basename</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
+            <span class="n">parent_node</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_fetch_node</span><span class="p">(</span><span class="n">parent_path</span><span class="p">,</span> <span class="n">normalized</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_insert_child</span><span class="p">(</span><span class="n">parent_node</span><span class="p">,</span> <span class="n">basename</span><span class="p">,</span> <span class="n">value</span><span class="o">=</span><span class="n">value</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="MemoryBackend"><a class="viewcode-back" href="../../../../persistence.html#taskflow.persistence.backends.impl_memory.MemoryBackend">[docs]</a><span class="k">class</span> <span class="nc">MemoryBackend</span><span class="p">(</span><span class="n">path_based</span><span class="o">.</span><span class="n">PathBasedBackend</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A in-memory (non-persistent) backend.</span>
+
+<span class="sd">    This backend writes logbooks, flow details, and atom details to a</span>
+<span class="sd">    in-memory filesystem-like structure (rooted by the ``memory``</span>
+<span class="sd">    instance variable).</span>
+
+<span class="sd">    This backend does *not* provide true transactional semantics. It does</span>
+<span class="sd">    guarantee that there will be no inter-thread race conditions when</span>
+<span class="sd">    writing and reading by using a read/write locks.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="c1">#: Default path used when none is provided.</span>
+    <span class="n">DEFAULT_PATH</span> <span class="o">=</span> <span class="n">pp</span><span class="o">.</span><span class="n">sep</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">conf</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">MemoryBackend</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">conf</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">memory</span> <span class="o">=</span> <span class="n">FakeFilesystem</span><span class="p">(</span><span class="n">deep_copy</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_conf</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;deep_copy&#39;</span><span class="p">,</span>
+                                                              <span class="bp">True</span><span class="p">))</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">lock</span> <span class="o">=</span> <span class="n">fasteners</span><span class="o">.</span><span class="n">ReaderWriterLock</span><span class="p">()</span>
+
+    <span class="k">def</span> <span class="nf">get_connection</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">Connection</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">close</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">pass</span></div>
+
+
+<span class="k">class</span> <span class="nc">Connection</span><span class="p">(</span><span class="n">path_based</span><span class="o">.</span><span class="n">PathBasedConnection</span><span class="p">):</span>
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">backend</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">Connection</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">backend</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">upgrade</span><span class="p">()</span>
+
+    <span class="nd">@contextlib.contextmanager</span>
+    <span class="k">def</span> <span class="nf">_memory_lock</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">write</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">write</span><span class="p">:</span>
+            <span class="n">lock</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">backend</span><span class="o">.</span><span class="n">lock</span><span class="o">.</span><span class="n">write_lock</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">lock</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">backend</span><span class="o">.</span><span class="n">lock</span><span class="o">.</span><span class="n">read_lock</span>
+        <span class="k">with</span> <span class="n">lock</span><span class="p">():</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="k">yield</span>
+            <span class="k">except</span> <span class="n">exc</span><span class="o">.</span><span class="n">TaskFlowException</span><span class="p">:</span>
+                <span class="k">raise</span>
+            <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+                <span class="n">exc</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">exc</span><span class="o">.</span><span class="n">StorageFailure</span><span class="p">,</span>
+                                     <span class="s2">&quot;Storage backend internal error&quot;</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_join_path</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">parts</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">pp</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="o">*</span><span class="n">parts</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_get_item</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="p">):</span>
+        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_memory_lock</span><span class="p">():</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">backend</span><span class="o">.</span><span class="n">memory</span><span class="p">[</span><span class="n">path</span><span class="p">]</span>
+
+    <span class="k">def</span> <span class="nf">_set_item</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="p">,</span> <span class="n">value</span><span class="p">,</span> <span class="n">transaction</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">backend</span><span class="o">.</span><span class="n">memory</span><span class="p">[</span><span class="n">path</span><span class="p">]</span> <span class="o">=</span> <span class="n">value</span>
+
+    <span class="k">def</span> <span class="nf">_del_tree</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="p">,</span> <span class="n">transaction</span><span class="p">):</span>
+        <span class="k">del</span> <span class="bp">self</span><span class="o">.</span><span class="n">backend</span><span class="o">.</span><span class="n">memory</span><span class="p">[</span><span class="n">path</span><span class="p">]</span>
+
+    <span class="k">def</span> <span class="nf">_get_children</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="p">):</span>
+        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_memory_lock</span><span class="p">():</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">backend</span><span class="o">.</span><span class="n">memory</span><span class="o">.</span><span class="n">ls</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_ensure_path</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="p">):</span>
+        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_memory_lock</span><span class="p">(</span><span class="n">write</span><span class="o">=</span><span class="bp">True</span><span class="p">):</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">backend</span><span class="o">.</span><span class="n">memory</span><span class="o">.</span><span class="n">ensure_path</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_create_link</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">src_path</span><span class="p">,</span> <span class="n">dest_path</span><span class="p">,</span> <span class="n">transaction</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">backend</span><span class="o">.</span><span class="n">memory</span><span class="o">.</span><span class="n">symlink</span><span class="p">(</span><span class="n">src_path</span><span class="p">,</span> <span class="n">dest_path</span><span class="p">)</span>
+
+    <span class="nd">@contextlib.contextmanager</span>
+    <span class="k">def</span> <span class="nf">_transaction</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;This just wraps a global write-lock.&quot;&quot;&quot;</span>
+        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_memory_lock</span><span class="p">(</span><span class="n">write</span><span class="o">=</span><span class="bp">True</span><span class="p">):</span>
+            <span class="k">yield</span>
+
+    <span class="k">def</span> <span class="nf">validate</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">pass</span>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+  <h3>Navigation</h3>
+  <ul>
+
+    <li><a href="../../../../index.html">Table Of Contents</a></li>
+
+
+
+  </ul>
+
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/taskflow
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../../../index.html">TaskFlow 2.9.1.dev9 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../../../index.html" >Module code</a> &raquo;</li>
+          <li class="nav-item nav-item-2"><a href="../backends.html" accesskey="U">taskflow.persistence.backends</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2017, OpenStack Foundation.
+      Last updated on &#39;Fri Feb 10 20:11:17 2017, commit 643495f&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/TaskFlow");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

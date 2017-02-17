@@ -1,0 +1,347 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Swift Plugin Guide &mdash; searchlight 2.0.0.0rc2.dev8 documentation</title>
+    
+    <link rel="stylesheet" href="../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../',
+        VERSION:     '2.0.0.0rc2.dev8',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../_static/jquery.js"></script>
+    <script type="text/javascript" src="../_static/underscore.js"></script>
+    <script type="text/javascript" src="../_static/doctools.js"></script>
+    <link rel="top" title="searchlight 2.0.0.0rc2.dev8 documentation" href="../index.html" />
+    <link rel="up" title="Searchlight Indexing" href="../indexingservice.html" />
+    <link rel="next" title="Keystone Authentication" href="../authentication.html" />
+    <link rel="prev" title="Nova Plugin Guide" href="nova.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="swift-plugin-guide">
+<h1>Swift Plugin Guide<a class="headerlink" href="#swift-plugin-guide" title="Permalink to this headline">¶</a></h1>
+<p>WARNING: The Swift plugin is currently EXPERIMENTAL as incremental indexing is
+only provided via an experimental OSLO messaging middleware patch while
+other indexing methodologies are explored for Swift.
+See <a class="reference internal" href="#proxy-server-conf"><span>proxy-server.conf</span></a> for additional information.</p>
+<p>Integration is provided via a plugin. There are multiple configuration
+settings required for proper indexing and incremental updates. Some of the
+settings are specified in Searchlight configuration files. Others are
+provided in Swift configuration files.</p>
+<div class="section" id="swift-configuration">
+<h2>Swift Configuration<a class="headerlink" href="#swift-configuration" title="Permalink to this headline">¶</a></h2>
+<div class="section" id="reseller-admin-role">
+<h3>reseller_admin_role<a class="headerlink" href="#reseller-admin-role" title="Permalink to this headline">¶</a></h3>
+<p>Users with the Keystone role defined in <cite>reseller_admin_role</cite> (<cite>ResellerAdmin</cite>
+by default) can operate on any account. The auth system sets the request
+context variable <cite>reseller_request</cite> to True if a request is coming from a user
+with this role.</p>
+<p>Searchlight needs this role for its service user to access all of the swift
+accounts during initial indexing. The <cite>searchlight</cite> user and <cite>service</cite> project
+being referred to here are defined in the <cite>service_credentials</cite> section of
+<cite>searchlight.conf</cite> file. If any of the Swift plugins are enabled, this
+role must be added prior to running <cite>searchlight-manage index sync</cite>.</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>openstack role add --user searchlight --project service ResellerAdmin
+</pre></div>
+</div>
+</div>
+<div class="section" id="proxy-server-conf">
+<span id="id1"></span><h3>proxy-server.conf<a class="headerlink" href="#proxy-server-conf" title="Permalink to this headline">¶</a></h3>
+<p>Incremental indexing for searchlight is typically provided via OSLO
+messaging. The Swift service currently doesn&#8217;t send notifications, but
+work has been started to investigate more performant ways to achieve
+indexing.  In the meantime, experimental support for providing notifications
+via middleware is provided in the following patch:</p>
+<blockquote>
+<div><ul class="simple">
+<li><a class="reference external" href="https://review.openstack.org/#/c/249471">https://review.openstack.org/#/c/249471</a></li>
+</ul>
+<ol class="arabic simple">
+<li>Apply the patch to the Swift proxy server</li>
+<li>Make the below configuration changes to <cite>proxy-server.conf</cite></li>
+<li>Restart the Swift proxy server</li>
+</ol>
+</div></blockquote>
+<div class="highlight-python"><div class="highlight"><pre><span></span># Add the following new section
+[filter:oslomiddleware]
+paste.filter_factory = swift.common.middleware.oslo_notifications:filter_factory
+publisher_id = swift.localhost
+#Replace &lt;user&gt;,&lt;password&gt;,&lt;rabbitip&gt; and &lt;rabbitport&gt; for your environment values
+transport_url = rabbit://&lt;user&gt;:&lt;password&gt;@&lt;rabbitip&gt;:&lt;rabbitport&gt;/
+notification_driver = messaging
+notification_topics = notifications
+
+# Add oslomiddleware to pipeline:main
+# see example below.
+[pipeline:main]
+pipeline = catch_errors gatekeeper ...&lt;other&gt;... oslomiddleware proxy-logging proxy-server
+</pre></div>
+</div>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">Restart the swift proxy API service (s-proxy) after making changes.
+Starting in Newton, Searchlight can share the same notification topic as
+other services, because it uses a messaging pool.</p>
+</div>
+</div>
+</div>
+<div class="section" id="searchlight-configuration">
+<h2>Searchlight Configuration<a class="headerlink" href="#searchlight-configuration" title="Permalink to this headline">¶</a></h2>
+<p>Searchlight resource configuration options are shown below with their
+configuration file and default values.</p>
+<p>See <a class="reference internal" href="../plugins.html#searchlight-plugins"><span>Searchlight Plugin Documentation</span></a> for common options with their default values,
+general configuration information, and an example complete configuration.</p>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">Unless you are changing to a non-default value, you do not need to
+specify any of the following configuration options. After enabling or
+disabling a plugin you do need to restart the searchlight services
+(<cite>searchlight-api</cite> and <cite>searchlight-listener</cite>).
+After enabling a Swift plugin, you will also need to run the sync job:
+<cite>searchlight-manage index sync &#8211;type OS::Swift::Account</cite></p>
+</div>
+<div class="section" id="searchlight-conf">
+<h3>searchlight.conf<a class="headerlink" href="#searchlight-conf" title="Permalink to this headline">¶</a></h3>
+<div class="section" id="plugin-os-swift-account">
+<h4>Plugin: OS::Swift::Account<a class="headerlink" href="#plugin-os-swift-account" title="Permalink to this headline">¶</a></h4>
+<div class="highlight-python"><div class="highlight"><pre><span></span>[resource_plugin:os_swift_account]
+enabled = true
+resource_group_name = searchlight
+# Specify same value as in swift proxy-server.conf for reseller_prefix
+reseller_prefix = AUTH_
+</pre></div>
+</div>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last"><cite>os_swift_account</cite> is disabled by default. You need to explicitly
+set enabled = True as shown above.</p>
+</div>
+</div>
+<div class="section" id="plugin-os-swift-container">
+<h4>Plugin: OS::Swift::Container<a class="headerlink" href="#plugin-os-swift-container" title="Permalink to this headline">¶</a></h4>
+<div class="highlight-python"><div class="highlight"><pre><span></span>[resource_plugin:os_swift_container]
+enabled = true
+resource_group_name = searchlight
+</pre></div>
+</div>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last"><cite>os_swift_container</cite> is disabled by default. You need to explicitly
+set enabled = True as shown above.</p>
+</div>
+</div>
+<div class="section" id="plugin-os-swift-object">
+<h4>Plugin: OS::Swift::Object<a class="headerlink" href="#plugin-os-swift-object" title="Permalink to this headline">¶</a></h4>
+<div class="highlight-python"><div class="highlight"><pre><span></span>[resource_plugin:os_swift_object]
+enabled = true
+resource_group_name = searchlight
+</pre></div>
+</div>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last"><cite>os_swift_object</cite> is disabled by default. You need to explicitly
+set enabled = True as shown above.</p>
+</div>
+</div>
+</div>
+<div class="section" id="local-conf-devstack">
+<h3>local.conf (devstack)<a class="headerlink" href="#local-conf-devstack" title="Permalink to this headline">¶</a></h3>
+<p>At this time we recommend that you manually enable the Searchlight plugins
+and middleware for Swift after devstack has completed stacking. Please
+follow the instructions above.</p>
+</div>
+</div>
+<div class="section" id="release-notes">
+<h2>Release Notes<a class="headerlink" href="#release-notes" title="Permalink to this headline">¶</a></h2>
+<div class="section" id="mitaka">
+<h3>0.2.0.0 (Mitaka)<a class="headerlink" href="#mitaka" title="Permalink to this headline">¶</a></h3>
+<p>Notifications must be configured properly for searchlight to process
+incremental updates. Searchlight must use its own topic. Use the following:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="n">notification_driver</span> <span class="o">=</span> <span class="n">messaging</span>
+<span class="n">notification_topics</span> <span class="o">=</span> <span class="n">searchlight_indexer</span>
+</pre></div>
+</div>
+<p>Large scale swift cluster support is targeted at a future release, but
+we encourage trial deployments to help us address issues as soon as possible.</p>
+<p>Swift did not generate notifications for account/container/object CRUD
+during the Mitaka release. This means that search results will not include
+incremental updates after the initial indexing. However, there is a patch
+available to enable notifications via oslo messaging for the Mitaka release.</p>
+<ul class="simple">
+<li><a class="reference external" href="https://review.openstack.org/#/c/249471">https://review.openstack.org/#/c/249471</a></li>
+</ul>
+<p>For devstack, the easiest way to test is:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>cd /opt/stack/swift
+git review -x 249471
+&lt;restart swift api&gt;
+</pre></div>
+</div>
+<p>Searchlight developers/installers should apply the above patch in Swift when
+using Searchlight with the Swift Mitaka release. We are working with the
+Swift team to create a supported incremental indexing methodology for future
+releases.</p>
+<p>Alternatively, you may set up a cron job to re-index swift
+account/container/objects periodically to get updated information. The
+recommendation is to use the notifications, because a full re-indexing will
+not be performant in large installations.</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>searchlight-manage index sync --type OS::Swift::Account
+</pre></div>
+</div>
+<p>The Searchlight Swift plugin resource types follow the hierarchy similar to
+Swift concepts</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>OS::Swift:Acccount(Parent)
+ -&gt; OS:Swift::Container(Child)
+   -&gt; OS::Swift::Object(Grand Child)
+</pre></div>
+</div>
+<p>which means indexing is initiated by specifying only the top parent
+(OS::Swift::Account) and that will in-turn index all the child
+plugins(Container and Object)</p>
+<p>Searchlight is adding indexing isolation in the Newton release via a concept
+called resource group isolation. This will better support re-indexing
+scalability.</p>
+<p>Additional properties can be similarly protected with the <cite>admin_only_fields</cite>
+under each plugin&#8217;s configuration section. Glob-like patterns are supported.
+For instance:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>[resource_plugin:os_swift_object]
+admin_only_fields=x-meta-admin*
+</pre></div>
+</div>
+</div>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="../index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Swift Plugin Guide</a><ul>
+<li><a class="reference internal" href="#swift-configuration">Swift Configuration</a><ul>
+<li><a class="reference internal" href="#reseller-admin-role">reseller_admin_role</a></li>
+<li><a class="reference internal" href="#proxy-server-conf">proxy-server.conf</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#searchlight-configuration">Searchlight Configuration</a><ul>
+<li><a class="reference internal" href="#searchlight-conf">searchlight.conf</a><ul>
+<li><a class="reference internal" href="#plugin-os-swift-account">Plugin: OS::Swift::Account</a></li>
+<li><a class="reference internal" href="#plugin-os-swift-container">Plugin: OS::Swift::Container</a></li>
+<li><a class="reference internal" href="#plugin-os-swift-object">Plugin: OS::Swift::Object</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#local-conf-devstack">local.conf (devstack)</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#release-notes">Release Notes</a><ul>
+<li><a class="reference internal" href="#mitaka">0.2.0.0 (Mitaka)</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="nova.html"
+                                  title="previous chapter">Nova Plugin Guide</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="../authentication.html"
+                                  title="next chapter">Keystone Authentication</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/searchlight
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="../_sources/plugins/swift.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../authentication.html" title="Keystone Authentication"
+             accesskey="N">next</a></li>
+        <li class="right" >
+          <a href="nova.html" title="Nova Plugin Guide"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../index.html">searchlight 2.0.0.0rc2.dev8 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../indexingservice.html" accesskey="U">Searchlight Indexing</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2010-2015, OpenStack Foundation..
+      Last updated on &#39;Thu Feb 9 15:23:46 2017, commit 40ee622&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/searchlight");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

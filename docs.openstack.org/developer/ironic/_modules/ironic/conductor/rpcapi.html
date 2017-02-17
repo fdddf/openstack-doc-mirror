@@ -1,0 +1,1057 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>ironic.conductor.rpcapi &mdash; Ironic 7.0.1.dev7 documentation</title>
+    
+    <link rel="stylesheet" href="../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../_static/toggle.css" type="text/css" />
+    <link rel="stylesheet" href="../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../',
+        VERSION:     '7.0.1.dev7',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../_static/doctools.js"></script>
+    <script type="text/javascript" src="../../../_static/toggle.js"></script>
+    <link rel="top" title="Ironic 7.0.1.dev7 documentation" href="../../../index.html" />
+    <link rel="up" title="Module code" href="../../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for ironic.conductor.rpcapi</h1><div class="highlight"><pre>
+<span></span><span class="c1"># coding=utf-8</span>
+
+<span class="c1"># Copyright 2013 Hewlett-Packard Development Company, L.P.</span>
+<span class="c1"># All Rights Reserved.</span>
+<span class="c1">#</span>
+<span class="c1">#    Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may</span>
+<span class="c1">#    not use this file except in compliance with the License. You may obtain</span>
+<span class="c1">#    a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#         http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1">#    Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1">#    distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="c1">#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="c1">#    License for the specific language governing permissions and limitations</span>
+<span class="c1">#    under the License.</span>
+<span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">Client side of the conductor RPC API.</span>
+<span class="sd">&quot;&quot;&quot;</span>
+
+<span class="kn">import</span> <span class="nn">random</span>
+
+<span class="kn">import</span> <span class="nn">oslo_messaging</span> <span class="kn">as</span> <span class="nn">messaging</span>
+
+<span class="kn">from</span> <span class="nn">ironic.common</span> <span class="kn">import</span> <span class="n">exception</span>
+<span class="kn">from</span> <span class="nn">ironic.common</span> <span class="kn">import</span> <span class="n">hash_ring</span>
+<span class="kn">from</span> <span class="nn">ironic.common.i18n</span> <span class="kn">import</span> <span class="n">_</span>
+<span class="kn">from</span> <span class="nn">ironic.common</span> <span class="kn">import</span> <span class="n">rpc</span>
+<span class="kn">from</span> <span class="nn">ironic.conductor</span> <span class="kn">import</span> <span class="n">manager</span>
+<span class="kn">from</span> <span class="nn">ironic.conf</span> <span class="kn">import</span> <span class="n">CONF</span>
+<span class="kn">from</span> <span class="nn">ironic.objects</span> <span class="kn">import</span> <span class="n">base</span> <span class="k">as</span> <span class="n">objects_base</span>
+
+
+<div class="viewcode-block" id="ConductorAPI"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI">[docs]</a><span class="k">class</span> <span class="nc">ConductorAPI</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Client side of the conductor RPC API.</span>
+
+<span class="sd">    API version history:</span>
+
+<span class="sd">    |    1.0 - Initial version.</span>
+<span class="sd">    |          Included get_node_power_status</span>
+<span class="sd">    |    1.1 - Added update_node and start_power_state_change.</span>
+<span class="sd">    |    1.2 - Added vendor_passthru.</span>
+<span class="sd">    |    1.3 - Rename start_power_state_change to change_node_power_state.</span>
+<span class="sd">    |    1.4 - Added do_node_deploy and do_node_tear_down.</span>
+<span class="sd">    |    1.5 - Added validate_driver_interfaces.</span>
+<span class="sd">    |    1.6 - change_node_power_state, do_node_deploy and do_node_tear_down</span>
+<span class="sd">    |          accept node id instead of node object.</span>
+<span class="sd">    |    1.7 - Added topic parameter to RPC methods.</span>
+<span class="sd">    |    1.8 - Added change_node_maintenance_mode.</span>
+<span class="sd">    |    1.9 - Added destroy_node.</span>
+<span class="sd">    |    1.10 - Remove get_node_power_state</span>
+<span class="sd">    |    1.11 - Added get_console_information, set_console_mode.</span>
+<span class="sd">    |    1.12 - validate_vendor_action, do_vendor_action replaced by single</span>
+<span class="sd">    |          vendor_passthru method.</span>
+<span class="sd">    |    1.13 - Added update_port.</span>
+<span class="sd">    |    1.14 - Added driver_vendor_passthru.</span>
+<span class="sd">    |    1.15 - Added rebuild parameter to do_node_deploy.</span>
+<span class="sd">    |    1.16 - Added get_driver_properties.</span>
+<span class="sd">    |    1.17 - Added set_boot_device, get_boot_device and</span>
+<span class="sd">    |          get_supported_boot_devices.</span>
+<span class="sd">    |    1.18 - Remove change_node_maintenance_mode.</span>
+<span class="sd">    |    1.19 - Change return value of vendor_passthru and</span>
+<span class="sd">    |           driver_vendor_passthru</span>
+<span class="sd">    |    1.20 - Added http_method parameter to vendor_passthru and</span>
+<span class="sd">    |           driver_vendor_passthru</span>
+<span class="sd">    |    1.21 - Added get_node_vendor_passthru_methods and</span>
+<span class="sd">    |           get_driver_vendor_passthru_methods</span>
+<span class="sd">    |    1.22 - Added configdrive parameter to do_node_deploy.</span>
+<span class="sd">    |    1.23 - Added do_provisioning_action</span>
+<span class="sd">    |    1.24 - Added inspect_hardware method</span>
+<span class="sd">    |    1.25 - Added destroy_port</span>
+<span class="sd">    |    1.26 - Added continue_node_clean</span>
+<span class="sd">    |    1.27 - Convert continue_node_clean to cast</span>
+<span class="sd">    |    1.28 - Change exceptions raised by destroy_node</span>
+<span class="sd">    |    1.29 - Change return value of vendor_passthru and</span>
+<span class="sd">    |           driver_vendor_passthru to a dictionary</span>
+<span class="sd">    |    1.30 - Added set_target_raid_config and</span>
+<span class="sd">    |           get_raid_logical_disk_properties</span>
+<span class="sd">    |    1.31 - Added Versioned Objects indirection API methods:</span>
+<span class="sd">    |           object_class_action_versions, object_action and</span>
+<span class="sd">    |           object_backport_versions</span>
+<span class="sd">    |    1.32 - Add do_node_clean</span>
+<span class="sd">    |    1.33 - Added update and destroy portgroup.</span>
+<span class="sd">    |    1.34 - Added heartbeat</span>
+<span class="sd">    |    1.35 - Added destroy_volume_connector and update_volume_connector</span>
+<span class="sd">    |    1.36 - Added create_node</span>
+<span class="sd">    |    1.37 - Added destroy_volume_target and update_volume_target</span>
+<span class="sd">    |    1.38 - Added vif_attach, vif_detach, vif_list</span>
+<span class="sd">    |    1.39 - Added timeout optional parameter to change_node_power_state</span>
+<span class="sd">    |    1.40 - Added inject_nmi</span>
+
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="c1"># NOTE(rloo): This must be in sync with manager.ConductorManager&#39;s.</span>
+    <span class="n">RPC_API_VERSION</span> <span class="o">=</span> <span class="s1">&#39;1.40&#39;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">topic</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">ConductorAPI</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">topic</span> <span class="o">=</span> <span class="n">topic</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">topic</span> <span class="o">=</span> <span class="n">manager</span><span class="o">.</span><span class="n">MANAGER_TOPIC</span>
+
+        <span class="n">target</span> <span class="o">=</span> <span class="n">messaging</span><span class="o">.</span><span class="n">Target</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span>
+                                  <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.0&#39;</span><span class="p">)</span>
+        <span class="n">serializer</span> <span class="o">=</span> <span class="n">objects_base</span><span class="o">.</span><span class="n">IronicObjectSerializer</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">client</span> <span class="o">=</span> <span class="n">rpc</span><span class="o">.</span><span class="n">get_client</span><span class="p">(</span><span class="n">target</span><span class="p">,</span>
+                                     <span class="n">version_cap</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">RPC_API_VERSION</span><span class="p">,</span>
+                                     <span class="n">serializer</span><span class="o">=</span><span class="n">serializer</span><span class="p">)</span>
+        <span class="c1"># NOTE(deva): this is going to be buggy</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">ring_manager</span> <span class="o">=</span> <span class="n">hash_ring</span><span class="o">.</span><span class="n">HashRingManager</span><span class="p">()</span>
+
+<div class="viewcode-block" id="ConductorAPI.get_topic_for"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.get_topic_for">[docs]</a>    <span class="k">def</span> <span class="nf">get_topic_for</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">node</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get the RPC topic for the conductor service the node is mapped to.</span>
+
+<span class="sd">        :param node: a node object.</span>
+<span class="sd">        :returns: an RPC topic string.</span>
+<span class="sd">        :raises: NoValidHost</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">ring_manager</span><span class="o">.</span><span class="n">reset</span><span class="p">()</span>
+
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">ring</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">ring_manager</span><span class="p">[</span><span class="n">node</span><span class="o">.</span><span class="n">driver</span><span class="p">]</span>
+            <span class="n">dest</span> <span class="o">=</span> <span class="n">ring</span><span class="o">.</span><span class="n">get_nodes</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="o">.</span><span class="n">encode</span><span class="p">(</span><span class="s1">&#39;utf-8&#39;</span><span class="p">),</span>
+                                  <span class="n">replicas</span><span class="o">=</span><span class="n">CONF</span><span class="o">.</span><span class="n">hash_distribution_replicas</span><span class="p">)</span>
+            <span class="k">return</span> <span class="s1">&#39;</span><span class="si">%s</span><span class="s1">.</span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">dest</span><span class="o">.</span><span class="n">pop</span><span class="p">())</span>
+        <span class="k">except</span> <span class="n">exception</span><span class="o">.</span><span class="n">DriverNotFound</span><span class="p">:</span>
+            <span class="n">reason</span> <span class="o">=</span> <span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;No conductor service registered which supports &#39;</span>
+                        <span class="s1">&#39;driver </span><span class="si">%s</span><span class="s1">.&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="n">node</span><span class="o">.</span><span class="n">driver</span><span class="p">)</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">NoValidHost</span><span class="p">(</span><span class="n">reason</span><span class="o">=</span><span class="n">reason</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.get_topic_for_driver"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.get_topic_for_driver">[docs]</a>    <span class="k">def</span> <span class="nf">get_topic_for_driver</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">driver_name</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get RPC topic name for a conductor supporting the given driver.</span>
+
+<span class="sd">        The topic is used to route messages to the conductor supporting</span>
+<span class="sd">        the specified driver. A conductor is selected at random from the</span>
+<span class="sd">        set of qualified conductors.</span>
+
+<span class="sd">        :param driver_name: the name of the driver to route to.</span>
+<span class="sd">        :returns: an RPC topic string.</span>
+<span class="sd">        :raises: DriverNotFound</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">ring_manager</span><span class="o">.</span><span class="n">reset</span><span class="p">()</span>
+
+        <span class="n">ring</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">ring_manager</span><span class="p">[</span><span class="n">driver_name</span><span class="p">]</span>
+        <span class="n">host</span> <span class="o">=</span> <span class="n">random</span><span class="o">.</span><span class="n">choice</span><span class="p">(</span><span class="nb">list</span><span class="p">(</span><span class="n">ring</span><span class="o">.</span><span class="n">nodes</span><span class="p">))</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span> <span class="o">+</span> <span class="s2">&quot;.&quot;</span> <span class="o">+</span> <span class="n">host</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.create_node"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.create_node">[docs]</a>    <span class="k">def</span> <span class="nf">create_node</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">node_obj</span><span class="p">,</span> <span class="n">topic</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Synchronously, have a conductor validate and create a node.</span>
+
+<span class="sd">        Create the node&#39;s information in the database and return a node object.</span>
+
+<span class="sd">        :param context: request context.</span>
+<span class="sd">        :param node_obj: a created (but not saved) node object.</span>
+<span class="sd">        :param topic: RPC topic. Defaults to self.topic.</span>
+<span class="sd">        :returns: created node object.</span>
+<span class="sd">        :raises: InterfaceNotFoundInEntrypoint if validation fails for any</span>
+<span class="sd">                 dynamic interfaces (e.g. network_interface).</span>
+<span class="sd">        :raises: NoValidDefaultForInterface if no default can be calculated</span>
+<span class="sd">                 for some interfaces, and explicit values must be provided.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="n">topic</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.36&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;create_node&#39;</span><span class="p">,</span> <span class="n">node_obj</span><span class="o">=</span><span class="n">node_obj</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.update_node"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.update_node">[docs]</a>    <span class="k">def</span> <span class="nf">update_node</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">node_obj</span><span class="p">,</span> <span class="n">topic</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Synchronously, have a conductor update the node&#39;s information.</span>
+
+<span class="sd">        Update the node&#39;s information in the database and return a node object.</span>
+<span class="sd">        The conductor will lock the node while it validates the supplied</span>
+<span class="sd">        information. If driver_info is passed, it will be validated by</span>
+<span class="sd">        the core drivers. If instance_uuid is passed, it will be set or unset</span>
+<span class="sd">        only if the node is properly configured.</span>
+
+<span class="sd">        Note that power_state should not be passed via this method.</span>
+<span class="sd">        Use change_node_power_state for initiating driver actions.</span>
+
+<span class="sd">        :param context: request context.</span>
+<span class="sd">        :param node_obj: a changed (but not saved) node object.</span>
+<span class="sd">        :param topic: RPC topic. Defaults to self.topic.</span>
+<span class="sd">        :returns: updated node object, including all fields.</span>
+<span class="sd">        :raises: NoValidDefaultForInterface if no default can be calculated</span>
+<span class="sd">                 for some interfaces, and explicit values must be provided.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="n">topic</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.1&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;update_node&#39;</span><span class="p">,</span> <span class="n">node_obj</span><span class="o">=</span><span class="n">node_obj</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.change_node_power_state"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.change_node_power_state">[docs]</a>    <span class="k">def</span> <span class="nf">change_node_power_state</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">node_id</span><span class="p">,</span> <span class="n">new_state</span><span class="p">,</span>
+                                <span class="n">topic</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Change a node&#39;s power state.</span>
+
+<span class="sd">        Synchronously, acquire lock and start the conductor background task</span>
+<span class="sd">        to change power state of a node.</span>
+
+<span class="sd">        :param context: request context.</span>
+<span class="sd">        :param node_id: node id or uuid.</span>
+<span class="sd">        :param new_state: one of ironic.common.states power state values</span>
+<span class="sd">        :param timeout: timeout (in seconds) positive integer (&gt; 0) for any</span>
+<span class="sd">           power state. ``None`` indicates to use default timeout.</span>
+<span class="sd">        :param topic: RPC topic. Defaults to self.topic.</span>
+<span class="sd">        :raises: NoFreeConductorWorker when there is no free worker to start</span>
+<span class="sd">                 async task.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="n">topic</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.39&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;change_node_power_state&#39;</span><span class="p">,</span> <span class="n">node_id</span><span class="o">=</span><span class="n">node_id</span><span class="p">,</span>
+                          <span class="n">new_state</span><span class="o">=</span><span class="n">new_state</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.vendor_passthru"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.vendor_passthru">[docs]</a>    <span class="k">def</span> <span class="nf">vendor_passthru</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">node_id</span><span class="p">,</span> <span class="n">driver_method</span><span class="p">,</span> <span class="n">http_method</span><span class="p">,</span>
+                        <span class="n">info</span><span class="p">,</span> <span class="n">topic</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Receive requests for vendor-specific actions.</span>
+
+<span class="sd">        Synchronously validate driver specific info or get driver status,</span>
+<span class="sd">        and if successful invokes the vendor method. If the method mode</span>
+<span class="sd">        is async the conductor will start background worker to perform</span>
+<span class="sd">        vendor action.</span>
+
+<span class="sd">        :param context: request context.</span>
+<span class="sd">        :param node_id: node id or uuid.</span>
+<span class="sd">        :param driver_method: name of method for driver.</span>
+<span class="sd">        :param http_method: the HTTP method used for the request.</span>
+<span class="sd">        :param info: info for node driver.</span>
+<span class="sd">        :param topic: RPC topic. Defaults to self.topic.</span>
+<span class="sd">        :raises: InvalidParameterValue if supplied info is not valid.</span>
+<span class="sd">        :raises: MissingParameterValue if a required parameter is missing</span>
+<span class="sd">        :raises: UnsupportedDriverExtension if current driver does not have</span>
+<span class="sd">                 vendor interface.</span>
+<span class="sd">        :raises: NoFreeConductorWorker when there is no free worker to start</span>
+<span class="sd">                 async task.</span>
+<span class="sd">        :raises: NodeLocked if node is locked by another conductor.</span>
+<span class="sd">        :returns: A dictionary containing:</span>
+
+<span class="sd">            :return: The response of the invoked vendor method</span>
+<span class="sd">            :async: Boolean value. Whether the method was invoked</span>
+<span class="sd">                asynchronously (True) or synchronously (False). When invoked</span>
+<span class="sd">                asynchronously the response will be always None.</span>
+<span class="sd">            :attach: Boolean value. Whether to attach the response of</span>
+<span class="sd">                the invoked vendor method to the HTTP response object (True)</span>
+<span class="sd">                or return it in the response body (False).</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="n">topic</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.20&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;vendor_passthru&#39;</span><span class="p">,</span> <span class="n">node_id</span><span class="o">=</span><span class="n">node_id</span><span class="p">,</span>
+                          <span class="n">driver_method</span><span class="o">=</span><span class="n">driver_method</span><span class="p">,</span>
+                          <span class="n">http_method</span><span class="o">=</span><span class="n">http_method</span><span class="p">,</span>
+                          <span class="n">info</span><span class="o">=</span><span class="n">info</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.driver_vendor_passthru"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.driver_vendor_passthru">[docs]</a>    <span class="k">def</span> <span class="nf">driver_vendor_passthru</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">driver_name</span><span class="p">,</span> <span class="n">driver_method</span><span class="p">,</span>
+                               <span class="n">http_method</span><span class="p">,</span> <span class="n">info</span><span class="p">,</span> <span class="n">topic</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Pass vendor-specific calls which don&#39;t specify a node to a driver.</span>
+
+<span class="sd">        Handles driver-level vendor passthru calls. These calls don&#39;t</span>
+<span class="sd">        require a node UUID and are executed on a random conductor with</span>
+<span class="sd">        the specified driver. If the method mode is async the conductor</span>
+<span class="sd">        will start background worker to perform vendor action.</span>
+
+<span class="sd">        :param context: request context.</span>
+<span class="sd">        :param driver_name: name of the driver on which to call the method.</span>
+<span class="sd">        :param driver_method: name of the vendor method, for use by the driver.</span>
+<span class="sd">        :param http_method: the HTTP method used for the request.</span>
+<span class="sd">        :param info: data to pass through to the driver.</span>
+<span class="sd">        :param topic: RPC topic. Defaults to self.topic.</span>
+<span class="sd">        :raises: InvalidParameterValue for parameter errors.</span>
+<span class="sd">        :raises: MissingParameterValue if a required parameter is missing</span>
+<span class="sd">        :raises: UnsupportedDriverExtension if the driver doesn&#39;t have a vendor</span>
+<span class="sd">                 interface, or if the vendor interface does not support the</span>
+<span class="sd">                 specified driver_method.</span>
+<span class="sd">        :raises: DriverNotFound if the supplied driver is not loaded.</span>
+<span class="sd">        :raises: NoFreeConductorWorker when there is no free worker to start</span>
+<span class="sd">                 async task.</span>
+<span class="sd">        :raises: InterfaceNotFoundInEntrypoint if the default interface for a</span>
+<span class="sd">                 hardware type is invalid.</span>
+<span class="sd">        :raises: NoValidDefaultForInterface if no default interface</span>
+<span class="sd">                 implementation can be found for this driver&#39;s vendor</span>
+<span class="sd">                 interface.</span>
+<span class="sd">        :returns: A dictionary containing:</span>
+
+<span class="sd">            :return: The response of the invoked vendor method</span>
+<span class="sd">            :async: Boolean value. Whether the method was invoked</span>
+<span class="sd">                asynchronously (True) or synchronously (False). When invoked</span>
+<span class="sd">                asynchronously the response will be always None.</span>
+<span class="sd">            :attach: Boolean value. Whether to attach the response of</span>
+<span class="sd">                the invoked vendor method to the HTTP response object (True)</span>
+<span class="sd">                or return it in the response body (False).</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="n">topic</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.20&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;driver_vendor_passthru&#39;</span><span class="p">,</span>
+                          <span class="n">driver_name</span><span class="o">=</span><span class="n">driver_name</span><span class="p">,</span>
+                          <span class="n">driver_method</span><span class="o">=</span><span class="n">driver_method</span><span class="p">,</span>
+                          <span class="n">http_method</span><span class="o">=</span><span class="n">http_method</span><span class="p">,</span>
+                          <span class="n">info</span><span class="o">=</span><span class="n">info</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.get_node_vendor_passthru_methods"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.get_node_vendor_passthru_methods">[docs]</a>    <span class="k">def</span> <span class="nf">get_node_vendor_passthru_methods</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">node_id</span><span class="p">,</span> <span class="n">topic</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Retrieve information about vendor methods of the given node.</span>
+
+<span class="sd">        :param context: an admin context.</span>
+<span class="sd">        :param node_id: the id or uuid of a node.</span>
+<span class="sd">        :param topic: RPC topic. Defaults to self.topic.</span>
+<span class="sd">        :returns: dictionary of &lt;method name&gt;:&lt;method metadata&gt; entries.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="n">topic</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.21&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;get_node_vendor_passthru_methods&#39;</span><span class="p">,</span>
+                          <span class="n">node_id</span><span class="o">=</span><span class="n">node_id</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.get_driver_vendor_passthru_methods"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.get_driver_vendor_passthru_methods">[docs]</a>    <span class="k">def</span> <span class="nf">get_driver_vendor_passthru_methods</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">driver_name</span><span class="p">,</span>
+                                           <span class="n">topic</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Retrieve information about vendor methods of the given driver.</span>
+
+<span class="sd">        :param context: an admin context.</span>
+<span class="sd">        :param driver_name: name of the driver.</span>
+<span class="sd">        :param topic: RPC topic. Defaults to self.topic.</span>
+<span class="sd">        :raises: UnsupportedDriverExtension if current driver does not have</span>
+<span class="sd">                 vendor interface.</span>
+<span class="sd">        :raises: DriverNotFound if the supplied driver is not loaded.</span>
+<span class="sd">        :raises: InterfaceNotFoundInEntrypoint if the default interface for a</span>
+<span class="sd">                 hardware type is invalid.</span>
+<span class="sd">        :raises: NoValidDefaultForInterface if no default interface</span>
+<span class="sd">                 implementation can be found for this driver&#39;s vendor</span>
+<span class="sd">                 interface.</span>
+<span class="sd">        :returns: dictionary of &lt;method name&gt;:&lt;method metadata&gt; entries.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="n">topic</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.21&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;get_driver_vendor_passthru_methods&#39;</span><span class="p">,</span>
+                          <span class="n">driver_name</span><span class="o">=</span><span class="n">driver_name</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.do_node_deploy"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.do_node_deploy">[docs]</a>    <span class="k">def</span> <span class="nf">do_node_deploy</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">node_id</span><span class="p">,</span> <span class="n">rebuild</span><span class="p">,</span> <span class="n">configdrive</span><span class="p">,</span>
+                       <span class="n">topic</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Signal to conductor service to perform a deployment.</span>
+
+<span class="sd">        :param context: request context.</span>
+<span class="sd">        :param node_id: node id or uuid.</span>
+<span class="sd">        :param rebuild: True if this is a rebuild request.</span>
+<span class="sd">        :param configdrive: A gzipped and base64 encoded configdrive.</span>
+<span class="sd">        :param topic: RPC topic. Defaults to self.topic.</span>
+<span class="sd">        :raises: InstanceDeployFailure</span>
+<span class="sd">        :raises: InvalidParameterValue if validation fails</span>
+<span class="sd">        :raises: MissingParameterValue if a required parameter is missing</span>
+<span class="sd">        :raises: NoFreeConductorWorker when there is no free worker to start</span>
+<span class="sd">                 async task.</span>
+
+<span class="sd">        The node must already be configured and in the appropriate</span>
+<span class="sd">        undeployed state before this method is called.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="n">topic</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.22&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;do_node_deploy&#39;</span><span class="p">,</span> <span class="n">node_id</span><span class="o">=</span><span class="n">node_id</span><span class="p">,</span>
+                          <span class="n">rebuild</span><span class="o">=</span><span class="n">rebuild</span><span class="p">,</span> <span class="n">configdrive</span><span class="o">=</span><span class="n">configdrive</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.do_node_tear_down"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.do_node_tear_down">[docs]</a>    <span class="k">def</span> <span class="nf">do_node_tear_down</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">node_id</span><span class="p">,</span> <span class="n">topic</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Signal to conductor service to tear down a deployment.</span>
+
+<span class="sd">        :param context: request context.</span>
+<span class="sd">        :param node_id: node id or uuid.</span>
+<span class="sd">        :param topic: RPC topic. Defaults to self.topic.</span>
+<span class="sd">        :raises: InstanceDeployFailure</span>
+<span class="sd">        :raises: InvalidParameterValue if validation fails</span>
+<span class="sd">        :raises: MissingParameterValue if a required parameter is missing</span>
+<span class="sd">        :raises: NoFreeConductorWorker when there is no free worker to start</span>
+<span class="sd">                 async task.</span>
+
+<span class="sd">        The node must already be configured and in the appropriate</span>
+<span class="sd">        deployed state before this method is called.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="n">topic</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.6&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;do_node_tear_down&#39;</span><span class="p">,</span> <span class="n">node_id</span><span class="o">=</span><span class="n">node_id</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.do_provisioning_action"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.do_provisioning_action">[docs]</a>    <span class="k">def</span> <span class="nf">do_provisioning_action</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">node_id</span><span class="p">,</span> <span class="n">action</span><span class="p">,</span> <span class="n">topic</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Signal to conductor service to perform the given action on a node.</span>
+
+<span class="sd">        :param context: request context.</span>
+<span class="sd">        :param node_id: node id or uuid.</span>
+<span class="sd">        :param action: an action. One of ironic.common.states.VERBS</span>
+<span class="sd">        :param topic: RPC topic. Defaults to self.topic.</span>
+<span class="sd">        :raises: InvalidParameterValue</span>
+<span class="sd">        :raises: NoFreeConductorWorker when there is no free worker to start</span>
+<span class="sd">                async task.</span>
+<span class="sd">        :raises: InvalidStateRequested if the requested action can not</span>
+<span class="sd">                 be performed.</span>
+
+<span class="sd">        This encapsulates some provisioning actions in a single call.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="n">topic</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.23&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;do_provisioning_action&#39;</span><span class="p">,</span>
+                          <span class="n">node_id</span><span class="o">=</span><span class="n">node_id</span><span class="p">,</span> <span class="n">action</span><span class="o">=</span><span class="n">action</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.continue_node_clean"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.continue_node_clean">[docs]</a>    <span class="k">def</span> <span class="nf">continue_node_clean</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">node_id</span><span class="p">,</span> <span class="n">topic</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Signal to conductor service to start the next cleaning action.</span>
+
+<span class="sd">        NOTE(JoshNang) this is an RPC cast, there will be no response or</span>
+<span class="sd">        exception raised by the conductor for this RPC.</span>
+
+<span class="sd">        :param context: request context.</span>
+<span class="sd">        :param node_id: node id or uuid.</span>
+<span class="sd">        :param topic: RPC topic. Defaults to self.topic.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="n">topic</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.27&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">cast</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;continue_node_clean&#39;</span><span class="p">,</span>
+                          <span class="n">node_id</span><span class="o">=</span><span class="n">node_id</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.validate_driver_interfaces"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.validate_driver_interfaces">[docs]</a>    <span class="k">def</span> <span class="nf">validate_driver_interfaces</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">node_id</span><span class="p">,</span> <span class="n">topic</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Validate the `core` and `standardized` interfaces for drivers.</span>
+
+<span class="sd">        :param context: request context.</span>
+<span class="sd">        :param node_id: node id or uuid.</span>
+<span class="sd">        :param topic: RPC topic. Defaults to self.topic.</span>
+<span class="sd">        :returns: a dictionary containing the results of each</span>
+<span class="sd">                  interface validation.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="n">topic</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.5&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;validate_driver_interfaces&#39;</span><span class="p">,</span>
+                          <span class="n">node_id</span><span class="o">=</span><span class="n">node_id</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.destroy_node"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.destroy_node">[docs]</a>    <span class="k">def</span> <span class="nf">destroy_node</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">node_id</span><span class="p">,</span> <span class="n">topic</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Delete a node.</span>
+
+<span class="sd">        :param context: request context.</span>
+<span class="sd">        :param node_id: node id or uuid.</span>
+<span class="sd">        :raises: NodeLocked if node is locked by another conductor.</span>
+<span class="sd">        :raises: NodeAssociated if the node contains an instance</span>
+<span class="sd">            associated with it.</span>
+<span class="sd">        :raises: InvalidState if the node is in the wrong provision</span>
+<span class="sd">            state to perform deletion.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="n">topic</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.9&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;destroy_node&#39;</span><span class="p">,</span> <span class="n">node_id</span><span class="o">=</span><span class="n">node_id</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.get_console_information"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.get_console_information">[docs]</a>    <span class="k">def</span> <span class="nf">get_console_information</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">node_id</span><span class="p">,</span> <span class="n">topic</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get connection information about the console.</span>
+
+<span class="sd">        :param context: request context.</span>
+<span class="sd">        :param node_id: node id or uuid.</span>
+<span class="sd">        :param topic: RPC topic. Defaults to self.topic.</span>
+<span class="sd">        :raises: UnsupportedDriverExtension if the node&#39;s driver doesn&#39;t</span>
+<span class="sd">                 support console.</span>
+<span class="sd">        :raises: InvalidParameterValue when the wrong driver info is specified.</span>
+<span class="sd">        :raises: MissingParameterValue if a required parameter is missing</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="n">topic</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.11&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;get_console_information&#39;</span><span class="p">,</span> <span class="n">node_id</span><span class="o">=</span><span class="n">node_id</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.set_console_mode"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.set_console_mode">[docs]</a>    <span class="k">def</span> <span class="nf">set_console_mode</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">node_id</span><span class="p">,</span> <span class="n">enabled</span><span class="p">,</span> <span class="n">topic</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Enable/Disable the console.</span>
+
+<span class="sd">        :param context: request context.</span>
+<span class="sd">        :param node_id: node id or uuid.</span>
+<span class="sd">        :param topic: RPC topic. Defaults to self.topic.</span>
+<span class="sd">        :param enabled: Boolean value; whether the console is enabled or</span>
+<span class="sd">                        disabled.</span>
+<span class="sd">        :raises: UnsupportedDriverExtension if the node&#39;s driver doesn&#39;t</span>
+<span class="sd">                 support console.</span>
+<span class="sd">        :raises: InvalidParameterValue when the wrong driver info is specified.</span>
+<span class="sd">        :raises: MissingParameterValue if a required parameter is missing</span>
+<span class="sd">        :raises: NoFreeConductorWorker when there is no free worker to start</span>
+<span class="sd">                 async task.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="n">topic</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.11&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;set_console_mode&#39;</span><span class="p">,</span> <span class="n">node_id</span><span class="o">=</span><span class="n">node_id</span><span class="p">,</span>
+                          <span class="n">enabled</span><span class="o">=</span><span class="n">enabled</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.update_port"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.update_port">[docs]</a>    <span class="k">def</span> <span class="nf">update_port</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">port_obj</span><span class="p">,</span> <span class="n">topic</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Synchronously, have a conductor update the port&#39;s information.</span>
+
+<span class="sd">        Update the port&#39;s information in the database and return a port object.</span>
+<span class="sd">        The conductor will lock related node and trigger specific driver</span>
+<span class="sd">        actions if they are needed.</span>
+
+<span class="sd">        :param context: request context.</span>
+<span class="sd">        :param port_obj: a changed (but not saved) port object.</span>
+<span class="sd">        :param topic: RPC topic. Defaults to self.topic.</span>
+<span class="sd">        :returns: updated port object, including all fields.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="n">topic</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.13&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;update_port&#39;</span><span class="p">,</span> <span class="n">port_obj</span><span class="o">=</span><span class="n">port_obj</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.update_portgroup"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.update_portgroup">[docs]</a>    <span class="k">def</span> <span class="nf">update_portgroup</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">portgroup_obj</span><span class="p">,</span> <span class="n">topic</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Synchronously, have a conductor update the portgroup&#39;s information.</span>
+
+<span class="sd">        Update the portgroup&#39;s information in the database and return a</span>
+<span class="sd">        portgroup object.</span>
+<span class="sd">        The conductor will lock related node and trigger specific driver</span>
+<span class="sd">        actions if they are needed.</span>
+
+<span class="sd">        :param context: request context.</span>
+<span class="sd">        :param portgroup_obj: a changed (but not saved) portgroup object.</span>
+<span class="sd">        :param topic: RPC topic. Defaults to self.topic.</span>
+<span class="sd">        :returns: updated portgroup object, including all fields.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="n">topic</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.33&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;update_portgroup&#39;</span><span class="p">,</span>
+                          <span class="n">portgroup_obj</span><span class="o">=</span><span class="n">portgroup_obj</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.destroy_portgroup"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.destroy_portgroup">[docs]</a>    <span class="k">def</span> <span class="nf">destroy_portgroup</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">portgroup</span><span class="p">,</span> <span class="n">topic</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Delete a portgroup.</span>
+
+<span class="sd">        :param context: request context.</span>
+<span class="sd">        :param portgroup: portgroup object</span>
+<span class="sd">        :param topic: RPC topic. Defaults to self.topic.</span>
+<span class="sd">        :raises: NodeLocked if node is locked by another conductor.</span>
+<span class="sd">        :raises: NodeNotFound if the node associated with the portgroup does</span>
+<span class="sd">                 not exist.</span>
+<span class="sd">        :raises: PortgroupNotEmpty if portgroup is not empty</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="n">topic</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.33&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;destroy_portgroup&#39;</span><span class="p">,</span> <span class="n">portgroup</span><span class="o">=</span><span class="n">portgroup</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.get_driver_properties"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.get_driver_properties">[docs]</a>    <span class="k">def</span> <span class="nf">get_driver_properties</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">driver_name</span><span class="p">,</span> <span class="n">topic</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get the properties of the driver.</span>
+
+<span class="sd">        :param context: request context.</span>
+<span class="sd">        :param driver_name: name of the driver.</span>
+<span class="sd">        :param topic: RPC topic. Defaults to self.topic.</span>
+<span class="sd">        :returns: a dictionary with &lt;property name&gt;:&lt;property description&gt;</span>
+<span class="sd">                  entries.</span>
+<span class="sd">        :raises: DriverNotFound.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="n">topic</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.16&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;get_driver_properties&#39;</span><span class="p">,</span>
+                          <span class="n">driver_name</span><span class="o">=</span><span class="n">driver_name</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.set_boot_device"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.set_boot_device">[docs]</a>    <span class="k">def</span> <span class="nf">set_boot_device</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">node_id</span><span class="p">,</span> <span class="n">device</span><span class="p">,</span> <span class="n">persistent</span><span class="o">=</span><span class="bp">False</span><span class="p">,</span>
+                        <span class="n">topic</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Set the boot device for a node.</span>
+
+<span class="sd">        Set the boot device to use on next reboot of the node. Be aware</span>
+<span class="sd">        that not all drivers support this.</span>
+
+<span class="sd">        :param context: request context.</span>
+<span class="sd">        :param node_id: node id or uuid.</span>
+<span class="sd">        :param device: the boot device, one of</span>
+<span class="sd">                       :mod:`ironic.common.boot_devices`.</span>
+<span class="sd">        :param persistent: Whether to set next-boot, or make the change</span>
+<span class="sd">                           permanent. Default: False.</span>
+<span class="sd">        :raises: NodeLocked if node is locked by another conductor.</span>
+<span class="sd">        :raises: UnsupportedDriverExtension if the node&#39;s driver doesn&#39;t</span>
+<span class="sd">                 support management.</span>
+<span class="sd">        :raises: InvalidParameterValue when the wrong driver info is</span>
+<span class="sd">                 specified or an invalid boot device is specified.</span>
+<span class="sd">        :raises: MissingParameterValue if missing supplied info.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="n">topic</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.17&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;set_boot_device&#39;</span><span class="p">,</span> <span class="n">node_id</span><span class="o">=</span><span class="n">node_id</span><span class="p">,</span>
+                          <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span> <span class="n">persistent</span><span class="o">=</span><span class="n">persistent</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.get_boot_device"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.get_boot_device">[docs]</a>    <span class="k">def</span> <span class="nf">get_boot_device</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">node_id</span><span class="p">,</span> <span class="n">topic</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get the current boot device.</span>
+
+<span class="sd">        Returns the current boot device of a node.</span>
+
+<span class="sd">        :param context: request context.</span>
+<span class="sd">        :param node_id: node id or uuid.</span>
+<span class="sd">        :raises: NodeLocked if node is locked by another conductor.</span>
+<span class="sd">        :raises: UnsupportedDriverExtension if the node&#39;s driver doesn&#39;t</span>
+<span class="sd">                 support management.</span>
+<span class="sd">        :raises: InvalidParameterValue when the wrong driver info is</span>
+<span class="sd">                 specified.</span>
+<span class="sd">        :raises: MissingParameterValue if missing supplied info.</span>
+<span class="sd">        :returns: a dictionary containing:</span>
+
+<span class="sd">            :boot_device: the boot device, one of</span>
+<span class="sd">                :mod:`ironic.common.boot_devices` or None if it is unknown.</span>
+<span class="sd">            :persistent: Whether the boot device will persist to all</span>
+<span class="sd">                future boots or not, None if it is unknown.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="n">topic</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.17&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;get_boot_device&#39;</span><span class="p">,</span> <span class="n">node_id</span><span class="o">=</span><span class="n">node_id</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.inject_nmi"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.inject_nmi">[docs]</a>    <span class="k">def</span> <span class="nf">inject_nmi</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">node_id</span><span class="p">,</span> <span class="n">topic</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Inject NMI for a node.</span>
+
+<span class="sd">        Inject NMI (Non Maskable Interrupt) for a node immediately.</span>
+<span class="sd">        Be aware that not all drivers support this.</span>
+
+<span class="sd">        :param context: request context.</span>
+<span class="sd">        :param node_id: node id or uuid.</span>
+<span class="sd">        :raises: NodeLocked if node is locked by another conductor.</span>
+<span class="sd">        :raises: UnsupportedDriverExtension if the node&#39;s driver doesn&#39;t</span>
+<span class="sd">                 support management or management.inject_nmi.</span>
+<span class="sd">        :raises: InvalidParameterValue when the wrong driver info is</span>
+<span class="sd">                 specified or an invalid boot device is specified.</span>
+<span class="sd">        :raises: MissingParameterValue if missing supplied info.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="n">topic</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.40&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;inject_nmi&#39;</span><span class="p">,</span> <span class="n">node_id</span><span class="o">=</span><span class="n">node_id</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.get_supported_boot_devices"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.get_supported_boot_devices">[docs]</a>    <span class="k">def</span> <span class="nf">get_supported_boot_devices</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">node_id</span><span class="p">,</span> <span class="n">topic</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get the list of supported devices.</span>
+
+<span class="sd">        Returns the list of supported boot devices of a node.</span>
+
+<span class="sd">        :param context: request context.</span>
+<span class="sd">        :param node_id: node id or uuid.</span>
+<span class="sd">        :raises: NodeLocked if node is locked by another conductor.</span>
+<span class="sd">        :raises: UnsupportedDriverExtension if the node&#39;s driver doesn&#39;t</span>
+<span class="sd">                 support management.</span>
+<span class="sd">        :raises: InvalidParameterValue when the wrong driver info is</span>
+<span class="sd">                 specified.</span>
+<span class="sd">        :raises: MissingParameterValue if missing supplied info.</span>
+<span class="sd">        :returns: A list with the supported boot devices defined</span>
+<span class="sd">                  in :mod:`ironic.common.boot_devices`.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="n">topic</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.17&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;get_supported_boot_devices&#39;</span><span class="p">,</span>
+                          <span class="n">node_id</span><span class="o">=</span><span class="n">node_id</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.inspect_hardware"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.inspect_hardware">[docs]</a>    <span class="k">def</span> <span class="nf">inspect_hardware</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">node_id</span><span class="p">,</span> <span class="n">topic</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Signals the conductor service to perform hardware introspection.</span>
+
+<span class="sd">        :param context: request context.</span>
+<span class="sd">        :param node_id: node id or uuid.</span>
+<span class="sd">        :param topic: RPC topic. Defaults to self.topic.</span>
+<span class="sd">        :raises: NodeLocked if node is locked by another conductor.</span>
+<span class="sd">        :raises: HardwareInspectionFailure</span>
+<span class="sd">        :raises: NoFreeConductorWorker when there is no free worker to start</span>
+<span class="sd">                 async task.</span>
+<span class="sd">        :raises: UnsupportedDriverExtension if the node&#39;s driver doesn&#39;t</span>
+<span class="sd">                 support inspection.</span>
+<span class="sd">        :raises: InvalidStateRequested if &#39;inspect&#39; is not a valid</span>
+<span class="sd">                 action to do in the current state.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="n">topic</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.24&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;inspect_hardware&#39;</span><span class="p">,</span> <span class="n">node_id</span><span class="o">=</span><span class="n">node_id</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.destroy_port"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.destroy_port">[docs]</a>    <span class="k">def</span> <span class="nf">destroy_port</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">port</span><span class="p">,</span> <span class="n">topic</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Delete a port.</span>
+
+<span class="sd">        :param context: request context.</span>
+<span class="sd">        :param port: port object</span>
+<span class="sd">        :param topic: RPC topic. Defaults to self.topic.</span>
+<span class="sd">        :raises: NodeLocked if node is locked by another conductor.</span>
+<span class="sd">        :raises: NodeNotFound if the node associated with the port does not</span>
+<span class="sd">                 exist.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="n">topic</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.25&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;destroy_port&#39;</span><span class="p">,</span> <span class="n">port</span><span class="o">=</span><span class="n">port</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.set_target_raid_config"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.set_target_raid_config">[docs]</a>    <span class="k">def</span> <span class="nf">set_target_raid_config</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">node_id</span><span class="p">,</span> <span class="n">target_raid_config</span><span class="p">,</span>
+                               <span class="n">topic</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Stores the target RAID configuration on the node.</span>
+
+<span class="sd">        Stores the target RAID configuration on node.target_raid_config</span>
+
+<span class="sd">        :param context: request context.</span>
+<span class="sd">        :param node_id: node id or uuid.</span>
+<span class="sd">        :param target_raid_config: Dictionary containing the target RAID</span>
+<span class="sd">            configuration. It may be an empty dictionary as well.</span>
+<span class="sd">        :param topic: RPC topic. Defaults to self.topic.</span>
+<span class="sd">        :raises: UnsupportedDriverExtension if the node&#39;s driver doesn&#39;t</span>
+<span class="sd">            support RAID configuration.</span>
+<span class="sd">        :raises: InvalidParameterValue, if validation of target raid config</span>
+<span class="sd">            fails.</span>
+<span class="sd">        :raises: MissingParameterValue, if some required parameters are</span>
+<span class="sd">            missing.</span>
+<span class="sd">        :raises: NodeLocked if node is locked by another conductor.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="n">topic</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.30&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;set_target_raid_config&#39;</span><span class="p">,</span>
+                          <span class="n">node_id</span><span class="o">=</span><span class="n">node_id</span><span class="p">,</span>
+                          <span class="n">target_raid_config</span><span class="o">=</span><span class="n">target_raid_config</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.get_raid_logical_disk_properties"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.get_raid_logical_disk_properties">[docs]</a>    <span class="k">def</span> <span class="nf">get_raid_logical_disk_properties</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">driver_name</span><span class="p">,</span>
+                                         <span class="n">topic</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get the logical disk properties for RAID configuration.</span>
+
+<span class="sd">        Gets the information about logical disk properties which can</span>
+<span class="sd">        be specified in the input RAID configuration.</span>
+
+<span class="sd">        :param context: request context.</span>
+<span class="sd">        :param driver_name: name of the driver</span>
+<span class="sd">        :param topic: RPC topic. Defaults to self.topic.</span>
+<span class="sd">        :raises: UnsupportedDriverExtension if the driver doesn&#39;t</span>
+<span class="sd">            support RAID configuration.</span>
+<span class="sd">        :raises: InterfaceNotFoundInEntrypoint if the default interface for a</span>
+<span class="sd">                 hardware type is invalid.</span>
+<span class="sd">        :raises: NoValidDefaultForInterface if no default interface</span>
+<span class="sd">                 implementation can be found for this driver&#39;s RAID</span>
+<span class="sd">                 interface.</span>
+<span class="sd">        :returns: A dictionary containing the properties that can be mentioned</span>
+<span class="sd">            for logical disks and a textual description for them.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="n">topic</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.30&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;get_raid_logical_disk_properties&#39;</span><span class="p">,</span>
+                          <span class="n">driver_name</span><span class="o">=</span><span class="n">driver_name</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.do_node_clean"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.do_node_clean">[docs]</a>    <span class="k">def</span> <span class="nf">do_node_clean</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">node_id</span><span class="p">,</span> <span class="n">clean_steps</span><span class="p">,</span> <span class="n">topic</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Signal to conductor service to perform manual cleaning on a node.</span>
+
+<span class="sd">        :param context: request context.</span>
+<span class="sd">        :param node_id: node ID or UUID.</span>
+<span class="sd">        :param clean_steps: a list of clean step dictionaries.</span>
+<span class="sd">        :param topic: RPC topic. Defaults to self.topic.</span>
+<span class="sd">        :raises: InvalidParameterValue if validation of power driver interface</span>
+<span class="sd">                 failed.</span>
+<span class="sd">        :raises: InvalidStateRequested if cleaning can not be performed.</span>
+<span class="sd">        :raises: NodeInMaintenance if node is in maintenance mode.</span>
+<span class="sd">        :raises: NodeLocked if node is locked by another conductor.</span>
+<span class="sd">        :raises: NoFreeConductorWorker when there is no free worker to start</span>
+<span class="sd">                 async task.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="n">topic</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.32&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;do_node_clean&#39;</span><span class="p">,</span>
+                          <span class="n">node_id</span><span class="o">=</span><span class="n">node_id</span><span class="p">,</span> <span class="n">clean_steps</span><span class="o">=</span><span class="n">clean_steps</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.heartbeat"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.heartbeat">[docs]</a>    <span class="k">def</span> <span class="nf">heartbeat</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">node_id</span><span class="p">,</span> <span class="n">callback_url</span><span class="p">,</span> <span class="n">topic</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Process a node heartbeat.</span>
+
+<span class="sd">        :param context: request context.</span>
+<span class="sd">        :param node_id: node ID or UUID.</span>
+<span class="sd">        :param callback_url: URL to reach back to the ramdisk.</span>
+<span class="sd">        :param topic: RPC topic. Defaults to self.topic.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="n">topic</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.34&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;heartbeat&#39;</span><span class="p">,</span> <span class="n">node_id</span><span class="o">=</span><span class="n">node_id</span><span class="p">,</span>
+                          <span class="n">callback_url</span><span class="o">=</span><span class="n">callback_url</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.object_class_action_versions"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.object_class_action_versions">[docs]</a>    <span class="k">def</span> <span class="nf">object_class_action_versions</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">objname</span><span class="p">,</span> <span class="n">objmethod</span><span class="p">,</span>
+                                     <span class="n">object_versions</span><span class="p">,</span> <span class="n">args</span><span class="p">,</span> <span class="n">kwargs</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Perform an action on a VersionedObject class.</span>
+
+<span class="sd">        We want any conductor to handle this, so it is intentional that there</span>
+<span class="sd">        is no topic argument for this method.</span>
+
+<span class="sd">        :param context: The context within which to perform the action</span>
+<span class="sd">        :param objname: The registry name of the object</span>
+<span class="sd">        :param objmethod: The name of the action method to call</span>
+<span class="sd">        :param object_versions: A dict of {objname: version} mappings</span>
+<span class="sd">        :param args: The positional arguments to the action method</span>
+<span class="sd">        :param kwargs: The keyword arguments to the action method</span>
+<span class="sd">        :raises: NotImplementedError when an operator makes an error during</span>
+<span class="sd">            upgrade</span>
+<span class="sd">        :returns: The result of the action method, which may (or may not)</span>
+<span class="sd">            be an instance of the implementing VersionedObject class.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">can_send_version</span><span class="p">(</span><span class="s1">&#39;1.31&#39;</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">NotImplementedError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Incompatible conductor version - &#39;</span>
+                                        <span class="s1">&#39;please upgrade ironic-conductor &#39;</span>
+                                        <span class="s1">&#39;first&#39;</span><span class="p">))</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.31&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;object_class_action_versions&#39;</span><span class="p">,</span>
+                          <span class="n">objname</span><span class="o">=</span><span class="n">objname</span><span class="p">,</span> <span class="n">objmethod</span><span class="o">=</span><span class="n">objmethod</span><span class="p">,</span>
+                          <span class="n">object_versions</span><span class="o">=</span><span class="n">object_versions</span><span class="p">,</span>
+                          <span class="n">args</span><span class="o">=</span><span class="n">args</span><span class="p">,</span> <span class="n">kwargs</span><span class="o">=</span><span class="n">kwargs</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.object_action"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.object_action">[docs]</a>    <span class="k">def</span> <span class="nf">object_action</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">objinst</span><span class="p">,</span> <span class="n">objmethod</span><span class="p">,</span> <span class="n">args</span><span class="p">,</span> <span class="n">kwargs</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Perform an action on a VersionedObject instance.</span>
+
+<span class="sd">        We want any conductor to handle this, so it is intentional that there</span>
+<span class="sd">        is no topic argument for this method.</span>
+
+<span class="sd">        :param context: The context within which to perform the action</span>
+<span class="sd">        :param objinst: The object instance on which to perform the action</span>
+<span class="sd">        :param objmethod: The name of the action method to call</span>
+<span class="sd">        :param args: The positional arguments to the action method</span>
+<span class="sd">        :param kwargs: The keyword arguments to the action method</span>
+<span class="sd">        :raises: NotImplementedError when an operator makes an error during</span>
+<span class="sd">            upgrade</span>
+<span class="sd">        :returns: A tuple with the updates made to the object and</span>
+<span class="sd">            the result of the action method</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">can_send_version</span><span class="p">(</span><span class="s1">&#39;1.31&#39;</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">NotImplementedError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Incompatible conductor version - &#39;</span>
+                                        <span class="s1">&#39;please upgrade ironic-conductor &#39;</span>
+                                        <span class="s1">&#39;first&#39;</span><span class="p">))</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.31&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;object_action&#39;</span><span class="p">,</span> <span class="n">objinst</span><span class="o">=</span><span class="n">objinst</span><span class="p">,</span>
+                          <span class="n">objmethod</span><span class="o">=</span><span class="n">objmethod</span><span class="p">,</span> <span class="n">args</span><span class="o">=</span><span class="n">args</span><span class="p">,</span> <span class="n">kwargs</span><span class="o">=</span><span class="n">kwargs</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.object_backport_versions"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.object_backport_versions">[docs]</a>    <span class="k">def</span> <span class="nf">object_backport_versions</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">objinst</span><span class="p">,</span> <span class="n">object_versions</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Perform a backport of an object instance.</span>
+
+<span class="sd">        The default behavior of the base VersionedObjectSerializer, upon</span>
+<span class="sd">        receiving an object with a version newer than what is in the local</span>
+<span class="sd">        registry, is to call this method to request a backport of the object.</span>
+
+<span class="sd">        We want any conductor to handle this, so it is intentional that there</span>
+<span class="sd">        is no topic argument for this method.</span>
+
+<span class="sd">        :param context: The context within which to perform the backport</span>
+<span class="sd">        :param objinst: An instance of a VersionedObject to be backported</span>
+<span class="sd">        :param object_versions: A dict of {objname: version} mappings</span>
+<span class="sd">        :raises: NotImplementedError when an operator makes an error during</span>
+<span class="sd">            upgrade</span>
+<span class="sd">        :returns: The downgraded instance of objinst</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">can_send_version</span><span class="p">(</span><span class="s1">&#39;1.31&#39;</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">NotImplementedError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Incompatible conductor version - &#39;</span>
+                                        <span class="s1">&#39;please upgrade ironic-conductor &#39;</span>
+                                        <span class="s1">&#39;first&#39;</span><span class="p">))</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.31&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;object_backport_versions&#39;</span><span class="p">,</span> <span class="n">objinst</span><span class="o">=</span><span class="n">objinst</span><span class="p">,</span>
+                          <span class="n">object_versions</span><span class="o">=</span><span class="n">object_versions</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.destroy_volume_connector"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.destroy_volume_connector">[docs]</a>    <span class="k">def</span> <span class="nf">destroy_volume_connector</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">connector</span><span class="p">,</span> <span class="n">topic</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Delete a volume connector.</span>
+
+<span class="sd">        Delete the volume connector. The conductor will lock the related node</span>
+<span class="sd">        during this operation.</span>
+
+<span class="sd">        :param context: request context</span>
+<span class="sd">        :param connector: volume connector object</span>
+<span class="sd">        :param topic: RPC topic. Defaults to self.topic.</span>
+<span class="sd">        :raises: NodeLocked if node is locked by another conductor</span>
+<span class="sd">        :raises: NodeNotFound if the node associated with the connector does</span>
+<span class="sd">                 not exist</span>
+<span class="sd">        :raises: VolumeConnectorNotFound if the volume connector cannot be</span>
+<span class="sd">                 found</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="n">topic</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.35&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;destroy_volume_connector&#39;</span><span class="p">,</span>
+                          <span class="n">connector</span><span class="o">=</span><span class="n">connector</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.update_volume_connector"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.update_volume_connector">[docs]</a>    <span class="k">def</span> <span class="nf">update_volume_connector</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">connector</span><span class="p">,</span> <span class="n">topic</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Update the volume connector&#39;s information.</span>
+
+<span class="sd">        Update the volume connector&#39;s information in the database and return</span>
+<span class="sd">        a volume connector object. The conductor will lock the related node</span>
+<span class="sd">        during this operation.</span>
+
+<span class="sd">        :param context: request context</span>
+<span class="sd">        :param connector: a changed (but not saved) volume connector object</span>
+<span class="sd">        :param topic: RPC topic. Defaults to self.topic.</span>
+<span class="sd">        :raises: InvalidParameterValue if the volume connector&#39;s UUID is being</span>
+<span class="sd">                 changed</span>
+<span class="sd">        :raises: NodeLocked if node is locked by another conductor</span>
+<span class="sd">        :raises: NodeNotFound if the node associated with the connector does</span>
+<span class="sd">                 not exist</span>
+<span class="sd">        :raises: VolumeConnectorNotFound if the volume connector cannot be</span>
+<span class="sd">                 found</span>
+<span class="sd">        :raises: VolumeConnectorTypeAndIdAlreadyExists if another connector</span>
+<span class="sd">                 already exists with the same values for type and connector_id</span>
+<span class="sd">                 fields</span>
+<span class="sd">        :returns: updated volume connector object, including all fields.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="n">topic</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.35&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;update_volume_connector&#39;</span><span class="p">,</span>
+                          <span class="n">connector</span><span class="o">=</span><span class="n">connector</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.destroy_volume_target"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.destroy_volume_target">[docs]</a>    <span class="k">def</span> <span class="nf">destroy_volume_target</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">target</span><span class="p">,</span> <span class="n">topic</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Delete a volume target.</span>
+
+<span class="sd">        :param context: request context</span>
+<span class="sd">        :param target: volume target object</span>
+<span class="sd">        :param topic: RPC topic. Defaults to self.topic.</span>
+<span class="sd">        :raises: NodeLocked if node is locked by another conductor</span>
+<span class="sd">        :raises: NodeNotFound if the node associated with the target does</span>
+<span class="sd">                 not exist</span>
+<span class="sd">        :raises: VolumeTargetNotFound if the volume target cannot be found</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="n">topic</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.37&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;destroy_volume_target&#39;</span><span class="p">,</span>
+                          <span class="n">target</span><span class="o">=</span><span class="n">target</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.update_volume_target"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.update_volume_target">[docs]</a>    <span class="k">def</span> <span class="nf">update_volume_target</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">target</span><span class="p">,</span> <span class="n">topic</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Update the volume target&#39;s information.</span>
+
+<span class="sd">        Update the volume target&#39;s information in the database and return a</span>
+<span class="sd">        volume target object. The conductor will lock the related node during</span>
+<span class="sd">        this operation.</span>
+
+<span class="sd">        :param context: request context</span>
+<span class="sd">        :param target: a changed (but not saved) volume target object</span>
+<span class="sd">        :param topic: RPC topic. Defaults to self.topic.</span>
+<span class="sd">        :raises: InvalidParameterValue if the volume target&#39;s UUID is being</span>
+<span class="sd">                 changed</span>
+<span class="sd">        :raises: NodeLocked if the node is already locked</span>
+<span class="sd">        :raises: NodeNotFound if the node associated with the volume target</span>
+<span class="sd">                 does not exist</span>
+<span class="sd">        :raises: VolumeTargetNotFound if the volume target cannot be found</span>
+<span class="sd">        :raises: VolumeTargetBootIndexAlreadyExists if a volume target already</span>
+<span class="sd">                 exists with the same node ID and boot index values</span>
+<span class="sd">        :returns: updated volume target object, including all fields</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="n">topic</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.37&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;update_volume_target&#39;</span><span class="p">,</span>
+                          <span class="n">target</span><span class="o">=</span><span class="n">target</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.vif_attach"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.vif_attach">[docs]</a>    <span class="k">def</span> <span class="nf">vif_attach</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">node_id</span><span class="p">,</span> <span class="n">vif_info</span><span class="p">,</span> <span class="n">topic</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Attach VIF to a node</span>
+
+<span class="sd">        :param context: request context.</span>
+<span class="sd">        :param node_id: node ID or UUID.</span>
+<span class="sd">        :param vif_info: a dictionary representing VIF object.</span>
+<span class="sd">            It must have an &#39;id&#39; key, whose value is a unique</span>
+<span class="sd">            identifier for that VIF.</span>
+<span class="sd">        :param topic: RPC topic. Defaults to self.topic.</span>
+<span class="sd">        :raises: NodeLocked, if node has an exclusive lock held on it</span>
+<span class="sd">        :raises: NetworkError, if an error occurs during attaching the VIF.</span>
+<span class="sd">        :raises: InvalidParameterValue, if a parameter that&#39;s required for</span>
+<span class="sd">            VIF attach is wrong/missing.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="n">topic</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.38&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;vif_attach&#39;</span><span class="p">,</span> <span class="n">node_id</span><span class="o">=</span><span class="n">node_id</span><span class="p">,</span>
+                          <span class="n">vif_info</span><span class="o">=</span><span class="n">vif_info</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.vif_detach"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.vif_detach">[docs]</a>    <span class="k">def</span> <span class="nf">vif_detach</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">node_id</span><span class="p">,</span> <span class="n">vif_id</span><span class="p">,</span> <span class="n">topic</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Detach VIF from a node</span>
+
+<span class="sd">        :param context: request context.</span>
+<span class="sd">        :param node_id: node ID or UUID.</span>
+<span class="sd">        :param vif_id: an ID of a VIF.</span>
+<span class="sd">        :param topic: RPC topic. Defaults to self.topic.</span>
+<span class="sd">        :raises: NodeLocked, if node has an exclusive lock held on it</span>
+<span class="sd">        :raises: NetworkError, if an error occurs during detaching the VIF.</span>
+<span class="sd">        :raises: InvalidParameterValue, if a parameter that&#39;s required for</span>
+<span class="sd">            VIF detach is wrong/missing.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="n">topic</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.38&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;vif_detach&#39;</span><span class="p">,</span> <span class="n">node_id</span><span class="o">=</span><span class="n">node_id</span><span class="p">,</span>
+                          <span class="n">vif_id</span><span class="o">=</span><span class="n">vif_id</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ConductorAPI.vif_list"><a class="viewcode-back" href="../../../api/ironic.conductor.rpcapi.html#ironic.conductor.rpcapi.ConductorAPI.vif_list">[docs]</a>    <span class="k">def</span> <span class="nf">vif_list</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">node_id</span><span class="p">,</span> <span class="n">topic</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;List attached VIFs for a node</span>
+
+<span class="sd">        :param context: request context.</span>
+<span class="sd">        :param node_id: node ID or UUID.</span>
+<span class="sd">        :param topic: RPC topic. Defaults to self.topic.</span>
+<span class="sd">        :returns: List of VIF dictionaries, each dictionary will have an</span>
+<span class="sd">            &#39;id&#39; entry with the ID of the VIF.</span>
+<span class="sd">        :raises: NetworkError, if an error occurs during listing the VIFs.</span>
+<span class="sd">        :raises: InvalidParameterValue, if a parameter that&#39;s required for</span>
+<span class="sd">            VIF list is wrong/missing.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">topic</span><span class="o">=</span><span class="n">topic</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s1">&#39;1.38&#39;</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">cctxt</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="s1">&#39;vif_list&#39;</span><span class="p">,</span> <span class="n">node_id</span><span class="o">=</span><span class="n">node_id</span><span class="p">)</span></div></div>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/ironic
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../../index.html">Ironic 7.0.1.dev7 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../../index.html" accesskey="U">Module code</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright OpenStack Foundation.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/Ironic");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

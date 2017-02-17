@@ -1,0 +1,696 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Cells &mdash; nova 15.0.0.0rc2.dev69 documentation</title>
+    
+    <link rel="stylesheet" href="_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="_static/support-matrix.css" type="text/css" />
+    <link rel="stylesheet" href="_static/feature-matrix.css" type="text/css" />
+    <link rel="stylesheet" href="_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '15.0.0.0rc2.dev69',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <link rel="top" title="nova 15.0.0.0rc2.dev69 documentation" href="index.html" />
+    <link rel="next" title="Upgrades" href="upgrade.html" />
+    <link rel="prev" title="Placement API Developer Notes" href="placement_dev.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="cells">
+<h1>Cells<a class="headerlink" href="#cells" title="Permalink to this headline">¶</a></h1>
+<p>Before reading further, there is a nice overview <a class="reference external" href="https://www.openstack.org/videos/video/nova-cells-v2-whats-going-on">presentation</a> that
+Andrew Laski gave at the Austin (Newton) summit which is worth watching.</p>
+<div class="section" id="cells-v1">
+<h2>Cells V1<a class="headerlink" href="#cells-v1" title="Permalink to this headline">¶</a></h2>
+<p>Historically, Nova has depended on a single logical database and message queue
+that all nodes depend on for communication and data persistence. This becomes
+an issue for deployers as scaling and providing fault tolerance for these
+systems is difficult.</p>
+<p>We have an experimental feature in Nova called &#8220;cells&#8221;, hereafter referred to
+as &#8220;cells v1&#8221;, which is used by some large deployments to partition compute
+nodes into smaller groups, coupled with a database and queue. This seems to be
+a well-liked and easy-to-understand arrangement of resources, but the
+implementation of it has issues for maintenance and correctness.
+See <a class="reference internal" href="#comparison-with-cells-v1">Comparison with Cells V1</a> for more detail.</p>
+<div class="section" id="status">
+<h3>Status<a class="headerlink" href="#status" title="Permalink to this headline">¶</a></h3>
+<p>Cells v1 is considered experimental and receives much less testing than the
+rest of Nova. For example, there is no job for testing cells v1 with Neutron.</p>
+<p>The priority for the core team is implementation of and migration to cells v2.
+Because of this, there are a few restrictions placed on cells v1:</p>
+<ol class="arabic simple">
+<li>Cells v1 is in feature freeze. This means no new feature proposals for cells
+v1 will be accepted by the core team, which includes but is not limited to
+API parity, e.g. supporting virtual interface attach/detach with Neutron.</li>
+<li>Latent bugs caused by the cells v1 design will not be fixed, e.g.
+<a class="reference external" href="https://bugs.launchpad.net/nova/+bug/1489581">bug 1489581</a>. So if new
+tests are added to Tempest which trigger a latent bug in cells v1 it may not
+be fixed. However, regressions in working function should be tracked with
+bugs and fixed.</li>
+</ol>
+<p><strong>Suffice it to say, new deployments of cells v1 are not encouraged.</strong></p>
+<p>The restrictions above are basically meant to prioritize effort and focus on
+getting cells v2 completed, and feature requests and hard to fix latent bugs
+detract from that effort. Further discussion on this can be found in the
+<a class="reference external" href="http://eavesdrop.openstack.org/meetings/nova/2015/nova.2015-11-12-14.00.log.html">2015/11/12 Nova meeting minutes</a>.</p>
+<p>There are no plans to remove Cells V1 until V2 is usable by existing
+deployments and there is a migration path.</p>
+</div>
+</div>
+<div class="section" id="cells-v2">
+<h2>Cells V2<a class="headerlink" href="#cells-v2" title="Permalink to this headline">¶</a></h2>
+<div class="section" id="manifesto">
+<h3>Manifesto<a class="headerlink" href="#manifesto" title="Permalink to this headline">¶</a></h3>
+<div class="section" id="proposal">
+<h4>Proposal<a class="headerlink" href="#proposal" title="Permalink to this headline">¶</a></h4>
+<p>Right now, when a request hits the Nova API for a particular instance, the
+instance information is fetched from the database, which contains the hostname
+of the compute node on which the instance currently lives. If the request needs
+to take action on the instance (which is most of them), the hostname is used to
+calculate the name of a queue, and a message is written there which finds its
+way to the proper compute node.</p>
+<p>The meat of this proposal is changing the above hostname lookup into two parts
+that yield three pieces of information instead of one. Basically, instead of
+merely looking up the <em>name</em> of the compute node on which an instance lives, we
+will also obtain database and queue connection information. Thus, when asked to
+take action on instance $foo, we will:</p>
+<ol class="arabic simple">
+<li>Lookup the three-tuple of (database, queue, hostname) for that instance</li>
+<li>Connect to that database and fetch the instance record</li>
+<li>Connect to the queue and send the message to the proper hostname queue</li>
+</ol>
+<p>The above differs from the current organization in two ways. First, we need to
+do two database lookups before we know where the instance lives. Second, we
+need to demand-connect to the appropriate database and queue. Both of these
+have performance implications, but we believe we can mitigate the impacts
+through the use of things like a memcache of instance mapping information and
+pooling of connections to database and queue systems. The number of cells will
+always be much smaller than the number of instances.</p>
+<p>There are availability implications with this change since something like a
+&#8216;nova list&#8217; which might query multiple cells could end up with a partial result
+if there is a database failure in a cell.  A database failure within a cell
+would cause larger issues than a partial list result so the expectation is that
+it would be addressed quickly and cellsv2 will handle it by indicating in the
+response that the data may not be complete.</p>
+<p>Since this is very similar to what we have with current cells, in terms of
+organization of resources, we have decided to call this &#8220;cellsv2&#8221; for
+disambiguation.</p>
+<p>After this work is complete there will no longer be a &#8220;no cells&#8221; deployment.
+The default installation of Nova will be a single cell setup.</p>
+</div>
+<div class="section" id="benefits">
+<h4>Benefits<a class="headerlink" href="#benefits" title="Permalink to this headline">¶</a></h4>
+<p>The benefits of this new organization are:</p>
+<ul class="simple">
+<li>Native sharding of the database and queue as a first-class-feature in nova.
+All of the code paths will go through the lookup procedure and thus we won&#8217;t
+have the same feature parity issues as we do with current cells.</li>
+<li>No high-level replication of all the cell databases at the top. The API will
+need a database of its own for things like the instance index, but it will
+not need to replicate all the data at the top level.</li>
+<li>It draws a clear line between global and local data elements. Things like
+flavors and keypairs are clearly global concepts that need only live at the
+top level. Providing this separation allows compute nodes to become even more
+stateless and insulated from things like deleted/changed global data.</li>
+<li>Existing non-cells users will suddenly gain the ability to spawn a new &#8220;cell&#8221;
+from their existing deployment without changing their architecture. Simply
+adding information about the new database and queue systems to the new index
+will allow them to consume those resources.</li>
+<li>Existing cells users will need to fill out the cells mapping index, shutdown
+their existing cells synchronization service, and ultimately clean up their
+top level database. However, since the high-level organization is not
+substantially different, they will not have to re-architect their systems to
+move to cellsv2.</li>
+<li>Adding new sets of hosts as a new &#8220;cell&#8221; allows them to be plugged into a
+deployment and tested before allowing builds to be scheduled to them.</li>
+</ul>
+</div>
+<div class="section" id="comparison-with-cells-v1">
+<h4>Comparison with Cells V1<a class="headerlink" href="#comparison-with-cells-v1" title="Permalink to this headline">¶</a></h4>
+<p>In reality, the proposed organization is nearly the same as what we currently
+have in cells today. A cell mostly consists of a database, queue, and set of
+compute nodes. The primary difference is that current cells require a
+nova-cells service that synchronizes information up and down from the top level
+to the child cell. Additionally, there are alternate code paths in
+compute/api.py which handle routing messages to cells instead of directly down
+to a compute host. Both of these differences are relevant to why we have a hard
+time achieving feature and test parity with regular nova (because many things
+take an alternate path with cells) and why it&#8217;s hard to understand what is
+going on (all the extra synchronization of data). The new proposed cellsv2
+organization avoids both of these problems by letting things live where they
+should, teaching nova to natively find the right db, queue, and compute node to
+handle a given request.</p>
+</div>
+</div>
+<div class="section" id="database-split">
+<h3>Database split<a class="headerlink" href="#database-split" title="Permalink to this headline">¶</a></h3>
+<p>As mentioned above there is a split between global data and data that is local
+to a cell.</p>
+<p>The following is a breakdown of what data can uncontroversially considered
+global versus local to a cell.  Missing data will be filled in as consensus is
+reached on the data that is more difficult to cleanly place.  The missing data
+is mostly concerned with scheduling and networking.</p>
+<div class="section" id="global-api-level-tables">
+<h4>Global (API-level) Tables<a class="headerlink" href="#global-api-level-tables" title="Permalink to this headline">¶</a></h4>
+<p>instance_types
+instance_type_projects
+instance_type_extra_specs
+quotas
+project_user_quotas
+quota_classes
+quota_usages
+security_groups
+security_group_rules
+security_group_default_rules
+provider_fw_rules
+key_pairs
+migrations
+networks
+tags</p>
+</div>
+<div class="section" id="cell-level-tables">
+<h4>Cell-level Tables<a class="headerlink" href="#cell-level-tables" title="Permalink to this headline">¶</a></h4>
+<p>instances
+instance_info_caches
+instance_extra
+instance_metadata
+instance_system_metadata
+instance_faults
+instance_actions
+instance_actions_events
+instance_id_mappings
+pci_devices
+block_device_mapping
+virtual_interfaces</p>
+</div>
+</div>
+</div>
+<div class="section" id="setup-of-cells-v2">
+<h2>Setup of Cells V2<a class="headerlink" href="#setup-of-cells-v2" title="Permalink to this headline">¶</a></h2>
+<div class="section" id="overview">
+<h3>Overview<a class="headerlink" href="#overview" title="Permalink to this headline">¶</a></h3>
+<p>As more of the CellsV2 implementation is finished, all operators are
+required to make changes to their deployment. For all deployments
+(even those that only intend to have one cell), these changes are
+configuration-related, both in the main nova configuration file as
+well as some extra records in the databases.</p>
+<p>All nova deployments must now have the following databases available
+and configured:</p>
+<blockquote>
+<div><ol class="arabic simple">
+<li>The &#8220;API&#8221; database</li>
+<li>One special &#8220;cell&#8221; database called &#8220;cell0&#8221;</li>
+<li>One (or eventually more) &#8220;cell&#8221; databases</li>
+</ol>
+</div></blockquote>
+<p>Thus, a small nova deployment will have an API database, a cell0, and
+what we will call here a &#8220;cell1&#8221; database. High-level tracking
+information is kept in the API database. Instances that are never
+scheduled are relegated to the cell0 database, which is effectively a
+graveyard of instances that failed to start. All successful/running
+instances are stored in &#8220;cell1&#8221;.</p>
+</div>
+<div class="section" id="first-time-setup">
+<h3>First Time Setup<a class="headerlink" href="#first-time-setup" title="Permalink to this headline">¶</a></h3>
+<p>Since there is only one API database, the connection information for
+it is stored in the nova.conf file.</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>[api_database]
+connection = mysql+pymysql://root:secretmysql@dbserver/nova_api?charset=utf8
+</pre></div>
+</div>
+<p>Since there may be multiple &#8220;cell&#8221; databases (and in fact everyone
+will have cell0 and cell1 at a minimum), connection info for these is
+stored in the API database. Thus, you must have connection information
+in your config file for the API database before continuing to the
+steps below, so that <cite>nova-manage</cite> can find your other databases.</p>
+<p>The following examples show the full expanded command line usage of
+the setup commands. This is to make it easier to visualize which of
+the various URLs are used by each of the commands. However, you should
+be able to put all of that in the config file and <cite>nova-manage</cite> will
+use those values. If need be, you can create separate config files and
+pass them as <cite>nova-manage &#8211;config-file foo.conf</cite> to control the
+behavior without specifying things on the command lines.</p>
+<p>The commands below use the API database so remember to run
+<cite>nova-manage api_db sync</cite> first.</p>
+<p>First we will create the necessary records for the cell0 database. To
+do that we use <cite>nova-manage</cite> like this:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>nova-manage cell_v2 map_cell0 --database_connection \
+  mysql+pymysql://root:secretmysql@dbserver/nova_cell0?charset=utf8
+</pre></div>
+</div>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">If you don&#8217;t specify <cite>&#8211;database_connection</cite> then
+<cite>nova-manage</cite> will use the <cite>[database]/connection</cite> value
+from your config file, and mangle the database name to have
+a <cite>_cell0</cite> suffix.</p>
+</div>
+<div class="admonition warning">
+<p class="first admonition-title">Warning</p>
+<p class="last">If your databases are on separate hosts then you should specify
+<cite>&#8211;database_connection</cite> or make certain that the nova.conf
+being used has the <cite>[database]/connection</cite> value pointing to the
+same user/password/host that will work for the cell0 database.
+If the cell0 mapping was created incorrectly, it can be deleted
+using the <cite>nova-manage cell_v2 delete_cell</cite> command and then run
+<cite>map_cell0</cite> again with the proper database connection value.</p>
+</div>
+<p>Since no hosts are ever in cell0, nothing further is required for its
+setup. Note that all deployments only ever have one cell0, as it is
+special, so once you have done this step you never need to do it
+again, even if you add more regular cells.</p>
+<p>Now, we must create another cell which will be our first &#8220;regular&#8221;
+cell, which has actual compute hosts in it, and to which instances can
+actually be scheduled. First, we create the cell record like this:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>nova-manage cell_v2 create_cell --verbose --name cell1 \
+  --database_connection  mysql+pymysql://root:secretmysql@127.0.0.1/nova?charset=utf8
+  --transport-url rabbit://stackrabbit:secretrabbit@mqserver:5672/
+</pre></div>
+</div>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">If you don&#8217;t specify the database and transport urls then
+<cite>nova-manage</cite> will use the
+<cite>[database]/connection</cite> and <cite>[DEFAULT]/transport_url</cite> values
+from the config file.</p>
+</div>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">At this point, the API database can now find the cell
+database, and further commands will attempt to look
+inside. If this is a completely fresh database (such as if
+you&#8217;re adding a cell, or if this is a new deployment), then
+you will need to run <cite>nova-manage db sync</cite> on it to
+initialize the schema.</p>
+</div>
+<p>The <cite>nova-manage cell_v2 create_cell</cite> command will print the UUID of the
+newly-created cell if <cite>&#8211;verbose</cite> is passed, which is useful if you
+need to run commands like <cite>discover_hosts</cite> targeted at a specific
+cell.</p>
+<p>Now we have a cell, but no hosts are in it which means the scheduler
+will never actually place instances there. The next step is to scan
+the database for compute node records and add them into the cell we
+just created. For this step, you must have had a compute node started
+such that it registers itself as a running service. Once that has
+happened, you can scan and add it to the cell:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>nova-manage cell_v2 discover_hosts
+</pre></div>
+</div>
+<p>This command will connect to any databases for which you have created
+cells (as above), look for hosts that have registered themselves
+there, and map those hosts in the API database so that
+they are visible to the scheduler as available targets for
+instances. Any time you add more compute hosts to a cell, you need to
+re-run this command to map them from the top-level so they can be
+utilized.</p>
+</div>
+<div class="section" id="references">
+<h3>References<a class="headerlink" href="#references" title="Permalink to this headline">¶</a></h3>
+<ul class="simple">
+<li><a class="reference external" href="http://docs.openstack.org/developer/nova/man/nova-manage.html#nova-cells-v2">man pages for the cells v2 commands</a></li>
+</ul>
+</div>
+</div>
+<div class="section" id="step-by-step-for-common-use-cases">
+<h2>Step-By-Step for Common Use Cases<a class="headerlink" href="#step-by-step-for-common-use-cases" title="Permalink to this headline">¶</a></h2>
+<p>The following are step-by-step examples for common use cases setting
+up Cells V2. This is intended as a quick reference that puts together
+everything explained in <a class="reference internal" href="#setup-of-cells-v2">Setup of Cells V2</a>. It is assumed that you have
+followed all other install steps for Nova and are setting up Cells V2
+specifically at this point.</p>
+<div class="section" id="fresh-install">
+<h3>Fresh Install<a class="headerlink" href="#fresh-install" title="Permalink to this headline">¶</a></h3>
+<p>You are installing Nova for the first time and have no compute hosts in the
+database yet. This will set up a single cell Nova deployment.</p>
+<ol class="arabic">
+<li><p class="first">Reminder: You should have already created and synced the Nova API database
+by creating a database, configuring its connection in the
+<code class="docutils literal"><span class="pre">[api_database]/connection</span></code> setting in the Nova configuration file, and
+running <code class="docutils literal"><span class="pre">nova-manage</span> <span class="pre">api_db</span> <span class="pre">sync</span></code>.</p>
+</li>
+<li><p class="first">Create a database for cell0. If you are going to pass the database
+connection url on the command line in step 3, you can name the cell0
+database whatever you want. If you are not going to pass the database url on
+the command line in step 3, you need to name the cell0 database based on the
+name of your existing Nova database: &lt;Nova database name&gt;_cell0. For
+example, if your Nova database is named <code class="docutils literal"><span class="pre">nova</span></code>, then your cell0 database
+should be named <code class="docutils literal"><span class="pre">nova_cell0</span></code>.</p>
+</li>
+<li><p class="first">Run the <code class="docutils literal"><span class="pre">map_cell0</span></code> command to create and map cell0:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>nova-manage cell_v2 map_cell0 \
+  --database_connection &lt;database connection url&gt;
+</pre></div>
+</div>
+<p>The database connection url is generated based on the
+<code class="docutils literal"><span class="pre">[database]/connection</span></code> setting in the Nova configuration file if not
+specified on the command line.</p>
+</li>
+<li><p class="first">Run <code class="docutils literal"><span class="pre">nova-manage</span> <span class="pre">db</span> <span class="pre">sync</span></code> to populate the cell0 database with a schema.
+The <code class="docutils literal"><span class="pre">db</span> <span class="pre">sync</span></code> command reads the database connection for cell0 that was
+created in step 3.</p>
+</li>
+<li><p class="first">Run the <code class="docutils literal"><span class="pre">create_cell</span></code> command to create the single cell which will contain
+your compute hosts:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>nova-manage cell_v2 create_cell --name &lt;name&gt; \
+  --transport-url &lt;transport url for message queue&gt; \
+  --database_connection &lt;database connection url&gt;
+</pre></div>
+</div>
+<p>The transport url is taken from the <code class="docutils literal"><span class="pre">[DEFAULT]/transport_url</span></code> setting in
+the Nova configuration file if not specified on the command line. The
+database url is taken from the <code class="docutils literal"><span class="pre">[database]/connection</span></code> setting in the Nova
+configuration file if not specified on the command line.</p>
+</li>
+<li><p class="first">Configure and start your compute hosts. Before step 7, make sure you have
+compute hosts in the database by running <code class="docutils literal"><span class="pre">nova</span> <span class="pre">hypervisor-list</span></code>.</p>
+</li>
+<li><p class="first">Run the <code class="docutils literal"><span class="pre">discover_hosts</span></code> command to map compute hosts to the single cell:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>nova-manage cell_v2 discover_hosts
+</pre></div>
+</div>
+<p>The command will search for compute hosts in the database of the cell you
+created in step 5 and map them to the cell. You can also configure a
+periodic task to have Nova discover new hosts automatically by setting
+the <code class="docutils literal"><span class="pre">[scheduler]/discover_hosts_in_cells_interval</span></code> to a time interval in
+seconds. The periodic task is run by the nova-scheduler service, so you must
+be sure to configure it on all of your nova-scheduler hosts.</p>
+</li>
+</ol>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">Remember: In the future, whenever you add new compute hosts, you
+will need to run the <code class="docutils literal"><span class="pre">discover_hosts</span></code> command after starting them
+to map them to the cell if you did not configure the automatic host
+discovery in step 7.</p>
+</div>
+</div>
+<div class="section" id="upgrade-minimal">
+<h3>Upgrade (minimal)<a class="headerlink" href="#upgrade-minimal" title="Permalink to this headline">¶</a></h3>
+<p>You are upgrading an existing Nova install and have compute hosts in the
+database. This will set up a single cell Nova deployment.</p>
+<ol class="arabic simple">
+<li>If you haven&#8217;t already created a cell0 database in a prior release,
+create a database for cell0 with a name based on the name of your Nova
+database: &lt;Nova database name&gt;_cell0. If your Nova database is named
+<code class="docutils literal"><span class="pre">nova</span></code>, then your cell0 database should be named <code class="docutils literal"><span class="pre">nova_cell0</span></code>.</li>
+</ol>
+<div class="admonition warning">
+<p class="first admonition-title">Warning</p>
+<p class="last">In Newton, the <code class="docutils literal"><span class="pre">simple_cell_setup</span></code> command expects the name of
+the cell0 database to be based on the name of the Nova API
+database: &lt;Nova API database name&gt;_cell0 and the database
+connection url is taken from the <code class="docutils literal"><span class="pre">[api_database]/connection</span></code>
+setting in the Nova configuration file.</p>
+</div>
+<ol class="arabic" start="2">
+<li><p class="first">Run the <code class="docutils literal"><span class="pre">simple_cell_setup</span></code> command to create and map cell0, create and
+map the single cell, and map existing compute hosts and instances to the
+single cell:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>nova-manage cell_v2 simple_cell_setup \
+  --transport-url &lt;transport url for message queue&gt;
+</pre></div>
+</div>
+<p>The transport url is taken from the <code class="docutils literal"><span class="pre">[DEFAULT]/transport_url</span></code> setting in
+the Nova configuration file if not specified on the command line. The
+database connection url will be generated based on the
+<code class="docutils literal"><span class="pre">[database]/connection</span></code> setting in the Nova configuration file.</p>
+</li>
+</ol>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">Remember: In the future, whenever you add new compute hosts, you
+will need to run the <code class="docutils literal"><span class="pre">discover_hosts</span></code> command after starting them
+to map them to the cell. You can also configure a periodic task to
+have Nova discover new hosts automatically by setting the
+<code class="docutils literal"><span class="pre">[scheduler]/discover_hosts_in_cells_interval</span></code> to a time interval
+in seconds. The periodic task is run by the nova-scheduler service,
+so you must be sure to configure it on all of your nova-scheduler
+hosts.</p>
+</div>
+</div>
+<div class="section" id="upgrade-with-cells-v1">
+<h3>Upgrade with Cells V1<a class="headerlink" href="#upgrade-with-cells-v1" title="Permalink to this headline">¶</a></h3>
+<p>You are upgrading an existing Nova install that has Cells V1 enabled and have
+compute hosts in your databases. This will set up a multiple cell Nova
+deployment. At this time, it is recommended to keep Cells V1 enabled during and
+after the upgrade as multiple Cells V2 cell support is not fully finished and
+may not work properly in all scenarios. These upgrade steps will help ensure a
+simple cutover from Cells V1 to Cells V2 in the future.</p>
+<ol class="arabic">
+<li><p class="first">If you haven&#8217;t already created a cell0 database in a prior release,
+create a database for cell0. If you are going to pass the database
+connection url on the command line in step 2, you can name the cell0
+database whatever you want. If you are not going to pass the database url on
+the command line in step 2, you need to name the cell0 database based on the
+name of your existing Nova database: &lt;Nova database name&gt;_cell0. For
+example, if your Nova database is named <code class="docutils literal"><span class="pre">nova</span></code>, then your cell0 database
+should be named <code class="docutils literal"><span class="pre">nova_cell0</span></code>.</p>
+</li>
+<li><p class="first">Run the <code class="docutils literal"><span class="pre">map_cell0</span></code> command to create and map cell0:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>nova-manage cell_v2 map_cell0 \
+  --database_connection &lt;database connection url&gt;
+</pre></div>
+</div>
+<p>The database connection url is generated based on the
+<code class="docutils literal"><span class="pre">[database]/connection</span></code> setting in the Nova configuration file if not
+specified on the command line.</p>
+</li>
+<li><p class="first">Run <code class="docutils literal"><span class="pre">nova-manage</span> <span class="pre">db</span> <span class="pre">sync</span></code> to populate the cell0 database with a schema.
+The <code class="docutils literal"><span class="pre">db</span> <span class="pre">sync</span></code> command reads the database connection for cell0 that was
+created in step 2.</p>
+</li>
+<li><p class="first">Run the <code class="docutils literal"><span class="pre">create_cell</span></code> command to create cells which will contain your
+compute hosts:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>nova-manage cell_v2 create_cell --name &lt;cell name&gt; \
+  --transport-url &lt;transport url for message queue&gt; \
+  --database_connection &lt;database connection url&gt;
+</pre></div>
+</div>
+<p>You will need to repeat this step for each cell in your deployment. Your
+existing cell database will be re-used &#8211; this simply informs the top-level
+API database about your existing cell databases.</p>
+<p>It is a good idea to specify a name for the new cell you create so you can
+easily look up cell uuids with the <code class="docutils literal"><span class="pre">list_cells</span></code> command later if needed.</p>
+<p>The transport url is taken from the <code class="docutils literal"><span class="pre">[DEFAULT]/transport_url</span></code> setting in
+the Nova configuration file if not specified on the command line. The
+database url is taken from the <code class="docutils literal"><span class="pre">[database]/connection</span></code> setting in the Nova
+configuration file if not specified on the command line. If you are not
+going to specify <code class="docutils literal"><span class="pre">--database_connection</span></code> and <code class="docutils literal"><span class="pre">--transport-url</span></code> on the
+command line, be sure to specify your existing cell Nova configuration
+file:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>nova-manage --config-file &lt;cell nova.conf&gt; cell_v2 create_cell \
+  --name &lt;cell name&gt;
+</pre></div>
+</div>
+</li>
+<li><p class="first">Run the <code class="docutils literal"><span class="pre">discover_hosts</span></code> command to map compute hosts to cells:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>nova-manage cell_v2 discover_hosts --cell_uuid &lt;cell uuid&gt;
+</pre></div>
+</div>
+<p>You will need to repeat this step for each cell in your deployment unless
+you omit the <code class="docutils literal"><span class="pre">--cell_uuid</span></code> option. If the cell uuid is not specified on
+the command line, <code class="docutils literal"><span class="pre">discover_hosts</span></code> will search for compute hosts in each
+cell database and map them to the corresponding cell. You can use the
+<code class="docutils literal"><span class="pre">list_cells</span></code> command to look up cell uuids if you are going to specify
+<code class="docutils literal"><span class="pre">--cell_uuid</span></code>.</p>
+<p>You can also configure a periodic task to have Nova discover new hosts
+automatically by setting the
+<code class="docutils literal"><span class="pre">[scheduler]/discover_hosts_in_cells_interval</span></code> to a time interval in
+seconds. The periodic task is run by the nova-scheduler service, so you must
+be sure to configure it on all of your nova-scheduler hosts.</p>
+</li>
+<li><p class="first">Run the <code class="docutils literal"><span class="pre">map_instances</span></code> command to map instances to cells:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>nova-manage cell_v2 map_instances --cell_uuid &lt;cell uuid&gt; \
+  --max-count &lt;max count&gt;
+</pre></div>
+</div>
+<p>You will need to repeat this step for each cell in your deployment. You can
+use the <code class="docutils literal"><span class="pre">list_cells</span></code> command to look up cell uuids.</p>
+<p>The <code class="docutils literal"><span class="pre">--max-count</span></code> option can be specified if you would like to limit the
+number of instances to map in a single run. If <code class="docutils literal"><span class="pre">--max-count</span></code> is not
+specified, all instances will be mapped. Repeated runs of the command will
+start from where the last run finished so it is not necessary to increase
+<code class="docutils literal"><span class="pre">--max-count</span></code> to finish. An exit code of 0 indicates that all instances
+have been mapped. An exit code of 1 indicates that there are remaining
+instances that need to be mapped.</p>
+</li>
+</ol>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">Remember: In the future, whenever you add new compute hosts, you
+will need to run the <code class="docutils literal"><span class="pre">discover_hosts</span></code> command after starting them
+to map them to a cell if you did not configure the automatic host
+discovery in step 5.</p>
+</div>
+</div>
+<div class="section" id="adding-a-new-cell-to-an-existing-deployment">
+<h3>Adding a new cell to an existing deployment<a class="headerlink" href="#adding-a-new-cell-to-an-existing-deployment" title="Permalink to this headline">¶</a></h3>
+<p>To expand your deployment with a new cell, first follow the usual steps for
+standing up a new Cells V1 cell. After that is finished, follow step 4 in
+<a class="reference internal" href="#upgrade-with-cells-v1">Upgrade with Cells V1</a> to create a new Cells V2 cell for it. If you have
+added new compute hosts for the new cell, you will also need to run the
+<code class="docutils literal"><span class="pre">discover_hosts</span></code> command after starting them to map them to the new cell if
+you did not configure the automatic host discovery as described in step 5 in
+<a class="reference internal" href="#upgrade-with-cells-v1">Upgrade with Cells V1</a>.</p>
+</div>
+<div class="section" id="id1">
+<h3>References<a class="headerlink" href="#id1" title="Permalink to this headline">¶</a></h3>
+<ul class="simple">
+<li><a class="reference external" href="http://docs.openstack.org/developer/nova/man/nova-manage.html#nova-cells-v2">man pages for the cells v2 commands</a></li>
+</ul>
+</div>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Cells</a><ul>
+<li><a class="reference internal" href="#cells-v1">Cells V1</a><ul>
+<li><a class="reference internal" href="#status">Status</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#cells-v2">Cells V2</a><ul>
+<li><a class="reference internal" href="#manifesto">Manifesto</a><ul>
+<li><a class="reference internal" href="#proposal">Proposal</a></li>
+<li><a class="reference internal" href="#benefits">Benefits</a></li>
+<li><a class="reference internal" href="#comparison-with-cells-v1">Comparison with Cells V1</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#database-split">Database split</a><ul>
+<li><a class="reference internal" href="#global-api-level-tables">Global (API-level) Tables</a></li>
+<li><a class="reference internal" href="#cell-level-tables">Cell-level Tables</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><a class="reference internal" href="#setup-of-cells-v2">Setup of Cells V2</a><ul>
+<li><a class="reference internal" href="#overview">Overview</a></li>
+<li><a class="reference internal" href="#first-time-setup">First Time Setup</a></li>
+<li><a class="reference internal" href="#references">References</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#step-by-step-for-common-use-cases">Step-By-Step for Common Use Cases</a><ul>
+<li><a class="reference internal" href="#fresh-install">Fresh Install</a></li>
+<li><a class="reference internal" href="#upgrade-minimal">Upgrade (minimal)</a></li>
+<li><a class="reference internal" href="#upgrade-with-cells-v1">Upgrade with Cells V1</a></li>
+<li><a class="reference internal" href="#adding-a-new-cell-to-an-existing-deployment">Adding a new cell to an existing deployment</a></li>
+<li><a class="reference internal" href="#id1">References</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="placement_dev.html"
+                                  title="previous chapter">Placement API Developer Notes</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="upgrade.html"
+                                  title="next chapter">Upgrades</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/nova
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="_sources/cells.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="upgrade.html" title="Upgrades"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="placement_dev.html" title="Placement API Developer Notes"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="index.html">nova 15.0.0.0rc2.dev69 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2010-present, OpenStack Foundation.
+      Last updated on &#39;Tue Feb 14 09:22:31 2017, commit 159bf6e&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/nova");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

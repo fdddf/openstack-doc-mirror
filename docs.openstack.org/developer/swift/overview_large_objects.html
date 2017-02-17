@@ -1,0 +1,732 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Large Object Support &mdash; swift 2.12.1.dev102 documentation</title>
+    
+    <link rel="stylesheet" href="_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '2.12.1.dev102',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <link rel="top" title="swift 2.12.1.dev102 documentation" href="index.html" />
+    <link rel="next" title="Object Versioning" href="overview_object_versioning.html" />
+    <link rel="prev" title="Rate Limiting" href="ratelimit.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="large-object-support">
+<span id="large-objects"></span><h1>Large Object Support<a class="headerlink" href="#large-object-support" title="Permalink to this headline">¶</a></h1>
+<div class="section" id="overview">
+<h2>Overview<a class="headerlink" href="#overview" title="Permalink to this headline">¶</a></h2>
+<p>Swift has a limit on the size of a single uploaded object; by default this is
+5GB. However, the download size of a single object is virtually unlimited with
+the concept of segmentation. Segments of the larger object are uploaded and a
+special manifest file is created that, when downloaded, sends all the segments
+concatenated as a single object. This also offers much greater upload speed
+with the possibility of parallel uploads of the segments.</p>
+</div>
+<div class="section" id="module-swift.common.middleware.dlo">
+<span id="id1"></span><span id="dlo-doc"></span><span id="dynamic-large-objects"></span><h2>Dynamic Large Objects<a class="headerlink" href="#module-swift.common.middleware.dlo" title="Permalink to this headline">¶</a></h2>
+<p>Middleware that will provide Dynamic Large Object (DLO) support.</p>
+<div class="section" id="using-swift">
+<h3>Using <code class="docutils literal"><span class="pre">swift</span></code><a class="headerlink" href="#using-swift" title="Permalink to this headline">¶</a></h3>
+<p>The quickest way to try out this feature is use the <code class="docutils literal"><span class="pre">swift</span></code> Swift Tool
+included with the <a class="reference external" href="http://github.com/openstack/python-swiftclient">python-swiftclient</a> library.  You can use the <code class="docutils literal"><span class="pre">-S</span></code>
+option to specify the segment size to use when splitting a large file. For
+example:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>swift upload test_container -S 1073741824 large_file
+</pre></div>
+</div>
+<p>This would split the large_file into 1G segments and begin uploading those
+segments in parallel. Once all the segments have been uploaded, <code class="docutils literal"><span class="pre">swift</span></code> will
+then create the manifest file so the segments can be downloaded as one.</p>
+<p>So now, the following <code class="docutils literal"><span class="pre">swift</span></code> command would download the entire large
+object:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>swift download test_container large_file
+</pre></div>
+</div>
+<p><code class="docutils literal"><span class="pre">swift</span></code> command uses a strict convention for its segmented object
+support. In the above example it will upload all the segments into a
+second container named test_container_segments. These segments will
+have names like large_file/1290206778.25/21474836480/00000000,
+large_file/1290206778.25/21474836480/00000001, etc.</p>
+<p>The main benefit for using a separate container is that the main container
+listings will not be polluted with all the segment names. The reason for using
+the segment name format of &lt;name&gt;/&lt;timestamp&gt;/&lt;size&gt;/&lt;segment&gt; is so that an
+upload of a new file with the same name won&#8217;t overwrite the contents of the
+first until the last moment when the manifest file is updated.</p>
+<p><code class="docutils literal"><span class="pre">swift</span></code> will manage these segment files for you, deleting old segments on
+deletes and overwrites, etc. You can override this behavior with the
+<code class="docutils literal"><span class="pre">--leave-segments</span></code> option if desired; this is useful if you want to have
+multiple versions of the same large object available.</p>
+</div>
+<div class="section" id="direct-api">
+<h3>Direct API<a class="headerlink" href="#direct-api" title="Permalink to this headline">¶</a></h3>
+<p>You can also work with the segments and manifests directly with HTTP
+requests instead of having <code class="docutils literal"><span class="pre">swift</span></code> do that for you. You can just
+upload the segments like you would any other object and the manifest
+is just a zero-byte (not enforced) file with an extra
+<code class="docutils literal"><span class="pre">X-Object-Manifest</span></code> header.</p>
+<p>All the object segments need to be in the same container, have a common object
+name prefix, and sort in the order in which they should be concatenated.
+Object names are sorted lexicographically as UTF-8 byte strings.
+They don&#8217;t have to be in the same container as the manifest file will be, which
+is useful to keep container listings clean as explained above with <code class="docutils literal"><span class="pre">swift</span></code>.</p>
+<p>The manifest file is simply a zero-byte (not enforced) file with the extra
+<code class="docutils literal"><span class="pre">X-Object-Manifest:</span> <span class="pre">&lt;container&gt;/&lt;prefix&gt;</span></code> header, where <code class="docutils literal"><span class="pre">&lt;container&gt;</span></code> is
+the container the object segments are in and <code class="docutils literal"><span class="pre">&lt;prefix&gt;</span></code> is the common prefix
+for all the segments.</p>
+<p>It is best to upload all the segments first and then create or update the
+manifest. In this way, the full object won&#8217;t be available for downloading
+until the upload is complete. Also, you can upload a new set of segments to
+a second location and then update the manifest to point to this new location.
+During the upload of the new segments, the original manifest will still be
+available to download the first set of segments.</p>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p>When updating a manifest object using a POST request, a
+<code class="docutils literal"><span class="pre">X-Object-Manifest</span></code> header must be included for the object to
+continue to behave as a manifest object.</p>
+<p class="last">The manifest file should have no content. However, this is not enforced.
+If the manifest path itself conforms to container/prefix specified in
+<code class="docutils literal"><span class="pre">X-Object-Manifest</span></code>, and if manifest has some content/data in it, it
+would also be considered as segment and manifest&#8217;s content will be part of
+the concatenated GET response. The order of concatenation follows the usual
+DLO logic which is - the order of concatenation adheres to order returned
+when segment names are sorted.</p>
+</div>
+<p>Here&#8217;s an example using <code class="docutils literal"><span class="pre">curl</span></code> with tiny 1-byte segments:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span># First, upload the segments
+curl -X PUT -H &#39;X-Auth-Token: &lt;token&gt;&#39;         http://&lt;storage_url&gt;/container/myobject/00000001 --data-binary &#39;1&#39;
+curl -X PUT -H &#39;X-Auth-Token: &lt;token&gt;&#39;         http://&lt;storage_url&gt;/container/myobject/00000002 --data-binary &#39;2&#39;
+curl -X PUT -H &#39;X-Auth-Token: &lt;token&gt;&#39;         http://&lt;storage_url&gt;/container/myobject/00000003 --data-binary &#39;3&#39;
+
+# Next, create the manifest file
+curl -X PUT -H &#39;X-Auth-Token: &lt;token&gt;&#39;         -H &#39;X-Object-Manifest: container/myobject/&#39;         http://&lt;storage_url&gt;/container/myobject --data-binary &#39;&#39;
+
+# And now we can download the segments as a single object
+curl -H &#39;X-Auth-Token: &lt;token&gt;&#39;         http://&lt;storage_url&gt;/container/myobject
+</pre></div>
+</div>
+</div>
+</div>
+<div class="section" id="module-swift.common.middleware.slo">
+<span id="id2"></span><span id="slo-doc"></span><span id="static-large-objects"></span><h2>Static Large Objects<a class="headerlink" href="#module-swift.common.middleware.slo" title="Permalink to this headline">¶</a></h2>
+<p>Middleware that will provide Static Large Object (SLO) support.</p>
+<p>This feature is very similar to Dynamic Large Object (DLO) support in that
+it allows the user to upload many objects concurrently and afterwards
+download them as a single object. It is different in that it does not rely
+on eventually consistent container listings to do so. Instead, a user
+defined manifest of the object segments is used.</p>
+<div class="section" id="uploading-the-manifest">
+<h3>Uploading the Manifest<a class="headerlink" href="#uploading-the-manifest" title="Permalink to this headline">¶</a></h3>
+<p>After the user has uploaded the objects to be concatenated, a manifest is
+uploaded. The request must be a PUT with the query parameter:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>?multipart-manifest=put
+</pre></div>
+</div>
+<p>The body of this request will be an ordered list of segment descriptions in
+JSON format. The data to be supplied for each segment is:</p>
+<table border="1" class="docutils">
+<colgroup>
+<col width="16%" />
+<col width="84%" />
+</colgroup>
+<thead valign="bottom">
+<tr class="row-odd"><th class="head">Key</th>
+<th class="head">Description</th>
+</tr>
+</thead>
+<tbody valign="top">
+<tr class="row-even"><td>path</td>
+<td>the path to the segment object (not including account)
+/container/object_name</td>
+</tr>
+<tr class="row-odd"><td>etag</td>
+<td>(optional) the ETag given back when the segment object
+was PUT</td>
+</tr>
+<tr class="row-even"><td>size_bytes</td>
+<td>(optional) the size of the complete segment object in
+bytes</td>
+</tr>
+<tr class="row-odd"><td>range</td>
+<td>(optional) the (inclusive) range within the object to
+use as a segment. If omitted, the entire object is used.</td>
+</tr>
+</tbody>
+</table>
+<p>The format of the list will be:</p>
+<blockquote>
+<div><div class="code highlight-python"><div class="highlight"><pre><span></span><span class="p">[{</span><span class="s2">&quot;path&quot;</span><span class="p">:</span> <span class="s2">&quot;/cont/object&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;etag&quot;</span><span class="p">:</span> <span class="s2">&quot;etagoftheobjectsegment&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;size_bytes&quot;</span><span class="p">:</span> <span class="mi">10485760</span><span class="p">,</span>
+  <span class="s2">&quot;range&quot;</span><span class="p">:</span> <span class="s2">&quot;1048576-2097151&quot;</span><span class="p">},</span> <span class="o">...</span><span class="p">]</span>
+</pre></div>
+</div>
+</div></blockquote>
+<p>The number of object segments is limited to a configurable amount, default
+1000. Each segment must be at least 1 byte. On upload, the middleware will
+head every segment passed in to verify:</p>
+<blockquote>
+<div><ol class="arabic simple">
+<li>the segment exists (i.e. the HEAD was successful);</li>
+<li>the segment meets minimum size requirements;</li>
+<li>if the user provided a non-null etag, the etag matches;</li>
+<li>if the user provided a non-null size_bytes, the size_bytes matches; and</li>
+<li>if the user provided a range, it is a singular, syntactically correct range
+that is satisfiable given the size of the object.</li>
+</ol>
+</div></blockquote>
+<p>Note that the etag and size_bytes keys are optional; if ommitted, the
+verification is not performed. If any of the objects fail to verify (not
+found, size/etag mismatch, below minimum size, invalid range) then the user
+will receive a 4xx error response. If everything does match, the user will
+receive a 2xx response and the SLO object is ready for downloading.</p>
+<p>Behind the scenes, on success, a json manifest generated from the user input is
+sent to object servers with an extra &#8220;X-Static-Large-Object: True&#8221; header
+and a modified Content-Type. The items in this manifest will include the etag
+and size_bytes for each segment, regardless of whether the client specified
+them for verification. The parameter: swift_bytes=$total_size will be
+appended to the existing Content-Type, where total_size is the sum of all
+the included segments&#8217; size_bytes. This extra parameter will be hidden from
+the user.</p>
+<p>Manifest files can reference objects in separate containers, which will improve
+concurrent upload speed. Objects can be referenced by multiple manifests. The
+segments of a SLO manifest can even be other SLO manifests. Treat them as any
+other object i.e., use the Etag and Content-Length given on the PUT of the
+sub-SLO in the manifest to the parent SLO.</p>
+<p>While uploading a manifest, a user can send Etag for verification. It needs to
+be md5 of the segments&#8217; etags, if there is no range specified. For example, if
+the manifest to be uploaded looks like this:</p>
+<blockquote>
+<div><div class="code highlight-python"><div class="highlight"><pre><span></span><span class="p">[{</span><span class="s2">&quot;path&quot;</span><span class="p">:</span> <span class="s2">&quot;/cont/object1&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;etag&quot;</span><span class="p">:</span> <span class="s2">&quot;etagoftheobjectsegment1&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;size_bytes&quot;</span><span class="p">:</span> <span class="mi">10485760</span><span class="p">},</span>
+ <span class="p">{</span><span class="s2">&quot;path&quot;</span><span class="p">:</span> <span class="s2">&quot;/cont/object2&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;etag&quot;</span><span class="p">:</span> <span class="s2">&quot;etagoftheobjectsegment2&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;size_bytes&quot;</span><span class="p">:</span> <span class="mi">10485760</span><span class="p">}]</span>
+</pre></div>
+</div>
+</div></blockquote>
+<p>The Etag of the above manifest would be md5 of etagoftheobjectsegment1 and
+etagoftheobjectsegment2. This could be computed in the following way:</p>
+<blockquote>
+<div><div class="code highlight-python"><div class="highlight"><pre><span></span>echo -n &#39;etagoftheobjectsegment1etagoftheobjectsegment2&#39; | md5sum
+</pre></div>
+</div>
+</div></blockquote>
+<p>If a manifest to be uploaded with a segment range looks like this:</p>
+<blockquote>
+<div><div class="code highlight-python"><div class="highlight"><pre><span></span><span class="p">[{</span><span class="s2">&quot;path&quot;</span><span class="p">:</span> <span class="s2">&quot;/cont/object1&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;etag&quot;</span><span class="p">:</span> <span class="s2">&quot;etagoftheobjectsegmentone&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;size_bytes&quot;</span><span class="p">:</span> <span class="mi">10485760</span><span class="p">,</span>
+  <span class="s2">&quot;range&quot;</span><span class="p">:</span> <span class="s2">&quot;1-2&quot;</span><span class="p">},</span>
+ <span class="p">{</span><span class="s2">&quot;path&quot;</span><span class="p">:</span> <span class="s2">&quot;/cont/object2&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;etag&quot;</span><span class="p">:</span> <span class="s2">&quot;etagoftheobjectsegmenttwo&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;size_bytes&quot;</span><span class="p">:</span> <span class="mi">10485760</span><span class="p">,</span>
+  <span class="s2">&quot;range&quot;</span><span class="p">:</span> <span class="s2">&quot;3-4&quot;</span><span class="p">}]</span>
+</pre></div>
+</div>
+</div></blockquote>
+<p>While computing the Etag of the above manifest, internally each segment&#8217;s etag
+will be taken in the form of &#8216;etagvalue:rangevalue;&#8217;. Hence the Etag of the
+above manifest would be:</p>
+<blockquote>
+<div><div class="code highlight-python"><div class="highlight"><pre><span></span>echo -n &#39;etagoftheobjectsegmentone:1-2;etagoftheobjectsegmenttwo:3-4;&#39;     | md5sum
+</pre></div>
+</div>
+</div></blockquote>
+</div>
+<div class="section" id="range-specification">
+<h3>Range Specification<a class="headerlink" href="#range-specification" title="Permalink to this headline">¶</a></h3>
+<p>Users now have the ability to specify ranges for SLO segments.
+Users can now include an optional &#8216;range&#8217; field in segment descriptions
+to specify which bytes from the underlying object should be used for the
+segment data. Only one range may be specified per segment.</p>
+<blockquote>
+<div><div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">The &#8216;etag&#8217; and &#8216;size_bytes&#8217; fields still describe the backing object as a
+whole.</p>
+</div>
+</div></blockquote>
+<p>If a user uploads this manifest:</p>
+<blockquote>
+<div><div class="code highlight-python"><div class="highlight"><pre><span></span><span class="p">[{</span><span class="s2">&quot;path&quot;</span><span class="p">:</span> <span class="s2">&quot;/con/obj_seg_1&quot;</span><span class="p">,</span> <span class="s2">&quot;size_bytes&quot;</span><span class="p">:</span> <span class="mi">2097152</span><span class="p">,</span> <span class="s2">&quot;range&quot;</span><span class="p">:</span> <span class="s2">&quot;0-1048576&quot;</span><span class="p">},</span>
+ <span class="p">{</span><span class="s2">&quot;path&quot;</span><span class="p">:</span> <span class="s2">&quot;/con/obj_seg_2&quot;</span><span class="p">,</span> <span class="s2">&quot;size_bytes&quot;</span><span class="p">:</span> <span class="mi">2097152</span><span class="p">,</span>
+  <span class="s2">&quot;range&quot;</span><span class="p">:</span> <span class="s2">&quot;512-1550000&quot;</span><span class="p">},</span>
+ <span class="p">{</span><span class="s2">&quot;path&quot;</span><span class="p">:</span> <span class="s2">&quot;/con/obj_seg_1&quot;</span><span class="p">,</span> <span class="s2">&quot;size_bytes&quot;</span><span class="p">:</span> <span class="mi">2097152</span><span class="p">,</span> <span class="s2">&quot;range&quot;</span><span class="p">:</span> <span class="s2">&quot;-2048&quot;</span><span class="p">}]</span>
+</pre></div>
+</div>
+</div></blockquote>
+<p>The segment will consist of the first 1048576 bytes of /con/obj_seg_1,
+followed by bytes 513 through 1550000 (inclusive) of /con/obj_seg_2, and
+finally bytes 2095104 through 2097152 (i.e., the last 2048 bytes) of
+/con/obj_seg_1.</p>
+<blockquote>
+<div><div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">The minimum sized range is 1 byte. This is the same as the minimum
+segment size.</p>
+</div>
+</div></blockquote>
+</div>
+<div class="section" id="retrieving-a-large-object">
+<h3>Retrieving a Large Object<a class="headerlink" href="#retrieving-a-large-object" title="Permalink to this headline">¶</a></h3>
+<p>A GET request to the manifest object will return the concatenation of the
+objects from the manifest much like DLO. If any of the segments from the
+manifest are not found or their Etag/Content Length have changed since upload,
+the connection will drop. In this case a 409 Conflict will be logged in the
+proxy logs and the user will receive incomplete results. Note that this will be
+enforced regardless of whether the user performed per-segment validation during
+upload.</p>
+<p>The headers from this GET or HEAD request will return the metadata attached
+to the manifest object itself with some exceptions:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>Content-Length: the total size of the SLO (the sum of the sizes of
+                the segments in the manifest)
+X-Static-Large-Object: True
+Etag: the etag of the SLO (generated the same way as DLO)
+</pre></div>
+</div>
+<p>A GET request with the query parameter:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>?multipart-manifest=get
+</pre></div>
+</div>
+<p>will return a transformed version of the original manifest, containing
+additional fields and different key names.</p>
+<p>A GET request with the query parameters:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>?multipart-manifest=get&amp;format=raw
+</pre></div>
+</div>
+<p>will return the contents of the original manifest as it was sent by the client.
+The main purpose for both calls is solely debugging.</p>
+<p>When the manifest object is uploaded you are more or less guaranteed that
+every segment in the manifest exists and matched the specifications.
+However, there is nothing that prevents the user from breaking the
+SLO download by deleting/replacing a segment referenced in the manifest. It is
+left to the user to use caution in handling the segments.</p>
+</div>
+<div class="section" id="deleting-a-large-object">
+<h3>Deleting a Large Object<a class="headerlink" href="#deleting-a-large-object" title="Permalink to this headline">¶</a></h3>
+<p>A DELETE request will just delete the manifest object itself.</p>
+<p>A DELETE with a query parameter:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>?multipart-manifest=delete
+</pre></div>
+</div>
+<p>will delete all the segments referenced in the manifest and then the manifest
+itself. The failure response will be similar to the bulk delete middleware.</p>
+</div>
+<div class="section" id="modifying-a-large-object">
+<h3>Modifying a Large Object<a class="headerlink" href="#modifying-a-large-object" title="Permalink to this headline">¶</a></h3>
+<p>PUTs / POSTs will work as expected, PUTs will just overwrite the manifest
+object for example.</p>
+</div>
+<div class="section" id="container-listings">
+<h3>Container Listings<a class="headerlink" href="#container-listings" title="Permalink to this headline">¶</a></h3>
+<p>In a container listing the size listed for SLO manifest objects will be the
+total_size of the concatenated segments in the manifest. The overall
+X-Container-Bytes-Used for the container (and subsequently for the account)
+will not reflect total_size of the manifest but the actual size of the json
+data stored. The reason for this somewhat confusing discrepancy is we want the
+container listing to reflect the size of the manifest object when it is
+downloaded. We do not, however, want to count the bytes-used twice (for both
+the manifest and the segments it&#8217;s referring to) in the container and account
+metadata which can be used for stats purposes.</p>
+<dl class="class">
+<dt id="swift.common.middleware.slo.StaticLargeObject">
+<em class="property">class </em><code class="descclassname">swift.common.middleware.slo.</code><code class="descname">StaticLargeObject</code><span class="sig-paren">(</span><em>app</em>, <em>conf</em>, <em>max_manifest_segments=1000</em>, <em>max_manifest_size=2097152</em><span class="sig-paren">)</span><a class="headerlink" href="#swift.common.middleware.slo.StaticLargeObject" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>StaticLargeObject Middleware</p>
+<p>See above for a full description.</p>
+<p>The proxy logs created for any subrequests made will have swift.source set
+to &#8220;SLO&#8221;.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><ul class="first last simple">
+<li><strong>app</strong> &#8211; The next WSGI filter or app in the paste.deploy chain.</li>
+<li><strong>conf</strong> &#8211; The configuration dict for the middleware.</li>
+</ul>
+</td>
+</tr>
+</tbody>
+</table>
+<dl class="method">
+<dt id="swift.common.middleware.slo.StaticLargeObject.get_segments_to_delete_iter">
+<code class="descname">get_segments_to_delete_iter</code><span class="sig-paren">(</span><em>req</em><span class="sig-paren">)</span><a class="headerlink" href="#swift.common.middleware.slo.StaticLargeObject.get_segments_to_delete_iter" title="Permalink to this definition">¶</a></dt>
+<dd><p>A generator function to be used to delete all the segments and
+sub-segments referenced in a manifest.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Params req:</th><td class="field-body"><p class="first">a swob.Request with an SLO manifest in path</p>
+</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Raises:</th><td class="field-body"><ul class="first last simple">
+<li><strong>HTTPPreconditionFailed</strong> &#8211; on invalid UTF8 in request path</li>
+<li><strong>HTTPBadRequest</strong> &#8211; on too many buffered sub segments and
+on invalid SLO manifest path</li>
+</ul>
+</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="swift.common.middleware.slo.StaticLargeObject.get_slo_segments">
+<code class="descname">get_slo_segments</code><span class="sig-paren">(</span><em>obj_name</em>, <em>req</em><span class="sig-paren">)</span><a class="headerlink" href="#swift.common.middleware.slo.StaticLargeObject.get_slo_segments" title="Permalink to this definition">¶</a></dt>
+<dd><p>Performs a swob.Request and returns the SLO manifest&#8217;s segments.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Raises:</th><td class="field-body"><ul class="first simple">
+<li><strong>HTTPServerError</strong> &#8211; on unable to load obj_name or
+on unable to load the SLO manifest data.</li>
+<li><strong>HTTPBadRequest</strong> &#8211; on not an SLO manifest</li>
+<li><strong>HTTPNotFound</strong> &#8211; on SLO manifest not found</li>
+</ul>
+</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Returns:</th><td class="field-body"><p class="first last">SLO manifest&#8217;s segments</p>
+</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="swift.common.middleware.slo.StaticLargeObject.handle_multipart_delete">
+<code class="descname">handle_multipart_delete</code><span class="sig-paren">(</span><em>req</em><span class="sig-paren">)</span><a class="headerlink" href="#swift.common.middleware.slo.StaticLargeObject.handle_multipart_delete" title="Permalink to this definition">¶</a></dt>
+<dd><p>Will delete all the segments in the SLO manifest and then, if
+successful, will delete the manifest file.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Params req:</th><td class="field-body">a swob.Request with an obj in path</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Returns:</th><td class="field-body">swob.Response whose app_iter set to Bulk.handle_delete_iter</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="swift.common.middleware.slo.StaticLargeObject.handle_multipart_get_or_head">
+<code class="descname">handle_multipart_get_or_head</code><span class="sig-paren">(</span><em>req</em>, <em>start_response</em><span class="sig-paren">)</span><a class="headerlink" href="#swift.common.middleware.slo.StaticLargeObject.handle_multipart_get_or_head" title="Permalink to this definition">¶</a></dt>
+<dd><p>Handles the GET or HEAD of a SLO manifest.</p>
+<p>The response body (only on GET, of course) will consist of the
+concatenation of the segments.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Params req:</th><td class="field-body">a swob.Request with a path referencing an object</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Raises:</th><td class="field-body">HttpException on errors</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="swift.common.middleware.slo.StaticLargeObject.handle_multipart_put">
+<code class="descname">handle_multipart_put</code><span class="sig-paren">(</span><em>req</em>, <em>start_response</em><span class="sig-paren">)</span><a class="headerlink" href="#swift.common.middleware.slo.StaticLargeObject.handle_multipart_put" title="Permalink to this definition">¶</a></dt>
+<dd><p>Will handle the PUT of a SLO manifest.
+Heads every object in manifest to check if is valid and if so will
+save a manifest generated from the user input. Uses WSGIContext to
+call self and start_response and returns a WSGI iterator.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Params req:</th><td class="field-body">a swob.Request with an obj in path</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Raises:</th><td class="field-body">HttpException on errors</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="function">
+<dt id="swift.common.middleware.slo.parse_and_validate_input">
+<code class="descclassname">swift.common.middleware.slo.</code><code class="descname">parse_and_validate_input</code><span class="sig-paren">(</span><em>req_body</em>, <em>req_path</em><span class="sig-paren">)</span><a class="headerlink" href="#swift.common.middleware.slo.parse_and_validate_input" title="Permalink to this definition">¶</a></dt>
+<dd><p>Given a request body, parses it and returns a list of dictionaries.</p>
+<p>The output structure is nearly the same as the input structure, but it
+is not an exact copy. Given a valid input dictionary <cite>d_in</cite>, its
+corresponding output dictionary <cite>d_out</cite> will be as follows:</p>
+<blockquote>
+<div><ul class="simple">
+<li>d_out[&#8216;etag&#8217;] == d_in[&#8216;etag&#8217;]</li>
+<li>d_out[&#8216;path&#8217;] == d_in[&#8216;path&#8217;]</li>
+<li>d_in[&#8216;size_bytes&#8217;] can be a string (&#8220;12&#8221;) or an integer (12), but
+d_out[&#8216;size_bytes&#8217;] is an integer.</li>
+<li>(optional) d_in[&#8216;range&#8217;] is a string of the form &#8220;M-N&#8221;, &#8220;M-&#8221;, or
+&#8220;-N&#8221;, where M and N are non-negative integers. d_out[&#8216;range&#8217;] is the
+corresponding swob.Range object. If d_in does not have a key
+&#8216;range&#8217;, neither will d_out.</li>
+</ul>
+</div></blockquote>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Raises:</th><td class="field-body">HTTPException on parse errors or semantic errors (e.g. bogus
+JSON structure, syntactically invalid ranges)</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Returns:</th><td class="field-body">a list of dictionaries on success</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+</div>
+</div>
+<div class="section" id="id3">
+<h2>Direct API<a class="headerlink" href="#id3" title="Permalink to this headline">¶</a></h2>
+<p>SLO support centers around the user generated manifest file. After the user
+has uploaded the segments into their account a manifest file needs to be
+built and uploaded. All object segments, must be at least 1 byte
+in size. Please see the SLO docs for <a class="reference internal" href="#slo-doc"><span>Static Large Objects</span></a> further
+details.</p>
+</div>
+<div class="section" id="additional-notes">
+<h2>Additional Notes<a class="headerlink" href="#additional-notes" title="Permalink to this headline">¶</a></h2>
+<ul class="simple">
+<li>With a <code class="docutils literal"><span class="pre">GET</span></code> or <code class="docutils literal"><span class="pre">HEAD</span></code> of a manifest file, the <code class="docutils literal"><span class="pre">X-Object-Manifest:</span>
+<span class="pre">&lt;container&gt;/&lt;prefix&gt;</span></code> header will be returned with the concatenated object
+so you can tell where it&#8217;s getting its segments from.</li>
+<li>When updating a manifest object using a POST request, a
+<code class="docutils literal"><span class="pre">X-Object-Manifest</span></code> header must be included for the object to
+continue to behave as a manifest object.</li>
+<li>The response&#8217;s <code class="docutils literal"><span class="pre">Content-Length</span></code> for a <code class="docutils literal"><span class="pre">GET</span></code> or <code class="docutils literal"><span class="pre">HEAD</span></code> on the manifest
+file will be the sum of all the segments in the <code class="docutils literal"><span class="pre">&lt;container&gt;/&lt;prefix&gt;</span></code>
+listing, dynamically. So, uploading additional segments after the manifest is
+created will cause the concatenated object to be that much larger; there&#8217;s no
+need to recreate the manifest file.</li>
+<li>The response&#8217;s <code class="docutils literal"><span class="pre">Content-Type</span></code> for a <code class="docutils literal"><span class="pre">GET</span></code> or <code class="docutils literal"><span class="pre">HEAD</span></code> on the manifest
+will be the same as the <code class="docutils literal"><span class="pre">Content-Type</span></code> set during the <code class="docutils literal"><span class="pre">PUT</span></code> request that
+created the manifest. You can easily change the <code class="docutils literal"><span class="pre">Content-Type</span></code> by reissuing
+the <code class="docutils literal"><span class="pre">PUT</span></code>.</li>
+<li>The response&#8217;s <code class="docutils literal"><span class="pre">ETag</span></code> for a <code class="docutils literal"><span class="pre">GET</span></code> or <code class="docutils literal"><span class="pre">HEAD</span></code> on the manifest file will
+be the MD5 sum of the concatenated string of ETags for each of the segments
+in the manifest (for DLO, from the listing <code class="docutils literal"><span class="pre">&lt;container&gt;/&lt;prefix&gt;</span></code>).
+Usually in Swift the ETag is the MD5 sum of the contents of the object, and
+that holds true for each segment independently. But it&#8217;s not meaningful to
+generate such an ETag for the manifest itself so this method was chosen to
+at least offer change detection.</li>
+</ul>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">If you are using the container sync feature you will need to ensure both
+your manifest file and your segment files are synced if they happen to be
+in different containers.</p>
+</div>
+</div>
+<div class="section" id="history">
+<h2>History<a class="headerlink" href="#history" title="Permalink to this headline">¶</a></h2>
+<p>Dynamic large object support has gone through various iterations before
+settling on this implementation.</p>
+<p>The primary factor driving the limitation of object size in Swift is
+maintaining balance among the partitions of the ring.  To maintain an even
+dispersion of disk usage throughout the cluster the obvious storage pattern
+was to simply split larger objects into smaller segments, which could then be
+glued together during a read.</p>
+<p>Before the introduction of large object support some applications were already
+splitting their uploads into segments and re-assembling them on the client
+side after retrieving the individual pieces.  This design allowed the client
+to support backup and archiving of large data sets, but was also frequently
+employed to improve performance or reduce errors due to network interruption.
+The major disadvantage of this method is that knowledge of the original
+partitioning scheme is required to properly reassemble the object, which is
+not practical for some use cases, such as CDN origination.</p>
+<p>In order to eliminate any barrier to entry for clients wanting to store
+objects larger than 5GB, initially we also prototyped fully transparent
+support for large object uploads.  A fully transparent implementation would
+support a larger max size by automatically splitting objects into segments
+during upload within the proxy without any changes to the client API.  All
+segments were completely hidden from the client API.</p>
+<p>This solution introduced a number of challenging failure conditions into the
+cluster, wouldn&#8217;t provide the client with any option to do parallel uploads,
+and had no basis for a resume feature.  The transparent implementation was
+deemed just too complex for the benefit.</p>
+<p>The current &#8220;user manifest&#8221; design was chosen in order to provide a
+transparent download of large objects to the client and still provide the
+uploading client a clean API to support segmented uploads.</p>
+<p>To meet an many use cases as possible Swift supports two types of large
+object manifests. Dynamic and static large object manifests both support
+the same idea of allowing the user to upload many segments to be later
+downloaded as a single file.</p>
+<p>Dynamic large objects rely on a container listing to provide the manifest.
+This has the advantage of allowing the user to add/removes segments from the
+manifest at any time. It has the disadvantage of relying on eventually
+consistent container listings. All three copies of the container dbs must
+be updated for a complete list to be guaranteed. Also, all segments must
+be in a single container, which can limit concurrent upload speed.</p>
+<p>Static large objects rely on a user provided manifest file. A user can
+upload objects into multiple containers and then reference those objects
+(segments) in a self generated manifest file. Future GETs to that file will
+download the concatenation of the specified segments. This has the advantage of
+being able to immediately download the complete object once the manifest has
+been successfully PUT. Being able to upload segments into separate containers
+also improves concurrent upload speed. It has the disadvantage that the
+manifest is finalized once PUT. Any changes to it means it has to be replaced.</p>
+<p>Between these two methods the user has great flexibility in how (s)he chooses
+to upload and retrieve large objects to Swift. Swift does not, however, stop
+the user from harming themselves. In both cases the segments are deletable by
+the user at any time. If a segment was deleted by mistake, a dynamic large
+object, having no way of knowing it was ever there, would happily ignore the
+deleted file and the user will get an incomplete file. A static large object
+would, when failing to retrieve the object specified in the manifest, drop the
+connection and the user would receive partial results.</p>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Large Object Support</a><ul>
+<li><a class="reference internal" href="#overview">Overview</a></li>
+<li><a class="reference internal" href="#module-swift.common.middleware.dlo">Dynamic Large Objects</a><ul>
+<li><a class="reference internal" href="#using-swift">Using <code class="docutils literal"><span class="pre">swift</span></code></a></li>
+<li><a class="reference internal" href="#direct-api">Direct API</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#module-swift.common.middleware.slo">Static Large Objects</a><ul>
+<li><a class="reference internal" href="#uploading-the-manifest">Uploading the Manifest</a></li>
+<li><a class="reference internal" href="#range-specification">Range Specification</a></li>
+<li><a class="reference internal" href="#retrieving-a-large-object">Retrieving a Large Object</a></li>
+<li><a class="reference internal" href="#deleting-a-large-object">Deleting a Large Object</a></li>
+<li><a class="reference internal" href="#modifying-a-large-object">Modifying a Large Object</a></li>
+<li><a class="reference internal" href="#container-listings">Container Listings</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#id3">Direct API</a></li>
+<li><a class="reference internal" href="#additional-notes">Additional Notes</a></li>
+<li><a class="reference internal" href="#history">History</a></li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="ratelimit.html"
+                                  title="previous chapter">Rate Limiting</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="overview_object_versioning.html"
+                                  title="next chapter">Object Versioning</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/swift
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="_sources/overview_large_objects.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="right" >
+          <a href="overview_object_versioning.html" title="Object Versioning"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="ratelimit.html" title="Rate Limiting"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="index.html">swift 2.12.1.dev102 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2017, OpenStack Foundation.
+      Last updated on &#39;Tue Feb 14 07:57:22 2017, commit 7cb6882&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/swift");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

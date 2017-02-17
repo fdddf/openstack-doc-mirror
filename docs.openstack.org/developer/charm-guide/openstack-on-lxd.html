@@ -1,0 +1,401 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>OpenStack on LXD &mdash; OpenStack Charms Guide 0.0.1.dev33 documentation</title>
+    
+    <link rel="stylesheet" href="_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '0.0.1.dev33',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <link rel="top" title="OpenStack Charms Guide 0.0.1.dev33 documentation" href="index.html" />
+    <link rel="up" title="Charm Deployment" href="deployment.html" />
+    <link rel="next" title="Charms" href="openstack-charms.html" />
+    <link rel="prev" title="Charm Deployment" href="deployment.html" /> 
+  </head>
+  <body>
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body">
+            
+  <div class="section" id="openstack-on-lxd">
+<span id="id1"></span><h1>OpenStack on LXD<a class="headerlink" href="#openstack-on-lxd" title="Permalink to this headline">¶</a></h1>
+<div class="section" id="overview">
+<h2>Overview<a class="headerlink" href="#overview" title="Permalink to this headline">¶</a></h2>
+<p>An OpenStack deployment is typically made over a number of physical servers, using LXD containers where appropriate for control plane services.</p>
+<p>However, the average developer probably does not have, or want to have, access to such infrastructure for day-to-day charm development.</p>
+<p>Its possible to deploy OpenStack using the OpenStack Charms in LXD containers on a single machine; this allows for faster, localized charm development and testing.</p>
+</div>
+<div class="section" id="host-setup">
+<h2>Host Setup<a class="headerlink" href="#host-setup" title="Permalink to this headline">¶</a></h2>
+<p>The tools in the openstack-on-lxd git repository require the use of Juju 2.x, which provides full support for the LXD local provider.</p>
+<div class="code bash highlight-python"><div class="highlight"><pre><span></span>sudo apt-get install juju lxd zfsutils-linux squid-deb-proxy \
+    python-novaclient python-keystoneclient python-glanceclient \
+    python-neutronclient python-openstackclient curl
+</pre></div>
+</div>
+<p>These tools are provided as part of the Ubuntu 16.04 LTS release; the latest Juju 2.x beta release can be obtained from the Juju team devel PPA:</p>
+<div class="code bash highlight-python"><div class="highlight"><pre><span></span>sudo add-apt-repository ppa:juju/devel
+</pre></div>
+</div>
+<p>You&#8217;ll need a well specified machine with at least 8G of RAM and a SSD; for reference the author uses Lenovo x240 with an Intel i5 processor, 16G RAM and a 500G Samsung SSD (split into two - one partition for the OS and one partition for a ZFS pool).</p>
+<p>For s390x, this has been validated on an LPAR with 12 CPUs, 40GB RAM, 2 ~40GB disks (one disk for the OS and one disk for the ZFS pool).</p>
+<p>You&#8217;ll also need to clone the repository with the bundles and configuration for the deployment:</p>
+<div class="code bash highlight-python"><div class="highlight"><pre><span></span>git clone https://github.com/openstack-charmers/openstack-on-lxd
+</pre></div>
+</div>
+<p>All commands in this document assume they are being made from within the local copy of this repo.</p>
+</div>
+<div class="section" id="lxd">
+<h2>LXD<a class="headerlink" href="#lxd" title="Permalink to this headline">¶</a></h2>
+<div class="section" id="base-configuration">
+<h3>Base Configuration<a class="headerlink" href="#base-configuration" title="Permalink to this headline">¶</a></h3>
+<p>This type of deployment creates numerous containers on a single host which leads to many thousands of file handles.</p>
+<p>Some of the default system thresholds may not be high enough for this use case, potentially leading to issues such as <cite>Too many open files</cite>.</p>
+<p>To address this, the host system should be configured according to the LXD <a class="reference external" href="https://github.com/lxc/lxd/blob/master/doc/production-setup.md">production-setup</a> guide, specifically the <cite>/etc/sysctl.conf</cite> bits:</p>
+<div class="code bash highlight-python"><div class="highlight"><pre><span></span>echo fs.inotify.max_queued_events=1048576 | sudo tee -a /etc/sysctl.conf
+echo fs.inotify.max_user_instances=1048576 | sudo tee -a /etc/sysctl.conf
+echo fs.inotify.max_user_watches=1048576 | sudo tee -a /etc/sysctl.conf
+echo vm.max_map_count=262144 | sudo tee -a /etc/sysctl.conf
+sudo sysctl -p
+</pre></div>
+</div>
+<p>In order to allow the OpenStack Cloud to function, you&#8217;ll need to reconfigure the default LXD bridge to support IPv4 networking; is also recommended that you use a fast storage backend such as ZFS on a SSD based block device.  Use the lxd provided configuration tool to help do this:</p>
+<div class="code bash highlight-python"><div class="highlight"><pre><span></span>sudo lxd init
+</pre></div>
+</div>
+<p>Ensure that you leave a range of IP addresses free to use for floating IP&#8217;s for OpenStack instances; For reference the author used:</p>
+<blockquote>
+<div>Network and IP: 10.0.8.1/24
+DHCP range: 10.0.8.2 -&gt; 10.0.8.200</div></blockquote>
+<p>Also update the default profile to use Jumbo frames for all network connections into containers:</p>
+<div class="code bash highlight-python"><div class="highlight"><pre><span></span>lxc profile device set default eth0 mtu 9000
+</pre></div>
+</div>
+<p>This will ensure you avoid any packet fragmentation type problems with overlay networks.</p>
+<p>Test out your configuration prior to launching an entire cloud:</p>
+<div class="code bash highlight-python"><div class="highlight"><pre><span></span>lxc launch ubuntu-daily:xenial
+</pre></div>
+</div>
+<p>This should result in a running container you can exec into and back out of:</p>
+<div class="code bash highlight-python"><div class="highlight"><pre><span></span>lxc exec &lt;container-name&gt; bash
+exit
+</pre></div>
+</div>
+</div>
+<div class="section" id="juju-profile-update">
+<h3>Juju Profile Update<a class="headerlink" href="#juju-profile-update" title="Permalink to this headline">¶</a></h3>
+<p>Juju creates a couple of profiles for the models that it creates by default; these are named juju-default and juju-admin.</p>
+<div class="code bash highlight-python"><div class="highlight"><pre><span></span>lxc profile create juju-default 2&gt;/dev/null || echo &quot;juju-default profile already exists&quot;
+cat lxd-profile.yaml | lxc profile edit juju-default
+</pre></div>
+</div>
+<p>This will ensure that containers created by LXD for Juju have the correct permissions to run your OpenStack cloud.</p>
+</div>
+</div>
+<div class="section" id="juju">
+<h2>Juju<a class="headerlink" href="#juju" title="Permalink to this headline">¶</a></h2>
+<div class="section" id="bootstrap-the-juju-controller">
+<h3>Bootstrap the  Juju Controller<a class="headerlink" href="#bootstrap-the-juju-controller" title="Permalink to this headline">¶</a></h3>
+<p>Prior to deploying the OpenStack on LXD bundle, you&#8217;ll need to bootstrap a controller to manage your Juju models:</p>
+<div class="code bash highlight-python"><div class="highlight"><pre><span></span>juju bootstrap --config config.yaml localhost lxd
+</pre></div>
+</div>
+<p>Review the contents of the config.yaml prior to running this command and edit as appropriate; this configures some defaults for containers created in the model including setting up things like a APT proxy to improve performance of network operations.</p>
+</div>
+<div class="section" id="configure-a-powernv-ppc64el-host">
+<h3>Configure a PowerNV (ppc64el) Host<a class="headerlink" href="#configure-a-powernv-ppc64el-host" title="Permalink to this headline">¶</a></h3>
+<p>When deployed directly to metal, the nova-compute charm sets smt=off, as is necessary for libvirt usage.  However, when nova-compute is in a container, the containment prevents ppc64_cpu from modifying the host&#8217;s smt value.  It is necessary to pre-configure the host smt setting for nova-compute (libvirt + qemu) in ppc64el scenarios.</p>
+<div class="code bash highlight-python"><div class="highlight"><pre><span></span>sudo ppc64_cpu --smt=off
+</pre></div>
+</div>
+</div>
+</div>
+<div class="section" id="openstack">
+<h2>OpenStack<a class="headerlink" href="#openstack" title="Permalink to this headline">¶</a></h2>
+<div class="section" id="deploy">
+<h3>Deploy<a class="headerlink" href="#deploy" title="Permalink to this headline">¶</a></h3>
+<p>Next, deploy the OpenStack cloud using the provided bundle.</p>
+<p>For amd64 Mitaka:</p>
+<div class="code bash highlight-python"><div class="highlight"><pre><span></span>juju deploy bundle-mitaka.yaml
+</pre></div>
+</div>
+<p>For s390x Mitaka:</p>
+<div class="code bash highlight-python"><div class="highlight"><pre><span></span>juju deploy bundle-mitaka-s390x.yaml
+</pre></div>
+</div>
+<p>For s390x Newton:</p>
+<div class="code bash highlight-python"><div class="highlight"><pre><span></span>juju deploy bundle-newton-s390x.yaml
+</pre></div>
+</div>
+<p>For ppc64el (PowerNV) Mitaka:</p>
+<div class="code bash highlight-python"><div class="highlight"><pre><span></span>juju deploy bundle-ppc64el.yaml
+</pre></div>
+</div>
+<p>You can watch deployment progress using the &#8216;juju status&#8217; command.  This may take some time depending on the speed of your system; CPU, disk and network speed will all effect deployment time.</p>
+</div>
+<div class="section" id="using-the-cloud">
+<h3>Using the Cloud<a class="headerlink" href="#using-the-cloud" title="Permalink to this headline">¶</a></h3>
+<div class="section" id="check-access">
+<h4>Check Access<a class="headerlink" href="#check-access" title="Permalink to this headline">¶</a></h4>
+<p>Once deployment has completed (units should report a ready state in the status output), check that you can access the deployed cloud OK:</p>
+<div class="code bash highlight-python"><div class="highlight"><pre><span></span>source novarc
+openstack catalog list
+nova service-list
+neutron agent-list
+cinder service-list
+</pre></div>
+</div>
+<p>This commands should all succeed and you should get a feel as to how the various OpenStack components are deployed in each container.</p>
+</div>
+<div class="section" id="upload-an-image">
+<h4>Upload an image<a class="headerlink" href="#upload-an-image" title="Permalink to this headline">¶</a></h4>
+<p>Before we can boot an instance, we need an image to boot in Glance.</p>
+<p>For amd64:</p>
+<div class="code bash highlight-python"><div class="highlight"><pre><span></span>curl http://cloud-images.ubuntu.com/xenial/current/xenial-server-cloudimg-amd64-disk1.img | \
+    openstack image create --public --container-format=bare --disk-format=qcow2 xenial
+</pre></div>
+</div>
+<p>For s390x:</p>
+<div class="code bash highlight-python"><div class="highlight"><pre><span></span>curl http://cloud-images.ubuntu.com/xenial/current/xenial-server-cloudimg-s390x-disk1.img | \
+    openstack image create --public --container-format=bare --disk-format=qcow2 xenial
+</pre></div>
+</div>
+<p>For ppc64el:</p>
+<div class="code bash highlight-python"><div class="highlight"><pre><span></span>curl http://cloud-images.ubuntu.com/xenial/current/xenial-server-cloudimg-ppc64el-disk1.img | \
+    openstack image create --public --container-format=bare --disk-format=qcow2 xenial
+</pre></div>
+</div>
+</div>
+<div class="section" id="configure-some-networking">
+<h4>Configure some networking<a class="headerlink" href="#configure-some-networking" title="Permalink to this headline">¶</a></h4>
+<p>First, create the &#8216;external&#8217; network which actually maps directly to the LXD bridge:</p>
+<div class="code bash highlight-python"><div class="highlight"><pre><span></span>./neutron-ext-net -g 10.0.8.1 -c 10.0.8.0/24 \
+    -f 10.0.8.201:10.0.8.254 ext_net
+</pre></div>
+</div>
+<p>and then create an internal overlay network for the instances to actually attach to:</p>
+<div class="code bash highlight-python"><div class="highlight"><pre><span></span>./neutron-tenant-net -t admin -r provider-router \
+    -N 10.0.8.1 internal 192.168.20.0/24
+</pre></div>
+</div>
+</div>
+<div class="section" id="create-a-key-pair">
+<h4>Create a key-pair<a class="headerlink" href="#create-a-key-pair" title="Permalink to this headline">¶</a></h4>
+<p>Upload your local public key into the cloud so you can access instances:</p>
+<div class="code bash highlight-python"><div class="highlight"><pre><span></span>openstack keypair create --public-key ~/.ssh/id_rsa.pub mykey
+</pre></div>
+</div>
+</div>
+<div class="section" id="create-flavors">
+<h4>Create Flavors<a class="headerlink" href="#create-flavors" title="Permalink to this headline">¶</a></h4>
+<p>It&#8217;s safe to skip this for Mitaka.  For Newton and later, there are no pre-populated flavors.  Check if flavors exist, and if not, create them:</p>
+<div class="code bash highlight-python"><div class="highlight"><pre><span></span>openstack flavor create --public --ram 512 --disk 1 --ephemeral 0 --vcpus 1 m1.tiny
+openstack flavor create --public --ram 1024 --disk 20 --ephemeral 40 --vcpus 1 m1.small
+openstack flavor create --public --ram 2048 --disk 40 --ephemeral 40 --vcpus 2 m1.medium
+openstack flavor create --public --ram 8192 --disk 40 --ephemeral 40 --vcpus 4 m1.large
+openstack flavor create --public --ram 16384 --disk 80 --ephemeral 40 --vcpus 8 m1.xlarge
+</pre></div>
+</div>
+</div>
+<div class="section" id="boot-an-instance">
+<h4>Boot an instance<a class="headerlink" href="#boot-an-instance" title="Permalink to this headline">¶</a></h4>
+<p>You can now boot an instance on your cloud:</p>
+<div class="code bash highlight-python"><div class="highlight"><pre><span></span>openstack server create --image xenial --flavor m1.small --key-name mykey \
+   --wait --nic net-id=$(neutron net-list | grep internal | awk &#39;{ print $2 }&#39;) \
+   openstack-on-lxd-ftw
+</pre></div>
+</div>
+</div>
+<div class="section" id="attaching-a-volume">
+<h4>Attaching a volume<a class="headerlink" href="#attaching-a-volume" title="Permalink to this headline">¶</a></h4>
+<p>First, create a volume in cinder:</p>
+<div class="code bash highlight-python"><div class="highlight"><pre><span></span>cinder create --name testvolume 10
+</pre></div>
+</div>
+<p>then attach it to the instance we just booted in nova:</p>
+<div class="code bash highlight-python"><div class="highlight"><pre><span></span>nova volume-attach openstack-on-lxd-ftw $(cinder list | grep testvolume | awk &#39;{ print $2 }&#39;) /dev/vdc
+</pre></div>
+</div>
+<p>The attached volume will be accessible once you login to the instance (see below).  It will need to be formatted and mounted!</p>
+</div>
+<div class="section" id="accessing-your-instance">
+<h4>Accessing your instance<a class="headerlink" href="#accessing-your-instance" title="Permalink to this headline">¶</a></h4>
+<p>In order to access the instance you just booted on the cloud, you&#8217;ll need to assign a floating IP address to the instance:</p>
+<div class="code bash highlight-python"><div class="highlight"><pre><span></span>nova floating-ip-create
+nova add-floating-ip &lt;uuid-of-instance&gt; &lt;new-floating-ip&gt;
+</pre></div>
+</div>
+<p>and then allow access via SSH (and ping) - you only need todo this once:</p>
+<div class="code bash highlight-python"><div class="highlight"><pre><span></span>neutron security-group-rule-create --protocol icmp \
+    --direction ingress $(nova secgroup-list | grep default | awk &#39;{ print $2 }&#39;)
+neutron security-group-rule-create --protocol tcp \
+    --port-range-min 22 --port-range-max 22 \
+    --direction ingress $(nova secgroup-list | grep default | awk &#39;{ print $2 }&#39;)
+</pre></div>
+</div>
+<p>After running these commands you should be able to access the instance:</p>
+<div class="code bash highlight-python"><div class="highlight"><pre><span></span>ssh ubuntu@&lt;new-floating-ip&gt;
+</pre></div>
+</div>
+</div>
+</div>
+</div>
+<div class="section" id="switching-in-a-dev-charm">
+<h2>Switching in a dev charm<a class="headerlink" href="#switching-in-a-dev-charm" title="Permalink to this headline">¶</a></h2>
+<p>Now that you have a running OpenStack deployment on your machine, you can switch in your development changes to one of the charms in the deployment:</p>
+<div class="code bash highlight-python"><div class="highlight"><pre><span></span>juju upgrade-charm --switch &lt;path-to-your-charm&gt; cinder
+</pre></div>
+</div>
+<p>The charm will be upgraded with your local development changes; alternatively you can update the bundle.yaml to reference your local charm so that its used from the start of cloud deployment.</p>
+</div>
+<div class="section" id="known-limitations">
+<h2>Known Limitations<a class="headerlink" href="#known-limitations" title="Permalink to this headline">¶</a></h2>
+<p>Currently is not possible to run Cinder with iSCSI/LVM based storage under LXD; this limits use of block storage options to those that are 100% userspace, such as Ceph.</p>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">OpenStack on LXD</a><ul>
+<li><a class="reference internal" href="#overview">Overview</a></li>
+<li><a class="reference internal" href="#host-setup">Host Setup</a></li>
+<li><a class="reference internal" href="#lxd">LXD</a><ul>
+<li><a class="reference internal" href="#base-configuration">Base Configuration</a></li>
+<li><a class="reference internal" href="#juju-profile-update">Juju Profile Update</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#juju">Juju</a><ul>
+<li><a class="reference internal" href="#bootstrap-the-juju-controller">Bootstrap the  Juju Controller</a></li>
+<li><a class="reference internal" href="#configure-a-powernv-ppc64el-host">Configure a PowerNV (ppc64el) Host</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#openstack">OpenStack</a><ul>
+<li><a class="reference internal" href="#deploy">Deploy</a></li>
+<li><a class="reference internal" href="#using-the-cloud">Using the Cloud</a><ul>
+<li><a class="reference internal" href="#check-access">Check Access</a></li>
+<li><a class="reference internal" href="#upload-an-image">Upload an image</a></li>
+<li><a class="reference internal" href="#configure-some-networking">Configure some networking</a></li>
+<li><a class="reference internal" href="#create-a-key-pair">Create a key-pair</a></li>
+<li><a class="reference internal" href="#create-flavors">Create Flavors</a></li>
+<li><a class="reference internal" href="#boot-an-instance">Boot an instance</a></li>
+<li><a class="reference internal" href="#attaching-a-volume">Attaching a volume</a></li>
+<li><a class="reference internal" href="#accessing-your-instance">Accessing your instance</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><a class="reference internal" href="#switching-in-a-dev-charm">Switching in a dev charm</a></li>
+<li><a class="reference internal" href="#known-limitations">Known Limitations</a></li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="deployment.html"
+                                  title="previous chapter">Charm Deployment</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="openstack-charms.html"
+                                  title="next chapter">Charms</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/charm-guide
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="_sources/openstack-on-lxd.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="openstack-charms.html" title="Charms"
+             accesskey="N">next</a></li>
+        <li class="right" >
+          <a href="deployment.html" title="Charm Deployment"
+             accesskey="P">previous</a> |</li>
+        <li><a href="index.html">OpenStack Charms Guide 0.0.1.dev33 documentation</a> &raquo;</li>
+          <li><a href="deployment.html" accesskey="U">Charm Deployment</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer">
+        &copy; Copyright 2017, OpenStack Contributors - use the <a href="https://git.openstack.org/cgit/openstack/openstack-charms-guide">openstack-charms-guide git repo</a> to propose changes.
+      Last updated on Wed Feb 8 11:51:57 2017, commit d150c32.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.2.3.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/OpenStack Charms Guide");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

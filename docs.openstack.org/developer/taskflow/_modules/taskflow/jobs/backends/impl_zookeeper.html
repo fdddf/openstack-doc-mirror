@@ -1,0 +1,977 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>taskflow.jobs.backends.impl_zookeeper &mdash; TaskFlow 2.9.1.dev9 documentation</title>
+    
+    <link rel="stylesheet" href="../../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../../',
+        VERSION:     '2.9.1.dev9',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../../_static/doctools.js"></script>
+    <link rel="top" title="TaskFlow 2.9.1.dev9 documentation" href="../../../../index.html" />
+    <link rel="up" title="taskflow.jobs.backends" href="../backends.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for taskflow.jobs.backends.impl_zookeeper</h1><div class="highlight"><pre>
+<span></span><span class="c1"># -*- coding: utf-8 -*-</span>
+
+<span class="c1">#    Copyright (C) 2013 Yahoo! Inc. All Rights Reserved.</span>
+<span class="c1">#</span>
+<span class="c1">#    Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may</span>
+<span class="c1">#    not use this file except in compliance with the License. You may obtain</span>
+<span class="c1">#    a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#         http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1">#    Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1">#    distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="c1">#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="c1">#    License for the specific language governing permissions and limitations</span>
+<span class="c1">#    under the License.</span>
+
+<span class="kn">import</span> <span class="nn">collections</span>
+<span class="kn">import</span> <span class="nn">contextlib</span>
+<span class="kn">import</span> <span class="nn">functools</span>
+<span class="kn">import</span> <span class="nn">sys</span>
+<span class="kn">import</span> <span class="nn">threading</span>
+
+<span class="kn">import</span> <span class="nn">fasteners</span>
+<span class="kn">import</span> <span class="nn">futurist</span>
+<span class="kn">from</span> <span class="nn">kazoo</span> <span class="kn">import</span> <span class="n">exceptions</span> <span class="k">as</span> <span class="n">k_exceptions</span>
+<span class="kn">from</span> <span class="nn">kazoo.protocol</span> <span class="kn">import</span> <span class="n">paths</span> <span class="k">as</span> <span class="n">k_paths</span>
+<span class="kn">from</span> <span class="nn">kazoo.protocol</span> <span class="kn">import</span> <span class="n">states</span> <span class="k">as</span> <span class="n">k_states</span>
+<span class="kn">from</span> <span class="nn">kazoo.recipe</span> <span class="kn">import</span> <span class="n">watchers</span>
+<span class="kn">from</span> <span class="nn">oslo_serialization</span> <span class="kn">import</span> <span class="n">jsonutils</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">excutils</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">timeutils</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">uuidutils</span>
+<span class="kn">import</span> <span class="nn">six</span>
+
+<span class="kn">from</span> <span class="nn">taskflow.conductors</span> <span class="kn">import</span> <span class="n">base</span> <span class="k">as</span> <span class="n">c_base</span>
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">exceptions</span> <span class="k">as</span> <span class="n">excp</span>
+<span class="kn">from</span> <span class="nn">taskflow.jobs</span> <span class="kn">import</span> <span class="n">base</span>
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">logging</span>
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">states</span>
+<span class="kn">from</span> <span class="nn">taskflow.utils</span> <span class="kn">import</span> <span class="n">kazoo_utils</span>
+<span class="kn">from</span> <span class="nn">taskflow.utils</span> <span class="kn">import</span> <span class="n">misc</span>
+
+<span class="n">LOG</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+
+<span class="nd">@functools.total_ordering</span>
+<div class="viewcode-block" id="ZookeeperJob"><a class="viewcode-back" href="../../../../jobs.html#taskflow.jobs.backends.impl_zookeeper.ZookeeperJob">[docs]</a><span class="k">class</span> <span class="nc">ZookeeperJob</span><span class="p">(</span><span class="n">base</span><span class="o">.</span><span class="n">Job</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A zookeeper job.&quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">board</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">client</span><span class="p">,</span> <span class="n">path</span><span class="p">,</span>
+                 <span class="n">uuid</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">details</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">book</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">book_data</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+                 <span class="n">created_on</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">backend</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+                 <span class="n">priority</span><span class="o">=</span><span class="n">base</span><span class="o">.</span><span class="n">JobPriority</span><span class="o">.</span><span class="n">NORMAL</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">ZookeeperJob</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">board</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span>
+                                           <span class="n">uuid</span><span class="o">=</span><span class="n">uuid</span><span class="p">,</span> <span class="n">details</span><span class="o">=</span><span class="n">details</span><span class="p">,</span>
+                                           <span class="n">backend</span><span class="o">=</span><span class="n">backend</span><span class="p">,</span>
+                                           <span class="n">book</span><span class="o">=</span><span class="n">book</span><span class="p">,</span> <span class="n">book_data</span><span class="o">=</span><span class="n">book_data</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_client</span> <span class="o">=</span> <span class="n">client</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_path</span> <span class="o">=</span> <span class="n">k_paths</span><span class="o">.</span><span class="n">normpath</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_lock_path</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_path</span> <span class="o">+</span> <span class="n">board</span><span class="o">.</span><span class="n">LOCK_POSTFIX</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_created_on</span> <span class="o">=</span> <span class="n">created_on</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_node_not_found</span> <span class="o">=</span> <span class="bp">False</span>
+        <span class="n">basename</span> <span class="o">=</span> <span class="n">k_paths</span><span class="o">.</span><span class="n">basename</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_path</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_root</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_path</span><span class="p">[</span><span class="mi">0</span><span class="p">:</span><span class="o">-</span><span class="nb">len</span><span class="p">(</span><span class="n">basename</span><span class="p">)]</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_sequence</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">basename</span><span class="p">[</span><span class="nb">len</span><span class="p">(</span><span class="n">board</span><span class="o">.</span><span class="n">JOB_PREFIX</span><span class="p">):])</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_priority</span> <span class="o">=</span> <span class="n">priority</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">lock_path</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Path the job lock/claim and owner znode is stored.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_lock_path</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">priority</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_priority</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">path</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Path the job data znode is stored.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_path</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">sequence</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Sequence number of the current job.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_sequence</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">root</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;The parent path of the job in zookeeper.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_root</span>
+
+    <span class="k">def</span> <span class="nf">_get_node_attr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="p">,</span> <span class="n">attr_name</span><span class="p">,</span> <span class="n">trans_func</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">_data</span><span class="p">,</span> <span class="n">node_stat</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
+            <span class="n">attr</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">node_stat</span><span class="p">,</span> <span class="n">attr_name</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">trans_func</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="k">return</span> <span class="n">trans_func</span><span class="p">(</span><span class="n">attr</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">return</span> <span class="n">attr</span>
+        <span class="k">except</span> <span class="n">k_exceptions</span><span class="o">.</span><span class="n">NoNodeError</span><span class="p">:</span>
+            <span class="n">excp</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span>
+                <span class="n">excp</span><span class="o">.</span><span class="n">NotFound</span><span class="p">,</span>
+                <span class="s2">&quot;Can not fetch the </span><span class="si">%r</span><span class="s2"> attribute of job </span><span class="si">%s</span><span class="s2"> (</span><span class="si">%s</span><span class="s2">),&quot;</span>
+                <span class="s2">&quot; path </span><span class="si">%s</span><span class="s2"> not found&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">attr_name</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span>
+                                        <span class="bp">self</span><span class="o">.</span><span class="n">path</span><span class="p">,</span> <span class="n">path</span><span class="p">))</span>
+        <span class="k">except</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">handler</span><span class="o">.</span><span class="n">timeout_exception</span><span class="p">:</span>
+            <span class="n">excp</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span>
+                <span class="n">excp</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">,</span>
+                <span class="s2">&quot;Can not fetch the </span><span class="si">%r</span><span class="s2"> attribute of job </span><span class="si">%s</span><span class="s2"> (</span><span class="si">%s</span><span class="s2">),&quot;</span>
+                <span class="s2">&quot; operation timed out&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">attr_name</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">path</span><span class="p">))</span>
+        <span class="k">except</span> <span class="n">k_exceptions</span><span class="o">.</span><span class="n">SessionExpiredError</span><span class="p">:</span>
+            <span class="n">excp</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span>
+                <span class="n">excp</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">,</span>
+                <span class="s2">&quot;Can not fetch the </span><span class="si">%r</span><span class="s2"> attribute of job </span><span class="si">%s</span><span class="s2"> (</span><span class="si">%s</span><span class="s2">),&quot;</span>
+                <span class="s2">&quot; session expired&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">attr_name</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">path</span><span class="p">))</span>
+        <span class="k">except</span> <span class="p">(</span><span class="ne">AttributeError</span><span class="p">,</span> <span class="n">k_exceptions</span><span class="o">.</span><span class="n">KazooException</span><span class="p">):</span>
+            <span class="n">excp</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span>
+                <span class="n">excp</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">,</span>
+                <span class="s2">&quot;Can not fetch the </span><span class="si">%r</span><span class="s2"> attribute of job </span><span class="si">%s</span><span class="s2"> (</span><span class="si">%s</span><span class="s2">),&quot;</span>
+                <span class="s2">&quot; internal error&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">attr_name</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">path</span><span class="p">))</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">last_modified</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">modified_on</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_node_not_found</span><span class="p">:</span>
+                <span class="n">modified_on</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_node_attr</span><span class="p">(</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">path</span><span class="p">,</span> <span class="s1">&#39;mtime&#39;</span><span class="p">,</span>
+                    <span class="n">trans_func</span><span class="o">=</span><span class="n">misc</span><span class="o">.</span><span class="n">millis_to_datetime</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">excp</span><span class="o">.</span><span class="n">NotFound</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_node_not_found</span> <span class="o">=</span> <span class="bp">True</span>
+        <span class="k">return</span> <span class="n">modified_on</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">created_on</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="c1"># This one we can cache (since it won&#39;t change after creation).</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_node_not_found</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">None</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_created_on</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_created_on</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_node_attr</span><span class="p">(</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">path</span><span class="p">,</span> <span class="s1">&#39;ctime&#39;</span><span class="p">,</span>
+                    <span class="n">trans_func</span><span class="o">=</span><span class="n">misc</span><span class="o">.</span><span class="n">millis_to_datetime</span><span class="p">)</span>
+            <span class="k">except</span> <span class="n">excp</span><span class="o">.</span><span class="n">NotFound</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_node_not_found</span> <span class="o">=</span> <span class="bp">True</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_created_on</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">state</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">owner</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">board</span><span class="o">.</span><span class="n">find_owner</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span>
+        <span class="n">job_data</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">raw_data</span><span class="p">,</span> <span class="n">_data_stat</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">path</span><span class="p">)</span>
+            <span class="n">job_data</span> <span class="o">=</span> <span class="n">misc</span><span class="o">.</span><span class="n">decode_json</span><span class="p">(</span><span class="n">raw_data</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">k_exceptions</span><span class="o">.</span><span class="n">NoNodeError</span><span class="p">:</span>
+            <span class="k">pass</span>
+        <span class="k">except</span> <span class="n">k_exceptions</span><span class="o">.</span><span class="n">SessionExpiredError</span><span class="p">:</span>
+            <span class="n">excp</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span>
+                <span class="n">excp</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">,</span>
+                <span class="s2">&quot;Can not fetch the state of </span><span class="si">%s</span><span class="s2">,&quot;</span>
+                <span class="s2">&quot; session expired&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">uuid</span><span class="p">))</span>
+        <span class="k">except</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">handler</span><span class="o">.</span><span class="n">timeout_exception</span><span class="p">:</span>
+            <span class="n">excp</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span>
+                <span class="n">excp</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">,</span>
+                <span class="s2">&quot;Can not fetch the state of </span><span class="si">%s</span><span class="s2">,&quot;</span>
+                <span class="s2">&quot; operation timed out&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">uuid</span><span class="p">))</span>
+        <span class="k">except</span> <span class="n">k_exceptions</span><span class="o">.</span><span class="n">KazooException</span><span class="p">:</span>
+            <span class="n">excp</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span>
+                <span class="n">excp</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">,</span>
+                <span class="s2">&quot;Can not fetch the state of </span><span class="si">%s</span><span class="s2">,&quot;</span>
+                <span class="s2">&quot; internal error&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">uuid</span><span class="p">))</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">job_data</span><span class="p">:</span>
+            <span class="c1"># No data this job has been completed (the owner that we might have</span>
+            <span class="c1"># fetched will not be able to be fetched again, since the job node</span>
+            <span class="c1"># is a parent node of the owner/lock node).</span>
+            <span class="k">return</span> <span class="n">states</span><span class="o">.</span><span class="n">COMPLETE</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">owner</span><span class="p">:</span>
+            <span class="c1"># No owner, but data, still work to be done.</span>
+            <span class="k">return</span> <span class="n">states</span><span class="o">.</span><span class="n">UNCLAIMED</span>
+        <span class="k">return</span> <span class="n">states</span><span class="o">.</span><span class="n">CLAIMED</span>
+
+    <span class="k">def</span> <span class="fm">__lt__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">other</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">other</span><span class="p">,</span> <span class="n">ZookeeperJob</span><span class="p">):</span>
+            <span class="k">return</span> <span class="bp">NotImplemented</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">root</span> <span class="o">==</span> <span class="n">other</span><span class="o">.</span><span class="n">root</span><span class="p">:</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">priority</span> <span class="o">==</span> <span class="n">other</span><span class="o">.</span><span class="n">priority</span><span class="p">:</span>
+                <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">sequence</span> <span class="o">&lt;</span> <span class="n">other</span><span class="o">.</span><span class="n">sequence</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">ordered</span> <span class="o">=</span> <span class="n">base</span><span class="o">.</span><span class="n">JobPriority</span><span class="o">.</span><span class="n">reorder</span><span class="p">(</span>
+                    <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">priority</span><span class="p">,</span> <span class="bp">self</span><span class="p">),</span> <span class="p">(</span><span class="n">other</span><span class="o">.</span><span class="n">priority</span><span class="p">,</span> <span class="n">other</span><span class="p">))</span>
+                <span class="k">if</span> <span class="n">ordered</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="ow">is</span> <span class="bp">self</span><span class="p">:</span>
+                    <span class="k">return</span> <span class="bp">False</span>
+                <span class="k">return</span> <span class="bp">True</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="c1"># Different jobboards with different roots...</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">root</span> <span class="o">&lt;</span> <span class="n">other</span><span class="o">.</span><span class="n">root</span>
+
+    <span class="k">def</span> <span class="fm">__eq__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">other</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">other</span><span class="p">,</span> <span class="n">ZookeeperJob</span><span class="p">):</span>
+            <span class="k">return</span> <span class="bp">NotImplemented</span>
+        <span class="k">return</span> <span class="p">((</span><span class="bp">self</span><span class="o">.</span><span class="n">root</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">sequence</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">priority</span><span class="p">)</span> <span class="o">==</span>
+                <span class="p">(</span><span class="n">other</span><span class="o">.</span><span class="n">root</span><span class="p">,</span> <span class="n">other</span><span class="o">.</span><span class="n">sequence</span><span class="p">,</span> <span class="n">other</span><span class="o">.</span><span class="n">priority</span><span class="p">))</span>
+
+    <span class="k">def</span> <span class="fm">__ne__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">other</span><span class="p">):</span>
+        <span class="k">return</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="fm">__eq__</span><span class="p">(</span><span class="n">other</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="fm">__hash__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="nb">hash</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">path</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="ZookeeperJobBoard"><a class="viewcode-back" href="../../../../jobs.html#taskflow.jobs.backends.impl_zookeeper.ZookeeperJobBoard">[docs]</a><span class="k">class</span> <span class="nc">ZookeeperJobBoard</span><span class="p">(</span><span class="n">base</span><span class="o">.</span><span class="n">NotifyingJobBoard</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A jobboard backed by `zookeeper`_.</span>
+
+<span class="sd">    Powered by the `kazoo &lt;http://kazoo.readthedocs.org/&gt;`_ library.</span>
+
+<span class="sd">    This jobboard creates *sequenced* persistent znodes in a directory in</span>
+<span class="sd">    zookeeper and uses zookeeper watches to notify other jobboards of</span>
+<span class="sd">    jobs which were posted using the :meth:`.post` method (this creates a</span>
+<span class="sd">    znode with job contents/details encoded in `json`_). The users of these</span>
+<span class="sd">    jobboard(s) (potentially on disjoint sets of machines) can then iterate</span>
+<span class="sd">    over the available jobs and decide if they want</span>
+<span class="sd">    to attempt to claim one of the jobs they have iterated over. If so they</span>
+<span class="sd">    will then attempt to contact zookeeper and they will attempt to create a</span>
+<span class="sd">    ephemeral znode using the name of the persistent znode + &quot;.lock&quot; as a</span>
+<span class="sd">    postfix. If the entity trying to use the jobboard to :meth:`.claim` the</span>
+<span class="sd">    job is able to create a ephemeral znode with that name then it will be</span>
+<span class="sd">    allowed (and expected) to perform whatever *work* the contents of that</span>
+<span class="sd">    job described. Once the claiming entity is finished the ephemeral znode</span>
+<span class="sd">    and persistent znode will be deleted (if successfully completed) in a</span>
+<span class="sd">    single transaction. If the claiming entity is not successful (or the</span>
+<span class="sd">    entity that claimed the znode dies) the ephemeral znode will be</span>
+<span class="sd">    released (either manually by using :meth:`.abandon` or automatically by</span>
+<span class="sd">    zookeeper when the ephemeral node and associated session is deemed to</span>
+<span class="sd">    have been lost).</span>
+
+<span class="sd">    Do note that the creation of a kazoo client is achieved</span>
+<span class="sd">    by :py:func:`~taskflow.utils.kazoo_utils.make_client` and the transfer</span>
+<span class="sd">    of this jobboard configuration to that function to make a</span>
+<span class="sd">    client may happen at ``__init__`` time. This implies that certain</span>
+<span class="sd">    parameters from this jobboard configuration may be provided to</span>
+<span class="sd">    :py:func:`~taskflow.utils.kazoo_utils.make_client` such</span>
+<span class="sd">    that if a client was not provided by the caller one will be created</span>
+<span class="sd">    according to :py:func:`~taskflow.utils.kazoo_utils.make_client`&#39;s</span>
+<span class="sd">    specification</span>
+
+<span class="sd">    .. _zookeeper: http://zookeeper.apache.org/</span>
+<span class="sd">    .. _json: http://json.org/</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="c1">#: Transaction support was added in 3.4.0 so we need at least that version.</span>
+    <span class="n">MIN_ZK_VERSION</span> <span class="o">=</span> <span class="p">(</span><span class="mi">3</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span>
+
+    <span class="c1">#: Znode **postfix** that lock entries have.</span>
+    <span class="n">LOCK_POSTFIX</span> <span class="o">=</span> <span class="s2">&quot;.lock&quot;</span>
+
+    <span class="c1">#: Znode child path created under root path that contains trashed jobs.</span>
+    <span class="n">TRASH_FOLDER</span> <span class="o">=</span> <span class="s2">&quot;.trash&quot;</span>
+
+    <span class="c1">#: Znode child path created under root path that contains registered</span>
+    <span class="c1">#: entities.</span>
+    <span class="n">ENTITY_FOLDER</span> <span class="o">=</span> <span class="s2">&quot;.entities&quot;</span>
+
+    <span class="c1">#: Znode **prefix** that job entries have.</span>
+    <span class="n">JOB_PREFIX</span> <span class="o">=</span> <span class="s1">&#39;job&#39;</span>
+
+    <span class="c1">#: Default znode path used for jobs (data, locks...).</span>
+    <span class="n">DEFAULT_PATH</span> <span class="o">=</span> <span class="s2">&quot;/taskflow/jobs&quot;</span>
+
+    <span class="n">STATE_HISTORY_LENGTH</span> <span class="o">=</span> <span class="mi">2</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Number of prior state changes to keep a history of, mainly useful</span>
+<span class="sd">    for history tracking and debugging connectivity issues.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">NO_FETCH_STATES</span> <span class="o">=</span> <span class="p">(</span><span class="n">k_states</span><span class="o">.</span><span class="n">KazooState</span><span class="o">.</span><span class="n">LOST</span><span class="p">,</span> <span class="n">k_states</span><span class="o">.</span><span class="n">KazooState</span><span class="o">.</span><span class="n">SUSPENDED</span><span class="p">)</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Client states underwhich we return empty lists from fetching routines,</span>
+<span class="sd">    during these states the underlying connection either is being recovered</span>
+<span class="sd">    or may be recovered (aka, it has not full disconnected).</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">conf</span><span class="p">,</span>
+                 <span class="n">client</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">persistence</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">emit_notifications</span><span class="o">=</span><span class="bp">True</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">ZookeeperJobBoard</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">conf</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">client</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_client</span> <span class="o">=</span> <span class="n">client</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_owned</span> <span class="o">=</span> <span class="bp">False</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_client</span> <span class="o">=</span> <span class="n">kazoo_utils</span><span class="o">.</span><span class="n">make_client</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_conf</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_owned</span> <span class="o">=</span> <span class="bp">True</span>
+        <span class="n">path</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">conf</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;path&quot;</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">DEFAULT_PATH</span><span class="p">))</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">path</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;Empty zookeeper path is disallowed&quot;</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">k_paths</span><span class="o">.</span><span class="n">isabs</span><span class="p">(</span><span class="n">path</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;Zookeeper path must be absolute&quot;</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_path</span> <span class="o">=</span> <span class="n">path</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_trash_path</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_path</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span><span class="n">k_paths</span><span class="o">.</span><span class="n">basename</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_path</span><span class="p">),</span>
+                                              <span class="bp">self</span><span class="o">.</span><span class="n">TRASH_FOLDER</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_entity_path</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_path</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span>
+            <span class="n">k_paths</span><span class="o">.</span><span class="n">basename</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_path</span><span class="p">),</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">ENTITY_FOLDER</span><span class="p">)</span>
+        <span class="c1"># The backend to load the full logbooks from, since what is sent over</span>
+        <span class="c1"># the data connection is only the logbook uuid and name, and not the</span>
+        <span class="c1"># full logbook.</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_persistence</span> <span class="o">=</span> <span class="n">persistence</span>
+        <span class="c1"># Misc. internal details</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_known_jobs</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_job_cond</span> <span class="o">=</span> <span class="n">threading</span><span class="o">.</span><span class="n">Condition</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_open_close_lock</span> <span class="o">=</span> <span class="n">threading</span><span class="o">.</span><span class="n">RLock</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">add_listener</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_state_change_listener</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_bad_paths</span> <span class="o">=</span> <span class="nb">frozenset</span><span class="p">([</span><span class="n">path</span><span class="p">])</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_job_watcher</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="c1"># Since we use sequenced ids this will be the path that the sequences</span>
+        <span class="c1"># are prefixed with, for example, job0000000001, job0000000002, ...</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_job_base</span> <span class="o">=</span> <span class="n">k_paths</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">JOB_PREFIX</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_worker</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_emit_notifications</span> <span class="o">=</span> <span class="nb">bool</span><span class="p">(</span><span class="n">emit_notifications</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_connected</span> <span class="o">=</span> <span class="bp">False</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_suspended</span> <span class="o">=</span> <span class="bp">False</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_last_states</span> <span class="o">=</span> <span class="n">collections</span><span class="o">.</span><span class="n">deque</span><span class="p">(</span><span class="n">maxlen</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">STATE_HISTORY_LENGTH</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_try_emit</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state</span><span class="p">,</span> <span class="n">details</span><span class="p">):</span>
+        <span class="c1"># Submit the work to the executor to avoid blocking the kazoo threads</span>
+        <span class="c1"># and queue(s)...</span>
+        <span class="n">worker</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_worker</span>
+        <span class="k">if</span> <span class="n">worker</span> <span class="ow">is</span> <span class="bp">None</span> <span class="ow">or</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_emit_notifications</span><span class="p">:</span>
+            <span class="c1"># Worker has been destroyed or we aren&#39;t supposed to emit anything</span>
+            <span class="c1"># in the first place...</span>
+            <span class="k">return</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">worker</span><span class="o">.</span><span class="n">submit</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">notifier</span><span class="o">.</span><span class="n">notify</span><span class="p">,</span> <span class="n">state</span><span class="p">,</span> <span class="n">details</span><span class="p">)</span>
+        <span class="k">except</span> <span class="ne">RuntimeError</span><span class="p">:</span>
+            <span class="c1"># Notification thread is/was shutdown just skip submitting a</span>
+            <span class="c1"># notification...</span>
+            <span class="k">pass</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">path</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Path where all job znodes will be stored.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_path</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">trash_path</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Path where all trashed job znodes will be stored.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_trash_path</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">entity_path</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Path where all conductor info znodes will be stored.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_entity_path</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">job_count</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_known_jobs</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_fetch_jobs</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">ensure_fresh</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">last_state</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_last_states</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+        <span class="k">except</span> <span class="ne">IndexError</span><span class="p">:</span>
+            <span class="n">last_state</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="k">if</span> <span class="n">last_state</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">NO_FETCH_STATES</span><span class="p">:</span>
+            <span class="c1"># NOTE(harlowja): on lost clear out all known jobs (from the</span>
+            <span class="c1"># in-memory mapping) as we can not safely assume there are any</span>
+            <span class="c1"># jobs to continue working on in this state.</span>
+            <span class="k">if</span> <span class="n">last_state</span> <span class="o">==</span> <span class="n">k_states</span><span class="o">.</span><span class="n">KazooState</span><span class="o">.</span><span class="n">LOST</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">_known_jobs</span><span class="p">:</span>
+                <span class="c1"># This will force the jobboard to drop all (in-memory) jobs</span>
+                <span class="c1"># that are not in this list (pretty much simulating what</span>
+                <span class="c1"># would happen if a jobboard data directory was emptied).</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_on_job_posting</span><span class="p">([],</span> <span class="n">delayed</span><span class="o">=</span><span class="bp">False</span><span class="p">)</span>
+            <span class="k">return</span> <span class="p">[]</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">ensure_fresh</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_force_refresh</span><span class="p">()</span>
+            <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_job_cond</span><span class="p">:</span>
+                <span class="k">return</span> <span class="nb">sorted</span><span class="p">(</span><span class="n">six</span><span class="o">.</span><span class="n">itervalues</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_known_jobs</span><span class="p">))</span>
+
+    <span class="k">def</span> <span class="nf">_force_refresh</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">maybe_children</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">get_children</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">path</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_on_job_posting</span><span class="p">(</span><span class="n">maybe_children</span><span class="p">,</span> <span class="n">delayed</span><span class="o">=</span><span class="bp">False</span><span class="p">)</span>
+        <span class="k">except</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">handler</span><span class="o">.</span><span class="n">timeout_exception</span><span class="p">:</span>
+            <span class="n">excp</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">excp</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">,</span>
+                                  <span class="s2">&quot;Refreshing failure, operation timed out&quot;</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">k_exceptions</span><span class="o">.</span><span class="n">SessionExpiredError</span><span class="p">:</span>
+            <span class="n">excp</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">excp</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">,</span>
+                                  <span class="s2">&quot;Refreshing failure, session expired&quot;</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">k_exceptions</span><span class="o">.</span><span class="n">NoNodeError</span><span class="p">:</span>
+            <span class="k">pass</span>
+        <span class="k">except</span> <span class="n">k_exceptions</span><span class="o">.</span><span class="n">KazooException</span><span class="p">:</span>
+            <span class="n">excp</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">excp</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">,</span>
+                                  <span class="s2">&quot;Refreshing failure, internal error&quot;</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">iterjobs</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">only_unclaimed</span><span class="o">=</span><span class="bp">False</span><span class="p">,</span> <span class="n">ensure_fresh</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+        <span class="n">board_removal_func</span> <span class="o">=</span> <span class="k">lambda</span> <span class="n">job</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_remove_job</span><span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">path</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">base</span><span class="o">.</span><span class="n">JobBoardIterator</span><span class="p">(</span>
+            <span class="bp">self</span><span class="p">,</span> <span class="n">LOG</span><span class="p">,</span> <span class="n">only_unclaimed</span><span class="o">=</span><span class="n">only_unclaimed</span><span class="p">,</span>
+            <span class="n">ensure_fresh</span><span class="o">=</span><span class="n">ensure_fresh</span><span class="p">,</span> <span class="n">board_fetch_func</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_fetch_jobs</span><span class="p">,</span>
+            <span class="n">board_removal_func</span><span class="o">=</span><span class="n">board_removal_func</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_remove_job</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">path</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_known_jobs</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">False</span>
+        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_job_cond</span><span class="p">:</span>
+            <span class="n">job</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_known_jobs</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="bp">None</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">job</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Removed job that was at path &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span><span class="p">,</span> <span class="n">path</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_try_emit</span><span class="p">(</span><span class="n">base</span><span class="o">.</span><span class="n">REMOVAL</span><span class="p">,</span> <span class="n">details</span><span class="o">=</span><span class="p">{</span><span class="s1">&#39;job&#39;</span><span class="p">:</span> <span class="n">job</span><span class="p">})</span>
+            <span class="k">return</span> <span class="bp">True</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">False</span>
+
+    <span class="k">def</span> <span class="nf">_process_child</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="p">,</span> <span class="n">request</span><span class="p">,</span> <span class="n">quiet</span><span class="o">=</span><span class="bp">True</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Receives the result of a child data fetch request.&quot;&quot;&quot;</span>
+        <span class="n">job</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">raw_data</span><span class="p">,</span> <span class="n">node_stat</span> <span class="o">=</span> <span class="n">request</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
+            <span class="n">job_data</span> <span class="o">=</span> <span class="n">misc</span><span class="o">.</span><span class="n">decode_json</span><span class="p">(</span><span class="n">raw_data</span><span class="p">)</span>
+            <span class="n">job_created_on</span> <span class="o">=</span> <span class="n">misc</span><span class="o">.</span><span class="n">millis_to_datetime</span><span class="p">(</span><span class="n">node_stat</span><span class="o">.</span><span class="n">ctime</span><span class="p">)</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">job_priority</span> <span class="o">=</span> <span class="n">job_data</span><span class="p">[</span><span class="s1">&#39;priority&#39;</span><span class="p">]</span>
+                <span class="n">job_priority</span> <span class="o">=</span> <span class="n">base</span><span class="o">.</span><span class="n">JobPriority</span><span class="o">.</span><span class="n">convert</span><span class="p">(</span><span class="n">job_priority</span><span class="p">)</span>
+            <span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+                <span class="n">job_priority</span> <span class="o">=</span> <span class="n">base</span><span class="o">.</span><span class="n">JobPriority</span><span class="o">.</span><span class="n">NORMAL</span>
+            <span class="n">job_uuid</span> <span class="o">=</span> <span class="n">job_data</span><span class="p">[</span><span class="s1">&#39;uuid&#39;</span><span class="p">]</span>
+            <span class="n">job_name</span> <span class="o">=</span> <span class="n">job_data</span><span class="p">[</span><span class="s1">&#39;name&#39;</span><span class="p">]</span>
+        <span class="k">except</span> <span class="p">(</span><span class="ne">ValueError</span><span class="p">,</span> <span class="ne">TypeError</span><span class="p">,</span> <span class="ne">KeyError</span><span class="p">):</span>
+            <span class="k">with</span> <span class="n">excutils</span><span class="o">.</span><span class="n">save_and_reraise_exception</span><span class="p">(</span><span class="n">reraise</span><span class="o">=</span><span class="ow">not</span> <span class="n">quiet</span><span class="p">):</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span><span class="s2">&quot;Incorrectly formatted job data found at path: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span>
+                         <span class="n">path</span><span class="p">,</span> <span class="n">exc_info</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+        <span class="k">except</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">handler</span><span class="o">.</span><span class="n">timeout_exception</span><span class="p">:</span>
+            <span class="k">with</span> <span class="n">excutils</span><span class="o">.</span><span class="n">save_and_reraise_exception</span><span class="p">(</span><span class="n">reraise</span><span class="o">=</span><span class="ow">not</span> <span class="n">quiet</span><span class="p">):</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span><span class="s2">&quot;Operation timed out fetching job data from path: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span>
+                         <span class="n">path</span><span class="p">,</span> <span class="n">exc_info</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">k_exceptions</span><span class="o">.</span><span class="n">SessionExpiredError</span><span class="p">:</span>
+            <span class="k">with</span> <span class="n">excutils</span><span class="o">.</span><span class="n">save_and_reraise_exception</span><span class="p">(</span><span class="n">reraise</span><span class="o">=</span><span class="ow">not</span> <span class="n">quiet</span><span class="p">):</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span><span class="s2">&quot;Session expired fetching job data from path: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span>
+                         <span class="n">path</span><span class="p">,</span> <span class="n">exc_info</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">k_exceptions</span><span class="o">.</span><span class="n">NoNodeError</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;No job node found at path: </span><span class="si">%s</span><span class="s2">, it must have&quot;</span>
+                      <span class="s2">&quot; disappeared or was removed&quot;</span><span class="p">,</span> <span class="n">path</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">k_exceptions</span><span class="o">.</span><span class="n">KazooException</span><span class="p">:</span>
+            <span class="k">with</span> <span class="n">excutils</span><span class="o">.</span><span class="n">save_and_reraise_exception</span><span class="p">(</span><span class="n">reraise</span><span class="o">=</span><span class="ow">not</span> <span class="n">quiet</span><span class="p">):</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span><span class="s2">&quot;Internal error fetching job data from path: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span>
+                         <span class="n">path</span><span class="p">,</span> <span class="n">exc_info</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_job_cond</span><span class="p">:</span>
+                <span class="c1"># Now we can officially check if someone already placed this</span>
+                <span class="c1"># jobs information into the known job set (if it&#39;s already</span>
+                <span class="c1"># existing then just leave it alone).</span>
+                <span class="k">if</span> <span class="n">path</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_known_jobs</span><span class="p">:</span>
+                    <span class="n">job</span> <span class="o">=</span> <span class="n">ZookeeperJob</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">job_name</span><span class="p">,</span>
+                                       <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="p">,</span> <span class="n">path</span><span class="p">,</span>
+                                       <span class="n">backend</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_persistence</span><span class="p">,</span>
+                                       <span class="n">uuid</span><span class="o">=</span><span class="n">job_uuid</span><span class="p">,</span>
+                                       <span class="n">book_data</span><span class="o">=</span><span class="n">job_data</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;book&quot;</span><span class="p">),</span>
+                                       <span class="n">details</span><span class="o">=</span><span class="n">job_data</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;details&quot;</span><span class="p">,</span> <span class="p">{}),</span>
+                                       <span class="n">created_on</span><span class="o">=</span><span class="n">job_created_on</span><span class="p">,</span>
+                                       <span class="n">priority</span><span class="o">=</span><span class="n">job_priority</span><span class="p">)</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_known_jobs</span><span class="p">[</span><span class="n">path</span><span class="p">]</span> <span class="o">=</span> <span class="n">job</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_job_cond</span><span class="o">.</span><span class="n">notify_all</span><span class="p">()</span>
+        <span class="k">if</span> <span class="n">job</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_try_emit</span><span class="p">(</span><span class="n">base</span><span class="o">.</span><span class="n">POSTED</span><span class="p">,</span> <span class="n">details</span><span class="o">=</span><span class="p">{</span><span class="s1">&#39;job&#39;</span><span class="p">:</span> <span class="n">job</span><span class="p">})</span>
+
+    <span class="k">def</span> <span class="nf">_on_job_posting</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">children</span><span class="p">,</span> <span class="n">delayed</span><span class="o">=</span><span class="bp">True</span><span class="p">):</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Got children </span><span class="si">%s</span><span class="s2"> under path </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">children</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">path</span><span class="p">)</span>
+        <span class="n">child_paths</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">for</span> <span class="n">c</span> <span class="ow">in</span> <span class="n">children</span><span class="p">:</span>
+            <span class="k">if</span> <span class="p">(</span><span class="n">c</span><span class="o">.</span><span class="n">endswith</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">LOCK_POSTFIX</span><span class="p">)</span> <span class="ow">or</span>
+                    <span class="ow">not</span> <span class="n">c</span><span class="o">.</span><span class="n">startswith</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">JOB_PREFIX</span><span class="p">)):</span>
+                <span class="c1"># Skip lock paths or non-job-paths (these are not valid jobs)</span>
+                <span class="k">continue</span>
+            <span class="n">child_paths</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">k_paths</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">path</span><span class="p">,</span> <span class="n">c</span><span class="p">))</span>
+        <span class="c1"># Figure out what we really should be investigating and what we</span>
+        <span class="c1"># shouldn&#39;t (remove jobs that exist in our local version, but don&#39;t</span>
+        <span class="c1"># exist in the children anymore) and accumulate all paths that we</span>
+        <span class="c1"># need to trigger population of (without holding the job lock).</span>
+        <span class="n">investigate_paths</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="n">pending_removals</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_job_cond</span><span class="p">:</span>
+            <span class="k">for</span> <span class="n">path</span> <span class="ow">in</span> <span class="n">six</span><span class="o">.</span><span class="n">iterkeys</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_known_jobs</span><span class="p">):</span>
+                <span class="k">if</span> <span class="n">path</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">child_paths</span><span class="p">:</span>
+                    <span class="n">pending_removals</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
+        <span class="k">for</span> <span class="n">path</span> <span class="ow">in</span> <span class="n">child_paths</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">path</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_bad_paths</span><span class="p">:</span>
+                <span class="k">continue</span>
+            <span class="c1"># This pre-check will *not* guarantee that we will not already</span>
+            <span class="c1"># have the job (if it&#39;s being populated elsewhere) but it will</span>
+            <span class="c1"># reduce the amount of duplicated requests in general; later when</span>
+            <span class="c1"># the job information has been populated we will ensure that we</span>
+            <span class="c1"># are not adding duplicates into the currently known jobs...</span>
+            <span class="k">if</span> <span class="n">path</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_known_jobs</span><span class="p">:</span>
+                <span class="k">continue</span>
+            <span class="k">if</span> <span class="n">path</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">investigate_paths</span><span class="p">:</span>
+                <span class="n">investigate_paths</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">pending_removals</span><span class="p">:</span>
+            <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_job_cond</span><span class="p">:</span>
+                <span class="n">am_removed</span> <span class="o">=</span> <span class="mi">0</span>
+                <span class="k">try</span><span class="p">:</span>
+                    <span class="k">for</span> <span class="n">path</span> <span class="ow">in</span> <span class="n">pending_removals</span><span class="p">:</span>
+                        <span class="n">am_removed</span> <span class="o">+=</span> <span class="nb">int</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_remove_job</span><span class="p">(</span><span class="n">path</span><span class="p">))</span>
+                <span class="k">finally</span><span class="p">:</span>
+                    <span class="k">if</span> <span class="n">am_removed</span><span class="p">:</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">_job_cond</span><span class="o">.</span><span class="n">notify_all</span><span class="p">()</span>
+        <span class="k">for</span> <span class="n">path</span> <span class="ow">in</span> <span class="n">investigate_paths</span><span class="p">:</span>
+            <span class="c1"># Fire off the request to populate this job.</span>
+            <span class="c1">#</span>
+            <span class="c1"># This method is *usually* called from a asynchronous handler so</span>
+            <span class="c1"># it&#39;s better to exit from this quickly to allow other asynchronous</span>
+            <span class="c1"># handlers to be executed.</span>
+            <span class="n">request</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">get_async</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">delayed</span><span class="p">:</span>
+                <span class="n">request</span><span class="o">.</span><span class="n">rawlink</span><span class="p">(</span><span class="n">functools</span><span class="o">.</span><span class="n">partial</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_process_child</span><span class="p">,</span> <span class="n">path</span><span class="p">))</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_process_child</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="n">request</span><span class="p">,</span> <span class="n">quiet</span><span class="o">=</span><span class="bp">False</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">post</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">book</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">details</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+             <span class="n">priority</span><span class="o">=</span><span class="n">base</span><span class="o">.</span><span class="n">JobPriority</span><span class="o">.</span><span class="n">NORMAL</span><span class="p">):</span>
+        <span class="c1"># NOTE(harlowja): Jobs are not ephemeral, they will persist until they</span>
+        <span class="c1"># are consumed (this may change later, but seems safer to do this until</span>
+        <span class="c1"># further notice).</span>
+        <span class="n">job_priority</span> <span class="o">=</span> <span class="n">base</span><span class="o">.</span><span class="n">JobPriority</span><span class="o">.</span><span class="n">convert</span><span class="p">(</span><span class="n">priority</span><span class="p">)</span>
+        <span class="n">job_uuid</span> <span class="o">=</span> <span class="n">uuidutils</span><span class="o">.</span><span class="n">generate_uuid</span><span class="p">()</span>
+        <span class="n">job_posting</span> <span class="o">=</span> <span class="n">base</span><span class="o">.</span><span class="n">format_posting</span><span class="p">(</span><span class="n">job_uuid</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span>
+                                          <span class="n">book</span><span class="o">=</span><span class="n">book</span><span class="p">,</span> <span class="n">details</span><span class="o">=</span><span class="n">details</span><span class="p">,</span>
+                                          <span class="n">priority</span><span class="o">=</span><span class="n">job_priority</span><span class="p">)</span>
+        <span class="n">raw_job_posting</span> <span class="o">=</span> <span class="n">misc</span><span class="o">.</span><span class="n">binary_encode</span><span class="p">(</span><span class="n">jsonutils</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span><span class="n">job_posting</span><span class="p">))</span>
+        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_wrap</span><span class="p">(</span><span class="n">job_uuid</span><span class="p">,</span> <span class="bp">None</span><span class="p">,</span>
+                        <span class="n">fail_msg_tpl</span><span class="o">=</span><span class="s2">&quot;Posting failure: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span>
+                        <span class="n">ensure_known</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+            <span class="n">job_path</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">create</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_job_base</span><span class="p">,</span>
+                                           <span class="n">value</span><span class="o">=</span><span class="n">raw_job_posting</span><span class="p">,</span>
+                                           <span class="n">sequence</span><span class="o">=</span><span class="bp">True</span><span class="p">,</span>
+                                           <span class="n">ephemeral</span><span class="o">=</span><span class="bp">False</span><span class="p">)</span>
+            <span class="n">job</span> <span class="o">=</span> <span class="n">ZookeeperJob</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="p">,</span> <span class="n">job_path</span><span class="p">,</span>
+                               <span class="n">backend</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_persistence</span><span class="p">,</span>
+                               <span class="n">book</span><span class="o">=</span><span class="n">book</span><span class="p">,</span> <span class="n">details</span><span class="o">=</span><span class="n">details</span><span class="p">,</span> <span class="n">uuid</span><span class="o">=</span><span class="n">job_uuid</span><span class="p">,</span>
+                               <span class="n">book_data</span><span class="o">=</span><span class="n">job_posting</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;book&#39;</span><span class="p">),</span>
+                               <span class="n">priority</span><span class="o">=</span><span class="n">job_priority</span><span class="p">)</span>
+            <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_job_cond</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_known_jobs</span><span class="p">[</span><span class="n">job_path</span><span class="p">]</span> <span class="o">=</span> <span class="n">job</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_job_cond</span><span class="o">.</span><span class="n">notify_all</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_try_emit</span><span class="p">(</span><span class="n">base</span><span class="o">.</span><span class="n">POSTED</span><span class="p">,</span> <span class="n">details</span><span class="o">=</span><span class="p">{</span><span class="s1">&#39;job&#39;</span><span class="p">:</span> <span class="n">job</span><span class="p">})</span>
+            <span class="k">return</span> <span class="n">job</span>
+
+    <span class="nd">@base.check_who</span>
+    <span class="k">def</span> <span class="nf">claim</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">job</span><span class="p">,</span> <span class="n">who</span><span class="p">):</span>
+        <span class="k">def</span> <span class="nf">_unclaimable_try_find_owner</span><span class="p">(</span><span class="n">cause</span><span class="p">):</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">owner</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">find_owner</span><span class="p">(</span><span class="n">job</span><span class="p">)</span>
+            <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+                <span class="n">owner</span> <span class="o">=</span> <span class="bp">None</span>
+            <span class="k">if</span> <span class="n">owner</span><span class="p">:</span>
+                <span class="n">message</span> <span class="o">=</span> <span class="s2">&quot;Job </span><span class="si">%s</span><span class="s2"> already claimed by &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="n">owner</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">message</span> <span class="o">=</span> <span class="s2">&quot;Job </span><span class="si">%s</span><span class="s2"> already claimed&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+            <span class="n">excp</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">excp</span><span class="o">.</span><span class="n">UnclaimableJob</span><span class="p">,</span>
+                                  <span class="n">message</span><span class="p">,</span> <span class="n">cause</span><span class="o">=</span><span class="n">cause</span><span class="p">)</span>
+
+        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_wrap</span><span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="n">job</span><span class="o">.</span><span class="n">path</span><span class="p">,</span>
+                        <span class="n">fail_msg_tpl</span><span class="o">=</span><span class="s2">&quot;Claiming failure: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">):</span>
+            <span class="c1"># NOTE(harlowja): post as json which will allow for future changes</span>
+            <span class="c1"># more easily than a raw string/text.</span>
+            <span class="n">value</span> <span class="o">=</span> <span class="n">jsonutils</span><span class="o">.</span><span class="n">dumps</span><span class="p">({</span>
+                <span class="s1">&#39;owner&#39;</span><span class="p">:</span> <span class="n">who</span><span class="p">,</span>
+            <span class="p">})</span>
+            <span class="c1"># Ensure the target job is still existent (at the right version).</span>
+            <span class="n">job_data</span><span class="p">,</span> <span class="n">job_stat</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">path</span><span class="p">)</span>
+            <span class="n">txn</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">transaction</span><span class="p">()</span>
+            <span class="c1"># This will abort (and not create the lock) if the job has been</span>
+            <span class="c1"># removed (somehow...) or updated by someone else to a different</span>
+            <span class="c1"># version...</span>
+            <span class="n">txn</span><span class="o">.</span><span class="n">check</span><span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">path</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="n">job_stat</span><span class="o">.</span><span class="n">version</span><span class="p">)</span>
+            <span class="n">txn</span><span class="o">.</span><span class="n">create</span><span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">lock_path</span><span class="p">,</span> <span class="n">value</span><span class="o">=</span><span class="n">misc</span><span class="o">.</span><span class="n">binary_encode</span><span class="p">(</span><span class="n">value</span><span class="p">),</span>
+                       <span class="n">ephemeral</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">kazoo_utils</span><span class="o">.</span><span class="n">checked_commit</span><span class="p">(</span><span class="n">txn</span><span class="p">)</span>
+            <span class="k">except</span> <span class="n">k_exceptions</span><span class="o">.</span><span class="n">NodeExistsError</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+                <span class="n">_unclaimable_try_find_owner</span><span class="p">(</span><span class="n">e</span><span class="p">)</span>
+            <span class="k">except</span> <span class="n">kazoo_utils</span><span class="o">.</span><span class="n">KazooTransactionException</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+                <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">e</span><span class="o">.</span><span class="n">failures</span><span class="p">)</span> <span class="o">&lt;</span> <span class="mi">2</span><span class="p">:</span>
+                    <span class="k">raise</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">e</span><span class="o">.</span><span class="n">failures</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">k_exceptions</span><span class="o">.</span><span class="n">NoNodeError</span><span class="p">):</span>
+                        <span class="n">excp</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span>
+                            <span class="n">excp</span><span class="o">.</span><span class="n">NotFound</span><span class="p">,</span>
+                            <span class="s2">&quot;Job </span><span class="si">%s</span><span class="s2"> not found to be claimed&quot;</span> <span class="o">%</span> <span class="n">job</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span>
+                            <span class="n">cause</span><span class="o">=</span><span class="n">e</span><span class="o">.</span><span class="n">failures</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
+                    <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">e</span><span class="o">.</span><span class="n">failures</span><span class="p">[</span><span class="mi">1</span><span class="p">],</span> <span class="n">k_exceptions</span><span class="o">.</span><span class="n">NodeExistsError</span><span class="p">):</span>
+                        <span class="n">_unclaimable_try_find_owner</span><span class="p">(</span><span class="n">e</span><span class="o">.</span><span class="n">failures</span><span class="p">[</span><span class="mi">1</span><span class="p">])</span>
+                    <span class="k">else</span><span class="p">:</span>
+                        <span class="n">excp</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span>
+                            <span class="n">excp</span><span class="o">.</span><span class="n">UnclaimableJob</span><span class="p">,</span>
+                            <span class="s2">&quot;Job </span><span class="si">%s</span><span class="s2"> claim failed due to transaction&quot;</span>
+                            <span class="s2">&quot; not succeeding&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">uuid</span><span class="p">),</span> <span class="n">cause</span><span class="o">=</span><span class="n">e</span><span class="p">)</span>
+
+    <span class="nd">@contextlib.contextmanager</span>
+    <span class="k">def</span> <span class="nf">_wrap</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">job_uuid</span><span class="p">,</span> <span class="n">job_path</span><span class="p">,</span>
+              <span class="n">fail_msg_tpl</span><span class="o">=</span><span class="s2">&quot;Failure: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">ensure_known</span><span class="o">=</span><span class="bp">True</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">job_path</span><span class="p">:</span>
+            <span class="n">fail_msg_tpl</span> <span class="o">+=</span> <span class="s2">&quot; (</span><span class="si">%s</span><span class="s2">)&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">job_path</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">ensure_known</span><span class="p">:</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">job_path</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;Unable to check if </span><span class="si">%r</span><span class="s2"> is a known path&quot;</span>
+                                 <span class="o">%</span> <span class="p">(</span><span class="n">job_path</span><span class="p">))</span>
+            <span class="k">if</span> <span class="n">job_path</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_known_jobs</span><span class="p">:</span>
+                <span class="n">fail_msg_tpl</span> <span class="o">+=</span> <span class="s2">&quot;, unknown job&quot;</span>
+                <span class="k">raise</span> <span class="n">excp</span><span class="o">.</span><span class="n">NotFound</span><span class="p">(</span><span class="n">fail_msg_tpl</span> <span class="o">%</span> <span class="p">(</span><span class="n">job_uuid</span><span class="p">))</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">yield</span>
+        <span class="k">except</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">handler</span><span class="o">.</span><span class="n">timeout_exception</span><span class="p">:</span>
+            <span class="n">fail_msg_tpl</span> <span class="o">+=</span> <span class="s2">&quot;, operation timed out&quot;</span>
+            <span class="n">excp</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">excp</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">,</span> <span class="n">fail_msg_tpl</span> <span class="o">%</span> <span class="p">(</span><span class="n">job_uuid</span><span class="p">))</span>
+        <span class="k">except</span> <span class="n">k_exceptions</span><span class="o">.</span><span class="n">SessionExpiredError</span><span class="p">:</span>
+            <span class="n">fail_msg_tpl</span> <span class="o">+=</span> <span class="s2">&quot;, session expired&quot;</span>
+            <span class="n">excp</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">excp</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">,</span> <span class="n">fail_msg_tpl</span> <span class="o">%</span> <span class="p">(</span><span class="n">job_uuid</span><span class="p">))</span>
+        <span class="k">except</span> <span class="n">k_exceptions</span><span class="o">.</span><span class="n">NoNodeError</span><span class="p">:</span>
+            <span class="n">fail_msg_tpl</span> <span class="o">+=</span> <span class="s2">&quot;, unknown job&quot;</span>
+            <span class="n">excp</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">excp</span><span class="o">.</span><span class="n">NotFound</span><span class="p">,</span> <span class="n">fail_msg_tpl</span> <span class="o">%</span> <span class="p">(</span><span class="n">job_uuid</span><span class="p">))</span>
+        <span class="k">except</span> <span class="n">k_exceptions</span><span class="o">.</span><span class="n">KazooException</span><span class="p">:</span>
+            <span class="n">fail_msg_tpl</span> <span class="o">+=</span> <span class="s2">&quot;, internal error&quot;</span>
+            <span class="n">excp</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">excp</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">,</span> <span class="n">fail_msg_tpl</span> <span class="o">%</span> <span class="p">(</span><span class="n">job_uuid</span><span class="p">))</span>
+
+    <span class="k">def</span> <span class="nf">find_owner</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">job</span><span class="p">):</span>
+        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_wrap</span><span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="n">job</span><span class="o">.</span><span class="n">path</span><span class="p">,</span>
+                        <span class="n">fail_msg_tpl</span><span class="o">=</span><span class="s2">&quot;Owner query failure: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span>
+                        <span class="n">ensure_known</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">sync</span><span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">lock_path</span><span class="p">)</span>
+                <span class="n">raw_data</span><span class="p">,</span> <span class="n">_lock_stat</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">lock_path</span><span class="p">)</span>
+                <span class="n">data</span> <span class="o">=</span> <span class="n">misc</span><span class="o">.</span><span class="n">decode_json</span><span class="p">(</span><span class="n">raw_data</span><span class="p">)</span>
+                <span class="n">owner</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;owner&quot;</span><span class="p">)</span>
+            <span class="k">except</span> <span class="n">k_exceptions</span><span class="o">.</span><span class="n">NoNodeError</span><span class="p">:</span>
+                <span class="n">owner</span> <span class="o">=</span> <span class="bp">None</span>
+            <span class="k">return</span> <span class="n">owner</span>
+
+    <span class="k">def</span> <span class="nf">_get_owner_and_data</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">job</span><span class="p">):</span>
+        <span class="n">lock_data</span><span class="p">,</span> <span class="n">lock_stat</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">lock_path</span><span class="p">)</span>
+        <span class="n">job_data</span><span class="p">,</span> <span class="n">job_stat</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">path</span><span class="p">)</span>
+        <span class="k">return</span> <span class="p">(</span><span class="n">misc</span><span class="o">.</span><span class="n">decode_json</span><span class="p">(</span><span class="n">lock_data</span><span class="p">),</span> <span class="n">lock_stat</span><span class="p">,</span>
+                <span class="n">misc</span><span class="o">.</span><span class="n">decode_json</span><span class="p">(</span><span class="n">job_data</span><span class="p">),</span> <span class="n">job_stat</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">register_entity</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">entity</span><span class="p">):</span>
+        <span class="n">entity_type</span> <span class="o">=</span> <span class="n">entity</span><span class="o">.</span><span class="n">kind</span>
+        <span class="k">if</span> <span class="n">entity_type</span> <span class="o">==</span> <span class="n">c_base</span><span class="o">.</span><span class="n">Conductor</span><span class="o">.</span><span class="n">ENTITY_KIND</span><span class="p">:</span>
+            <span class="n">entity_path</span> <span class="o">=</span> <span class="n">k_paths</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">entity_path</span><span class="p">,</span> <span class="n">entity_type</span><span class="p">)</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">ensure_path</span><span class="p">(</span><span class="n">entity_path</span><span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">create</span><span class="p">(</span><span class="n">k_paths</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">entity_path</span><span class="p">,</span> <span class="n">entity</span><span class="o">.</span><span class="n">name</span><span class="p">),</span>
+                                    <span class="n">value</span><span class="o">=</span><span class="n">misc</span><span class="o">.</span><span class="n">binary_encode</span><span class="p">(</span>
+                                        <span class="n">jsonutils</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span><span class="n">entity</span><span class="o">.</span><span class="n">to_dict</span><span class="p">())),</span>
+                                    <span class="n">ephemeral</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+            <span class="k">except</span> <span class="n">k_exceptions</span><span class="o">.</span><span class="n">NodeExistsError</span><span class="p">:</span>
+                <span class="k">pass</span>
+            <span class="k">except</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">handler</span><span class="o">.</span><span class="n">timeout_exception</span><span class="p">:</span>
+                <span class="n">excp</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span>
+                    <span class="n">excp</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">,</span>
+                    <span class="s2">&quot;Can not register entity </span><span class="si">%s</span><span class="s2"> under </span><span class="si">%s</span><span class="s2">, operation&quot;</span>
+                    <span class="s2">&quot; timed out&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">entity</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="n">entity_path</span><span class="p">))</span>
+            <span class="k">except</span> <span class="n">k_exceptions</span><span class="o">.</span><span class="n">SessionExpiredError</span><span class="p">:</span>
+                <span class="n">excp</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span>
+                    <span class="n">excp</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">,</span>
+                    <span class="s2">&quot;Can not register entity </span><span class="si">%s</span><span class="s2"> under </span><span class="si">%s</span><span class="s2">, session&quot;</span>
+                    <span class="s2">&quot; expired&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">entity</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="n">entity_path</span><span class="p">))</span>
+            <span class="k">except</span> <span class="n">k_exceptions</span><span class="o">.</span><span class="n">KazooException</span><span class="p">:</span>
+                <span class="n">excp</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span>
+                    <span class="n">excp</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">,</span>
+                    <span class="s2">&quot;Can not register entity </span><span class="si">%s</span><span class="s2"> under </span><span class="si">%s</span><span class="s2">, internal&quot;</span>
+                    <span class="s2">&quot; error&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">entity</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="n">entity_path</span><span class="p">))</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">excp</span><span class="o">.</span><span class="n">NotImplementedError</span><span class="p">(</span>
+                <span class="s2">&quot;Not implemented for other entity type &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span> <span class="o">%</span> <span class="n">entity_type</span><span class="p">)</span>
+
+    <span class="nd">@base.check_who</span>
+    <span class="k">def</span> <span class="nf">consume</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">job</span><span class="p">,</span> <span class="n">who</span><span class="p">):</span>
+        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_wrap</span><span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="n">job</span><span class="o">.</span><span class="n">path</span><span class="p">,</span>
+                        <span class="n">fail_msg_tpl</span><span class="o">=</span><span class="s2">&quot;Consumption failure: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">):</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">owner_data</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_owner_and_data</span><span class="p">(</span><span class="n">job</span><span class="p">)</span>
+                <span class="n">lock_data</span><span class="p">,</span> <span class="n">lock_stat</span><span class="p">,</span> <span class="n">data</span><span class="p">,</span> <span class="n">data_stat</span> <span class="o">=</span> <span class="n">owner_data</span>
+            <span class="k">except</span> <span class="n">k_exceptions</span><span class="o">.</span><span class="n">NoNodeError</span><span class="p">:</span>
+                <span class="n">excp</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">excp</span><span class="o">.</span><span class="n">NotFound</span><span class="p">,</span>
+                                      <span class="s2">&quot;Can not consume a job </span><span class="si">%s</span><span class="s2">&quot;</span>
+                                      <span class="s2">&quot; which we can not determine&quot;</span>
+                                      <span class="s2">&quot; the owner of&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">uuid</span><span class="p">))</span>
+            <span class="k">if</span> <span class="n">lock_data</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;owner&quot;</span><span class="p">)</span> <span class="o">!=</span> <span class="n">who</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="n">excp</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">(</span><span class="s2">&quot;Can not consume a job </span><span class="si">%s</span><span class="s2">&quot;</span>
+                                      <span class="s2">&quot; which is not owned by </span><span class="si">%s</span><span class="s2">&quot;</span>
+                                      <span class="o">%</span> <span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="n">who</span><span class="p">))</span>
+            <span class="n">txn</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">transaction</span><span class="p">()</span>
+            <span class="n">txn</span><span class="o">.</span><span class="n">delete</span><span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">lock_path</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="n">lock_stat</span><span class="o">.</span><span class="n">version</span><span class="p">)</span>
+            <span class="n">txn</span><span class="o">.</span><span class="n">delete</span><span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">path</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="n">data_stat</span><span class="o">.</span><span class="n">version</span><span class="p">)</span>
+            <span class="n">kazoo_utils</span><span class="o">.</span><span class="n">checked_commit</span><span class="p">(</span><span class="n">txn</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_remove_job</span><span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">path</span><span class="p">)</span>
+
+    <span class="nd">@base.check_who</span>
+    <span class="k">def</span> <span class="nf">abandon</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">job</span><span class="p">,</span> <span class="n">who</span><span class="p">):</span>
+        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_wrap</span><span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="n">job</span><span class="o">.</span><span class="n">path</span><span class="p">,</span>
+                        <span class="n">fail_msg_tpl</span><span class="o">=</span><span class="s2">&quot;Abandonment failure: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">):</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">owner_data</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_owner_and_data</span><span class="p">(</span><span class="n">job</span><span class="p">)</span>
+                <span class="n">lock_data</span><span class="p">,</span> <span class="n">lock_stat</span><span class="p">,</span> <span class="n">data</span><span class="p">,</span> <span class="n">data_stat</span> <span class="o">=</span> <span class="n">owner_data</span>
+            <span class="k">except</span> <span class="n">k_exceptions</span><span class="o">.</span><span class="n">NoNodeError</span><span class="p">:</span>
+                <span class="n">excp</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">excp</span><span class="o">.</span><span class="n">NotFound</span><span class="p">,</span>
+                                      <span class="s2">&quot;Can not abandon a job </span><span class="si">%s</span><span class="s2">&quot;</span>
+                                      <span class="s2">&quot; which we can not determine&quot;</span>
+                                      <span class="s2">&quot; the owner of&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">uuid</span><span class="p">))</span>
+            <span class="k">if</span> <span class="n">lock_data</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;owner&quot;</span><span class="p">)</span> <span class="o">!=</span> <span class="n">who</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="n">excp</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">(</span><span class="s2">&quot;Can not abandon a job </span><span class="si">%s</span><span class="s2">&quot;</span>
+                                      <span class="s2">&quot; which is not owned by </span><span class="si">%s</span><span class="s2">&quot;</span>
+                                      <span class="o">%</span> <span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="n">who</span><span class="p">))</span>
+            <span class="n">txn</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">transaction</span><span class="p">()</span>
+            <span class="n">txn</span><span class="o">.</span><span class="n">delete</span><span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">lock_path</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="n">lock_stat</span><span class="o">.</span><span class="n">version</span><span class="p">)</span>
+            <span class="n">kazoo_utils</span><span class="o">.</span><span class="n">checked_commit</span><span class="p">(</span><span class="n">txn</span><span class="p">)</span>
+
+    <span class="nd">@base.check_who</span>
+    <span class="k">def</span> <span class="nf">trash</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">job</span><span class="p">,</span> <span class="n">who</span><span class="p">):</span>
+        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_wrap</span><span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="n">job</span><span class="o">.</span><span class="n">path</span><span class="p">,</span>
+                        <span class="n">fail_msg_tpl</span><span class="o">=</span><span class="s2">&quot;Trash failure: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">):</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">owner_data</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_owner_and_data</span><span class="p">(</span><span class="n">job</span><span class="p">)</span>
+                <span class="n">lock_data</span><span class="p">,</span> <span class="n">lock_stat</span><span class="p">,</span> <span class="n">data</span><span class="p">,</span> <span class="n">data_stat</span> <span class="o">=</span> <span class="n">owner_data</span>
+            <span class="k">except</span> <span class="n">k_exceptions</span><span class="o">.</span><span class="n">NoNodeError</span><span class="p">:</span>
+                <span class="n">excp</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">excp</span><span class="o">.</span><span class="n">NotFound</span><span class="p">,</span>
+                                      <span class="s2">&quot;Can not trash a job </span><span class="si">%s</span><span class="s2">&quot;</span>
+                                      <span class="s2">&quot; which we can not determine&quot;</span>
+                                      <span class="s2">&quot; the owner of&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">uuid</span><span class="p">))</span>
+            <span class="k">if</span> <span class="n">lock_data</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;owner&quot;</span><span class="p">)</span> <span class="o">!=</span> <span class="n">who</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="n">excp</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">(</span><span class="s2">&quot;Can not trash a job </span><span class="si">%s</span><span class="s2">&quot;</span>
+                                      <span class="s2">&quot; which is not owned by </span><span class="si">%s</span><span class="s2">&quot;</span>
+                                      <span class="o">%</span> <span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="n">who</span><span class="p">))</span>
+            <span class="n">trash_path</span> <span class="o">=</span> <span class="n">job</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">path</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">trash_path</span><span class="p">)</span>
+            <span class="n">value</span> <span class="o">=</span> <span class="n">misc</span><span class="o">.</span><span class="n">binary_encode</span><span class="p">(</span><span class="n">jsonutils</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span><span class="n">data</span><span class="p">))</span>
+            <span class="n">txn</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">transaction</span><span class="p">()</span>
+            <span class="n">txn</span><span class="o">.</span><span class="n">create</span><span class="p">(</span><span class="n">trash_path</span><span class="p">,</span> <span class="n">value</span><span class="o">=</span><span class="n">value</span><span class="p">)</span>
+            <span class="n">txn</span><span class="o">.</span><span class="n">delete</span><span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">lock_path</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="n">lock_stat</span><span class="o">.</span><span class="n">version</span><span class="p">)</span>
+            <span class="n">txn</span><span class="o">.</span><span class="n">delete</span><span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">path</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="n">data_stat</span><span class="o">.</span><span class="n">version</span><span class="p">)</span>
+            <span class="n">kazoo_utils</span><span class="o">.</span><span class="n">checked_commit</span><span class="p">(</span><span class="n">txn</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_state_change_listener</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state</span><span class="p">):</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_last_states</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Kazoo client has changed to&quot;</span>
+                      <span class="s2">&quot; state &#39;</span><span class="si">%s</span><span class="s2">&#39; from prior states &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span><span class="p">,</span> <span class="n">state</span><span class="p">,</span>
+                      <span class="bp">self</span><span class="o">.</span><span class="n">_last_states</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Kazoo client has changed to state &#39;</span><span class="si">%s</span><span class="s2">&#39; (from&quot;</span>
+                      <span class="s2">&quot; its initial/uninitialized state)&quot;</span><span class="p">,</span> <span class="n">state</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_last_states</span><span class="o">.</span><span class="n">appendleft</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">state</span> <span class="o">==</span> <span class="n">k_states</span><span class="o">.</span><span class="n">KazooState</span><span class="o">.</span><span class="n">LOST</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_connected</span> <span class="o">=</span> <span class="bp">False</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span><span class="s2">&quot;Connection to zookeeper has been lost&quot;</span><span class="p">)</span>
+        <span class="k">elif</span> <span class="n">state</span> <span class="o">==</span> <span class="n">k_states</span><span class="o">.</span><span class="n">KazooState</span><span class="o">.</span><span class="n">SUSPENDED</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span><span class="s2">&quot;Connection to zookeeper has been suspended&quot;</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_suspended</span> <span class="o">=</span> <span class="bp">True</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="c1"># Must be CONNECTED then (as there are only 3 enums)</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_suspended</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_suspended</span> <span class="o">=</span> <span class="bp">False</span>
+
+    <span class="k">def</span> <span class="nf">wait</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="c1"># Wait until timeout expires (or forever) for jobs to appear.</span>
+        <span class="n">watch</span> <span class="o">=</span> <span class="n">timeutils</span><span class="o">.</span><span class="n">StopWatch</span><span class="p">(</span><span class="n">duration</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span>
+        <span class="n">watch</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_job_cond</span><span class="p">:</span>
+            <span class="k">while</span> <span class="bp">True</span><span class="p">:</span>
+                <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_known_jobs</span><span class="p">:</span>
+                    <span class="k">if</span> <span class="n">watch</span><span class="o">.</span><span class="n">expired</span><span class="p">():</span>
+                        <span class="k">raise</span> <span class="n">excp</span><span class="o">.</span><span class="n">NotFound</span><span class="p">(</span><span class="s2">&quot;Expired waiting for jobs to&quot;</span>
+                                            <span class="s2">&quot; arrive; waited </span><span class="si">%s</span><span class="s2"> seconds&quot;</span>
+                                            <span class="o">%</span> <span class="n">watch</span><span class="o">.</span><span class="n">elapsed</span><span class="p">())</span>
+                    <span class="c1"># This is done since the given timeout can not be provided</span>
+                    <span class="c1"># to the condition variable, since we can not ensure that</span>
+                    <span class="c1"># when we acquire the condition that there will actually</span>
+                    <span class="c1"># be jobs (especially if we are spuriously awaken), so we</span>
+                    <span class="c1"># must recalculate the amount of time we really have left.</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_job_cond</span><span class="o">.</span><span class="n">wait</span><span class="p">(</span><span class="n">watch</span><span class="o">.</span><span class="n">leftover</span><span class="p">(</span><span class="n">return_none</span><span class="o">=</span><span class="bp">True</span><span class="p">))</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="n">curr_jobs</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_fetch_jobs</span><span class="p">()</span>
+                    <span class="n">fetch_func</span> <span class="o">=</span> <span class="k">lambda</span> <span class="n">ensure_fresh</span><span class="p">:</span> <span class="n">curr_jobs</span>
+                    <span class="n">removal_func</span> <span class="o">=</span> <span class="k">lambda</span> <span class="n">a_job</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_remove_job</span><span class="p">(</span><span class="n">a_job</span><span class="o">.</span><span class="n">path</span><span class="p">)</span>
+                    <span class="k">return</span> <span class="n">base</span><span class="o">.</span><span class="n">JobBoardIterator</span><span class="p">(</span>
+                        <span class="bp">self</span><span class="p">,</span> <span class="n">LOG</span><span class="p">,</span> <span class="n">board_fetch_func</span><span class="o">=</span><span class="n">fetch_func</span><span class="p">,</span>
+                        <span class="n">board_removal_func</span><span class="o">=</span><span class="n">removal_func</span><span class="p">)</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">connected</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_connected</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">connected</span>
+
+    <span class="nd">@fasteners.locked</span><span class="p">(</span><span class="n">lock</span><span class="o">=</span><span class="s1">&#39;_open_close_lock&#39;</span><span class="p">)</span>
+    <span class="k">def</span> <span class="nf">close</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_owned</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Stopping client&quot;</span><span class="p">)</span>
+            <span class="n">kazoo_utils</span><span class="o">.</span><span class="n">finalize_client</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="p">)</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_worker</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Shutting down the notifier&quot;</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_worker</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_worker</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_job_cond</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_known_jobs</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Stopped &amp; cleared local state&quot;</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_connected</span> <span class="o">=</span> <span class="bp">False</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_last_states</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
+
+    <span class="nd">@fasteners.locked</span><span class="p">(</span><span class="n">lock</span><span class="o">=</span><span class="s1">&#39;_open_close_lock&#39;</span><span class="p">)</span>
+    <span class="k">def</span> <span class="nf">connect</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="mf">10.0</span><span class="p">):</span>
+
+        <span class="k">def</span> <span class="nf">try_clean</span><span class="p">():</span>
+            <span class="c1"># Attempt to do the needed cleanup if post-connection setup does</span>
+            <span class="c1"># not succeed (maybe the connection is lost right after it is</span>
+            <span class="c1"># obtained).</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
+            <span class="k">except</span> <span class="n">k_exceptions</span><span class="o">.</span><span class="n">KazooException</span><span class="p">:</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">exception</span><span class="p">(</span><span class="s2">&quot;Failed cleaning-up after post-connection&quot;</span>
+                              <span class="s2">&quot; initialization failed&quot;</span><span class="p">)</span>
+
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">timeout</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="n">timeout</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">timeout</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">start</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span>
+        <span class="k">except</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">handler</span><span class="o">.</span><span class="n">timeout_exception</span><span class="p">,</span>
+                <span class="n">k_exceptions</span><span class="o">.</span><span class="n">KazooException</span><span class="p">):</span>
+            <span class="n">excp</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">excp</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">,</span>
+                                  <span class="s2">&quot;Failed to connect to zookeeper&quot;</span><span class="p">)</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_conf</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;check_compatible&#39;</span><span class="p">,</span> <span class="bp">True</span><span class="p">):</span>
+                <span class="n">kazoo_utils</span><span class="o">.</span><span class="n">check_compatible</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">MIN_ZK_VERSION</span><span class="p">)</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_worker</span> <span class="ow">is</span> <span class="bp">None</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">_emit_notifications</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_worker</span> <span class="o">=</span> <span class="n">futurist</span><span class="o">.</span><span class="n">ThreadPoolExecutor</span><span class="p">(</span><span class="n">max_workers</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">ensure_path</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">path</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">ensure_path</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">trash_path</span><span class="p">)</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_job_watcher</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_job_watcher</span> <span class="o">=</span> <span class="n">watchers</span><span class="o">.</span><span class="n">ChildrenWatch</span><span class="p">(</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="p">,</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">path</span><span class="p">,</span>
+                    <span class="n">func</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_on_job_posting</span><span class="p">,</span>
+                    <span class="n">allow_session_lost</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_connected</span> <span class="o">=</span> <span class="bp">True</span>
+        <span class="k">except</span> <span class="n">excp</span><span class="o">.</span><span class="n">IncompatibleVersion</span><span class="p">:</span>
+            <span class="k">with</span> <span class="n">excutils</span><span class="o">.</span><span class="n">save_and_reraise_exception</span><span class="p">():</span>
+                <span class="n">try_clean</span><span class="p">()</span>
+        <span class="k">except</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">handler</span><span class="o">.</span><span class="n">timeout_exception</span><span class="p">,</span>
+                <span class="n">k_exceptions</span><span class="o">.</span><span class="n">KazooException</span><span class="p">):</span>
+            <span class="n">exc_type</span><span class="p">,</span> <span class="n">exc</span><span class="p">,</span> <span class="n">exc_tb</span> <span class="o">=</span> <span class="n">sys</span><span class="o">.</span><span class="n">exc_info</span><span class="p">()</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">try_clean</span><span class="p">()</span>
+                <span class="n">excp</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">excp</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">,</span>
+                                      <span class="s2">&quot;Failed to do post-connection&quot;</span>
+                                      <span class="s2">&quot; initialization&quot;</span><span class="p">,</span> <span class="n">cause</span><span class="o">=</span><span class="n">exc</span><span class="p">)</span>
+            <span class="k">finally</span><span class="p">:</span>
+                <span class="k">del</span><span class="p">(</span><span class="n">exc_type</span><span class="p">,</span> <span class="n">exc</span><span class="p">,</span> <span class="n">exc_tb</span><span class="p">)</span></div>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+  <h3>Navigation</h3>
+  <ul>
+
+    <li><a href="../../../../index.html">Table Of Contents</a></li>
+
+
+
+  </ul>
+
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/taskflow
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../../../index.html">TaskFlow 2.9.1.dev9 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../../../index.html" >Module code</a> &raquo;</li>
+          <li class="nav-item nav-item-2"><a href="../backends.html" accesskey="U">taskflow.jobs.backends</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2017, OpenStack Foundation.
+      Last updated on &#39;Fri Feb 10 20:11:17 2017, commit 643495f&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/TaskFlow");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

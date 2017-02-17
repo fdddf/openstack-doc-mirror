@@ -1,0 +1,276 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Scheduler Evolution &mdash; nova 15.0.0.0rc2.dev69 documentation</title>
+    
+    <link rel="stylesheet" href="_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="_static/support-matrix.css" type="text/css" />
+    <link rel="stylesheet" href="_static/feature-matrix.css" type="text/css" />
+    <link rel="stylesheet" href="_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '15.0.0.0rc2.dev69',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <link rel="top" title="nova 15.0.0.0rc2.dev69 documentation" href="index.html" />
+    <link rel="next" title="Guru Meditation Reports" href="gmr.html" />
+    <link rel="prev" title="Code Review Guide for Nova" href="code-review.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="scheduler-evolution">
+<h1>Scheduler Evolution<a class="headerlink" href="#scheduler-evolution" title="Permalink to this headline">¶</a></h1>
+<p>Evolving the scheduler has been a priority item over several
+releases: <a class="reference external" href="http://specs.openstack.org/openstack/nova-specs/#priorities">http://specs.openstack.org/openstack/nova-specs/#priorities</a></p>
+<p>The scheduler has become tightly coupled with the rest of nova,
+limiting its capabilities, accuracy, flexibility and maintainability.
+The goal of scheduler evolution is to bring about a better separation of
+concerns between scheduling functionality and the rest of nova.</p>
+<p>Once this effort has completed, its conceivable that the nova-scheduler could
+become a separate git repo, outside of nova but within the compute project.
+This is not the current focus.</p>
+<div class="section" id="problem-use-cases">
+<h2>Problem Use Cases<a class="headerlink" href="#problem-use-cases" title="Permalink to this headline">¶</a></h2>
+<p>Many users are wanting to do more advanced things with the scheduler, but the
+current architecture is not ready to support those use cases in a maintainable way.
+A few examples will help to illustrate where the scheduler falls
+short:</p>
+<div class="section" id="cross-project-affinity">
+<h3>Cross Project Affinity<a class="headerlink" href="#cross-project-affinity" title="Permalink to this headline">¶</a></h3>
+<p>It can be desirable, when booting from a volume, to use a compute node
+that is close to the shared storage where that volume is. Similarly, for
+the sake of performance, it can be desirable to use a compute node that
+is in a particular location in relation to a pre-created port.</p>
+</div>
+<div class="section" id="accessing-aggregates-in-filters-and-weights">
+<h3>Accessing Aggregates in Filters and Weights<a class="headerlink" href="#accessing-aggregates-in-filters-and-weights" title="Permalink to this headline">¶</a></h3>
+<p>Any DB access in a filter or weight slows down the scheduler. Until the
+end of kilo, there was no way to deal with the scheduler accessing
+information about aggregates without querying the DB in every call to
+host_passes() in a filter.</p>
+</div>
+<div class="section" id="filter-scheduler-alternatives">
+<h3>Filter Scheduler Alternatives<a class="headerlink" href="#filter-scheduler-alternatives" title="Permalink to this headline">¶</a></h3>
+<p>For certain use cases, radically different schedulers may perform much better
+than the filter scheduler. We should not block this innovation. It is
+unreasonable to assume a single scheduler will work for all use cases.</p>
+<p>However, to enable this kind of innovation in a maintainable way, a
+single strong scheduler interface is required.</p>
+</div>
+<div class="section" id="project-scale-issues">
+<h3>Project Scale issues<a class="headerlink" href="#project-scale-issues" title="Permalink to this headline">¶</a></h3>
+<p>There are many interesting ideas for new schedulers, like the solver scheduler,
+and frequent requests to add new filters and weights to the scheduling system.
+The current nova team does not have the bandwidth to deal with all these
+requests. A dedicated scheduler team could work on these items independently
+of the rest of nova.</p>
+<p>The tight coupling that currently exists makes it impossible to work
+on the scheduler in isolation. A stable interface is required before
+the code can be split out.</p>
+</div>
+</div>
+<div class="section" id="key-areas-we-are-evolving">
+<h2>Key areas we are evolving<a class="headerlink" href="#key-areas-we-are-evolving" title="Permalink to this headline">¶</a></h2>
+<p>Here we discuss, at a high level, areas that are being addressed as part of
+the scheduler evolution work.</p>
+<div class="section" id="fixing-the-scheduler-db-model">
+<h3>Fixing the Scheduler DB model<a class="headerlink" href="#fixing-the-scheduler-db-model" title="Permalink to this headline">¶</a></h3>
+<p>We need the nova and scheduler data models to be independent of each other.</p>
+<p>The first step is breaking the link between the ComputeNode and Service
+DB tables. In theory where the Service information is stored should be
+pluggable through the service group API, and should be independent of the
+scheduler service. For example, it could be managed via zookeeper rather
+than polling the nova DB.</p>
+<p>There are also places where filters and weights call into the nova DB to
+find out information about aggregates. This needs to be sent to the
+scheduler, rather than reading directly from the nova database.</p>
+</div>
+<div class="section" id="versioning-scheduler-placement-interfaces">
+<h3>Versioning Scheduler Placement Interfaces<a class="headerlink" href="#versioning-scheduler-placement-interfaces" title="Permalink to this headline">¶</a></h3>
+<p>At the start of kilo, the scheduler is passed a set of dictionaries across
+a versioned RPC interface. The dictionaries can create problems with the
+backwards compatibility needed for live-upgrades.</p>
+<p>Luckily we already have the oslo.versionedobjects infrastructure we can use
+to model this data in a way that can be versioned across releases.</p>
+<p>This effort is mostly focusing around the request_spec. See, for
+example, <a class="reference external" href="http://specs.openstack.org/openstack/nova-specs/specs/kilo/approved/sched-select-destinations-use-request-spec-object.html">this spec</a>.</p>
+</div>
+<div class="section" id="sending-host-and-node-stats-to-the-scheduler">
+<h3>Sending host and node stats to the scheduler<a class="headerlink" href="#sending-host-and-node-stats-to-the-scheduler" title="Permalink to this headline">¶</a></h3>
+<p>Periodically nova-compute updates the scheduler state stored in
+the database.</p>
+<p>We need a good way to model the data that is being sent from the compute
+nodes into the scheduler, so over time, the scheduler can move to having
+its own database.</p>
+<p>This is linked to the work on the resource tracker.</p>
+</div>
+<div class="section" id="updating-the-scheduler-about-other-data">
+<h3>Updating the Scheduler about other data<a class="headerlink" href="#updating-the-scheduler-about-other-data" title="Permalink to this headline">¶</a></h3>
+<p>For things like host aggregates, we need the scheduler to cache information
+about those, and know when there are changes so it can update its cache.</p>
+<p>Over time, its possible that we need to send cinder and neutron data, so
+the scheduler can use that data to help pick a nova-compute host.</p>
+</div>
+<div class="section" id="resource-tracker">
+<h3>Resource Tracker<a class="headerlink" href="#resource-tracker" title="Permalink to this headline">¶</a></h3>
+<p>The recent work to add support for NUMA and PCI pass through have shown we
+have no good pattern to extend the resource tracker. Ideally we want to keep
+the innovation inside the nova tree, but we also need it to be easier.</p>
+<p>This is very related to the effort to re-think how we model resources, as
+covered by discussion about <a class="reference external" href="https://blueprints.launchpad.net/nova/+spec/resource-providers">resource providers</a>.</p>
+</div>
+<div class="section" id="parallelism-and-concurrency">
+<h3>Parallelism and Concurrency<a class="headerlink" href="#parallelism-and-concurrency" title="Permalink to this headline">¶</a></h3>
+<p>The current design of the nova-scheduler is very racy, and can lead to
+excessive numbers of build retries before the correct host is found. The
+recent NUMA features are particularly impacted by how the scheduler
+works. All this has lead to many people running only a single
+nova-scheduler process configured to use a very small greenthread pool.</p>
+<p>The work on cells v2 will mean that we soon need the scheduler to scale for
+much larger problems. The current scheduler works best with less than 1k nodes
+but we will need the scheduler to work with at least 10k nodes.</p>
+<p>Various ideas have been discussed to reduce races when running multiple
+nova-scheduler processes. One idea is to use two-phase commit &#8220;style&#8221;
+resource tracker claims. Another idea involves using incremental updates
+so it is more efficient to keep the scheduler&#8217;s state up to date,
+potentially using Kafka.</p>
+<p>For more details, see the <a class="reference external" href="http://specs.openstack.org/openstack/nova-specs/specs/backlog/approved/parallel-scheduler.html">backlog spec</a> that describes more of the details
+around this problem.</p>
+</div>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Scheduler Evolution</a><ul>
+<li><a class="reference internal" href="#problem-use-cases">Problem Use Cases</a><ul>
+<li><a class="reference internal" href="#cross-project-affinity">Cross Project Affinity</a></li>
+<li><a class="reference internal" href="#accessing-aggregates-in-filters-and-weights">Accessing Aggregates in Filters and Weights</a></li>
+<li><a class="reference internal" href="#filter-scheduler-alternatives">Filter Scheduler Alternatives</a></li>
+<li><a class="reference internal" href="#project-scale-issues">Project Scale issues</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#key-areas-we-are-evolving">Key areas we are evolving</a><ul>
+<li><a class="reference internal" href="#fixing-the-scheduler-db-model">Fixing the Scheduler DB model</a></li>
+<li><a class="reference internal" href="#versioning-scheduler-placement-interfaces">Versioning Scheduler Placement Interfaces</a></li>
+<li><a class="reference internal" href="#sending-host-and-node-stats-to-the-scheduler">Sending host and node stats to the scheduler</a></li>
+<li><a class="reference internal" href="#updating-the-scheduler-about-other-data">Updating the Scheduler about other data</a></li>
+<li><a class="reference internal" href="#resource-tracker">Resource Tracker</a></li>
+<li><a class="reference internal" href="#parallelism-and-concurrency">Parallelism and Concurrency</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="code-review.html"
+                                  title="previous chapter">Code Review Guide for Nova</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="gmr.html"
+                                  title="next chapter">Guru Meditation Reports</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/nova
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="_sources/scheduler_evolution.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="gmr.html" title="Guru Meditation Reports"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="code-review.html" title="Code Review Guide for Nova"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="index.html">nova 15.0.0.0rc2.dev69 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2010-present, OpenStack Foundation.
+      Last updated on &#39;Tue Feb 14 09:22:31 2017, commit 159bf6e&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/nova");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

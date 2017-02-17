@@ -1,0 +1,858 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>ironic.common.exception &mdash; Ironic 7.0.1.dev7 documentation</title>
+    
+    <link rel="stylesheet" href="../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../_static/toggle.css" type="text/css" />
+    <link rel="stylesheet" href="../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../',
+        VERSION:     '7.0.1.dev7',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../_static/doctools.js"></script>
+    <script type="text/javascript" src="../../../_static/toggle.js"></script>
+    <link rel="top" title="Ironic 7.0.1.dev7 documentation" href="../../../index.html" />
+    <link rel="up" title="Module code" href="../../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for ironic.common.exception</h1><div class="highlight"><pre>
+<span></span><span class="c1"># Copyright 2010 United States Government as represented by the</span>
+<span class="c1"># Administrator of the National Aeronautics and Space Administration.</span>
+<span class="c1"># All Rights Reserved.</span>
+<span class="c1">#</span>
+<span class="c1">#    Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may</span>
+<span class="c1">#    not use this file except in compliance with the License. You may obtain</span>
+<span class="c1">#    a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#         http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1">#    Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1">#    distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="c1">#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="c1">#    License for the specific language governing permissions and limitations</span>
+<span class="c1">#    under the License.</span>
+
+<span class="sd">&quot;&quot;&quot;Ironic base exception handling.</span>
+
+<span class="sd">SHOULD include dedicated exception logging.</span>
+
+<span class="sd">&quot;&quot;&quot;</span>
+
+<span class="kn">import</span> <span class="nn">collections</span>
+
+<span class="kn">from</span> <span class="nn">oslo_log</span> <span class="kn">import</span> <span class="n">log</span> <span class="k">as</span> <span class="n">logging</span>
+<span class="kn">from</span> <span class="nn">oslo_serialization</span> <span class="kn">import</span> <span class="n">jsonutils</span>
+<span class="kn">import</span> <span class="nn">six</span>
+<span class="kn">from</span> <span class="nn">six.moves</span> <span class="kn">import</span> <span class="n">http_client</span>
+
+<span class="kn">from</span> <span class="nn">ironic.common.i18n</span> <span class="kn">import</span> <span class="n">_</span><span class="p">,</span> <span class="n">_LE</span>
+<span class="kn">from</span> <span class="nn">ironic.conf</span> <span class="kn">import</span> <span class="n">CONF</span>
+
+<span class="n">LOG</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+
+<span class="k">def</span> <span class="nf">_ensure_exception_kwargs_serializable</span><span class="p">(</span><span class="n">exc_class_name</span><span class="p">,</span> <span class="n">kwargs</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Ensure that kwargs are serializable</span>
+
+<span class="sd">    Ensure that all kwargs passed to exception constructor can be passed over</span>
+<span class="sd">    RPC, by trying to convert them to JSON, or, as a last resort, to string.</span>
+<span class="sd">    If it is not possible, unserializable kwargs will be removed, letting the</span>
+<span class="sd">    receiver to handle the exception string as it is configured to.</span>
+
+<span class="sd">    :param exc_class_name: an IronicException class name.</span>
+<span class="sd">    :param kwargs: a dictionary of keyword arguments passed to the exception</span>
+<span class="sd">        constructor.</span>
+<span class="sd">    :returns: a dictionary of serializable keyword arguments.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">serializers</span> <span class="o">=</span> <span class="p">[(</span><span class="n">jsonutils</span><span class="o">.</span><span class="n">dumps</span><span class="p">,</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;when converting to JSON&#39;</span><span class="p">)),</span>
+                   <span class="p">(</span><span class="n">six</span><span class="o">.</span><span class="n">text_type</span><span class="p">,</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;when converting to string&#39;</span><span class="p">))]</span>
+    <span class="n">exceptions</span> <span class="o">=</span> <span class="n">collections</span><span class="o">.</span><span class="n">defaultdict</span><span class="p">(</span><span class="nb">list</span><span class="p">)</span>
+    <span class="n">serializable_kwargs</span> <span class="o">=</span> <span class="p">{}</span>
+    <span class="k">for</span> <span class="n">k</span><span class="p">,</span> <span class="n">v</span> <span class="ow">in</span> <span class="n">kwargs</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+        <span class="k">for</span> <span class="n">serializer</span><span class="p">,</span> <span class="n">msg</span> <span class="ow">in</span> <span class="n">serializers</span><span class="p">:</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">serializable_kwargs</span><span class="p">[</span><span class="n">k</span><span class="p">]</span> <span class="o">=</span> <span class="n">serializer</span><span class="p">(</span><span class="n">v</span><span class="p">)</span>
+                <span class="n">exceptions</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="n">k</span><span class="p">,</span> <span class="bp">None</span><span class="p">)</span>
+                <span class="k">break</span>
+            <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+                <span class="n">exceptions</span><span class="p">[</span><span class="n">k</span><span class="p">]</span><span class="o">.</span><span class="n">append</span><span class="p">(</span>
+                    <span class="s1">&#39;(</span><span class="si">%(serializer_type)s</span><span class="s1">) </span><span class="si">%(e_type)s</span><span class="s1">: </span><span class="si">%(e_contents)s</span><span class="s1">&#39;</span> <span class="o">%</span>
+                    <span class="p">{</span><span class="s1">&#39;serializer_type&#39;</span><span class="p">:</span> <span class="n">msg</span><span class="p">,</span> <span class="s1">&#39;e_contents&#39;</span><span class="p">:</span> <span class="n">e</span><span class="p">,</span>
+                     <span class="s1">&#39;e_type&#39;</span><span class="p">:</span> <span class="n">e</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="vm">__name__</span><span class="p">})</span>
+    <span class="k">if</span> <span class="n">exceptions</span><span class="p">:</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">error</span><span class="p">(</span>
+            <span class="n">_LE</span><span class="p">(</span><span class="s2">&quot;One or more arguments passed to the </span><span class="si">%(exc_class)s</span><span class="s2"> &quot;</span>
+                <span class="s2">&quot;constructor as kwargs can not be serialized. The serialized &quot;</span>
+                <span class="s2">&quot;arguments: </span><span class="si">%(serialized)s</span><span class="s2">. These unserialized kwargs were &quot;</span>
+                <span class="s2">&quot;dropped because of the exceptions encountered during their &quot;</span>
+                <span class="s2">&quot;serialization:</span><span class="se">\n</span><span class="si">%(errors)s</span><span class="s2">&quot;</span><span class="p">),</span>
+            <span class="nb">dict</span><span class="p">(</span><span class="n">errors</span><span class="o">=</span><span class="s1">&#39;;</span><span class="se">\n</span><span class="s1">&#39;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="s2">&quot;</span><span class="si">%s</span><span class="s2">: </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">k</span><span class="p">,</span> <span class="s1">&#39;; &#39;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">v</span><span class="p">))</span>
+                                   <span class="k">for</span> <span class="n">k</span><span class="p">,</span> <span class="n">v</span> <span class="ow">in</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">items</span><span class="p">()),</span>
+                 <span class="n">exc_class</span><span class="o">=</span><span class="n">exc_class_name</span><span class="p">,</span> <span class="n">serialized</span><span class="o">=</span><span class="n">serializable_kwargs</span><span class="p">)</span>
+        <span class="p">)</span>
+        <span class="c1"># We might be able to actually put the following keys&#39; values into</span>
+        <span class="c1"># format string, but there is no guarantee, drop it just in case.</span>
+        <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="n">exceptions</span><span class="p">:</span>
+            <span class="k">del</span> <span class="n">kwargs</span><span class="p">[</span><span class="n">k</span><span class="p">]</span>
+    <span class="k">return</span> <span class="n">serializable_kwargs</span>
+
+
+<div class="viewcode-block" id="IronicException"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.IronicException">[docs]</a><span class="k">class</span> <span class="nc">IronicException</span><span class="p">(</span><span class="ne">Exception</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Base Ironic Exception</span>
+
+<span class="sd">    To correctly use this class, inherit from it and define</span>
+<span class="sd">    a &#39;_msg_fmt&#39; property. That message will get printf&#39;d</span>
+<span class="sd">    with the keyword arguments provided to the constructor.</span>
+
+<span class="sd">    If you need to access the message from an exception you should use</span>
+<span class="sd">    six.text_type(exc)</span>
+
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;An unknown exception occurred.&quot;</span><span class="p">)</span>
+    <span class="n">code</span> <span class="o">=</span> <span class="n">http_client</span><span class="o">.</span><span class="n">INTERNAL_SERVER_ERROR</span>
+    <span class="n">headers</span> <span class="o">=</span> <span class="p">{}</span>
+    <span class="n">safe</span> <span class="o">=</span> <span class="bp">False</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">message</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">kwargs</span> <span class="o">=</span> <span class="n">_ensure_exception_kwargs_serializable</span><span class="p">(</span>
+            <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="vm">__name__</span><span class="p">,</span> <span class="n">kwargs</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="s1">&#39;code&#39;</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">kwargs</span><span class="p">:</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">kwargs</span><span class="p">[</span><span class="s1">&#39;code&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">code</span>
+            <span class="k">except</span> <span class="ne">AttributeError</span><span class="p">:</span>
+                <span class="k">pass</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">message</span><span class="p">:</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">message</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_msg_fmt</span> <span class="o">%</span> <span class="n">kwargs</span>
+
+            <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+                <span class="c1"># kwargs doesn&#39;t match a variable in self._msg_fmt</span>
+                <span class="c1"># log the issue and the kwargs</span>
+                <span class="n">prs</span> <span class="o">=</span> <span class="s1">&#39;, &#39;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="s1">&#39;</span><span class="si">%s</span><span class="s1">: </span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="n">pair</span> <span class="k">for</span> <span class="n">pair</span> <span class="ow">in</span> <span class="n">kwargs</span><span class="o">.</span><span class="n">items</span><span class="p">())</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">exception</span><span class="p">(</span><span class="n">_LE</span><span class="p">(</span><span class="s1">&#39;Exception in string format operation &#39;</span>
+                                  <span class="s1">&#39;(arguments </span><span class="si">%s</span><span class="s1">)&#39;</span><span class="p">),</span> <span class="n">prs</span><span class="p">)</span>
+                <span class="k">if</span> <span class="n">CONF</span><span class="o">.</span><span class="n">fatal_exception_format_errors</span><span class="p">:</span>
+                    <span class="k">raise</span> <span class="n">e</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="c1"># at least get the core self._msg_fmt out if something</span>
+                    <span class="c1"># happened</span>
+                    <span class="n">message</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_msg_fmt</span>
+
+        <span class="nb">super</span><span class="p">(</span><span class="n">IronicException</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">message</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="fm">__str__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Encode to utf-8 then wsme api can consume it as well.&quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">six</span><span class="o">.</span><span class="n">PY3</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">six</span><span class="o">.</span><span class="n">text_type</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span><span class="o">.</span><span class="n">encode</span><span class="p">(</span><span class="s1">&#39;utf-8&#39;</span><span class="p">)</span>
+
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+
+    <span class="k">def</span> <span class="fm">__unicode__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Return a unicode representation of the exception message.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="n">six</span><span class="o">.</span><span class="n">text_type</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span></div>
+
+
+<div class="viewcode-block" id="NotAuthorized"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.NotAuthorized">[docs]</a><span class="k">class</span> <span class="nc">NotAuthorized</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Not authorized.&quot;</span><span class="p">)</span>
+    <span class="n">code</span> <span class="o">=</span> <span class="n">http_client</span><span class="o">.</span><span class="n">FORBIDDEN</span></div>
+
+
+<div class="viewcode-block" id="OperationNotPermitted"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.OperationNotPermitted">[docs]</a><span class="k">class</span> <span class="nc">OperationNotPermitted</span><span class="p">(</span><span class="n">NotAuthorized</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Operation not permitted.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="Invalid"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.Invalid">[docs]</a><span class="k">class</span> <span class="nc">Invalid</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Unacceptable parameters.&quot;</span><span class="p">)</span>
+    <span class="n">code</span> <span class="o">=</span> <span class="n">http_client</span><span class="o">.</span><span class="n">BAD_REQUEST</span></div>
+
+
+<div class="viewcode-block" id="Conflict"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.Conflict">[docs]</a><span class="k">class</span> <span class="nc">Conflict</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;Conflict.&#39;</span><span class="p">)</span>
+    <span class="n">code</span> <span class="o">=</span> <span class="n">http_client</span><span class="o">.</span><span class="n">CONFLICT</span></div>
+
+
+<div class="viewcode-block" id="TemporaryFailure"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.TemporaryFailure">[docs]</a><span class="k">class</span> <span class="nc">TemporaryFailure</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Resource temporarily unavailable, please retry.&quot;</span><span class="p">)</span>
+    <span class="n">code</span> <span class="o">=</span> <span class="n">http_client</span><span class="o">.</span><span class="n">SERVICE_UNAVAILABLE</span></div>
+
+
+<div class="viewcode-block" id="NotAcceptable"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.NotAcceptable">[docs]</a><span class="k">class</span> <span class="nc">NotAcceptable</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="c1"># TODO(deva): We need to set response headers in the API for this exception</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Request not acceptable.&quot;</span><span class="p">)</span>
+    <span class="n">code</span> <span class="o">=</span> <span class="n">http_client</span><span class="o">.</span><span class="n">NOT_ACCEPTABLE</span></div>
+
+
+<div class="viewcode-block" id="InvalidState"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.InvalidState">[docs]</a><span class="k">class</span> <span class="nc">InvalidState</span><span class="p">(</span><span class="n">Conflict</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Invalid resource state.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="NodeAlreadyExists"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.NodeAlreadyExists">[docs]</a><span class="k">class</span> <span class="nc">NodeAlreadyExists</span><span class="p">(</span><span class="n">Conflict</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;A node with UUID </span><span class="si">%(uuid)s</span><span class="s2"> already exists.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="MACAlreadyExists"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.MACAlreadyExists">[docs]</a><span class="k">class</span> <span class="nc">MACAlreadyExists</span><span class="p">(</span><span class="n">Conflict</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;A port with MAC address </span><span class="si">%(mac)s</span><span class="s2"> already exists.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="ChassisAlreadyExists"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.ChassisAlreadyExists">[docs]</a><span class="k">class</span> <span class="nc">ChassisAlreadyExists</span><span class="p">(</span><span class="n">Conflict</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;A chassis with UUID </span><span class="si">%(uuid)s</span><span class="s2"> already exists.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="PortAlreadyExists"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.PortAlreadyExists">[docs]</a><span class="k">class</span> <span class="nc">PortAlreadyExists</span><span class="p">(</span><span class="n">Conflict</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;A port with UUID </span><span class="si">%(uuid)s</span><span class="s2"> already exists.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="PortgroupAlreadyExists"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.PortgroupAlreadyExists">[docs]</a><span class="k">class</span> <span class="nc">PortgroupAlreadyExists</span><span class="p">(</span><span class="n">Conflict</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;A portgroup with UUID </span><span class="si">%(uuid)s</span><span class="s2"> already exists.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="PortgroupDuplicateName"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.PortgroupDuplicateName">[docs]</a><span class="k">class</span> <span class="nc">PortgroupDuplicateName</span><span class="p">(</span><span class="n">Conflict</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;A portgroup with name </span><span class="si">%(name)s</span><span class="s2"> already exists.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="PortgroupMACAlreadyExists"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.PortgroupMACAlreadyExists">[docs]</a><span class="k">class</span> <span class="nc">PortgroupMACAlreadyExists</span><span class="p">(</span><span class="n">Conflict</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;A portgroup with MAC address </span><span class="si">%(mac)s</span><span class="s2"> already exists.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="InstanceAssociated"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.InstanceAssociated">[docs]</a><span class="k">class</span> <span class="nc">InstanceAssociated</span><span class="p">(</span><span class="n">Conflict</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Instance </span><span class="si">%(instance_uuid)s</span><span class="s2"> is already associated with a &quot;</span>
+                 <span class="s2">&quot;node, it cannot be associated with this other node </span><span class="si">%(node)s</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="DuplicateName"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.DuplicateName">[docs]</a><span class="k">class</span> <span class="nc">DuplicateName</span><span class="p">(</span><span class="n">Conflict</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;A node with name </span><span class="si">%(name)s</span><span class="s2"> already exists.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="VolumeConnectorAlreadyExists"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.VolumeConnectorAlreadyExists">[docs]</a><span class="k">class</span> <span class="nc">VolumeConnectorAlreadyExists</span><span class="p">(</span><span class="n">Conflict</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;A volume connector with UUID </span><span class="si">%(uuid)s</span><span class="s2"> already exists.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="VolumeConnectorTypeAndIdAlreadyExists"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.VolumeConnectorTypeAndIdAlreadyExists">[docs]</a><span class="k">class</span> <span class="nc">VolumeConnectorTypeAndIdAlreadyExists</span><span class="p">(</span><span class="n">Conflict</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;A volume connector with type </span><span class="si">%(type)s</span><span class="s2"> and connector ID &quot;</span>
+                 <span class="s2">&quot;</span><span class="si">%(connector_id)s</span><span class="s2"> already exists.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="VolumeTargetAlreadyExists"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.VolumeTargetAlreadyExists">[docs]</a><span class="k">class</span> <span class="nc">VolumeTargetAlreadyExists</span><span class="p">(</span><span class="n">Conflict</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;A volume target with UUID </span><span class="si">%(uuid)s</span><span class="s2"> already exists.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="VolumeTargetBootIndexAlreadyExists"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.VolumeTargetBootIndexAlreadyExists">[docs]</a><span class="k">class</span> <span class="nc">VolumeTargetBootIndexAlreadyExists</span><span class="p">(</span><span class="n">Conflict</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;A volume target with boot index &#39;</span><span class="si">%(boot_index)s</span><span class="s2">&#39; &quot;</span>
+                 <span class="s2">&quot;for the same node already exists.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="VifAlreadyAttached"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.VifAlreadyAttached">[docs]</a><span class="k">class</span> <span class="nc">VifAlreadyAttached</span><span class="p">(</span><span class="n">Conflict</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Unable to attach VIF because VIF </span><span class="si">%(vif)s</span><span class="s2"> is already &quot;</span>
+                 <span class="s2">&quot;attached to Ironic </span><span class="si">%(object_type)s</span><span class="s2"> </span><span class="si">%(object_uuid)s</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="NoFreePhysicalPorts"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.NoFreePhysicalPorts">[docs]</a><span class="k">class</span> <span class="nc">NoFreePhysicalPorts</span><span class="p">(</span><span class="n">Invalid</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Unable to attach VIF </span><span class="si">%(vif)s</span><span class="s2">, not &quot;</span>
+                 <span class="s2">&quot;enough free physical ports.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="VifNotAttached"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.VifNotAttached">[docs]</a><span class="k">class</span> <span class="nc">VifNotAttached</span><span class="p">(</span><span class="n">Invalid</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Unable to detach VIF </span><span class="si">%(vif)s</span><span class="s2"> from node </span><span class="si">%(node)s</span><span class="s2"> &quot;</span>
+                 <span class="s2">&quot;because it is not attached to it.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="InvalidUUID"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.InvalidUUID">[docs]</a><span class="k">class</span> <span class="nc">InvalidUUID</span><span class="p">(</span><span class="n">Invalid</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Expected a UUID but received </span><span class="si">%(uuid)s</span><span class="s2">.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="InvalidUuidOrName"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.InvalidUuidOrName">[docs]</a><span class="k">class</span> <span class="nc">InvalidUuidOrName</span><span class="p">(</span><span class="n">Invalid</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Expected a logical name or UUID but received </span><span class="si">%(name)s</span><span class="s2">.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="InvalidName"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.InvalidName">[docs]</a><span class="k">class</span> <span class="nc">InvalidName</span><span class="p">(</span><span class="n">Invalid</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Expected a logical name but received </span><span class="si">%(name)s</span><span class="s2">.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="InvalidIdentity"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.InvalidIdentity">[docs]</a><span class="k">class</span> <span class="nc">InvalidIdentity</span><span class="p">(</span><span class="n">Invalid</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Expected a UUID or int but received </span><span class="si">%(identity)s</span><span class="s2">.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="InvalidMAC"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.InvalidMAC">[docs]</a><span class="k">class</span> <span class="nc">InvalidMAC</span><span class="p">(</span><span class="n">Invalid</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Expected a MAC address but received </span><span class="si">%(mac)s</span><span class="s2">.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="InvalidSwitchID"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.InvalidSwitchID">[docs]</a><span class="k">class</span> <span class="nc">InvalidSwitchID</span><span class="p">(</span><span class="n">Invalid</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Expected a MAC address or OpenFlow datapath ID but &quot;</span>
+                 <span class="s2">&quot;received </span><span class="si">%(switch_id)s</span><span class="s2">.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="InvalidDatapathID"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.InvalidDatapathID">[docs]</a><span class="k">class</span> <span class="nc">InvalidDatapathID</span><span class="p">(</span><span class="n">Invalid</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Expected an OpenFlow datapath ID but received &quot;</span>
+                 <span class="s2">&quot;</span><span class="si">%(datapath_id)s</span><span class="s2">.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="InvalidStateRequested"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.InvalidStateRequested">[docs]</a><span class="k">class</span> <span class="nc">InvalidStateRequested</span><span class="p">(</span><span class="n">Invalid</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;The requested action &quot;</span><span class="si">%(action)s</span><span class="s1">&quot; can not be performed &#39;</span>
+                 <span class="s1">&#39;on node &quot;</span><span class="si">%(node)s</span><span class="s1">&quot; while it is in state &quot;</span><span class="si">%(state)s</span><span class="s1">&quot;.&#39;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="PatchError"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.PatchError">[docs]</a><span class="k">class</span> <span class="nc">PatchError</span><span class="p">(</span><span class="n">Invalid</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Couldn&#39;t apply patch &#39;</span><span class="si">%(patch)s</span><span class="s2">&#39;. Reason: </span><span class="si">%(reason)s</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="InstanceDeployFailure"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.InstanceDeployFailure">[docs]</a><span class="k">class</span> <span class="nc">InstanceDeployFailure</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Failed to deploy instance: </span><span class="si">%(reason)s</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="ImageUnacceptable"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.ImageUnacceptable">[docs]</a><span class="k">class</span> <span class="nc">ImageUnacceptable</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Image </span><span class="si">%(image_id)s</span><span class="s2"> is unacceptable: </span><span class="si">%(reason)s</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="ImageConvertFailed"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.ImageConvertFailed">[docs]</a><span class="k">class</span> <span class="nc">ImageConvertFailed</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Image </span><span class="si">%(image_id)s</span><span class="s2"> is unacceptable: </span><span class="si">%(reason)s</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<span class="c1"># Cannot be templated as the error syntax varies.</span>
+<span class="c1"># msg needs to be constructed when raised.</span>
+<div class="viewcode-block" id="InvalidParameterValue"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.InvalidParameterValue">[docs]</a><span class="k">class</span> <span class="nc">InvalidParameterValue</span><span class="p">(</span><span class="n">Invalid</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="si">%(err)s</span><span class="s2">&quot;</span></div>
+
+
+<div class="viewcode-block" id="MissingParameterValue"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.MissingParameterValue">[docs]</a><span class="k">class</span> <span class="nc">MissingParameterValue</span><span class="p">(</span><span class="n">InvalidParameterValue</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="si">%(err)s</span><span class="s2">&quot;</span></div>
+
+
+<div class="viewcode-block" id="Duplicate"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.Duplicate">[docs]</a><span class="k">class</span> <span class="nc">Duplicate</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Resource already exists.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="NotFound"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.NotFound">[docs]</a><span class="k">class</span> <span class="nc">NotFound</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Resource could not be found.&quot;</span><span class="p">)</span>
+    <span class="n">code</span> <span class="o">=</span> <span class="n">http_client</span><span class="o">.</span><span class="n">NOT_FOUND</span></div>
+
+
+<div class="viewcode-block" id="DHCPLoadError"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.DHCPLoadError">[docs]</a><span class="k">class</span> <span class="nc">DHCPLoadError</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Failed to load DHCP provider </span><span class="si">%(dhcp_provider_name)s</span><span class="s2">, &quot;</span>
+                 <span class="s2">&quot;reason: </span><span class="si">%(reason)s</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<span class="c1"># TODO(dtantsur): word &quot;driver&quot; is overused in class names here, and generally</span>
+<span class="c1"># means stevedore driver, not ironic driver. Rename them in the future.</span>
+
+
+<div class="viewcode-block" id="DriverNotFound"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.DriverNotFound">[docs]</a><span class="k">class</span> <span class="nc">DriverNotFound</span><span class="p">(</span><span class="n">NotFound</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Could not find the following driver(s) or hardware type(s): &quot;</span>
+                 <span class="s2">&quot;</span><span class="si">%(driver_name)s</span><span class="s2">.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="DriverNotFoundInEntrypoint"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.DriverNotFoundInEntrypoint">[docs]</a><span class="k">class</span> <span class="nc">DriverNotFoundInEntrypoint</span><span class="p">(</span><span class="n">DriverNotFound</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Could not find the following items in the &quot;</span>
+                 <span class="s2">&quot;&#39;</span><span class="si">%(entrypoint)s</span><span class="s2">&#39; entrypoint: </span><span class="si">%(names)s</span><span class="s2">.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="InterfaceNotFoundInEntrypoint"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.InterfaceNotFoundInEntrypoint">[docs]</a><span class="k">class</span> <span class="nc">InterfaceNotFoundInEntrypoint</span><span class="p">(</span><span class="n">InvalidParameterValue</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Could not find the following interface in the &quot;</span>
+                 <span class="s2">&quot;&#39;</span><span class="si">%(entrypoint)s</span><span class="s2">&#39; entrypoint: </span><span class="si">%(iface)s</span><span class="s2">. Valid interfaces &quot;</span>
+                 <span class="s2">&quot;are </span><span class="si">%(valid)s</span><span class="s2">.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="IncompatibleInterface"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.IncompatibleInterface">[docs]</a><span class="k">class</span> <span class="nc">IncompatibleInterface</span><span class="p">(</span><span class="n">InvalidParameterValue</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;</span><span class="si">%(interface_type)s</span><span class="s2"> interface implementation &quot;</span>
+                 <span class="s2">&quot;&#39;</span><span class="si">%(interface_impl)s</span><span class="s2">&#39; is not supported by hardware type &quot;</span>
+                 <span class="s2">&quot;</span><span class="si">%(hardware_type)s</span><span class="s2">.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="NoValidDefaultForInterface"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.NoValidDefaultForInterface">[docs]</a><span class="k">class</span> <span class="nc">NoValidDefaultForInterface</span><span class="p">(</span><span class="n">InvalidParameterValue</span><span class="p">):</span>
+    <span class="c1"># NOTE(rloo): in the line below, there is no blank space after &#39;For&#39;</span>
+    <span class="c1">#             because node_info could be an empty string. If node_info</span>
+    <span class="c1">#             is not empty, it should start with a space.</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;For</span><span class="si">%(node_info)s</span><span class="s2"> </span><span class="si">%(driver_type)s</span><span class="s2"> &#39;</span><span class="si">%(driver)s</span><span class="s2">&#39;, no default &quot;</span>
+                 <span class="s2">&quot;value found for </span><span class="si">%(interface_type)s</span><span class="s2"> interface.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="MustBeNone"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.MustBeNone">[docs]</a><span class="k">class</span> <span class="nc">MustBeNone</span><span class="p">(</span><span class="n">InvalidParameterValue</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;For node </span><span class="si">%(node)s</span><span class="s2"> with driver </span><span class="si">%(driver)s</span><span class="s2">, these node &quot;</span>
+                 <span class="s2">&quot;fields must be set to None: </span><span class="si">%(node_fields)s</span><span class="s2">.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="ImageNotFound"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.ImageNotFound">[docs]</a><span class="k">class</span> <span class="nc">ImageNotFound</span><span class="p">(</span><span class="n">NotFound</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Image </span><span class="si">%(image_id)s</span><span class="s2"> could not be found.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="NoValidHost"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.NoValidHost">[docs]</a><span class="k">class</span> <span class="nc">NoValidHost</span><span class="p">(</span><span class="n">NotFound</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;No valid host was found. Reason: </span><span class="si">%(reason)s</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="InstanceNotFound"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.InstanceNotFound">[docs]</a><span class="k">class</span> <span class="nc">InstanceNotFound</span><span class="p">(</span><span class="n">NotFound</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Instance </span><span class="si">%(instance)s</span><span class="s2"> could not be found.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="InputFileError"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.InputFileError">[docs]</a><span class="k">class</span> <span class="nc">InputFileError</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Error with file </span><span class="si">%(file_name)s</span><span class="s2">. Reason: </span><span class="si">%(reason)s</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="NodeNotFound"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.NodeNotFound">[docs]</a><span class="k">class</span> <span class="nc">NodeNotFound</span><span class="p">(</span><span class="n">NotFound</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Node </span><span class="si">%(node)s</span><span class="s2"> could not be found.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="PortgroupNotFound"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.PortgroupNotFound">[docs]</a><span class="k">class</span> <span class="nc">PortgroupNotFound</span><span class="p">(</span><span class="n">NotFound</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Portgroup </span><span class="si">%(portgroup)s</span><span class="s2"> could not be found.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="PortgroupNotEmpty"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.PortgroupNotEmpty">[docs]</a><span class="k">class</span> <span class="nc">PortgroupNotEmpty</span><span class="p">(</span><span class="n">Invalid</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Cannot complete the requested action because portgroup &quot;</span>
+                 <span class="s2">&quot;</span><span class="si">%(portgroup)s</span><span class="s2"> contains ports.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="NodeAssociated"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.NodeAssociated">[docs]</a><span class="k">class</span> <span class="nc">NodeAssociated</span><span class="p">(</span><span class="n">InvalidState</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Node </span><span class="si">%(node)s</span><span class="s2"> is associated with instance </span><span class="si">%(instance)s</span><span class="s2">.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="PortNotFound"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.PortNotFound">[docs]</a><span class="k">class</span> <span class="nc">PortNotFound</span><span class="p">(</span><span class="n">NotFound</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Port </span><span class="si">%(port)s</span><span class="s2"> could not be found.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="FailedToUpdateDHCPOptOnPort"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.FailedToUpdateDHCPOptOnPort">[docs]</a><span class="k">class</span> <span class="nc">FailedToUpdateDHCPOptOnPort</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Update DHCP options on port: </span><span class="si">%(port_id)s</span><span class="s2"> failed.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="FailedToCleanDHCPOpts"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.FailedToCleanDHCPOpts">[docs]</a><span class="k">class</span> <span class="nc">FailedToCleanDHCPOpts</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Clean up DHCP options on node: </span><span class="si">%(node)s</span><span class="s2"> failed.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="FailedToGetIPAddressOnPort"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.FailedToGetIPAddressOnPort">[docs]</a><span class="k">class</span> <span class="nc">FailedToGetIPAddressOnPort</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Retrieve IP address on port: </span><span class="si">%(port_id)s</span><span class="s2"> failed.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="InvalidIPv4Address"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.InvalidIPv4Address">[docs]</a><span class="k">class</span> <span class="nc">InvalidIPv4Address</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Invalid IPv4 address </span><span class="si">%(ip_address)s</span><span class="s2">.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="FailedToUpdateMacOnPort"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.FailedToUpdateMacOnPort">[docs]</a><span class="k">class</span> <span class="nc">FailedToUpdateMacOnPort</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Update MAC address on port: </span><span class="si">%(port_id)s</span><span class="s2"> failed.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="ChassisNotFound"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.ChassisNotFound">[docs]</a><span class="k">class</span> <span class="nc">ChassisNotFound</span><span class="p">(</span><span class="n">NotFound</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Chassis </span><span class="si">%(chassis)s</span><span class="s2"> could not be found.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="VolumeConnectorNotFound"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.VolumeConnectorNotFound">[docs]</a><span class="k">class</span> <span class="nc">VolumeConnectorNotFound</span><span class="p">(</span><span class="n">NotFound</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Volume connector </span><span class="si">%(connector)s</span><span class="s2"> could not be found.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="VolumeTargetNotFound"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.VolumeTargetNotFound">[docs]</a><span class="k">class</span> <span class="nc">VolumeTargetNotFound</span><span class="p">(</span><span class="n">NotFound</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Volume target </span><span class="si">%(target)s</span><span class="s2"> could not be found.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="DriverNameConflict"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.DriverNameConflict">[docs]</a><span class="k">class</span> <span class="nc">DriverNameConflict</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Classic and dynamic drivers cannot have the &quot;</span>
+                 <span class="s2">&quot;same names &#39;</span><span class="si">%(names)s</span><span class="s2">&#39;.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="NoDriversLoaded"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.NoDriversLoaded">[docs]</a><span class="k">class</span> <span class="nc">NoDriversLoaded</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Conductor </span><span class="si">%(conductor)s</span><span class="s2"> cannot be started &quot;</span>
+                 <span class="s2">&quot;because no drivers were loaded.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="ConductorNotFound"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.ConductorNotFound">[docs]</a><span class="k">class</span> <span class="nc">ConductorNotFound</span><span class="p">(</span><span class="n">NotFound</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Conductor </span><span class="si">%(conductor)s</span><span class="s2"> could not be found.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="ConductorAlreadyRegistered"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.ConductorAlreadyRegistered">[docs]</a><span class="k">class</span> <span class="nc">ConductorAlreadyRegistered</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Conductor </span><span class="si">%(conductor)s</span><span class="s2"> already registered.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="ConductorHardwareInterfacesAlreadyRegistered"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.ConductorHardwareInterfacesAlreadyRegistered">[docs]</a><span class="k">class</span> <span class="nc">ConductorHardwareInterfacesAlreadyRegistered</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;At least one of these (hardware type </span><span class="si">%(hardware_type)s</span><span class="s2">, &quot;</span>
+                 <span class="s2">&quot;interface type </span><span class="si">%(interface_type)s</span><span class="s2">, interfaces &quot;</span>
+                 <span class="s2">&quot;</span><span class="si">%(interfaces)s</span><span class="s2">) combinations are already registered for &quot;</span>
+                 <span class="s2">&quot;this conductor.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="PowerStateFailure"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.PowerStateFailure">[docs]</a><span class="k">class</span> <span class="nc">PowerStateFailure</span><span class="p">(</span><span class="n">InvalidState</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Failed to set node power state to </span><span class="si">%(pstate)s</span><span class="s2">.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="ExclusiveLockRequired"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.ExclusiveLockRequired">[docs]</a><span class="k">class</span> <span class="nc">ExclusiveLockRequired</span><span class="p">(</span><span class="n">NotAuthorized</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;An exclusive lock is required, &quot;</span>
+                 <span class="s2">&quot;but the current context has a shared lock.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="NodeMaintenanceFailure"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.NodeMaintenanceFailure">[docs]</a><span class="k">class</span> <span class="nc">NodeMaintenanceFailure</span><span class="p">(</span><span class="n">Invalid</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Failed to toggle maintenance-mode flag &quot;</span>
+                 <span class="s2">&quot;for node </span><span class="si">%(node)s</span><span class="s2">: </span><span class="si">%(reason)s</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="NodeConsoleNotEnabled"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.NodeConsoleNotEnabled">[docs]</a><span class="k">class</span> <span class="nc">NodeConsoleNotEnabled</span><span class="p">(</span><span class="n">Invalid</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Console access is not enabled on node </span><span class="si">%(node)s</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="NodeInMaintenance"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.NodeInMaintenance">[docs]</a><span class="k">class</span> <span class="nc">NodeInMaintenance</span><span class="p">(</span><span class="n">Invalid</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;The </span><span class="si">%(op)s</span><span class="s2"> operation can&#39;t be performed on node &quot;</span>
+                 <span class="s2">&quot;</span><span class="si">%(node)s</span><span class="s2"> because it&#39;s in maintenance mode.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="ChassisNotEmpty"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.ChassisNotEmpty">[docs]</a><span class="k">class</span> <span class="nc">ChassisNotEmpty</span><span class="p">(</span><span class="n">Invalid</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Cannot complete the requested action because chassis &quot;</span>
+                 <span class="s2">&quot;</span><span class="si">%(chassis)s</span><span class="s2"> contains nodes.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="IPMIFailure"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.IPMIFailure">[docs]</a><span class="k">class</span> <span class="nc">IPMIFailure</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;IPMI call failed: </span><span class="si">%(cmd)s</span><span class="s2">.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="SSHConnectFailed"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.SSHConnectFailed">[docs]</a><span class="k">class</span> <span class="nc">SSHConnectFailed</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Failed to establish SSH connection to host </span><span class="si">%(host)s</span><span class="s2">.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="SSHCommandFailed"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.SSHCommandFailed">[docs]</a><span class="k">class</span> <span class="nc">SSHCommandFailed</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Failed to execute command via SSH: </span><span class="si">%(cmd)s</span><span class="s2">.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="UnsupportedDriverExtension"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.UnsupportedDriverExtension">[docs]</a><span class="k">class</span> <span class="nc">UnsupportedDriverExtension</span><span class="p">(</span><span class="n">Invalid</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;Driver </span><span class="si">%(driver)s</span><span class="s1"> does not support </span><span class="si">%(extension)s</span><span class="s1"> &#39;</span>
+                 <span class="s1">&#39;(disabled or not implemented).&#39;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="GlanceConnectionFailed"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.GlanceConnectionFailed">[docs]</a><span class="k">class</span> <span class="nc">GlanceConnectionFailed</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Connection to glance host </span><span class="si">%(host)s</span><span class="s2">:</span><span class="si">%(port)s</span><span class="s2"> failed: &quot;</span>
+                 <span class="s2">&quot;</span><span class="si">%(reason)s</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="ImageNotAuthorized"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.ImageNotAuthorized">[docs]</a><span class="k">class</span> <span class="nc">ImageNotAuthorized</span><span class="p">(</span><span class="n">NotAuthorized</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Not authorized for image </span><span class="si">%(image_id)s</span><span class="s2">.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="InvalidImageRef"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.InvalidImageRef">[docs]</a><span class="k">class</span> <span class="nc">InvalidImageRef</span><span class="p">(</span><span class="n">Invalid</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Invalid image href </span><span class="si">%(image_href)s</span><span class="s2">.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="ImageRefValidationFailed"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.ImageRefValidationFailed">[docs]</a><span class="k">class</span> <span class="nc">ImageRefValidationFailed</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Validation of image href </span><span class="si">%(image_href)s</span><span class="s2"> failed, &quot;</span>
+                 <span class="s2">&quot;reason: </span><span class="si">%(reason)s</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="ImageDownloadFailed"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.ImageDownloadFailed">[docs]</a><span class="k">class</span> <span class="nc">ImageDownloadFailed</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Failed to download image </span><span class="si">%(image_href)s</span><span class="s2">, reason: </span><span class="si">%(reason)s</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="KeystoneUnauthorized"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.KeystoneUnauthorized">[docs]</a><span class="k">class</span> <span class="nc">KeystoneUnauthorized</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Not authorized in Keystone.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="KeystoneFailure"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.KeystoneFailure">[docs]</a><span class="k">class</span> <span class="nc">KeystoneFailure</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="k">pass</span></div>
+
+
+<div class="viewcode-block" id="CatalogNotFound"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.CatalogNotFound">[docs]</a><span class="k">class</span> <span class="nc">CatalogNotFound</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Service type </span><span class="si">%(service_type)s</span><span class="s2"> with endpoint type &quot;</span>
+                 <span class="s2">&quot;</span><span class="si">%(endpoint_type)s</span><span class="s2"> not found in keystone service catalog.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="ServiceUnavailable"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.ServiceUnavailable">[docs]</a><span class="k">class</span> <span class="nc">ServiceUnavailable</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Connection failed&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="Forbidden"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.Forbidden">[docs]</a><span class="k">class</span> <span class="nc">Forbidden</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Requested OpenStack Images API is forbidden&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="BadRequest"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.BadRequest">[docs]</a><span class="k">class</span> <span class="nc">BadRequest</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="k">pass</span></div>
+
+
+<div class="viewcode-block" id="InvalidEndpoint"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.InvalidEndpoint">[docs]</a><span class="k">class</span> <span class="nc">InvalidEndpoint</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;The provided endpoint is invalid&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="CommunicationError"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.CommunicationError">[docs]</a><span class="k">class</span> <span class="nc">CommunicationError</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Unable to communicate with the server.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="HTTPForbidden"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.HTTPForbidden">[docs]</a><span class="k">class</span> <span class="nc">HTTPForbidden</span><span class="p">(</span><span class="n">NotAuthorized</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Access was denied to the following resource: </span><span class="si">%(resource)s</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="Unauthorized"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.Unauthorized">[docs]</a><span class="k">class</span> <span class="nc">Unauthorized</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="k">pass</span></div>
+
+
+<div class="viewcode-block" id="HTTPNotFound"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.HTTPNotFound">[docs]</a><span class="k">class</span> <span class="nc">HTTPNotFound</span><span class="p">(</span><span class="n">NotFound</span><span class="p">):</span>
+    <span class="k">pass</span></div>
+
+
+<div class="viewcode-block" id="ConfigNotFound"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.ConfigNotFound">[docs]</a><span class="k">class</span> <span class="nc">ConfigNotFound</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Could not find config at </span><span class="si">%(path)s</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="NodeLocked"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.NodeLocked">[docs]</a><span class="k">class</span> <span class="nc">NodeLocked</span><span class="p">(</span><span class="n">Conflict</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Node </span><span class="si">%(node)s</span><span class="s2"> is locked by host </span><span class="si">%(host)s</span><span class="s2">, please retry &quot;</span>
+                 <span class="s2">&quot;after the current operation is completed.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="NodeNotLocked"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.NodeNotLocked">[docs]</a><span class="k">class</span> <span class="nc">NodeNotLocked</span><span class="p">(</span><span class="n">Invalid</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Node </span><span class="si">%(node)s</span><span class="s2"> found not to be locked on release&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="NoFreeConductorWorker"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.NoFreeConductorWorker">[docs]</a><span class="k">class</span> <span class="nc">NoFreeConductorWorker</span><span class="p">(</span><span class="n">TemporaryFailure</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;Requested action cannot be performed due to lack of free &#39;</span>
+                 <span class="s1">&#39;conductor workers.&#39;</span><span class="p">)</span>
+    <span class="n">code</span> <span class="o">=</span> <span class="n">http_client</span><span class="o">.</span><span class="n">SERVICE_UNAVAILABLE</span></div>
+
+
+<div class="viewcode-block" id="VendorPassthruException"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.VendorPassthruException">[docs]</a><span class="k">class</span> <span class="nc">VendorPassthruException</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="k">pass</span></div>
+
+
+<div class="viewcode-block" id="ConfigInvalid"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.ConfigInvalid">[docs]</a><span class="k">class</span> <span class="nc">ConfigInvalid</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Invalid configuration file. </span><span class="si">%(error_msg)s</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="DriverLoadError"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.DriverLoadError">[docs]</a><span class="k">class</span> <span class="nc">DriverLoadError</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Driver, hardware type or interface </span><span class="si">%(driver)s</span><span class="s2"> could not be &quot;</span>
+                 <span class="s2">&quot;loaded. Reason: </span><span class="si">%(reason)s</span><span class="s2">.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="ConsoleError"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.ConsoleError">[docs]</a><span class="k">class</span> <span class="nc">ConsoleError</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="k">pass</span></div>
+
+
+<div class="viewcode-block" id="NoConsolePid"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.NoConsolePid">[docs]</a><span class="k">class</span> <span class="nc">NoConsolePid</span><span class="p">(</span><span class="n">ConsoleError</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Could not find pid in pid file </span><span class="si">%(pid_path)s</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="ConsoleSubprocessFailed"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.ConsoleSubprocessFailed">[docs]</a><span class="k">class</span> <span class="nc">ConsoleSubprocessFailed</span><span class="p">(</span><span class="n">ConsoleError</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Console subprocess failed to start. </span><span class="si">%(error)s</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="PasswordFileFailedToCreate"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.PasswordFileFailedToCreate">[docs]</a><span class="k">class</span> <span class="nc">PasswordFileFailedToCreate</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Failed to create the password file. </span><span class="si">%(error)s</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="IloOperationError"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.IloOperationError">[docs]</a><span class="k">class</span> <span class="nc">IloOperationError</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;</span><span class="si">%(operation)s</span><span class="s2"> failed, error: </span><span class="si">%(error)s</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="IloOperationNotSupported"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.IloOperationNotSupported">[docs]</a><span class="k">class</span> <span class="nc">IloOperationNotSupported</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;</span><span class="si">%(operation)s</span><span class="s2"> not supported. error: </span><span class="si">%(error)s</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="DracOperationError"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.DracOperationError">[docs]</a><span class="k">class</span> <span class="nc">DracOperationError</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;DRAC operation failed. Reason: </span><span class="si">%(error)s</span><span class="s1">&#39;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="FailedToGetSensorData"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.FailedToGetSensorData">[docs]</a><span class="k">class</span> <span class="nc">FailedToGetSensorData</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Failed to get sensor data for node </span><span class="si">%(node)s</span><span class="s2">. &quot;</span>
+                 <span class="s2">&quot;Error: </span><span class="si">%(error)s</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="FailedToParseSensorData"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.FailedToParseSensorData">[docs]</a><span class="k">class</span> <span class="nc">FailedToParseSensorData</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Failed to parse sensor data for node </span><span class="si">%(node)s</span><span class="s2">. &quot;</span>
+                 <span class="s2">&quot;Error: </span><span class="si">%(error)s</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="InsufficientDiskSpace"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.InsufficientDiskSpace">[docs]</a><span class="k">class</span> <span class="nc">InsufficientDiskSpace</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Disk volume where &#39;</span><span class="si">%(path)s</span><span class="s2">&#39; is located doesn&#39;t have &quot;</span>
+                 <span class="s2">&quot;enough disk space. Required </span><span class="si">%(required)d</span><span class="s2"> MiB, &quot;</span>
+                 <span class="s2">&quot;only </span><span class="si">%(actual)d</span><span class="s2"> MiB available space present.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="ImageCreationFailed"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.ImageCreationFailed">[docs]</a><span class="k">class</span> <span class="nc">ImageCreationFailed</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;Creating </span><span class="si">%(image_type)s</span><span class="s1"> image failed: </span><span class="si">%(error)s</span><span class="s1">&#39;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="SwiftOperationError"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.SwiftOperationError">[docs]</a><span class="k">class</span> <span class="nc">SwiftOperationError</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Swift operation &#39;</span><span class="si">%(operation)s</span><span class="s2">&#39; failed: </span><span class="si">%(error)s</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="SwiftObjectNotFoundError"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.SwiftObjectNotFoundError">[docs]</a><span class="k">class</span> <span class="nc">SwiftObjectNotFoundError</span><span class="p">(</span><span class="n">SwiftOperationError</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Swift object </span><span class="si">%(obj)s</span><span class="s2"> from container </span><span class="si">%(container)s</span><span class="s2"> &quot;</span>
+                 <span class="s2">&quot;not found. Operation &#39;</span><span class="si">%(operation)s</span><span class="s2">&#39; failed.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="SNMPFailure"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.SNMPFailure">[docs]</a><span class="k">class</span> <span class="nc">SNMPFailure</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;SNMP operation &#39;</span><span class="si">%(operation)s</span><span class="s2">&#39; failed: </span><span class="si">%(error)s</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="FileSystemNotSupported"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.FileSystemNotSupported">[docs]</a><span class="k">class</span> <span class="nc">FileSystemNotSupported</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Failed to create a file system. &quot;</span>
+                 <span class="s2">&quot;File system </span><span class="si">%(fs)s</span><span class="s2"> is not supported.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="IRMCOperationError"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.IRMCOperationError">[docs]</a><span class="k">class</span> <span class="nc">IRMCOperationError</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;iRMC </span><span class="si">%(operation)s</span><span class="s1"> failed. Reason: </span><span class="si">%(error)s</span><span class="s1">&#39;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="IRMCSharedFileSystemNotMounted"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.IRMCSharedFileSystemNotMounted">[docs]</a><span class="k">class</span> <span class="nc">IRMCSharedFileSystemNotMounted</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;iRMC shared file system &#39;</span><span class="si">%(share)s</span><span class="s2">&#39; is not mounted.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="HardwareInspectionFailure"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.HardwareInspectionFailure">[docs]</a><span class="k">class</span> <span class="nc">HardwareInspectionFailure</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Failed to inspect hardware. Reason: </span><span class="si">%(error)s</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="NodeCleaningFailure"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.NodeCleaningFailure">[docs]</a><span class="k">class</span> <span class="nc">NodeCleaningFailure</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Failed to clean node </span><span class="si">%(node)s</span><span class="s2">: </span><span class="si">%(reason)s</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="PathNotFound"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.PathNotFound">[docs]</a><span class="k">class</span> <span class="nc">PathNotFound</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Path </span><span class="si">%(dir)s</span><span class="s2"> does not exist.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="DirectoryNotWritable"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.DirectoryNotWritable">[docs]</a><span class="k">class</span> <span class="nc">DirectoryNotWritable</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Directory </span><span class="si">%(dir)s</span><span class="s2"> is not writable.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="UcsOperationError"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.UcsOperationError">[docs]</a><span class="k">class</span> <span class="nc">UcsOperationError</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Cisco UCS client: operation </span><span class="si">%(operation)s</span><span class="s2"> failed for node&quot;</span>
+                 <span class="s2">&quot; </span><span class="si">%(node)s</span><span class="s2">. Reason: </span><span class="si">%(error)s</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="UcsConnectionError"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.UcsConnectionError">[docs]</a><span class="k">class</span> <span class="nc">UcsConnectionError</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Cisco UCS client: connection failed for node &quot;</span>
+                 <span class="s2">&quot;</span><span class="si">%(node)s</span><span class="s2">. Reason: </span><span class="si">%(error)s</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="ImageUploadFailed"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.ImageUploadFailed">[docs]</a><span class="k">class</span> <span class="nc">ImageUploadFailed</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Failed to upload </span><span class="si">%(image_name)s</span><span class="s2"> image to web server &quot;</span>
+                 <span class="s2">&quot;</span><span class="si">%(web_server)s</span><span class="s2">, reason: </span><span class="si">%(reason)s</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="CIMCException"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.CIMCException">[docs]</a><span class="k">class</span> <span class="nc">CIMCException</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Cisco IMC exception occurred for node </span><span class="si">%(node)s</span><span class="s2">: </span><span class="si">%(error)s</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="OneViewError"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.OneViewError">[docs]</a><span class="k">class</span> <span class="nc">OneViewError</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;OneView exception occurred. Error: </span><span class="si">%(error)s</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="OneViewInvalidNodeParameter"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.OneViewInvalidNodeParameter">[docs]</a><span class="k">class</span> <span class="nc">OneViewInvalidNodeParameter</span><span class="p">(</span><span class="n">OneViewError</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Error while obtaining OneView info from node </span><span class="si">%(node_uuid)s</span><span class="s2">. &quot;</span>
+                 <span class="s2">&quot;Error: </span><span class="si">%(error)s</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="NodeTagNotFound"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.NodeTagNotFound">[docs]</a><span class="k">class</span> <span class="nc">NodeTagNotFound</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Node </span><span class="si">%(node_id)s</span><span class="s2"> doesn&#39;t have a tag &#39;</span><span class="si">%(tag)s</span><span class="s2">&#39;&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="NetworkError"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.NetworkError">[docs]</a><span class="k">class</span> <span class="nc">NetworkError</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Network operation failure.&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="IncompleteLookup"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.IncompleteLookup">[docs]</a><span class="k">class</span> <span class="nc">IncompleteLookup</span><span class="p">(</span><span class="n">Invalid</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;At least one of &#39;addresses&#39; and &#39;node_uuid&#39; parameters &quot;</span>
+                 <span class="s2">&quot;is required&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="NotificationSchemaObjectError"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.NotificationSchemaObjectError">[docs]</a><span class="k">class</span> <span class="nc">NotificationSchemaObjectError</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Expected object </span><span class="si">%(obj)s</span><span class="s2"> when populating notification payload&quot;</span>
+                 <span class="s2">&quot; but got object </span><span class="si">%(source)s</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="NotificationSchemaKeyError"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.NotificationSchemaKeyError">[docs]</a><span class="k">class</span> <span class="nc">NotificationSchemaKeyError</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Object </span><span class="si">%(obj)s</span><span class="s2"> doesn&#39;t have the field </span><span class="se">\&quot;</span><span class="si">%(field)s</span><span class="se">\&quot;</span><span class="s2"> &quot;</span>
+                 <span class="s2">&quot;required for populating notification schema key &quot;</span>
+                 <span class="s2">&quot;</span><span class="se">\&quot;</span><span class="si">%(key)s</span><span class="se">\&quot;</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="NotificationPayloadError"><a class="viewcode-back" href="../../../api/ironic.common.exception.html#ironic.common.exception.NotificationPayloadError">[docs]</a><span class="k">class</span> <span class="nc">NotificationPayloadError</span><span class="p">(</span><span class="n">IronicException</span><span class="p">):</span>
+    <span class="n">_msg_fmt</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Payload not populated when trying to send notification &quot;</span>
+                 <span class="s2">&quot;</span><span class="se">\&quot;</span><span class="si">%(class_name)s</span><span class="se">\&quot;</span><span class="s2">&quot;</span><span class="p">)</span></div>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/ironic
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../../index.html">Ironic 7.0.1.dev7 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../../index.html" accesskey="U">Module code</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright OpenStack Foundation.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/Ironic");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

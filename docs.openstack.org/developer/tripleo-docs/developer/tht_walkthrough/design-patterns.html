@@ -1,0 +1,296 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>THT design patterns &mdash; tripleo-docs 0.0.1.dev344 documentation</title>
+    
+    <link rel="stylesheet" href="../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../_static/custom.css" type="text/css" />
+    <link rel="stylesheet" href="../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../',
+        VERSION:     '0.0.1.dev344',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../_static/doctools.js"></script>
+    <script type="text/javascript" src="../../_static/cookies.js"></script>
+    <script type="text/javascript" src="../../_static/expandable.js"></script>
+    <script type="text/javascript" src="../../_static/admonition_selector.js"></script>
+    <script type="text/javascript" src="../../_static/jquery.scrollTo.js"></script>
+    <script type="text/javascript" src="../../_static/jquery.nav.js"></script>
+    <script type="text/javascript" src="../../_static/menu.js"></script>
+    <link rel="top" title="tripleo-docs 0.0.1.dev344 documentation" href="../../index.html" />
+    <link rel="up" title="Composable services tutorial" href="tht_walkthrough.html" />
+    <link rel="next" title="Summary" href="summary.html" />
+    <link rel="prev" title="Updating puppet-tripleo" href="changes-puppet-tripleo.html" /> 
+  </head>
+  <body>
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body">
+            
+  <div class="section" id="tht-design-patterns">
+<h1>THT design patterns<a class="headerlink" href="#tht-design-patterns" title="Permalink to this headline">¶</a></h1>
+<div class="section" id="duplicated-parameters">
+<span id="id1"></span><h2>Duplicated parameters<a class="headerlink" href="#duplicated-parameters" title="Permalink to this headline">¶</a></h2>
+<p>Problem: When defining multiple related services, it can be necessary
+to define the same parameters (such as rabbit or DB credentials) in
+multiple service templates.  To avoid this, it is possible to define a
+&#8220;base&#8221; heat template that contains the common parameters and config_settings
+mapping for those services that require it.</p>
+<p>This pattern will describe how to avoid duplicated parameters in the THT yaml
+files.</p>
+<p><tt class="docutils literal"><span class="pre">mongodb-base.yaml</span></tt>: This file should have all the common parameters between
+the different environments (With pacemaker and without pacemaker).</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>heat_template_version: 2016-04-08
+description: &gt;
+  Configuration details for MongoDB service using composable roles
+parameters:
+  MongoDbNoJournal:
+    default: false
+    description: Should MongoDb journaling be disabled
+    type: boolean
+  MongoDbIPv6:
+    default: false
+    description: Enable IPv6 if MongoDB VIP is IPv6
+    type: boolean
+  MongoDbReplset:
+    type: string
+    default: &quot;tripleo&quot;
+outputs:
+  role_data:
+    description: Role data for the MongoDB base service.
+    value:
+      config_settings:
+        mongodb::server::nojournal: {get_param: MongoDbNoJournal}
+        mongodb::server::ipv6: {get_param: MongoDbIPv6}
+        mongodb::server::replset: {get_param: MongoDbReplset}
+</pre></div>
+</div>
+<p>In this way we will be able to reuse the common parameter among all the
+template files requiring it.</p>
+<p>Referencing the common parameter:</p>
+<p><tt class="docutils literal"><span class="pre">mongodb.yaml</span></tt>: Will have specific parameters to deploy mongodb without
+pacemaker.</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>heat_template_version: 2016-04-08
+description: &gt;
+  MongoDb service deployment using puppet
+parameters:
+  #Parameters not used EndpointMap
+  EndpointMap:
+    default: {}
+    description: Mapping of service endpoint -&gt; protocol. Typically set
+                 via parameter_defaults in the resource registry.
+    type: json
+resources:
+  MongoDbBase:
+    type: ./mongodb-base.yaml
+outputs:
+  role_data:
+    description: Service mongodb using composable services.
+    value:
+      config_settings:
+        map_merge:
+          - get_attr: [MongoDbBase, role_data, config_settings]
+          - mongodb::server::service_manage: True
+      step_config: |
+        include ::tripleo::profile::base::database::mongodb
+</pre></div>
+</div>
+<p>In this case mongodb.yaml is using all the common parameter added in the
+MongoDbBase resource.</p>
+<p>If using the parameter &#8216;EndpointMap&#8217; in the base template, you must the pass it from from the service file,
+and even if it is not used in the service template, it must still be defined.</p>
+<p>In the service file:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>parameters:
+  EndpointMap:
+    default: {}
+    description: Mapping of service endpoint -&gt; protocol. Typically set
+                 via parameter_defaults in the resource registry.
+    type: json
+resources:
+  &lt;ServiceName&gt;ServiceBase:
+    type: ./&lt;ServiceName&gt;-base.yaml
+    properties:
+      EndpointMap: {get_param: EndpointMap}
+</pre></div>
+</div>
+<p>This will pass the endpoint information to the base config file.</p>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">Even if the EndpointMap parameter is optional in the base template,
+for consistency is advised always using it in all service templates.</p>
+</div>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="../../index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">THT design patterns</a><ul>
+<li><a class="reference internal" href="#duplicated-parameters">Duplicated parameters</a></li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="changes-puppet-tripleo.html"
+                                  title="previous chapter">Updating puppet-tripleo</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="summary.html"
+                                  title="next chapter">Summary</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/tripleo-docs
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="../../_sources/developer/tht_walkthrough/design-patterns.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+  <div id="admonition_selector">
+    <span class="trigger">Limit Environment Specific Content</span>
+
+    <div class="content">
+      <span class="title">Operating Systems</span>
+      <ul>
+        <li><input type="checkbox" id="centos" checked="checked"><label for="centos" title="Step that should only be run when using CentOS.">CentOS</label></li>
+        <li><input type="checkbox" id="rhel" checked="checked"><label for="rhel" title="Step that should only be run when using RHEL.">RHEL</label></li>
+      </ul>
+
+      <span class="title">Branches</span>
+      <ul>
+        <li><input type="checkbox" id="stable" checked=""><label for="stable" title="Step that should only be run when choosing to use components from their stable branches rather than using packages/source based on current master.">Install from stable branch</label></li>
+        <li><input type="checkbox" id="mitaka" checked=""><label for="mitaka" title="Step that should only be run when installing from the Mitaka stable branch.">Install from Mitaka branch</label></li>
+        <li><input type="checkbox" id="newton" checked=""><label for="newton" title="Step that should only be run when installing from the Newton stable branch.">Install from Newton branch</label></li>
+      </ul>
+
+      <span class="title">RHEL Registration Types</span>
+      <ul>
+        <li><input type="checkbox" id="portal" checked="checked"><label for="portal" title="Step that should only be run when registering to the Red Hat Portal.">Portal</label></li>
+        <li><input type="checkbox" id="satellite" checked="checked"><label for="satellite" title="Step that should only be run when registering to Red Hat Satellite.">Satellite</label></li>
+      </ul>
+
+      <span class="title">Environments</span>
+      <ul>
+        <li><input type="checkbox" id="baremetal" checked="checked"><label for="baremetal" title="Step that should only be run when deploying to baremetal.">Baremetal</label></li>
+        <li><input type="checkbox" id="virtual" checked="checked"><label for="virtual" title="Step that should only be run when deploying to virtual machines.">Virtual</label></li>
+        <li><input type="checkbox" id="ssl" checked="checked"><label for="ssl" title="Step that should only be run when deploying with SSL OpenStack endpoints.">SSL</label></li>
+        <li><input type="checkbox" id="selfsigned" checked="checked"><label for="selfsigned" title="Step that should only be run when deploying with SSL and a self-signed certificate.">Self-Signed SSL</label></li>
+      </ul>
+
+      <span class="title">Additional Overcloud Roles</span>
+      <ul>
+        <li><input type="checkbox" id="ceph" checked="checked"><label for="ceph" title="Step that should only be run when deploying Ceph for use by the Overcloud.">Ceph</label></li>
+      </ul>
+
+      <span class="title">Development options</span>
+      <ul>
+         <li><input type="checkbox" id="source" checked=""><label for="source"
+            title="Step that should only be run when choosing to use some components directly from their git source code repositories instead of packages.">Install from source</label></li>
+      </ul>
+
+      <span class="title">Upgrade Version</span>
+      <ul>
+        <li><input type="checkbox" id="ktol" checked="checked"><label for="ktol" title="Upgrading Kilo to Liberty is not supported">Upgrading Kilo to Liberty (unsupported)</label></li>
+        <li><input type="checkbox" id="ltom" checked="checked"><label for="ltom" title="Step that should only be run for upgrading from Liberty to Mitaka">Upgrading Liberty to Mitaka</label></li>
+        <li><input type="checkbox" id="mton" checked="checked"><label for="mton" title="Step that should only be run for upgrading from Mitaka to Newton">Upgrading Mitaka to Newton</label></li>
+      </ul>
+
+
+    </div>
+  </div>
+
+  
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="summary.html" title="Summary"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="changes-puppet-tripleo.html" title="Updating puppet-tripleo"
+             accesskey="P">previous</a> |</li>
+        <li><a href="../../index.html">tripleo-docs 0.0.1.dev344 documentation</a> &raquo;</li>
+          <li><a href="../developer.html" >Developer Documentation</a> &raquo;</li>
+          <li><a href="tht_walkthrough.html" accesskey="U">Composable services tutorial</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer">
+        &copy; Copyright 2015, OpenStack Foundation.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.2.3.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/tripleo-docs");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

@@ -1,0 +1,483 @@
+
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Multi-Node Lab &mdash; DevStack 0.0.1.dev8194 documentation</title>
+    
+    <link rel="stylesheet" href="../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../',
+        VERSION:     '0.0.1.dev8194',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../_static/jquery.js"></script>
+    <script type="text/javascript" src="../_static/underscore.js"></script>
+    <script type="text/javascript" src="../_static/doctools.js"></script>
+    <link rel="top" title="DevStack 0.0.1.dev8194 documentation" href="../index.html" /> 
+  </head>
+  <body>
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body">
+            
+  <div class="section" id="multi-node-lab">
+<h1>Multi-Node Lab<a class="headerlink" href="#multi-node-lab" title="Permalink to this headline">¶</a></h1>
+<p>Here is OpenStack in a realistic test configuration with multiple
+physical servers.</p>
+<div class="section" id="prerequisites-linux-network">
+<h2>Prerequisites Linux &amp; Network<a class="headerlink" href="#prerequisites-linux-network" title="Permalink to this headline">¶</a></h2>
+<div class="section" id="minimal-install">
+<h3>Minimal Install<a class="headerlink" href="#minimal-install" title="Permalink to this headline">¶</a></h3>
+<p>You need to have a system with a fresh install of Linux. You can
+download the <a class="reference external" href="https://help.ubuntu.com/community/Installation/MinimalCD">Minimal
+CD</a> for
+Ubuntu releases since DevStack will download &amp; install all the
+additional dependencies. The netinstall ISO is available for
+<a class="reference external" href="http://mirrors.kernel.org/fedora/releases/">Fedora</a>
+and
+<a class="reference external" href="http://mirrors.kernel.org/centos/">CentOS/RHEL</a>.</p>
+<p>Install a couple of packages to bootstrap configuration:</p>
+<div class="highlight-python"><pre>apt-get install -y git sudo || yum install -y git sudo</pre>
+</div>
+</div>
+<div class="section" id="network-configuration">
+<h3>Network Configuration<a class="headerlink" href="#network-configuration" title="Permalink to this headline">¶</a></h3>
+<p>The first iteration of the lab uses OpenStack&#8217;s FlatDHCP network
+controller so only a single network will be required. It should be on
+its own subnet without DHCP; the host IPs and floating IP pool(s) will
+come out of this block. This example uses the following:</p>
+<ul class="simple">
+<li>Gateway: 192.168.42.1</li>
+<li>Physical nodes: 192.168.42.11-192.168.42.99</li>
+<li>Floating IPs: 192.168.42.128-192.168.42.254</li>
+</ul>
+<p>Configure each node with a static IP. For Ubuntu edit
+<tt class="docutils literal"><span class="pre">/etc/network/interfaces</span></tt>:</p>
+<div class="highlight-python"><pre>auto eth0
+iface eth0 inet static
+    address 192.168.42.11
+    netmask 255.255.255.0
+    gateway 192.168.42.1</pre>
+</div>
+<p>For Fedora and CentOS/RHEL edit
+<tt class="docutils literal"><span class="pre">/etc/sysconfig/network-scripts/ifcfg-eth0</span></tt>:</p>
+<div class="highlight-python"><pre>BOOTPROTO=static
+IPADDR=192.168.42.11
+NETMASK=255.255.255.0
+GATEWAY=192.168.42.1</pre>
+</div>
+</div>
+</div>
+<div class="section" id="installation-shake-and-bake">
+<h2>Installation shake and bake<a class="headerlink" href="#installation-shake-and-bake" title="Permalink to this headline">¶</a></h2>
+<div class="section" id="add-the-devstack-user">
+<h3>Add the DevStack User<a class="headerlink" href="#add-the-devstack-user" title="Permalink to this headline">¶</a></h3>
+<p>OpenStack runs as a non-root user that has sudo access to root. There is
+nothing special about the name, we&#8217;ll use <tt class="docutils literal"><span class="pre">stack</span></tt> here. Every node
+must use the same name and preferably uid. If you created a user during
+the OS install you can use it and give it sudo privileges below.
+Otherwise create the stack user:</p>
+<div class="highlight-python"><pre>groupadd stack
+useradd -g stack -s /bin/bash -d /opt/stack -m stack</pre>
+</div>
+<p>This user will be making many changes to your system during installation
+and operation so it needs to have sudo privileges to root without a
+password:</p>
+<div class="highlight-python"><pre>echo "stack ALL=(ALL) NOPASSWD: ALL" &gt;&gt; /etc/sudoers</pre>
+</div>
+<p>From here on use the <tt class="docutils literal"><span class="pre">stack</span></tt> user. <strong>Logout</strong> and <strong>login</strong> as the
+<tt class="docutils literal"><span class="pre">stack</span></tt> user.</p>
+</div>
+<div class="section" id="set-up-ssh">
+<h3>Set Up Ssh<a class="headerlink" href="#set-up-ssh" title="Permalink to this headline">¶</a></h3>
+<p>Set up the stack user on each node with an ssh key for access:</p>
+<div class="highlight-python"><pre>mkdir ~/.ssh; chmod 700 ~/.ssh
+echo "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCyYjfgyPazTvGpd8OaAvtU2utL8W6gWC4JdRS1J95GhNNfQd657yO6s1AH5KYQWktcE6FO/xNUC2reEXSGC7ezy+sGO1kj9Limv5vrvNHvF1+wts0Cmyx61D2nQw35/Qz8BvpdJANL7VwP/cFI/p3yhvx2lsnjFE3hN8xRB2LtLUopUSVdBwACOVUmH2G+2BWMJDjVINd2DPqRIA4Zhy09KJ3O1Joabr0XpQL0yt/I9x8BVHdAx6l9U0tMg9dj5+tAjZvMAFfye3PJcYwwsfJoFxC8w/SLtqlFX7Ehw++8RtvomvuipLdmWCy+T9hIkl+gHYE4cS3OIqXH7f49jdJf jesse@spacey.local" &gt; ~/.ssh/authorized_keys</pre>
+</div>
+</div>
+<div class="section" id="download-devstack">
+<h3>Download DevStack<a class="headerlink" href="#download-devstack" title="Permalink to this headline">¶</a></h3>
+<p>Grab the latest version of DevStack:</p>
+<div class="highlight-python"><pre>git clone https://git.openstack.org/openstack-dev/devstack
+cd devstack</pre>
+</div>
+<p>Up to this point all of the steps apply to each node in the cluster.
+From here on there are some differences between the cluster controller
+(aka &#8216;head node&#8217;) and the compute nodes.</p>
+</div>
+<div class="section" id="configure-cluster-controller">
+<h3>Configure Cluster Controller<a class="headerlink" href="#configure-cluster-controller" title="Permalink to this headline">¶</a></h3>
+<p>The cluster controller runs all OpenStack services. Configure the
+cluster controller&#8217;s DevStack in <tt class="docutils literal"><span class="pre">local.conf</span></tt>:</p>
+<div class="highlight-python"><pre>[[local|localrc]]
+HOST_IP=192.168.42.11
+FLAT_INTERFACE=eth0
+FIXED_RANGE=10.4.128.0/20
+FIXED_NETWORK_SIZE=4096
+FLOATING_RANGE=192.168.42.128/25
+MULTI_HOST=1
+LOGFILE=/opt/stack/logs/stack.sh.log
+ADMIN_PASSWORD=labstack
+DATABASE_PASSWORD=supersecret
+RABBIT_PASSWORD=supersecret
+SERVICE_PASSWORD=supersecret</pre>
+</div>
+<p>In the multi-node configuration the first 10 or so IPs in the private
+subnet are usually reserved. Add this to <tt class="docutils literal"><span class="pre">local.sh</span></tt> to have it run
+after every <tt class="docutils literal"><span class="pre">stack.sh</span></tt> run:</p>
+<div class="highlight-python"><pre>for i in `seq 2 10`; do /opt/stack/nova/bin/nova-manage fixed reserve 10.4.128.$i; done</pre>
+</div>
+<p>Fire up OpenStack:</p>
+<div class="highlight-python"><pre>./stack.sh</pre>
+</div>
+<p>A stream of activity ensues. When complete you will see a summary of
+<tt class="docutils literal"><span class="pre">stack.sh</span></tt>&#8216;s work, including the relevant URLs, accounts and passwords
+to poke at your shiny new OpenStack. The most recent log file is
+available in <tt class="docutils literal"><span class="pre">stack.sh.log</span></tt>.</p>
+</div>
+<div class="section" id="configure-compute-nodes">
+<h3>Configure Compute Nodes<a class="headerlink" href="#configure-compute-nodes" title="Permalink to this headline">¶</a></h3>
+<p>The compute nodes only run the OpenStack worker services. For additional
+machines, create a <tt class="docutils literal"><span class="pre">local.conf</span></tt> with:</p>
+<div class="highlight-python"><pre>[[local|localrc]]
+HOST_IP=192.168.42.12 # change this per compute node
+FLAT_INTERFACE=eth0
+FIXED_RANGE=10.4.128.0/20
+FIXED_NETWORK_SIZE=4096
+FLOATING_RANGE=192.168.42.128/25
+MULTI_HOST=1
+LOGFILE=/opt/stack/logs/stack.sh.log
+ADMIN_PASSWORD=labstack
+DATABASE_PASSWORD=supersecret
+RABBIT_PASSWORD=supersecret
+SERVICE_PASSWORD=supersecret
+DATABASE_TYPE=mysql
+SERVICE_HOST=192.168.42.11
+MYSQL_HOST=$SERVICE_HOST
+RABBIT_HOST=$SERVICE_HOST
+GLANCE_HOSTPORT=$SERVICE_HOST:9292
+ENABLED_SERVICES=n-cpu,n-net,n-api-meta,c-vol
+NOVA_VNC_ENABLED=True
+NOVNCPROXY_URL="http://$SERVICE_HOST:6080/vnc_auto.html"
+VNCSERVER_LISTEN=$HOST_IP
+VNCSERVER_PROXYCLIENT_ADDRESS=$VNCSERVER_LISTEN</pre>
+</div>
+<p><strong>Note:</strong> the <tt class="docutils literal"><span class="pre">n-api-meta</span></tt> service is a version of the api server
+that only serves the metadata service. It&#8217;s needed because the
+computes created won&#8217;t have a routing path to the metadata service on
+the controller.</p>
+<p>Fire up OpenStack:</p>
+<div class="highlight-python"><pre>./stack.sh</pre>
+</div>
+<p>A stream of activity ensues. When complete you will see a summary of
+<tt class="docutils literal"><span class="pre">stack.sh</span></tt>&#8216;s work, including the relevant URLs, accounts and passwords
+to poke at your shiny new OpenStack. The most recent log file is
+available in <tt class="docutils literal"><span class="pre">stack.sh.log</span></tt>.</p>
+</div>
+<div class="section" id="cleaning-up-after-devstack">
+<h3>Cleaning Up After DevStack<a class="headerlink" href="#cleaning-up-after-devstack" title="Permalink to this headline">¶</a></h3>
+<p>Shutting down OpenStack is now as simple as running the included
+<tt class="docutils literal"><span class="pre">unstack.sh</span></tt> script:</p>
+<div class="highlight-python"><pre>./unstack.sh</pre>
+</div>
+<p>A more aggressive cleanup can be performed using <tt class="docutils literal"><span class="pre">clean.sh</span></tt>. It
+removes certain troublesome packages and attempts to leave the system in
+a state where changing the database or queue manager can be reliably
+performed.</p>
+<div class="highlight-python"><pre>./clean.sh</pre>
+</div>
+<p>Sometimes running instances are not cleaned up. DevStack attempts to do
+this when it runs but there are times it needs to still be done by hand:</p>
+<div class="highlight-python"><pre>sudo rm -rf /etc/libvirt/qemu/inst*
+sudo virsh list | grep inst | awk '{print $1}' | xargs -n1 virsh destroy</pre>
+</div>
+</div>
+</div>
+<div class="section" id="options-pimp-your-stack">
+<h2>Options pimp your stack<a class="headerlink" href="#options-pimp-your-stack" title="Permalink to this headline">¶</a></h2>
+<div class="section" id="additional-users">
+<h3>Additional Users<a class="headerlink" href="#additional-users" title="Permalink to this headline">¶</a></h3>
+<p>DevStack creates two OpenStack users (<tt class="docutils literal"><span class="pre">admin</span></tt> and <tt class="docutils literal"><span class="pre">demo</span></tt>) and two
+projects (also <tt class="docutils literal"><span class="pre">admin</span></tt> and <tt class="docutils literal"><span class="pre">demo</span></tt>). <tt class="docutils literal"><span class="pre">admin</span></tt> is exactly what it
+sounds like, a privileged administrative account that is a member of
+both the <tt class="docutils literal"><span class="pre">admin</span></tt> and <tt class="docutils literal"><span class="pre">demo</span></tt> projects. <tt class="docutils literal"><span class="pre">demo</span></tt> is a normal user
+account that is only a member of the <tt class="docutils literal"><span class="pre">demo</span></tt> project. Creating
+additional OpenStack users can be done through the dashboard, sometimes
+it is easier to do them in bulk from a script, especially since they get
+blown away every time <tt class="docutils literal"><span class="pre">stack.sh</span></tt> runs. The following steps are ripe
+for scripting:</p>
+<div class="highlight-python"><pre># Get admin creds
+. openrc admin admin
+
+# List existing projects
+openstack project list
+
+# List existing users
+openstack user list
+
+# Add a user and project
+NAME=bob
+PASSWORD=BigSecret
+PROJECT=$NAME
+openstack project create $PROJECT
+openstack user create $NAME --password=$PASSWORD --project $PROJECT
+openstack role add Member --user $NAME --project $PROJECT
+# The Member role is created by stack.sh
+# openstack role assignment list</pre>
+</div>
+</div>
+<div class="section" id="swift">
+<h3>Swift<a class="headerlink" href="#swift" title="Permalink to this headline">¶</a></h3>
+<p>Swift, OpenStack Object Storage, requires a significant amount of resources
+and is disabled by default in DevStack. The support in DevStack is geared
+toward a minimal installation but can be used for testing. To implement a
+true multi-node test of swift, additional steps will be required. Enabling it is as
+simple as enabling the <tt class="docutils literal"><span class="pre">swift</span></tt> service in <tt class="docutils literal"><span class="pre">local.conf</span></tt>:</p>
+<div class="highlight-python"><pre>enable_service s-proxy s-object s-container s-account</pre>
+</div>
+<p>Swift, OpenStack Object Storage, will put its data files in <tt class="docutils literal"><span class="pre">SWIFT_DATA_DIR</span></tt> (default
+<tt class="docutils literal"><span class="pre">/opt/stack/data/swift</span></tt>). The size of the data &#8216;partition&#8217; created
+(really a loop-mounted file) is set by <tt class="docutils literal"><span class="pre">SWIFT_LOOPBACK_DISK_SIZE</span></tt>. The
+Swift config files are located in <tt class="docutils literal"><span class="pre">SWIFT_CONF_DIR</span></tt> (default
+<tt class="docutils literal"><span class="pre">/etc/swift</span></tt>). All of these settings can be overridden in (wait for
+it...) <tt class="docutils literal"><span class="pre">local.conf</span></tt>.</p>
+</div>
+<div class="section" id="volumes">
+<h3>Volumes<a class="headerlink" href="#volumes" title="Permalink to this headline">¶</a></h3>
+<p>DevStack will automatically use an existing LVM volume group named
+<tt class="docutils literal"><span class="pre">stack-volumes</span></tt> to store cloud-created volumes. If <tt class="docutils literal"><span class="pre">stack-volumes</span></tt>
+doesn&#8217;t exist, DevStack will set up a 10Gb loop-mounted file to contain
+it. This obviously limits the number and size of volumes that can be
+created inside OpenStack. The size can be overridden by setting
+<tt class="docutils literal"><span class="pre">VOLUME_BACKING_FILE_SIZE</span></tt> in <tt class="docutils literal"><span class="pre">local.conf</span></tt>.</p>
+<p><tt class="docutils literal"><span class="pre">stack-volumes</span></tt> can be pre-created on any physical volume supported by
+Linux&#8217;s LVM. The name of the volume group can be changed by setting
+<tt class="docutils literal"><span class="pre">VOLUME_GROUP_NAME</span></tt> in <tt class="docutils literal"><span class="pre">localrc</span></tt>. <tt class="docutils literal"><span class="pre">stack.sh</span></tt> deletes all logical
+volumes in <tt class="docutils literal"><span class="pre">VOLUME_GROUP_NAME</span></tt> that begin with <tt class="docutils literal"><span class="pre">VOLUME_NAME_PREFIX</span></tt> as
+part of cleaning up from previous runs. It is recommended to not use the
+root volume group as <tt class="docutils literal"><span class="pre">VOLUME_GROUP_NAME</span></tt>.</p>
+<p>The details of creating the volume group depends on the server hardware
+involved but looks something like this:</p>
+<div class="highlight-python"><pre>pvcreate /dev/sdc
+vgcreate stack-volumes /dev/sdc</pre>
+</div>
+</div>
+<div class="section" id="syslog">
+<h3>Syslog<a class="headerlink" href="#syslog" title="Permalink to this headline">¶</a></h3>
+<p>DevStack is capable of using <tt class="docutils literal"><span class="pre">rsyslog</span></tt> to aggregate logging across the
+cluster. It is off by default; to turn it on set <tt class="docutils literal"><span class="pre">SYSLOG=True</span></tt> in
+<tt class="docutils literal"><span class="pre">local.conf</span></tt>. <tt class="docutils literal"><span class="pre">SYSLOG_HOST</span></tt> defaults to <tt class="docutils literal"><span class="pre">HOST_IP</span></tt>; on the compute
+nodes it must be set to the IP of the cluster controller to send syslog
+output there. In the example above, add this to the compute node
+<tt class="docutils literal"><span class="pre">local.conf</span></tt>:</p>
+<div class="highlight-python"><pre>SYSLOG_HOST=192.168.42.11</pre>
+</div>
+</div>
+<div class="section" id="using-alternate-repositories-branches">
+<h3>Using Alternate Repositories/Branches<a class="headerlink" href="#using-alternate-repositories-branches" title="Permalink to this headline">¶</a></h3>
+<p>The git repositories for all of the OpenStack services are defined in
+<tt class="docutils literal"><span class="pre">stackrc</span></tt>. Since this file is a part of the DevStack package changes
+to it will probably be overwritten as updates are applied. Every setting
+in <tt class="docutils literal"><span class="pre">stackrc</span></tt> can be redefined in <tt class="docutils literal"><span class="pre">local.conf</span></tt>.</p>
+<p>To change the repository or branch that a particular OpenStack service
+is created from, simply change the value of <tt class="docutils literal"><span class="pre">*_REPO</span></tt> or <tt class="docutils literal"><span class="pre">*_BRANCH</span></tt>
+corresponding to that service.</p>
+<p>After making changes to the repository or branch, if <tt class="docutils literal"><span class="pre">RECLONE</span></tt> is not
+set in <tt class="docutils literal"><span class="pre">localrc</span></tt> it may be necessary to remove the corresponding
+directory from <tt class="docutils literal"><span class="pre">/opt/stack</span></tt> to force git to re-clone the repository.</p>
+<p>For example, to pull nova, OpenStack Compute, from a proposed release candidate
+in the primary nova repository:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="n">NOVA_BRANCH</span><span class="o">=</span><span class="n">rc</span><span class="o">-</span><span class="n">proposed</span>
+</pre></div>
+</div>
+<p>To pull glance, OpenStack Image service, from an experimental fork:</p>
+<div class="highlight-python"><pre>GLANCE_BRANCH=try-something-big
+GLANCE_REPO=https://github.com/mcuser/glance.git</pre>
+</div>
+</div>
+</div>
+<div class="section" id="notes-stuff-you-might-need-to-know">
+<h2>Notes stuff you might need to know<a class="headerlink" href="#notes-stuff-you-might-need-to-know" title="Permalink to this headline">¶</a></h2>
+<div class="section" id="reset-the-bridge">
+<h3>Reset the Bridge<a class="headerlink" href="#reset-the-bridge" title="Permalink to this headline">¶</a></h3>
+<p>How to reset the bridge configuration:</p>
+<div class="highlight-python"><pre>sudo brctl delif br100 eth0.926
+sudo ip link set dev br100 down
+sudo brctl delbr br100</pre>
+</div>
+</div>
+<div class="section" id="set-mysql-password">
+<h3>Set MySQL Password<a class="headerlink" href="#set-mysql-password" title="Permalink to this headline">¶</a></h3>
+<p>If you forgot to set the root password you can do this:</p>
+<div class="highlight-python"><pre>mysqladmin -u root -pnova password 'supersecret'</pre>
+</div>
+</div>
+<div class="section" id="live-migration">
+<h3>Live Migration<a class="headerlink" href="#live-migration" title="Permalink to this headline">¶</a></h3>
+<p>In order for live migration to work with the default live migration URI:</p>
+<div class="highlight-python"><pre>[libvirt]
+live_migration_uri = qemu+ssh://stack@%s/system</pre>
+</div>
+<p>SSH keys need to be exchanged between each compute node:</p>
+<ol class="arabic">
+<li><p class="first">The SOURCE root user&#8217;s public RSA key (likely in /root/.ssh/id_rsa.pub)
+needs to be in the DESTINATION stack user&#8217;s authorized_keys file
+(~stack/.ssh/authorized_keys).  This can be accomplished by manually
+copying the contents from the file on the SOURCE to the DESTINATION.  If
+you have a password configured for the stack user, then you can use the
+following command to accomplish the same thing:</p>
+<div class="highlight-python"><pre>ssh-copy-id -i /root/.ssh/id_rsa.pub stack@DESTINATION</pre>
+</div>
+</li>
+<li><p class="first">The DESTINATION host&#8217;s public ECDSA key (/etc/ssh/ssh_host_ecdsa_key.pub)
+needs to be in the SOURCE root user&#8217;s known_hosts file
+(/root/.ssh/known_hosts).  This can be accomplished by running the
+following on the SOURCE machine (hostname must be used):</p>
+<div class="highlight-python"><pre>ssh-keyscan -H DEST_HOSTNAME | sudo tee -a /root/.ssh/known_hosts</pre>
+</div>
+</li>
+<li><p class="first">Verify that login via ssh works without a password:</p>
+<div class="highlight-python"><pre>ssh -i /root/.ssh/id_rsa.pub stack@DESTINATION</pre>
+</div>
+</li>
+</ol>
+<p>In essence, this means that every compute node&#8217;s root user&#8217;s public RSA key
+must exist in every other compute node&#8217;s stack user&#8217;s authorized_keys file and
+every compute node&#8217;s public ECDSA key needs to be in every other compute
+node&#8217;s root user&#8217;s known_hosts file.  Please note that if the root or stack
+user does not have a SSH key, one can be generated using:</p>
+<div class="highlight-python"><pre>ssh-keygen -t rsa</pre>
+</div>
+<p>The above steps are necessary because libvirtd runs as root when the
+live_migration_uri uses the &#8220;qemu:///system&#8221; family of URIs.  For more
+information, see the <a class="reference external" href="https://libvirt.org/drvqemu.html#securitydriver">libvirt documentation</a>.</p>
+</div>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="../index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Multi-Node Lab</a><ul>
+<li><a class="reference internal" href="#prerequisites-linux-network">Prerequisites Linux &amp; Network</a><ul>
+<li><a class="reference internal" href="#minimal-install">Minimal Install</a></li>
+<li><a class="reference internal" href="#network-configuration">Network Configuration</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#installation-shake-and-bake">Installation shake and bake</a><ul>
+<li><a class="reference internal" href="#add-the-devstack-user">Add the DevStack User</a></li>
+<li><a class="reference internal" href="#set-up-ssh">Set Up Ssh</a></li>
+<li><a class="reference internal" href="#download-devstack">Download DevStack</a></li>
+<li><a class="reference internal" href="#configure-cluster-controller">Configure Cluster Controller</a></li>
+<li><a class="reference internal" href="#configure-compute-nodes">Configure Compute Nodes</a></li>
+<li><a class="reference internal" href="#cleaning-up-after-devstack">Cleaning Up After DevStack</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#options-pimp-your-stack">Options pimp your stack</a><ul>
+<li><a class="reference internal" href="#additional-users">Additional Users</a></li>
+<li><a class="reference internal" href="#swift">Swift</a></li>
+<li><a class="reference internal" href="#volumes">Volumes</a></li>
+<li><a class="reference internal" href="#syslog">Syslog</a></li>
+<li><a class="reference internal" href="#using-alternate-repositories-branches">Using Alternate Repositories/Branches</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#notes-stuff-you-might-need-to-know">Notes stuff you might need to know</a><ul>
+<li><a class="reference internal" href="#reset-the-bridge">Reset the Bridge</a></li>
+<li><a class="reference internal" href="#set-mysql-password">Set MySQL Password</a></li>
+<li><a class="reference internal" href="#live-migration">Live Migration</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack-dev/devstack
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="../_sources/guides/multinode-lab.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related">
+      <h3>Navigation</h3>
+      <ul>
+        <li><a href="../index.html">DevStack 0.0.1.dev8194 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer">
+        &copy; Copyright 2014, OpenStack Foundation.
+      Last updated on Mon Feb 13 19:57:46 2017, commit 6bd3561.
+      Created using <a href="http://sphinx.pocoo.org/">Sphinx</a> 1.1.3.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/DevStack");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

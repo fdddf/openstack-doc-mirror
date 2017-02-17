@@ -1,0 +1,587 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Filter Scheduler &mdash; nova 15.0.0.0rc2.dev69 documentation</title>
+    
+    <link rel="stylesheet" href="_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="_static/support-matrix.css" type="text/css" />
+    <link rel="stylesheet" href="_static/feature-matrix.css" type="text/css" />
+    <link rel="stylesheet" href="_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '15.0.0.0rc2.dev69',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <link rel="top" title="nova 15.0.0.0rc2.dev69 documentation" href="index.html" />
+    <link rel="next" title="AMQP and Nova" href="rpc.html" />
+    <link rel="prev" title="Internationalization" href="i18n.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="filter-scheduler">
+<h1>Filter Scheduler<a class="headerlink" href="#filter-scheduler" title="Permalink to this headline">¶</a></h1>
+<p>The <strong>Filter Scheduler</strong> supports <cite>filtering</cite> and <cite>weighting</cite> to make informed
+decisions on where a new instance should be created. This Scheduler supports
+working with Compute Nodes only.</p>
+<div class="section" id="filtering">
+<h2>Filtering<a class="headerlink" href="#filtering" title="Permalink to this headline">¶</a></h2>
+<img alt="_images/filteringWorkflow1.png" src="_images/filteringWorkflow1.png" />
+<p>During its work Filter Scheduler iterates over all found compute nodes,
+evaluating each against a set of filters. The list of resulting hosts is
+ordered by weighers. The Scheduler then chooses hosts for the requested
+number of instances, choosing the most weighted hosts. For a specific
+filter to succeed for a specific host, the filter matches the user
+request against the state of the host plus some extra magic as defined
+by each filter (described in more detail below).</p>
+<p>If the Scheduler cannot find candidates for the next instance, it means that
+there are no appropriate hosts where that instance can be scheduled.</p>
+<p>The Filter Scheduler has to be quite flexible to support the required variety
+of <cite>filtering</cite> and <cite>weighting</cite> strategies. If this flexibility is insufficient
+you can implement <cite>your own filtering algorithm</cite>.</p>
+<p>There are many standard filter classes which may be used
+(<code class="xref py py-mod docutils literal"><span class="pre">nova.scheduler.filters</span></code>):</p>
+<ul>
+<li><p class="first"><code class="xref py py-class docutils literal"><span class="pre">AllHostsFilter</span></code> - does no filtering. It passes all the available hosts.</p>
+</li>
+<li><p class="first"><code class="xref py py-class docutils literal"><span class="pre">ImagePropertiesFilter</span></code> - filters hosts based on properties defined
+on the instance&#8217;s image. It passes hosts that can support the properties
+specified on the image used by the instance.</p>
+</li>
+<li><p class="first"><code class="xref py py-class docutils literal"><span class="pre">AvailabilityZoneFilter</span></code> - filters hosts by availability zone. It passes
+hosts matching the availability zone specified in the instance properties.
+Use a comma to specify multiple zones. The filter will then ensure it matches
+any zone specified.</p>
+</li>
+<li><p class="first"><code class="xref py py-class docutils literal"><span class="pre">ComputeCapabilitiesFilter</span></code> - checks that the capabilities provided by the
+host compute service satisfy any extra specifications associated with the
+instance type. It passes hosts that can create the specified instance type.</p>
+<p>If an extra specs key contains a colon (:), anything before the colon is
+treated as a namespace and anything after the colon is treated as the key to
+be matched. If a namespace is present and is not <code class="docutils literal"><span class="pre">capabilities</span></code>, the filter
+ignores the namespace. For example <code class="docutils literal"><span class="pre">capabilities:cpu_info:features</span></code> is
+a valid scope format. For backward compatibility, when a key doesn&#8217;t contain
+a colon (:), the key&#8217;s contents are important. If this key is an attribute of
+HostState object, like <code class="docutils literal"><span class="pre">free_disk_mb</span></code>, the filter also treats the extra
+specs key as the key to be matched. If not, the filter will ignore the key.</p>
+<p>The extra specifications can have an operator at the beginning of the value
+string of a key/value pair. If there is no operator specified, then a
+default operator of <code class="docutils literal"><span class="pre">s==</span></code> is used. Valid operators are:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>* = (equal to or greater than as a number; same as vcpus case)
+* == (equal to as a number)
+* != (not equal to as a number)
+* &gt;= (greater than or equal to as a number)
+* &lt;= (less than or equal to as a number)
+* s== (equal to as a string)
+* s!= (not equal to as a string)
+* s&gt;= (greater than or equal to as a string)
+* s&gt; (greater than as a string)
+* s&lt;= (less than or equal to as a string)
+* s&lt; (less than as a string)
+* &lt;in&gt; (substring)
+* &lt;all-in&gt; (all elements contained in collection)
+* &lt;or&gt; (find one of these)
+
+Examples are: &quot;&gt;= 5&quot;, &quot;s== 2.1.0&quot;, &quot;&lt;in&gt; gcc&quot;, &quot;&lt;all-in&gt; aes mmx&quot;, and &quot;&lt;or&gt; fpu &lt;or&gt; gpu&quot;
+</pre></div>
+</div>
+<p>some of attributes that can be used as useful key and their values contains:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>* free_ram_mb (compared with a number, values like &quot;&gt;= 4096&quot;)
+* free_disk_mb (compared with a number, values like &quot;&gt;= 10240&quot;)
+* host (compared with a string, values like: &quot;&lt;in&gt; compute&quot;,&quot;s== compute_01&quot;)
+* hypervisor_type (compared with a string, values like: &quot;s== QEMU&quot;, &quot;s== powervm&quot;)
+* hypervisor_version (compared with a number, values like : &quot;&gt;= 1005003&quot;, &quot;== 2000000&quot;)
+* num_instances (compared with a number, values like: &quot;&lt;= 10&quot;)
+* num_io_ops (compared with a number, values like: &quot;&lt;= 5&quot;)
+* vcpus_total (compared with a number, values like: &quot;= 48&quot;, &quot;&gt;=24&quot;)
+* vcpus_used (compared with a number, values like: &quot;= 0&quot;, &quot;&lt;= 10&quot;)
+</pre></div>
+</div>
+</li>
+<li><p class="first"><code class="xref py py-class docutils literal"><span class="pre">AggregateInstanceExtraSpecsFilter</span></code> - checks that the aggregate metadata
+satisfies any extra specifications associated with the instance type (that
+have no scope or are scoped with <code class="docutils literal"><span class="pre">aggregate_instance_extra_specs</span></code>).
+It passes hosts that can create the specified instance type.
+The extra specifications can have the same operators as
+<code class="xref py py-class docutils literal"><span class="pre">ComputeCapabilitiesFilter</span></code>. To specify multiple values for the same key
+use a comma. E.g., &#8220;value1,value2&#8221;</p>
+</li>
+<li><p class="first"><code class="xref py py-class docutils literal"><span class="pre">ComputeFilter</span></code> - passes all hosts that are operational and enabled.</p>
+</li>
+<li><p class="first"><code class="xref py py-class docutils literal"><span class="pre">CoreFilter</span></code> - filters based on CPU core utilization. It passes hosts with
+sufficient number of CPU cores.</p>
+</li>
+<li><p class="first"><code class="xref py py-class docutils literal"><span class="pre">AggregateCoreFilter</span></code> - filters hosts by CPU core number with per-aggregate
+<code class="docutils literal"><span class="pre">cpu_allocation_ratio</span></code> setting. If no per-aggregate value is found, it will
+fall back to the global default <code class="docutils literal"><span class="pre">cpu_allocation_ratio</span></code>. If more than one value
+is found for a host (meaning the host is in two different aggregates with
+different ratio settings), the minimum value will be used.</p>
+</li>
+<li><p class="first"><code class="xref py py-class docutils literal"><span class="pre">IsolatedHostsFilter</span></code> - filter based on <code class="docutils literal"><span class="pre">image_isolated</span></code>, <code class="docutils literal"><span class="pre">host_isolated</span></code>
+and <code class="docutils literal"><span class="pre">restrict_isolated_hosts_to_isolated_images</span></code> flags.</p>
+</li>
+<li><p class="first"><code class="xref py py-class docutils literal"><span class="pre">JsonFilter</span></code> - allows simple JSON-based grammar for selecting hosts.</p>
+</li>
+<li><p class="first"><code class="xref py py-class docutils literal"><span class="pre">RamFilter</span></code> - filters hosts by their RAM. Only hosts with sufficient RAM
+to host the instance are passed.</p>
+</li>
+<li><p class="first"><code class="xref py py-class docutils literal"><span class="pre">AggregateRamFilter</span></code> - filters hosts by RAM with per-aggregate
+<code class="docutils literal"><span class="pre">ram_allocation_ratio</span></code> setting. If no per-aggregate value is found, it will
+fall back to the global default <code class="docutils literal"><span class="pre">ram_allocation_ratio</span></code>. If more than one value
+is found for a host (meaning the host is in two different aggregates with
+different ratio settings), the minimum value will be used.</p>
+</li>
+<li><p class="first"><code class="xref py py-class docutils literal"><span class="pre">DiskFilter</span></code> - filters hosts by their disk allocation. Only hosts with sufficient
+disk space to host the instance are passed.
+<code class="docutils literal"><span class="pre">disk_allocation_ratio</span></code> setting. The virtual disk to physical disk
+allocation ratio, 1.0 by default. The total allowed allocated disk size will
+be physical disk multiplied this ratio.</p>
+</li>
+<li><p class="first"><code class="xref py py-class docutils literal"><span class="pre">AggregateDiskFilter</span></code> - filters hosts by disk allocation with per-aggregate
+<code class="docutils literal"><span class="pre">disk_allocation_ratio</span></code> setting. If no per-aggregate value is found, it will
+fall back to the global default <code class="docutils literal"><span class="pre">disk_allocation_ratio</span></code>. If more than one value
+is found for a host (meaning the host is in two or more different aggregates with
+different ratio settings), the minimum value will be used.</p>
+</li>
+<li><p class="first"><code class="xref py py-class docutils literal"><span class="pre">NumInstancesFilter</span></code> - filters compute nodes by number of running instances. Nodes
+with too many instances will be filtered.
+<code class="docutils literal"><span class="pre">max_instances_per_host</span></code> setting. Maximum number of instances allowed to run on
+this host. The host will be ignored by the scheduler if more than <code class="docutils literal"><span class="pre">max_instances_per_host</span></code>
+already exist on the host.</p>
+</li>
+<li><p class="first"><code class="xref py py-class docutils literal"><span class="pre">AggregateNumInstancesFilter</span></code> - filters hosts by number of instances with
+per-aggregate <code class="docutils literal"><span class="pre">max_instances_per_host</span></code> setting. If no per-aggregate value
+is found, it will fall back to the global default <code class="docutils literal"><span class="pre">max_instances_per_host</span></code>.
+If more than one value is found for a host (meaning the host is in two or more
+different aggregates with different max instances per host settings),
+the minimum value will be used.</p>
+</li>
+<li><p class="first"><code class="xref py py-class docutils literal"><span class="pre">IoOpsFilter</span></code> - filters hosts by concurrent I/O operations on it.
+hosts with too many concurrent I/O operations will be filtered.
+<code class="docutils literal"><span class="pre">max_io_ops_per_host</span></code> setting. Maximum number of I/O intensive instances allowed to
+run on this host, the host will be ignored by scheduler if more than <code class="docutils literal"><span class="pre">max_io_ops_per_host</span></code>
+instances such as build/resize/snapshot etc are running on it.</p>
+</li>
+<li><p class="first"><code class="xref py py-class docutils literal"><span class="pre">AggregateIoOpsFilter</span></code> - filters hosts by I/O operations with per-aggregate
+<code class="docutils literal"><span class="pre">max_io_ops_per_host</span></code> setting. If no per-aggregate value is found, it will
+fall back to the global default <code class="docutils literal"><span class="pre">max_io_ops_per_host</span></code>. If more than
+one value is found for a host (meaning the host is in two or more different
+aggregates with different max io operations settings), the minimum value
+will be used.</p>
+</li>
+<li><p class="first"><code class="xref py py-class docutils literal"><span class="pre">PciPassthroughFilter</span></code> - Filter that schedules instances on a host if the host
+has devices to meet the device requests in the &#8216;extra_specs&#8217; for the flavor.</p>
+</li>
+<li><p class="first"><code class="xref py py-class docutils literal"><span class="pre">SimpleCIDRAffinityFilter</span></code> - allows a new instance on a host within
+the same IP block.</p>
+</li>
+<li><p class="first"><code class="xref py py-class docutils literal"><span class="pre">DifferentHostFilter</span></code> - allows the instance on a different host from a
+set of instances.</p>
+</li>
+<li><p class="first"><code class="xref py py-class docutils literal"><span class="pre">SameHostFilter</span></code> - puts the instance on the same host as another instance in
+a set of instances.</p>
+</li>
+<li><p class="first"><code class="xref py py-class docutils literal"><span class="pre">RetryFilter</span></code> - filters hosts that have been attempted for scheduling.
+Only passes hosts that have not been previously attempted.</p>
+</li>
+<li><p class="first"><code class="xref py py-class docutils literal"><span class="pre">TrustedFilter</span></code> (EXPERIMENTAL) - filters hosts based on their trust.  Only passes hosts
+that meet the trust requirements specified in the instance properties.</p>
+</li>
+<li><p class="first"><code class="xref py py-class docutils literal"><span class="pre">TypeAffinityFilter</span></code> - Only passes hosts that are not already running an
+instance of the requested type.</p>
+</li>
+<li><dl class="first docutils">
+<dt><code class="xref py py-class docutils literal"><span class="pre">AggregateTypeAffinityFilter</span></code> - limits instance_type by aggregate.</dt>
+<dd><p class="first last">This filter passes hosts if no instance_type key is set or
+the instance_type aggregate metadata value contains the name of the
+instance_type requested. The value of the instance_type metadata entry is
+a string that may contain either a single instance_type name or a comma
+separated list of instance_type names. e.g. &#8216;m1.nano&#8217; or &#8220;m1.nano,m1.small&#8221;</p>
+</dd>
+</dl>
+</li>
+<li><p class="first"><code class="xref py py-class docutils literal"><span class="pre">ServerGroupAntiAffinityFilter</span></code> - This filter implements anti-affinity for a
+server group.  First you must create a server group with a policy of
+&#8216;anti-affinity&#8217; via the server groups API.  Then, when you boot a new server,
+provide a scheduler hint of &#8216;group=&lt;uuid&gt;&#8217; where &lt;uuid&gt; is the UUID of the
+server group you created.  This will result in the server getting added to the
+group.  When the server gets scheduled, anti-affinity will be enforced among
+all servers in that group.</p>
+</li>
+<li><p class="first"><code class="xref py py-class docutils literal"><span class="pre">ServerGroupAffinityFilter</span></code> - This filter works the same way as
+ServerGroupAntiAffinityFilter. The difference is that when you create the server
+group, you should specify a policy of &#8216;affinity&#8217;.</p>
+</li>
+<li><p class="first"><code class="xref py py-class docutils literal"><span class="pre">AggregateMultiTenancyIsolation</span></code> - isolate tenants in specific aggregates.
+To specify multiple tenants use a comma. Eg. &#8220;tenant1,tenant2&#8221;</p>
+</li>
+<li><p class="first"><code class="xref py py-class docutils literal"><span class="pre">AggregateImagePropertiesIsolation</span></code> - isolates hosts based on image
+properties and aggregate metadata. Use a comma to specify multiple values for the
+same property. The filter will then ensure at least one value matches.</p>
+</li>
+<li><p class="first"><code class="xref py py-class docutils literal"><span class="pre">MetricsFilter</span></code> - filters hosts based on metrics weight_setting. Only hosts with
+the available metrics are passed.</p>
+</li>
+<li><p class="first"><code class="xref py py-class docutils literal"><span class="pre">NUMATopologyFilter</span></code> - filters hosts based on the NUMA topology requested by the
+instance, if any.</p>
+</li>
+</ul>
+<p>Now we can focus on these standard filter classes in some detail. We&#8217;ll skip the
+simplest ones, such as <code class="xref py py-class docutils literal"><span class="pre">AllHostsFilter</span></code>, <code class="xref py py-class docutils literal"><span class="pre">CoreFilter</span></code> and <code class="xref py py-class docutils literal"><span class="pre">RamFilter</span></code>,
+because their functionality is relatively simple and can be understood from the
+code. For example class <code class="xref py py-class docutils literal"><span class="pre">RamFilter</span></code> has the next realization:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="k">class</span> <span class="nc">RamFilter</span><span class="p">(</span><span class="n">filters</span><span class="o">.</span><span class="n">BaseHostFilter</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Ram Filter with over subscription flag&quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="nf">host_passes</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">host_state</span><span class="p">,</span> <span class="n">filter_properties</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Only return hosts with sufficient available RAM.&quot;&quot;&quot;</span>
+        <span class="n">instance_type</span> <span class="o">=</span> <span class="n">filter_properties</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;instance_type&#39;</span><span class="p">)</span>
+        <span class="n">requested_ram</span> <span class="o">=</span> <span class="n">instance_type</span><span class="p">[</span><span class="s1">&#39;memory_mb&#39;</span><span class="p">]</span>
+        <span class="n">free_ram_mb</span> <span class="o">=</span> <span class="n">host_state</span><span class="o">.</span><span class="n">free_ram_mb</span>
+        <span class="n">total_usable_ram_mb</span> <span class="o">=</span> <span class="n">host_state</span><span class="o">.</span><span class="n">total_usable_ram_mb</span>
+        <span class="n">used_ram_mb</span> <span class="o">=</span> <span class="n">total_usable_ram_mb</span> <span class="o">-</span> <span class="n">free_ram_mb</span>
+        <span class="k">return</span> <span class="n">total_usable_ram_mb</span> <span class="o">*</span> <span class="n">FLAGS</span><span class="o">.</span><span class="n">ram_allocation_ratio</span>  <span class="o">-</span> <span class="n">used_ram_mb</span> <span class="o">&gt;=</span> <span class="n">requested_ram</span>
+</pre></div>
+</div>
+<p>Here <code class="docutils literal"><span class="pre">ram_allocation_ratio</span></code> means the virtual RAM to physical RAM allocation
+ratio (it is <code class="docutils literal"><span class="pre">1.5</span></code> by default).</p>
+<p>The <code class="xref py py-class docutils literal"><span class="pre">AvailabilityZoneFilter</span></code> looks at the availability zone of compute node
+and availability zone from the properties of the request. Each compute service
+has its own availability zone. So deployment engineers have an option to run
+scheduler with availability zones support and can configure availability zones
+on each compute host. This class&#8217;s method <code class="docutils literal"><span class="pre">host_passes</span></code> returns <code class="docutils literal"><span class="pre">True</span></code> if
+availability zone mentioned in request is the same on the current compute host.</p>
+<p>The <code class="xref py py-class docutils literal"><span class="pre">ImagePropertiesFilter</span></code> filters hosts based on the architecture,
+hypervisor type and virtual machine mode specified in the
+instance.  For example, an instance might require a host that supports the ARM
+architecture on a qemu compute host. The <code class="xref py py-class docutils literal"><span class="pre">ImagePropertiesFilter</span></code> will only
+pass hosts that can satisfy this request. These instance
+properties are populated from properties defined on the instance&#8217;s image.
+E.g. an image can be decorated with these properties using
+<code class="docutils literal"><span class="pre">glance</span> <span class="pre">image-update</span> <span class="pre">img-uuid</span> <span class="pre">--property</span> <span class="pre">architecture=arm</span> <span class="pre">--property</span>
+<span class="pre">hypervisor_type=qemu</span></code>
+Only hosts that satisfy these requirements will pass the
+<code class="xref py py-class docutils literal"><span class="pre">ImagePropertiesFilter</span></code>.</p>
+<p><code class="xref py py-class docutils literal"><span class="pre">ComputeCapabilitiesFilter</span></code> checks if the host satisfies any <code class="docutils literal"><span class="pre">extra_specs</span></code>
+specified on the instance type.  The <code class="docutils literal"><span class="pre">extra_specs</span></code> can contain key/value pairs.
+The key for the filter is either non-scope format (i.e. no <code class="docutils literal"><span class="pre">:</span></code> contained), or
+scope format in capabilities scope (i.e. <code class="docutils literal"><span class="pre">capabilities:xxx:yyy</span></code>). One example
+of capabilities scope is <code class="docutils literal"><span class="pre">capabilities:cpu_info:features</span></code>, which will match
+host&#8217;s cpu features capabilities. The <code class="xref py py-class docutils literal"><span class="pre">ComputeCapabilitiesFilter</span></code> will only
+pass hosts whose capabilities satisfy the requested specifications.  All hosts
+are passed if no <code class="docutils literal"><span class="pre">extra_specs</span></code> are specified.</p>
+<p><code class="xref py py-class docutils literal"><span class="pre">ComputeFilter</span></code> is quite simple and passes any host whose compute service is
+enabled and operational.</p>
+<p>Now we are going to <code class="xref py py-class docutils literal"><span class="pre">IsolatedHostsFilter</span></code>. There can be some special hosts
+reserved for specific images. These hosts are called <strong>isolated</strong>. So the
+images to run on the isolated hosts are also called isolated. The filter
+checks if <code class="docutils literal"><span class="pre">image_isolated</span></code> flag named in instance specifications is the same
+as the host. Isolated hosts can run non isolated images if the flag
+<code class="docutils literal"><span class="pre">restrict_isolated_hosts_to_isolated_images</span></code> is set to false.</p>
+<p><code class="xref py py-class docutils literal"><span class="pre">DifferentHostFilter</span></code> - method <code class="docutils literal"><span class="pre">host_passes</span></code> returns <code class="docutils literal"><span class="pre">True</span></code> if the host to
+place an instance on is different from all the hosts used by a set of instances.</p>
+<p><code class="xref py py-class docutils literal"><span class="pre">SameHostFilter</span></code> does the opposite to what <code class="xref py py-class docutils literal"><span class="pre">DifferentHostFilter</span></code> does.
+<code class="docutils literal"><span class="pre">host_passes</span></code> returns <code class="docutils literal"><span class="pre">True</span></code> if the host we want to place an instance on is
+one of the hosts used by a set of instances.</p>
+<p><code class="xref py py-class docutils literal"><span class="pre">SimpleCIDRAffinityFilter</span></code> looks at the subnet mask and investigates if
+the network address of the current host is in the same sub network as it was
+defined in the request.</p>
+<p><code class="xref py py-class docutils literal"><span class="pre">JsonFilter</span></code> - this filter provides the opportunity to write complicated
+queries for the hosts capabilities filtering, based on simple JSON-like syntax.
+There can be used the following operations for the host states properties:
+<code class="docutils literal"><span class="pre">=</span></code>, <code class="docutils literal"><span class="pre">&lt;</span></code>, <code class="docutils literal"><span class="pre">&gt;</span></code>, <code class="docutils literal"><span class="pre">in</span></code>, <code class="docutils literal"><span class="pre">&lt;=</span></code>, <code class="docutils literal"><span class="pre">&gt;=</span></code>, that can be combined with the following
+logical operations: <code class="docutils literal"><span class="pre">not</span></code>, <code class="docutils literal"><span class="pre">or</span></code>, <code class="docutils literal"><span class="pre">and</span></code>. For example, the following query can be
+found in tests:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="p">[</span><span class="s1">&#39;and&#39;</span><span class="p">,</span>
+    <span class="p">[</span><span class="s1">&#39;&gt;=&#39;</span><span class="p">,</span> <span class="s1">&#39;$free_ram_mb&#39;</span><span class="p">,</span> <span class="mi">1024</span><span class="p">],</span>
+    <span class="p">[</span><span class="s1">&#39;&gt;=&#39;</span><span class="p">,</span> <span class="s1">&#39;$free_disk_mb&#39;</span><span class="p">,</span> <span class="mi">200</span> <span class="o">*</span> <span class="mi">1024</span><span class="p">]</span>
+<span class="p">]</span>
+</pre></div>
+</div>
+<p>This query will filter all hosts with free RAM greater or equal than 1024 MB
+and at the same time with free disk space greater or equal than 200 GB.</p>
+<p>Many filters use data from <code class="docutils literal"><span class="pre">scheduler_hints</span></code>, that is defined in the moment of
+creation of the new server for the user. The only exception for this rule is
+<code class="xref py py-class docutils literal"><span class="pre">JsonFilter</span></code>, that takes data from the schedulers <code class="docutils literal"><span class="pre">HostState</span></code> data structure
+directly. Variable naming, such as the <code class="docutils literal"><span class="pre">$free_ram_mb</span></code> example above, should
+be based on those attributes.</p>
+<p>The <code class="xref py py-class docutils literal"><span class="pre">RetryFilter</span></code> filters hosts that have already been attempted for
+scheduling. It only passes hosts that have not been previously attempted. If a
+compute node is raising an exception when spawning an instance, then the
+compute manager will reschedule it by adding the failing host to a retry
+dictionary so that the RetryFilter will not accept it as a possible
+destination. That means that if all of your compute nodes are failing, then the
+RetryFilter will return 0 hosts and the scheduler will raise a NoValidHost
+exception even if the problem is related to 1:N compute nodes. If you see that
+case in the scheduler logs, then your problem is most likely related to a
+compute problem and you should check the compute logs.</p>
+<p>The <code class="xref py py-class docutils literal"><span class="pre">TrustedFilter</span></code> filters hosts based on their trust.  Only passes hosts
+that match the trust requested in the <code class="docutils literal"><span class="pre">extra_specs</span></code> for the flavor. The key
+for this filter must be scope format as <code class="docutils literal"><span class="pre">trust:trusted_host</span></code>, where <code class="docutils literal"><span class="pre">trust</span></code>
+is the scope of the key and <code class="docutils literal"><span class="pre">trusted_host</span></code> is the actual key value.
+The value of this pair (<code class="docutils literal"><span class="pre">trusted</span></code>/<code class="docutils literal"><span class="pre">untrusted</span></code>) must match the
+integrity of a host (obtained from the Attestation service) before it is
+passed by the <code class="xref py py-class docutils literal"><span class="pre">TrustedFilter</span></code>.</p>
+<p>The <code class="xref py py-class docutils literal"><span class="pre">NUMATopologyFilter</span></code> considers the NUMA topology that was specified for the instance
+through the use of flavor extra_specs in combination with the image properties, as
+described in detail in the related nova-spec document:</p>
+<ul class="simple">
+<li><a class="reference external" href="http://git.openstack.org/cgit/openstack/nova-specs/tree/specs/juno/virt-driver-numa-placement.rst">http://git.openstack.org/cgit/openstack/nova-specs/tree/specs/juno/virt-driver-numa-placement.rst</a></li>
+</ul>
+<p>and try to match it with the topology exposed by the host, accounting for the
+<code class="docutils literal"><span class="pre">ram_allocation_ratio</span></code> and <code class="docutils literal"><span class="pre">cpu_allocation_ratio</span></code> for over-subscription. The
+filtering is done in the following manner:</p>
+<ul class="simple">
+<li>Filter will attempt to pack instance cells onto host cells.</li>
+<li>It will consider the standard over-subscription limits for each host NUMA cell,
+and provide limits to the compute host accordingly (as mentioned above).</li>
+<li>If instance has no topology defined, it will be considered for any host.</li>
+<li>If instance has a topology defined, it will be considered only for NUMA
+capable hosts.</li>
+</ul>
+</div>
+<div class="section" id="configuring-filters">
+<h2>Configuring Filters<a class="headerlink" href="#configuring-filters" title="Permalink to this headline">¶</a></h2>
+<p>To use filters you specify two settings:</p>
+<ul class="simple">
+<li><code class="docutils literal"><span class="pre">filter_scheduler.available_filters</span></code> - Defines filter classes made
+available to the scheduler. This setting can be used multiple times.</li>
+<li><code class="docutils literal"><span class="pre">filter_scheduler.enabled_filters</span></code> - Of the available filters, defines
+those that the scheduler uses by default.</li>
+</ul>
+<p>The default values for these settings in nova.conf are:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="o">--</span><span class="n">filter_scheduler</span><span class="o">.</span><span class="n">available_filters</span><span class="o">=</span><span class="n">nova</span><span class="o">.</span><span class="n">scheduler</span><span class="o">.</span><span class="n">filters</span><span class="o">.</span><span class="n">all_filters</span>
+<span class="o">--</span><span class="n">filter_scheduler</span><span class="o">.</span><span class="n">enabled_filters</span><span class="o">=</span><span class="n">RamFilter</span><span class="p">,</span><span class="n">ComputeFilter</span><span class="p">,</span><span class="n">AvailabilityZoneFilter</span><span class="p">,</span><span class="n">ComputeCapabilitiesFilter</span><span class="p">,</span><span class="n">ImagePropertiesFilter</span><span class="p">,</span><span class="n">ServerGroupAntiAffinityFilter</span><span class="p">,</span><span class="n">ServerGroupAffinityFilter</span>
+</pre></div>
+</div>
+<p>With this configuration, all filters in <code class="docutils literal"><span class="pre">nova.scheduler.filters</span></code>
+would be available, and by default the <code class="xref py py-class docutils literal"><span class="pre">RamFilter</span></code>, <code class="xref py py-class docutils literal"><span class="pre">ComputeFilter</span></code>,
+<code class="xref py py-class docutils literal"><span class="pre">AvailabilityZoneFilter</span></code>, <code class="xref py py-class docutils literal"><span class="pre">ComputeCapabilitiesFilter</span></code>,
+<code class="xref py py-class docutils literal"><span class="pre">ImagePropertiesFilter</span></code>, <code class="xref py py-class docutils literal"><span class="pre">ServerGroupAntiAffinityFilter</span></code>,
+and <code class="xref py py-class docutils literal"><span class="pre">ServerGroupAffinityFilter</span></code> would be used.</p>
+</div>
+<div class="section" id="writing-your-own-filter">
+<h2>Writing Your Own Filter<a class="headerlink" href="#writing-your-own-filter" title="Permalink to this headline">¶</a></h2>
+<p>To create <strong>your own filter</strong> you must inherit from
+<code class="xref py py-class docutils literal"><span class="pre">BaseHostFilter</span></code> and implement one method:
+<code class="docutils literal"><span class="pre">host_passes</span></code>. This method should return <code class="docutils literal"><span class="pre">True</span></code> if a host passes the filter. It
+takes <code class="docutils literal"><span class="pre">host_state</span></code> (describing the host) and <code class="docutils literal"><span class="pre">filter_properties</span></code> dictionary as the
+parameters.</p>
+<p>As an example, nova.conf could contain the following scheduler-related
+settings:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="o">--</span><span class="n">scheduler</span><span class="o">.</span><span class="n">driver</span><span class="o">=</span><span class="n">nova</span><span class="o">.</span><span class="n">scheduler</span><span class="o">.</span><span class="n">FilterScheduler</span>
+<span class="o">--</span><span class="n">filter_scheduler</span><span class="o">.</span><span class="n">available_filters</span><span class="o">=</span><span class="n">nova</span><span class="o">.</span><span class="n">scheduler</span><span class="o">.</span><span class="n">filters</span><span class="o">.</span><span class="n">all_filters</span>
+<span class="o">--</span><span class="n">filter_scheduler</span><span class="o">.</span><span class="n">available_filters</span><span class="o">=</span><span class="n">myfilter</span><span class="o">.</span><span class="n">MyFilter</span>
+<span class="o">--</span><span class="n">filter_scheduler</span><span class="o">.</span><span class="n">enabled_filters</span><span class="o">=</span><span class="n">RamFilter</span><span class="p">,</span><span class="n">ComputeFilter</span><span class="p">,</span><span class="n">MyFilter</span>
+</pre></div>
+</div>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">When writing your own filter, be sure to add it to the list of available filters
+and enable it in the default filters. The &#8220;all_filters&#8221; setting  only includes the
+filters shipped with nova.</p>
+</div>
+<p>With these settings, nova will use the <code class="docutils literal"><span class="pre">FilterScheduler</span></code> for the scheduler
+driver.  The standard nova filters and MyFilter are available to the
+FilterScheduler.  The RamFilter, ComputeFilter, and MyFilter are used by
+default when no filters are specified in the request.</p>
+<p>Each filter selects hosts in a different way and has different costs. The order
+of <code class="docutils literal"><span class="pre">filter_scheduler.enabled_filters</span></code> affects scheduling performance. The
+general suggestion is to filter out invalid hosts as soon as possible to avoid
+unnecessary costs.  We can sort <code class="docutils literal"><span class="pre">filter_scheduler.enabled_filters</span></code> items by
+their costs in reverse order. For example, ComputeFilter is better before any
+resource calculating filters like RamFilter, CoreFilter.</p>
+<p>In medium/large environments having AvailabilityZoneFilter before any
+capability or resource calculating filters can be useful.</p>
+</div>
+<div class="section" id="weights">
+<h2>Weights<a class="headerlink" href="#weights" title="Permalink to this headline">¶</a></h2>
+<p>Filter Scheduler uses the so-called <strong>weights</strong> during its work. A weigher is a
+way to select the best suitable host from a group of valid hosts by giving
+weights to all the hosts in the list.</p>
+<p>In order to prioritize one weigher against another, all the weighers have to
+define a multiplier that will be applied before computing the weight for a node.
+All the weights are normalized beforehand so that the  multiplier can be applied
+easily. Therefore the final weight for the object will be:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="n">weight</span> <span class="o">=</span> <span class="n">w1_multiplier</span> <span class="o">*</span> <span class="n">norm</span><span class="p">(</span><span class="n">w1</span><span class="p">)</span> <span class="o">+</span> <span class="n">w2_multiplier</span> <span class="o">*</span> <span class="n">norm</span><span class="p">(</span><span class="n">w2</span><span class="p">)</span> <span class="o">+</span> <span class="o">...</span>
+</pre></div>
+</div>
+<p>A weigher should be a subclass of <code class="docutils literal"><span class="pre">weights.BaseHostWeigher</span></code> and they can implement
+both the <code class="docutils literal"><span class="pre">weight_multiplier</span></code> and <code class="docutils literal"><span class="pre">_weight_object</span></code> methods or just implement the
+<code class="docutils literal"><span class="pre">weight_objects</span></code> method. <code class="docutils literal"><span class="pre">weight_objects</span></code> method is overridden only if you need
+access to all objects in order to calculate weights, and it just return a list of weights,
+and not modify the weight of the object directly, since final weights are normalized
+and computed by <code class="docutils literal"><span class="pre">weight.BaseWeightHandler</span></code>.</p>
+<p>The Filter Scheduler weighs hosts based on the config option
+<cite>filter_scheduler.weight_classes</cite>, this defaults to
+<cite>nova.scheduler.weights.all_weighers</cite>, which selects the following weighers:</p>
+<ul>
+<li><p class="first"><code class="xref py py-class docutils literal"><span class="pre">RAMWeigher</span></code> Compute weight based on available RAM on the compute node.
+Sort with the largest weight winning. If the multiplier is negative, the
+host with least RAM available will win (useful for stacking hosts, instead
+of spreading).</p>
+</li>
+<li><p class="first"><code class="xref py py-class docutils literal"><span class="pre">DiskWeigher</span></code> Hosts are weighted and sorted by free disk space with the largest
+weight winning.  If the multiplier is negative, the host with less disk space available
+will win (useful for stacking hosts, instead of spreading).</p>
+</li>
+<li><p class="first"><code class="xref py py-class docutils literal"><span class="pre">MetricsWeigher</span></code> This weigher can compute the weight based on the compute node
+host&#8217;s various metrics. The to-be weighed metrics and their weighing ratio
+are specified in the configuration file as the followings:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="n">metrics_weight_setting</span> <span class="o">=</span> <span class="n">name1</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">name2</span><span class="o">=-</span><span class="mf">1.0</span>
+</pre></div>
+</div>
+</li>
+<li><p class="first"><code class="xref py py-class docutils literal"><span class="pre">IoOpsWeigher</span></code> The weigher can compute the weight based on the compute node
+host&#8217;s workload. The default is to preferably choose light workload compute
+hosts. If the multiplier is positive, the weigher prefer choosing heavy
+workload compute hosts, the weighing has the opposite effect of the default.</p>
+</li>
+<li><p class="first"><code class="xref py py-class docutils literal"><span class="pre">ServerGroupSoftAffinityWeigher</span></code> The weigher can compute the weight based
+on the number of instances that run on the same server group. The largest
+weight defines the preferred host for the new instance. For the multiplier
+only a positive value is meaningful for the calculation as a negative value
+would mean that the affinity weigher would prefer non collocating placement.</p>
+</li>
+<li><p class="first"><code class="xref py py-class docutils literal"><span class="pre">ServerGroupSoftAntiAffinityWeigher</span></code> The weigher can compute the weight based
+on the number of instances that run on the same server group as a negative
+value. The largest weight defines the preferred host for the new instance.
+For the multiplier only a positive value is meaningful for the calculation as
+a negative value would mean that the anti-affinity weigher would prefer
+collocating placement.</p>
+</li>
+</ul>
+<p>Filter Scheduler makes a local list of acceptable hosts by repeated filtering and
+weighing. Each time it chooses a host, it virtually consumes resources on it,
+so subsequent selections can adjust accordingly. It is useful if the customer
+asks for a large block of instances, because weight is computed for
+each instance requested.</p>
+<img alt="_images/filteringWorkflow2.png" src="_images/filteringWorkflow2.png" />
+<p>At the end Filter Scheduler sorts selected hosts by their weight and attempts
+to provision instances on the chosen hosts.</p>
+<p>P.S.: you can find more examples of using Filter Scheduler and standard filters
+in <code class="xref py py-mod docutils literal"><span class="pre">nova.tests.scheduler</span></code>.</p>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Filter Scheduler</a><ul>
+<li><a class="reference internal" href="#filtering">Filtering</a></li>
+<li><a class="reference internal" href="#configuring-filters">Configuring Filters</a></li>
+<li><a class="reference internal" href="#writing-your-own-filter">Writing Your Own Filter</a></li>
+<li><a class="reference internal" href="#weights">Weights</a></li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="i18n.html"
+                                  title="previous chapter">Internationalization</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="rpc.html"
+                                  title="next chapter">AMQP and Nova</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/nova
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="_sources/filter_scheduler.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="rpc.html" title="AMQP and Nova"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="i18n.html" title="Internationalization"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="index.html">nova 15.0.0.0rc2.dev69 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2010-present, OpenStack Foundation.
+      Last updated on &#39;Tue Feb 14 09:22:31 2017, commit 159bf6e&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/nova");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

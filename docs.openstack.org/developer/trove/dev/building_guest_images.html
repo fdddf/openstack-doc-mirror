@@ -1,0 +1,742 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Building Guest Images for OpenStack Trove &mdash; trove 7.0.0.0rc2.dev2 documentation</title>
+    
+    <link rel="stylesheet" href="../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../',
+        VERSION:     '7.0.0.0rc2.dev2',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../_static/jquery.js"></script>
+    <script type="text/javascript" src="../_static/underscore.js"></script>
+    <script type="text/javascript" src="../_static/doctools.js"></script>
+    <link rel="top" title="trove 7.0.0.0rc2.dev2 documentation" href="../index.html" />
+    <link rel="next" title="Guest Images via Cloud-Init" href="guest_cloud_init.html" />
+    <link rel="prev" title="Manual Trove Installation" href="manual_install.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="building-guest-images-for-openstack-trove">
+<span id="build-guest-images"></span><h1>Building Guest Images for OpenStack Trove<a class="headerlink" href="#building-guest-images-for-openstack-trove" title="Permalink to this headline">¶</a></h1>
+<div class="section" id="overview">
+<h2>Overview<a class="headerlink" href="#overview" title="Permalink to this headline">¶</a></h2>
+<p>When Trove receives a command to create a guest instance, it does so
+by launching a Nova instance based on the appropriate guest image that
+is stored in Glance.</p>
+<p>To operate Trove it is vital to have a properly constructed guest
+image, and while tools are provided that help you build them,
+the Trove project itself does not distribute guest images. This
+document shows you how to build guest images for use with Trove.</p>
+<p>It is assumed that you have a working OpenStack deployment with the
+key services like Keystone, Glance, Swift, Cinder, Nova and networking
+through either Nova Networks or Neutron where you will deploy the
+guest images. It is also assumed that you have Trove functioning and
+all the Trove services operating normally. If you don&#8217;t have these
+prerequisites, this document won&#8217;t help you get them. Consult the
+appropriate documentation for installing and configuring OpenStack for
+that.</p>
+</div>
+<div class="section" id="high-level-overview-of-a-trove-guest-instance">
+<h2>High Level Overview of a Trove Guest Instance<a class="headerlink" href="#high-level-overview-of-a-trove-guest-instance" title="Permalink to this headline">¶</a></h2>
+<p>At the most basic level, a Trove Guest Instance is a Nova instance
+launched by Trove in response to a create command. For most of this
+document, we will confine ourselves to single instance databases; in
+other words, without the additional complexity of replication or
+mirroring. Guest instances and Guest images for replicated and
+mirrored database instances will be addressed specifically in later
+sections of this document.</p>
+<p>This section describes the various components of a Trove Guest
+Instance.</p>
+<div class="section" id="operating-system-and-database">
+<h3>Operating System and Database<a class="headerlink" href="#operating-system-and-database" title="Permalink to this headline">¶</a></h3>
+<p>A Trove Guest Instance contains at least a functioning Operating
+System and the database software that the instance wishes to provide
+(as a Service). For example, if your chosen operating system is Ubuntu
+and you wish to deliver MySQL version 5.5, then your guest instance is
+a Nova instance running the Ubuntu operating system and will have
+MySQL version 5.5 installed on it.</p>
+</div>
+<div class="section" id="trove-guest-agent">
+<h3>Trove Guest Agent<a class="headerlink" href="#trove-guest-agent" title="Permalink to this headline">¶</a></h3>
+<p>Trove supports multiple databases, some of them are relational (RDBMS)
+and some are non-relational (NoSQL). In order to provide a common
+management interface to all of these, the Trove Guest Instance has on
+it a &#8216;Guest Agent&#8217;. The Trove Guest Agent is a component of the
+Trove system that is specific to the database running on that Guest
+Instance.</p>
+<p>The purpose of the Trove Guest Agent is to implement the Trove Guest
+Agent API for the specific database. This includes such things as the
+implementation of the database &#8216;start&#8217; and &#8216;stop&#8217; commands. The Trove
+Guest Agent API is the common API used by Trove to communicate with
+any guest database, and the Guest Agent is the implementation of that
+API for the specific database.</p>
+<p>The Trove Guest Agent runs on the Trove Guest Instance.</p>
+</div>
+<div class="section" id="injected-configuration-for-the-guest-agent">
+<h3>Injected Configuration for the Guest Agent<a class="headerlink" href="#injected-configuration-for-the-guest-agent" title="Permalink to this headline">¶</a></h3>
+<p>When TaskManager launches the guest VM it injects the specific settings
+for the guest into the VM, into the file /etc/trove/conf.d/guest_info.conf.
+The file is injected one of three ways. If use_heat=True, it is injected
+during the heat launch process. If use_nova_server_config_drive=True
+it is injected via ConfigDrive. Otherwise it is passed to the nova
+create call as the &#8216;files&#8217; parameter and will be injected based on
+the configuration of Nova; the Nova default is to discard the files.
+If the settings in guest_info.conf are not present on the guest
+Guest Agent will fail to start up.</p>
+</div>
+<div class="section" id="persistent-storage-networking">
+<h3>Persistent Storage, Networking<a class="headerlink" href="#persistent-storage-networking" title="Permalink to this headline">¶</a></h3>
+<p>The database stores data on persistent storage on Cinder (if
+configured, see trove.conf and the volume_support parameter) or
+ephemeral storage on the Nova instance. The database is accessible
+over the network and the Guest Instance is configured for network
+access by client applications.</p>
+</div>
+</div>
+<div class="section" id="building-guest-images-using-dib">
+<h2>Building Guest Images using DIB<a class="headerlink" href="#building-guest-images-using-dib" title="Permalink to this headline">¶</a></h2>
+<p>A Trove Guest Image can be built with any tool that produces an image
+accepted by Nova. In this document we describe how to build guest
+images using the &#8216;Disk Image Builder&#8217; (DIB) tool, and we focus on
+building qemu images <a class="footnote-reference" href="#id7" id="id1">[1]</a>. DIB is an OpenStack tool and is available for
+download at
+<a class="reference external" href="https://git.openstack.org/cgit/openstack/diskimage-builder/tree/">https://git.openstack.org/cgit/openstack/diskimage-builder/tree/</a> or
+<a class="reference external" href="https://pypi.python.org/pypi/diskimage-builder/0.1.38">https://pypi.python.org/pypi/diskimage-builder/0.1.38</a>.</p>
+<p>DIB uses a chroot&#8217;ed environment to construct the image. The goal is
+to build a bare machine that has all the components required for
+launch by Nova.</p>
+<div class="section" id="invocation">
+<h3>Invocation<a class="headerlink" href="#invocation" title="Permalink to this headline">¶</a></h3>
+<p>You can download the DIB tool from OpenStack&#8217;s public git
+repository. Note that DIB works with Ubuntu and Fedora (RedHat). Other
+operating systems are not yet fully supported.</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span>user@machine:/opt/stack$ git clone https://git.openstack.org/openstack/diskimage-builder
+Cloning into <span class="s1">&#39;diskimage-builder&#39;</span>...
+remote: Counting objects: <span class="m">8881</span>, <span class="k">done</span>.
+remote: Total <span class="m">8881</span> <span class="o">(</span>delta <span class="m">0</span><span class="o">)</span>, reused <span class="m">0</span> <span class="o">(</span>delta <span class="m">0</span><span class="o">)</span>
+Receiving objects: <span class="m">100</span>% <span class="o">(</span><span class="m">8881</span>/8881<span class="o">)</span>, <span class="m">1</span>.92 MiB <span class="p">|</span> <span class="m">0</span> bytes/s, <span class="k">done</span>.
+Resolving deltas: <span class="m">100</span>% <span class="o">(</span><span class="m">4668</span>/4668<span class="o">)</span>, <span class="k">done</span>.
+Checking connectivity... <span class="k">done</span>.
+user@machine:/opt/stack$
+</pre></div>
+</div>
+<p>Ensure that you have qemu-img <a class="footnote-reference" href="#id8" id="id2">[2]</a> and kpartx installed.</p>
+<p>The disk-image-create command is the main command in the DIB tool that
+is used to build guest images for Trove. The disk-image-create command
+takes the following options:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span>user@machine:/opt/stack/diskimage-builder$ ./bin/disk-image-create -h
+Usage: disk-image-create <span class="o">[</span>OPTION<span class="o">]</span>... <span class="o">[</span>ELEMENT<span class="o">]</span>...
+
+Options:
+    -a i386<span class="p">|</span>amd64<span class="p">|</span>armhf -- <span class="nb">set</span> the architecture of the image<span class="o">(</span>default amd64<span class="o">)</span>
+    -o imagename -- <span class="nb">set</span> the imagename of the output image file<span class="o">(</span>default image<span class="o">)</span>
+    -t qcow2,tar -- <span class="nb">set</span> the image types of the output image files <span class="o">(</span>default qcow2<span class="o">)</span>
+       File types should be comma separated
+    -x -- turn on tracing
+    -u -- uncompressed<span class="p">;</span> <span class="k">do</span> not compress the image - larger but faster
+    -c -- clear environment before starting work
+    --image-size size -- image size in GB <span class="k">for</span> the created image
+    --image-cache directory -- location <span class="k">for</span> cached images<span class="o">(</span>default ~/.cache/image-create<span class="o">)</span>
+    --max-online-resize size -- max number of filesystem blocks to support when resizing.
+       Useful <span class="k">if</span> you want a really large root partition when the image is deployed.
+       Using a very large value may run into a known bug in resize2fs.
+       Setting the value to <span class="m">274877906944</span> will get you a 1PB root file system.
+       Making this value unnecessarily large will consume extra disk space
+       on the root partition with extra file system inodes.
+    --min-tmpfs size -- minimum size in GB needed in tmpfs to build the image
+    --no-tmpfs -- <span class="k">do</span> not use tmpfs to speed image build
+    --offline -- <span class="k">do</span> not update cached resources
+    --qemu-img-options -- option flags to be passed directly to qemu-img.
+       Options need to be comma separated, and follow the <span class="nv">key</span><span class="o">=</span>value pattern.
+    --root-label label -- label <span class="k">for</span> the root filesystem.  Defaults to <span class="s1">&#39;cloudimg-rootfs&#39;</span>.
+    --ramdisk-element -- specify the main element to be used <span class="k">for</span> building ramdisks.
+       Defaults to <span class="s1">&#39;ramdisk&#39;</span>.  Should be <span class="nb">set</span> to <span class="s1">&#39;dracut-ramdisk&#39;</span> <span class="k">for</span> platforms such
+       as RHEL and CentOS that <span class="k">do</span> not package busybox.
+    --install-type -- specify the default installation type. Defaults to <span class="s1">&#39;source&#39;</span>. Set
+       to <span class="s1">&#39;package&#39;</span> to use package based installations by default.
+    -n skip the default inclusion of the <span class="s1">&#39;base&#39;</span> element
+    -p package<span class="o">[</span>,package,package<span class="o">]</span> -- list of packages to install in the image
+    -h<span class="p">|</span>--help -- display this <span class="nb">help</span> and <span class="nb">exit</span>
+
+ELEMENTS_PATH will allow you to specify multiple locations <span class="k">for</span> the elements.
+
+NOTE: At least one distribution root element must be specified.
+
+Examples:
+    disk-image-create -a amd64 -o ubuntu-amd64 vm ubuntu
+    <span class="nb">export</span> <span class="nv">ELEMENTS_PATH</span><span class="o">=</span>~/source/tripleo-image-elements/elements
+    disk-image-create -a amd64 -o fedora-amd64-heat-cfntools vm fedora heat-cfntools
+user@machine:/opt/stack/diskimage-builder$
+</pre></div>
+</div>
+<p>The example command provided above would build a perfectly functional
+Nova image with the 64 bit Fedora operating system.</p>
+<p>In addition to the -a argument which specifies to build an amd64 (64
+bit) image, and the -o which specifies the output file, the command
+line lists the various elements that should be used in building the
+image. The next section of this document talks about image elements.</p>
+<p>Building a Trove guest image is a little more involved and the standard
+elements (more about this later) are highly configurable through the use
+of environment variables.</p>
+<p>This command will create a guest image usable by Trove:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span><span class="c1"># assign a suitable value for each of these environment</span>
+<span class="c1"># variables that change the way the elements behave.</span>
+<span class="nb">export</span> HOST_USERNAME
+<span class="nb">export</span> HOST_SCP_USERNAME
+<span class="nb">export</span> GUEST_USERNAME
+<span class="nb">export</span> CONTROLLER_IP
+<span class="nb">export</span> TROVESTACK_SCRIPTS
+<span class="nb">export</span> SERVICE_TYPE
+<span class="nb">export</span> PATH_TROVE
+<span class="nb">export</span> ESCAPED_PATH_TROVE
+<span class="nb">export</span> SSH_DIR
+<span class="nb">export</span> GUEST_LOGDIR
+<span class="nb">export</span> ESCAPED_GUEST_LOGDIR
+<span class="nb">export</span> <span class="nv">DIB_CLOUD_INIT_DATASOURCES</span><span class="o">=</span><span class="s2">&quot;ConfigDrive&quot;</span>
+<span class="nb">export</span> DATASTORE_PKG_LOCATION
+<span class="nb">export</span> BRANCH_OVERRIDE
+
+<span class="c1"># you typically do not have to change these variables</span>
+<span class="nb">export</span> <span class="nv">ELEMENTS_PATH</span><span class="o">=</span><span class="nv">$TROVESTACK_SCRIPTS</span>/files/elements
+<span class="nb">export</span> <span class="nv">ELEMENTS_PATH</span><span class="o">+=</span>:<span class="nv">$PATH_DISKIMAGEBUILDER</span>/elements
+<span class="nb">export</span> <span class="nv">ELEMENTS_PATH</span><span class="o">+=</span>:<span class="nv">$PATH_TRIPLEO_ELEMENTS</span>/elements
+<span class="nb">export</span> <span class="nv">DIB_APT_CONF_DIR</span><span class="o">=</span>/etc/apt/apt.conf.d
+<span class="nb">export</span> <span class="nv">DIB_CLOUD_INIT_ETC_HOSTS</span><span class="o">=</span><span class="nb">true</span>
+<span class="nb">local</span> <span class="nv">QEMU_IMG_OPTIONS</span><span class="o">=</span><span class="k">$(</span>! <span class="k">$(</span>qemu-img <span class="p">|</span> grep -q <span class="s1">&#39;version 1&#39;</span><span class="k">)</span> <span class="o">&amp;&amp;</span> <span class="nb">echo</span> <span class="s2">&quot;--qemu-img-options compat=0.10&quot;</span><span class="k">)</span>
+
+<span class="c1"># run disk-image-create that actually causes the image to be built</span>
+<span class="si">${</span><span class="nv">PATH_DISKIMAGEBUILDER</span><span class="si">}</span>/bin/disk-image-create -a amd64 -o <span class="s2">&quot;</span><span class="si">${</span><span class="nv">VM</span><span class="si">}</span><span class="s2">&quot;</span> <span class="se">\</span>
+    -x <span class="si">${</span><span class="nv">QEMU_IMG_OPTIONS</span><span class="si">}</span> <span class="si">${</span><span class="nv">DISTRO</span><span class="si">}</span> <span class="si">${</span><span class="nv">EXTRA_ELEMENTS</span><span class="si">}</span> vm heat-cfntools <span class="se">\</span>
+    cloud-init-datasources <span class="si">${</span><span class="nv">DISTRO</span><span class="si">}</span>-guest <span class="si">${</span><span class="nv">DISTRO</span><span class="si">}</span>-<span class="si">${</span><span class="nv">SERVICE_TYPE</span><span class="si">}</span>
+</pre></div>
+</div>
+</div>
+<div class="section" id="disk-image-builder-elements">
+<h3>Disk Image Builder &#8216;Elements&#8217;<a class="headerlink" href="#disk-image-builder-elements" title="Permalink to this headline">¶</a></h3>
+<p>DIB Elements are &#8216;executed&#8217; by the disk-image-create command to
+produce the guest image.  An element consists of a number of bash
+scripts that are executed by DIB in a specific order to generate the
+image. You provide the names of the elements that you would like
+executed, in order, on the command line to disk-image-create.</p>
+<p>Elements are executed within the chroot&#8217;ed environment while DIB is
+run. Elements are executed in phases and the various phases are (in
+order) root.d, extra-data.d, pre-install.d, install.d, post-install.d,
+block-device.d, finalise.d <a class="footnote-reference" href="#id9" id="id3">[3]</a>, and cleanup.d <a class="footnote-reference" href="#id10" id="id4">[4]</a>. The latter
+reference provides a very good outline on writing elements and is a
+&#8216;must read&#8217;.</p>
+<p>Some elements use environment.d to setup environment
+variables. Element dependencies can be established using the
+element-deps and element-provides files which are plain text files.</p>
+</div>
+<div class="section" id="existing-elements">
+<h3>Existing Elements<a class="headerlink" href="#existing-elements" title="Permalink to this headline">¶</a></h3>
+<p>DIB comes with some tools that are located in the elements directory.</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span>user@machine:/opt/stack/diskimage-builder/elements$ ls
+apt-conf                         dpkg                      ramdisk
+apt-preferences                  dracut-network            ramdisk-base
+apt-sources                      dracut-ramdisk            rax-nova-agent
+architecture-emulation-binaries  element-manifest          redhat-common
+baremetal                        enable-serial-console     rhel
+base                             epel                      rhel7
+cache-url                        fedora                    rhel-common
+centos7                          hwburnin                  rpm-distro
+cleanup-kernel-initrd            hwdiscovery               <span class="k">select</span>-boot-kernel-initrd
+cloud-init-datasources           ilo                       selinux-permissive
+cloud-init-nocloud               ironic-agent              serial-console
+debian                           ironic-discoverd-ramdisk  source-repositories
+debian-systemd                   iso                       stable-interface-names
+debian-upstart                   local-config              svc-map
+deploy                           manifests                 uboot
+deploy-baremetal                 mellanox                  ubuntu
+deploy-ironic                    modprobe-blacklist        ubuntu-core
+deploy-kexec                     opensuse                  vm
+dhcp-all-interfaces              package-installs          yum
+dib-run-parts                    pip-cache                 zypper
+disable-selinux                  pkg-map
+dkms                             pypi
+</pre></div>
+</div>
+<p>In addition, projects like TripleO <a class="footnote-reference" href="#id11" id="id5">[5]</a> provide elements as well.</p>
+<p>Trove provides a set of elements as part of the trove <a class="footnote-reference" href="#id12" id="id6">[6]</a>
+project which will be described in the next section.</p>
+</div>
+</div>
+<div class="section" id="trove-reference-elements">
+<h2>Trove Reference Elements<a class="headerlink" href="#trove-reference-elements" title="Permalink to this headline">¶</a></h2>
+<p>Reference elements provided by Trove are part of the trove project.</p>
+<p>In keeping with the philosophy of making elements &#8216;layered&#8217;, Trove
+provides two sets of elements. The first implements the guest agent
+for various operating systems and the second implements the database
+for these operating systems.</p>
+<div class="section" id="provided-reference-elements">
+<h3>Provided Reference Elements<a class="headerlink" href="#provided-reference-elements" title="Permalink to this headline">¶</a></h3>
+<p>The Trove reference elements are located in the
+trove/integration/scripts/files/elements directory. The elements
+[operating-system]-guest provide the Trove Guest capabilities and the
+[operating-system]-[database] elements provide support for each
+database on the specified database.</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span>user@machine:/opt/stack/trove/integration/scripts/files/elements$ ls -l
+total <span class="m">56</span>
+drwxrwxr-x <span class="m">5</span> user group <span class="m">4096</span> Jan  <span class="m">7</span> <span class="m">12</span>:47 fedora-guest
+drwxrwxr-x <span class="m">3</span> user group <span class="m">4096</span> Jan  <span class="m">7</span> <span class="m">12</span>:47 fedora-mongodb
+drwxrwxr-x <span class="m">3</span> user group <span class="m">4096</span> Jan  <span class="m">7</span> <span class="m">12</span>:47 fedora-mysql
+drwxrwxr-x <span class="m">3</span> user group <span class="m">4096</span> Jan  <span class="m">7</span> <span class="m">12</span>:47 fedora-percona
+drwxrwxr-x <span class="m">3</span> user group <span class="m">4096</span> Jan  <span class="m">7</span> <span class="m">12</span>:47 fedora-postgresql
+drwxrwxr-x <span class="m">3</span> user group <span class="m">4096</span> Jan  <span class="m">7</span> <span class="m">12</span>:47 fedora-redis
+drwxrwxr-x <span class="m">3</span> user group <span class="m">4096</span> Jan  <span class="m">7</span> <span class="m">12</span>:47 ubuntu-cassandra
+drwxrwxr-x <span class="m">3</span> user group <span class="m">4096</span> Jan  <span class="m">7</span> <span class="m">12</span>:47 ubuntu-couchbase
+drwxrwxr-x <span class="m">6</span> user group <span class="m">4096</span> Jan  <span class="m">7</span> <span class="m">12</span>:47 ubuntu-guest
+drwxrwxr-x <span class="m">3</span> user group <span class="m">4096</span> Jan  <span class="m">7</span> <span class="m">12</span>:47 ubuntu-mongodb
+drwxrwxr-x <span class="m">4</span> user group <span class="m">4096</span> Jan  <span class="m">7</span> <span class="m">12</span>:47 ubuntu-mysql
+drwxrwxr-x <span class="m">4</span> user group <span class="m">4096</span> Jan  <span class="m">7</span> <span class="m">12</span>:47 ubuntu-percona
+drwxrwxr-x <span class="m">3</span> user group <span class="m">4096</span> Jan  <span class="m">7</span> <span class="m">12</span>:47 ubuntu-postgresql
+drwxrwxr-x <span class="m">3</span> user group <span class="m">4096</span> Jan  <span class="m">7</span> <span class="m">12</span>:47 ubuntu-redis
+user@machine:/opt/stack/trove/integration/scripts/files/elements$
+</pre></div>
+</div>
+<p>With this infrastructure in place, and the elements from DIB and
+TripleO accessible to the DIB command, one can generate the (for
+example) Ubuntu guest image for Percona Server with the command line:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span><span class="si">${</span><span class="nv">DIB</span><span class="si">}</span> -a amd64 -o <span class="si">${</span><span class="nv">output</span><span class="p">-file</span><span class="si">}</span> Ubuntu vm heat-cfntools <span class="se">\</span>
+    cloud-init-datasources ubuntu-guest ubuntu-percona
+</pre></div>
+</div>
+<p>Where ${DIB} is the fully qualified path to the disk-image-create
+command and ${output-file} is the name of the output file to be
+created.</p>
+</div>
+<div class="section" id="contributing-reference-elements-when-implementing-a-new-datastore">
+<h3>Contributing Reference Elements When Implementing a New &#8216;Datastore&#8217;<a class="headerlink" href="#contributing-reference-elements-when-implementing-a-new-datastore" title="Permalink to this headline">¶</a></h3>
+<p>When contributing a new datastore, you should contribute elements
+that will allow any user of Trove to be able to build a guest image
+for that datastore.</p>
+<p>This is typically accomplished by submitting files into the
+trove project, as above.</p>
+</div>
+</div>
+<div class="section" id="getting-the-guest-agent-code-onto-a-trove-guest-instance">
+<h2>Getting the Guest Agent Code onto a Trove Guest Instance<a class="headerlink" href="#getting-the-guest-agent-code-onto-a-trove-guest-instance" title="Permalink to this headline">¶</a></h2>
+<p>The guest agent code typically runs on the guest instance alongside
+the database. There are two ways in which the guest agent code can be
+placed on the guest instance and we describe both of these here.</p>
+<div class="section" id="guest-agent-code-installed-at-build-time">
+<h3>Guest Agent Code Installed at Build Time<a class="headerlink" href="#guest-agent-code-installed-at-build-time" title="Permalink to this headline">¶</a></h3>
+<p>In this option, the guest agent code is built into the guest image,
+thereby ensuring that all database instances that are launched with
+the image will have the exact same version of the guest image.</p>
+<p>This can be accomplished by placing suitable code in the elements for
+the image and these elements will ensure that the guest agent code is
+installed on the image.</p>
+</div>
+<div class="section" id="guest-agent-code-installed-at-run-time">
+<h3>Guest Agent Code Installed at Run Time<a class="headerlink" href="#guest-agent-code-installed-at-run-time" title="Permalink to this headline">¶</a></h3>
+<p>In this option, the guest agent code is not part of the guest image
+and instead the guest agent code is obtained at runtime, potentially
+from some well known location.</p>
+<p>In devstack, this is implemented in trove-guest.upstart.conf and
+trove-guest.systemd.conf. Shown below is the code from
+trove-guest.upstart.conf (this code may change in the future and
+is shown here as an example only). See the code highlighted below:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span>description <span class="s2">&quot;Trove Guest&quot;</span>
+author <span class="s2">&quot;Auto-Gen&quot;</span>
+
+start on <span class="o">(</span>filesystem and net-device-up IFACE!<span class="o">=</span>lo<span class="o">)</span>
+stop on runlevel <span class="o">[</span><span class="m">016</span><span class="o">]</span>
+chdir /var/run
+pre-start script
+    mkdir -p /var/run/trove
+    chown GUEST_USERNAME:root /var/run/trove/
+
+    mkdir -p /var/lock/trove
+    chown GUEST_USERNAME:root /var/lock/trove/
+
+    mkdir -p GUEST_LOGDIR
+    chown GUEST_USERNAME:root GUEST_LOGDIR
+    chmod +r /etc/guest_info
+
+    <span class="c1"># If /etc/trove does not exist, copy the trove source and the</span>
+    <span class="c1"># guest agent config from the user&#39;s development environment</span>
+    <span class="k">if</span> <span class="o">[</span> ! -d /etc/trove <span class="o">]</span><span class="p">;</span> <span class="k">then</span>
+-&gt;      sudo -u GUEST_USERNAME rsync -e <span class="s1">&#39;ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no&#39;</span> -avz --exclude<span class="o">=</span><span class="s1">&#39;.*&#39;</span> HOST_SCP_USERNAME@NETWORK_GATEWAY:PATH_TROVE/ /home/GUEST_USERNAME/trove
+        mkdir -p /etc/trove
+-&gt;      sudo -u GUEST_USERNAME rsync -e <span class="s1">&#39;ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no&#39;</span> -avz --exclude<span class="o">=</span><span class="s1">&#39;.*&#39;</span> HOST_SCP_USERNAME@NETWORK_GATEWAY:/etc/trove/trove-guestagent.conf ~GUEST_USERNAME/
+        mv ~GUEST_USERNAME/trove-guestagent.conf /etc/trove/trove-guestagent.conf
+    <span class="k">fi</span>
+
+end script
+
+<span class="nb">exec</span> su -c <span class="s2">&quot;/home/GUEST_USERNAME/trove/contrib/trove-guestagent -config-file=/etc/guest_info --config-file=/etc/trove/trove-guestagent.conf&quot;</span> GUEST_USERNAME
+</pre></div>
+</div>
+<p>In building an image for a production Trove deployment, it is a very
+bad idea to use this mechanism. It makes sense in a development
+environment where the thing that you are developing is in Trove and
+part of the Guest Agent! This is because you get to merely boot a new
+Trove instance and the freshly modified code gets run on the
+Guest. But, in any other circumstance, it is much better to have the
+guest image include the guest agent code.</p>
+</div>
+</div>
+<div class="section" id="considerations-in-building-a-guest-image">
+<h2>Considerations in Building a Guest Image<a class="headerlink" href="#considerations-in-building-a-guest-image" title="Permalink to this headline">¶</a></h2>
+<p>In building a guest image, there are several considerations that one
+must take into account. Some of the ones that we have encountered are
+described below.</p>
+<div class="section" id="speed-of-launch-and-start-up-activities">
+<h3>Speed of Launch and Start-up Activities<a class="headerlink" href="#speed-of-launch-and-start-up-activities" title="Permalink to this headline">¶</a></h3>
+<p>The actions performed on first boot can be very expensive and may
+impact the time taken to launch a new guest instance. So, for example,
+guest images that don&#8217;t have the database software pre-installed and
+instead download and install during launch could take longer to
+launch.</p>
+<p>In building a guest image, therefore care should be taken to ensure
+that activities performed on first boot are traded off against the
+demands for start-time.</p>
+</div>
+<div class="section" id="database-licensing-and-database-software-download-issues">
+<h3>Database licensing, and Database Software Download Issues<a class="headerlink" href="#database-licensing-and-database-software-download-issues" title="Permalink to this headline">¶</a></h3>
+<p>Some database software downloads are licensed and manual steps are
+required in order to obtain the installable software. In other
+instances, no repositories may be setup to serve images of a
+particular database.  In these cases, it is suggested that an extra
+step be used to build the guest image.</p>
+<div class="section" id="user-manually-downloads-database-software">
+<h4>User Manually Downloads Database Software<a class="headerlink" href="#user-manually-downloads-database-software" title="Permalink to this headline">¶</a></h4>
+<p>The user manually downloads the database software in a suitable format
+and places it in a specified location on the machine that will be used
+to build the guest image.</p>
+<p>An environment variable &#8216;DATASTORE_PKG_LOCATION&#8217; is set to point
+to this location. It can be a single file (for example new_db.deb)
+or a folder (for example new_db_files) depending on what the elements
+expect. In the latter case, the folder would need to contain all the
+files that the elements need in order to install the database software
+(a folder would typically be used only if more than one file was
+required).</p>
+</div>
+<div class="section" id="use-an-extra-data-d-folder">
+<h4>Use an extra-data.d Folder<a class="headerlink" href="#use-an-extra-data-d-folder" title="Permalink to this headline">¶</a></h4>
+<p>Use an extra-data.d folder for the element and copy the file
+into the image</p>
+<p>Steps in extra-data.d are run first, and outside the DIB chroot&#8217;ed
+environment. The step here can copy the installable from
+DATASTORE_PKG_LOCATION into the image
+(typically into TMP_HOOKS_PATH).</p>
+<p>For example, if DATASTORE_PKG_LOCATION contains the full path to an
+installation package, an element in this folder could contain the
+following line:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span>dd <span class="k">if</span><span class="o">=</span><span class="si">${</span><span class="nv">DATASTORE_PKG_LOCATION</span><span class="si">}</span> <span class="nv">of</span><span class="o">=</span><span class="si">${</span><span class="nv">TMP_HOOKS_PATH</span><span class="si">}</span>/new_db.deb
+</pre></div>
+</div>
+</div>
+<div class="section" id="use-an-install-d-step-to-install-the-software">
+<h4>Use an install.d Step to Install the Software<a class="headerlink" href="#use-an-install-d-step-to-install-the-software" title="Permalink to this headline">¶</a></h4>
+<p>A standard install.d step can now install the software from
+TMP_HOOKS_DIR.</p>
+<p>For example, an element in this folder could contain:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span>dpkg -i <span class="si">${</span><span class="nv">TMP_HOOKS_PATH</span><span class="si">}</span>/new_db.deb
+</pre></div>
+</div>
+<p>Once elements have been set up that expect a package to be available,
+the guest image can be created by executing the following:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span><span class="nv">DATASTORE_PKG_LOCATION</span><span class="o">=</span>/path/to/new_db.deb ./script_to_call_dib.sh
+</pre></div>
+</div>
+<p>Assuming the elements for new_db are available in the trove
+repository, this would equate to:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span><span class="nv">DATASTORE_PKG_LOCATION</span><span class="o">=</span>/path/to/new_db.deb ./trovestack kick-start new_db
+</pre></div>
+</div>
+</div>
+</div>
+</div>
+<div class="section" id="building-guest-images-using-standard-elements">
+<h2>Building Guest Images Using Standard Elements<a class="headerlink" href="#building-guest-images-using-standard-elements" title="Permalink to this headline">¶</a></h2>
+<p>A very good reference for how one builds guest images can be found by
+reviewing the trovestack script (trove/integration/scripts). Lower level
+routines that actually invoke Disk Image Builder can be found in
+trove/integration/scripts/functions_qemu.</p>
+<p>The following block of code illustrates the most basic invocation of
+DIB to create a guest image. This code is in
+trove/integration/scripts/functions_qemu as part of the function
+build_vm().  We look at this section of code in detail below.</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span><span class="c1"># assign a suitable value for each of these environment</span>
+<span class="c1"># variables that change the way the elements behave.</span>
+<span class="nb">export</span> HOST_USERNAME
+<span class="nb">export</span> HOST_SCP_USERNAME
+<span class="nb">export</span> GUEST_USERNAME
+<span class="nb">export</span> CONTROLLER_IP
+<span class="nb">export</span> TROVESTACK_SCRIPTS
+<span class="nb">export</span> SERVICE_TYPE
+<span class="nb">export</span> PATH_TROVE
+<span class="nb">export</span> ESCAPED_PATH_TROVE
+<span class="nb">export</span> SSH_DIR
+<span class="nb">export</span> GUEST_LOGDIR
+<span class="nb">export</span> ESCAPED_GUEST_LOGDIR
+<span class="nb">export</span> <span class="nv">DIB_CLOUD_INIT_DATASOURCES</span><span class="o">=</span><span class="s2">&quot;ConfigDrive&quot;</span>
+<span class="nb">export</span> DATASTORE_PKG_LOCATION
+<span class="nb">export</span> BRANCH_OVERRIDE
+
+<span class="c1"># you typically do not have to change these variables</span>
+<span class="nb">export</span> <span class="nv">ELEMENTS_PATH</span><span class="o">=</span><span class="nv">$TROVESTACK_SCRIPTS</span>/files/elements
+<span class="nb">export</span> <span class="nv">ELEMENTS_PATH</span><span class="o">+=</span>:<span class="nv">$PATH_DISKIMAGEBUILDER</span>/elements
+<span class="nb">export</span> <span class="nv">ELEMENTS_PATH</span><span class="o">+=</span>:<span class="nv">$PATH_TRIPLEO_ELEMENTS</span>/elements
+<span class="nb">export</span> <span class="nv">DIB_APT_CONF_DIR</span><span class="o">=</span>/etc/apt/apt.conf.d
+<span class="nb">export</span> <span class="nv">DIB_CLOUD_INIT_ETC_HOSTS</span><span class="o">=</span><span class="nb">true</span>
+<span class="nb">local</span> <span class="nv">QEMU_IMG_OPTIONS</span><span class="o">=</span><span class="k">$(</span>! <span class="k">$(</span>qemu-img <span class="p">|</span> grep -q <span class="s1">&#39;version 1&#39;</span><span class="k">)</span> <span class="o">&amp;&amp;</span> <span class="nb">echo</span> <span class="s2">&quot;--qemu-img-options compat=0.10&quot;</span><span class="k">)</span>
+
+<span class="c1"># run disk-image-create that actually causes the image to be built</span>
+<span class="si">${</span><span class="nv">PATH_DISKIMAGEBUILDER</span><span class="si">}</span>/bin/disk-image-create -a amd64 -o <span class="s2">&quot;</span><span class="si">${</span><span class="nv">VM</span><span class="si">}</span><span class="s2">&quot;</span> <span class="se">\</span>
+    -x <span class="si">${</span><span class="nv">QEMU_IMG_OPTIONS</span><span class="si">}</span> <span class="si">${</span><span class="nv">DISTRO</span><span class="si">}</span> <span class="si">${</span><span class="nv">EXTRA_ELEMENTS</span><span class="si">}</span> vm heat-cfntools <span class="se">\</span>
+    cloud-init-datasources <span class="si">${</span><span class="nv">DISTRO</span><span class="si">}</span>-guest <span class="si">${</span><span class="nv">DISTRO</span><span class="si">}</span>-<span class="si">${</span><span class="nv">SERVICE_TYPE</span><span class="si">}</span>
+</pre></div>
+</div>
+<p>Several of the environment variables referenced above are referenced
+in the course of the Disk Image Building process.</p>
+<p>For example, let&#8217;s look at GUEST_LOGDIR. Looking at the element
+elements/fedora-guest/extra-data.d/20-guest-systemd, we find:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span><span class="ch">#!/bin/bash</span>
+
+<span class="nb">set</span> -e
+<span class="nb">set</span> -o xtrace
+
+<span class="c1"># CONTEXT: HOST prior to IMAGE BUILD as SCRIPT USER</span>
+<span class="c1"># PURPOSE: stages the bootstrap file and upstart conf file while replacing variables so that guest image is properly</span>
+<span class="c1"># configured</span>
+
+<span class="nb">source</span> <span class="nv">$_LIB</span>/die
+
+<span class="o">[</span> -n <span class="s2">&quot;</span><span class="nv">$TMP_HOOKS_PATH</span><span class="s2">&quot;</span> <span class="o">]</span> <span class="o">||</span> die <span class="s2">&quot;Temp hook path not set&quot;</span>
+
+<span class="o">[</span> -n <span class="s2">&quot;</span><span class="si">${</span><span class="nv">GUEST_USERNAME</span><span class="si">}</span><span class="s2">&quot;</span> <span class="o">]</span> <span class="o">||</span> die <span class="s2">&quot;GUEST_USERNAME needs to be set to the user for the guest image&quot;</span>
+<span class="o">[</span> -n <span class="s2">&quot;</span><span class="si">${</span><span class="nv">HOST_SCP_USERNAME</span><span class="si">}</span><span class="s2">&quot;</span> <span class="o">]</span> <span class="o">||</span> die <span class="s2">&quot;HOST_SCP_USERNAME needs to be set to the user for the host instance&quot;</span>
+<span class="o">[</span> -n <span class="s2">&quot;</span><span class="si">${</span><span class="nv">CONTROLLER_IP</span><span class="si">}</span><span class="s2">&quot;</span> <span class="o">]</span> <span class="o">||</span> die <span class="s2">&quot;CONTROLLER_IP needs to be set to the ip address that guests will use to contact the controller&quot;</span>
+<span class="o">[</span> -n <span class="s2">&quot;</span><span class="si">${</span><span class="nv">ESCAPED_PATH_TROVE</span><span class="si">}</span><span class="s2">&quot;</span> <span class="o">]</span> <span class="o">||</span> die <span class="s2">&quot;ESCAPED_PATH_TROVE needs to be set to the path to the trove directory on the trovestack host&quot;</span>
+<span class="o">[</span> -n <span class="s2">&quot;</span><span class="si">${</span><span class="nv">TROVESTACK_SCRIPTS</span><span class="si">}</span><span class="s2">&quot;</span> <span class="o">]</span> <span class="o">||</span> die <span class="s2">&quot;TROVESTACK_SCRIPTS needs to be set to the trove/integration/scripts dir&quot;</span>
+<span class="o">[</span> -n <span class="s2">&quot;</span><span class="si">${</span><span class="nv">ESCAPED_GUEST_LOGDIR</span><span class="si">}</span><span class="s2">&quot;</span> <span class="o">]</span> <span class="o">||</span> die <span class="s2">&quot;ESCAPED_GUEST_LOGDIR must be set to the escaped guest log dir&quot;</span>
+
+sed <span class="s2">&quot;s/GUEST_USERNAME/</span><span class="si">${</span><span class="nv">GUEST_USERNAME</span><span class="si">}</span><span class="s2">/g;s/GUEST_LOGDIR/</span><span class="si">${</span><span class="nv">ESCAPED_GUEST_LOGDIR</span><span class="si">}</span><span class="s2">/g;s/HOST_SCP_USERNAME/</span><span class="si">${</span><span class="nv">HOST_SCP_USERNAME</span><span class="si">}</span><span class="s2">/g;s/CONTROLLER_IP/</span><span class="si">${</span><span class="nv">CONTROLLER_IP</span><span class="si">}</span><span class="s2">/g;s/PATH_TROVE/</span><span class="si">${</span><span class="nv">ESCAPED_PATH_TROVE</span><span class="si">}</span><span class="s2">/g&quot;</span> <span class="se">\</span>
+<span class="si">${</span><span class="nv">TROVESTACK_SCRIPTS</span><span class="si">}</span>/files/trove-guest.systemd.conf &gt;
+<span class="si">${</span><span class="nv">TMP_HOOKS_PATH</span><span class="si">}</span>/trove-guest.service
+</pre></div>
+</div>
+<p>As you can see, the value of GUEST_LOGDIR is used in the extra-data.d
+script to appropriately configure the trove-guest.systemd.conf file.</p>
+<p>This pattern is one that you can expect in your own building of guest
+images.  The invocation of disk-image-create provides a list of
+elements that are to be invoked &#8216;in order&#8217;.</p>
+<p>That list of elements is:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span><span class="si">${</span><span class="nv">DISTRO</span><span class="si">}</span>
+<span class="si">${</span><span class="nv">EXTRA_ELEMENTS</span><span class="si">}</span>
+vm
+heat-cfntools
+cloud-init-datasources
+<span class="si">${</span><span class="nv">DISTRO</span><span class="si">}</span>-guest
+<span class="si">${</span><span class="nv">DISTRO</span><span class="si">}</span>-<span class="si">${</span><span class="nv">SERVICE_TYPE</span><span class="si">}</span>
+</pre></div>
+</div>
+<p>When invoked to (for example) create a MySQL guest image on Ubuntu, we
+can expect that DISTRO would be &#8216;Ubuntu&#8217; and SERVICE_TYPE would be
+MySQL. And therefore these would end up being the elements:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span>ubuntu                        From diskimage-builder/elements/ubuntu
+vm                            From diskimage-builder/elements/vm
+heat-cfntools                 From tripleo-image-elements/elements/heat-cfntools
+cloud-init-datasources        From diskimage-builder/elements/cloud-init-datasources
+ubuntu-guest                  From trove/integration/scripts/files/elements/ubuntu-guest
+ubuntu-mysql                  From trove/integration/scripts/files/elements/ubuntu-mysql
+</pre></div>
+</div>
+</div>
+<div class="section" id="references">
+<h2>References<a class="headerlink" href="#references" title="Permalink to this headline">¶</a></h2>
+<table class="docutils footnote" frame="void" id="id7" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label"><a class="fn-backref" href="#id1">[1]</a></td><td>For more information about QEMU, refer to <a class="reference external" href="http://wiki.qemu.org/Main_Page">http://wiki.qemu.org/Main_Page</a></td></tr>
+</tbody>
+</table>
+<table class="docutils footnote" frame="void" id="id8" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label"><a class="fn-backref" href="#id2">[2]</a></td><td>On Ubuntu, qemu-img is part of the package qemu-utils, on Fedora and RedHat it is part of the qemu package.</td></tr>
+</tbody>
+</table>
+<table class="docutils footnote" frame="void" id="id9" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label"><a class="fn-backref" href="#id3">[3]</a></td><td>User (especially in the USA) are cautioned about this spelling which once resulted in several sleepless nights.</td></tr>
+</tbody>
+</table>
+<table class="docutils footnote" frame="void" id="id10" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label"><a class="fn-backref" href="#id4">[4]</a></td><td><a class="reference external" href="https://git.openstack.org/cgit/openstack/diskimage-builder/tree/README.rst#writing-an-element">https://git.openstack.org/cgit/openstack/diskimage-builder/tree/README.rst#writing-an-element</a></td></tr>
+</tbody>
+</table>
+<table class="docutils footnote" frame="void" id="id11" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label"><a class="fn-backref" href="#id5">[5]</a></td><td><a class="reference external" href="https://git.openstack.org/cgit/openstack/tripleo-image-elements/tree/elements">https://git.openstack.org/cgit/openstack/tripleo-image-elements/tree/elements</a></td></tr>
+</tbody>
+</table>
+<table class="docutils footnote" frame="void" id="id12" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label"><a class="fn-backref" href="#id6">[6]</a></td><td><a class="reference external" href="https://git.openstack.org/cgit/openstack/trove/integration/tree/scripts/files/elements">https://git.openstack.org/cgit/openstack/trove/integration/tree/scripts/files/elements</a></td></tr>
+</tbody>
+</table>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="../index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Building Guest Images for OpenStack Trove</a><ul>
+<li><a class="reference internal" href="#overview">Overview</a></li>
+<li><a class="reference internal" href="#high-level-overview-of-a-trove-guest-instance">High Level Overview of a Trove Guest Instance</a><ul>
+<li><a class="reference internal" href="#operating-system-and-database">Operating System and Database</a></li>
+<li><a class="reference internal" href="#trove-guest-agent">Trove Guest Agent</a></li>
+<li><a class="reference internal" href="#injected-configuration-for-the-guest-agent">Injected Configuration for the Guest Agent</a></li>
+<li><a class="reference internal" href="#persistent-storage-networking">Persistent Storage, Networking</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#building-guest-images-using-dib">Building Guest Images using DIB</a><ul>
+<li><a class="reference internal" href="#invocation">Invocation</a></li>
+<li><a class="reference internal" href="#disk-image-builder-elements">Disk Image Builder &#8216;Elements&#8217;</a></li>
+<li><a class="reference internal" href="#existing-elements">Existing Elements</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#trove-reference-elements">Trove Reference Elements</a><ul>
+<li><a class="reference internal" href="#provided-reference-elements">Provided Reference Elements</a></li>
+<li><a class="reference internal" href="#contributing-reference-elements-when-implementing-a-new-datastore">Contributing Reference Elements When Implementing a New &#8216;Datastore&#8217;</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#getting-the-guest-agent-code-onto-a-trove-guest-instance">Getting the Guest Agent Code onto a Trove Guest Instance</a><ul>
+<li><a class="reference internal" href="#guest-agent-code-installed-at-build-time">Guest Agent Code Installed at Build Time</a></li>
+<li><a class="reference internal" href="#guest-agent-code-installed-at-run-time">Guest Agent Code Installed at Run Time</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#considerations-in-building-a-guest-image">Considerations in Building a Guest Image</a><ul>
+<li><a class="reference internal" href="#speed-of-launch-and-start-up-activities">Speed of Launch and Start-up Activities</a></li>
+<li><a class="reference internal" href="#database-licensing-and-database-software-download-issues">Database licensing, and Database Software Download Issues</a><ul>
+<li><a class="reference internal" href="#user-manually-downloads-database-software">User Manually Downloads Database Software</a></li>
+<li><a class="reference internal" href="#use-an-extra-data-d-folder">Use an extra-data.d Folder</a></li>
+<li><a class="reference internal" href="#use-an-install-d-step-to-install-the-software">Use an install.d Step to Install the Software</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><a class="reference internal" href="#building-guest-images-using-standard-elements">Building Guest Images Using Standard Elements</a></li>
+<li><a class="reference internal" href="#references">References</a></li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="manual_install.html"
+                                  title="previous chapter">Manual Trove Installation</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="guest_cloud_init.html"
+                                  title="next chapter">Guest Images via Cloud-Init</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/trove
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="../_sources/dev/building_guest_images.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="guest_cloud_init.html" title="Guest Images via Cloud-Init"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="manual_install.html" title="Manual Trove Installation"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../index.html">trove 7.0.0.0rc2.dev2 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2013, OpenStack Foundation.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/trove");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

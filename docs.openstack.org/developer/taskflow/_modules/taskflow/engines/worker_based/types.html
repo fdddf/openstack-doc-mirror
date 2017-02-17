@@ -1,0 +1,380 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>taskflow.engines.worker_based.types &mdash; TaskFlow 2.9.1.dev9 documentation</title>
+    
+    <link rel="stylesheet" href="../../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../../',
+        VERSION:     '2.9.1.dev9',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../../_static/doctools.js"></script>
+    <link rel="top" title="TaskFlow 2.9.1.dev9 documentation" href="../../../../index.html" />
+    <link rel="up" title="Module code" href="../../../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for taskflow.engines.worker_based.types</h1><div class="highlight"><pre>
+<span></span><span class="c1"># -*- coding: utf-8 -*-</span>
+
+<span class="c1">#    Copyright (C) 2014 Yahoo! Inc. All Rights Reserved.</span>
+<span class="c1">#</span>
+<span class="c1">#    Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may</span>
+<span class="c1">#    not use this file except in compliance with the License. You may obtain</span>
+<span class="c1">#    a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#         http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1">#    Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1">#    distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="c1">#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="c1">#    License for the specific language governing permissions and limitations</span>
+<span class="c1">#    under the License.</span>
+
+<span class="kn">import</span> <span class="nn">random</span>
+<span class="kn">import</span> <span class="nn">threading</span>
+
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">reflection</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">timeutils</span>
+<span class="kn">import</span> <span class="nn">six</span>
+
+<span class="kn">from</span> <span class="nn">taskflow.engines.worker_based</span> <span class="kn">import</span> <span class="n">protocol</span> <span class="k">as</span> <span class="n">pr</span>
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">logging</span>
+<span class="kn">from</span> <span class="nn">taskflow.utils</span> <span class="kn">import</span> <span class="n">kombu_utils</span> <span class="k">as</span> <span class="n">ku</span>
+
+<span class="n">LOG</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+
+<span class="c1"># TODO(harlowja): this needs to be made better, once</span>
+<span class="c1"># https://blueprints.launchpad.net/taskflow/+spec/wbe-worker-info is finally</span>
+<span class="c1"># implemented we can go about using that instead.</span>
+<div class="viewcode-block" id="TopicWorker"><a class="viewcode-back" href="../../../../workers.html#taskflow.engines.worker_based.types.TopicWorker">[docs]</a><span class="k">class</span> <span class="nc">TopicWorker</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A (read-only) worker and its relevant information + useful methods.&quot;&quot;&quot;</span>
+
+    <span class="n">_NO_IDENTITY</span> <span class="o">=</span> <span class="nb">object</span><span class="p">()</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">topic</span><span class="p">,</span> <span class="n">tasks</span><span class="p">,</span> <span class="n">identity</span><span class="o">=</span><span class="n">_NO_IDENTITY</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">tasks</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">for</span> <span class="n">task</span> <span class="ow">in</span> <span class="n">tasks</span><span class="p">:</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">six</span><span class="o">.</span><span class="n">string_types</span><span class="p">):</span>
+                <span class="n">task</span> <span class="o">=</span> <span class="n">reflection</span><span class="o">.</span><span class="n">get_class_name</span><span class="p">(</span><span class="n">task</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">tasks</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">task</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">topic</span> <span class="o">=</span> <span class="n">topic</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">identity</span> <span class="o">=</span> <span class="n">identity</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">last_seen</span> <span class="o">=</span> <span class="bp">None</span>
+
+    <span class="k">def</span> <span class="nf">performs</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">six</span><span class="o">.</span><span class="n">string_types</span><span class="p">):</span>
+            <span class="n">task</span> <span class="o">=</span> <span class="n">reflection</span><span class="o">.</span><span class="n">get_class_name</span><span class="p">(</span><span class="n">task</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">task</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">tasks</span>
+
+    <span class="k">def</span> <span class="fm">__eq__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">other</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">other</span><span class="p">,</span> <span class="n">TopicWorker</span><span class="p">):</span>
+            <span class="k">return</span> <span class="bp">NotImplemented</span>
+        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">other</span><span class="o">.</span><span class="n">tasks</span><span class="p">)</span> <span class="o">!=</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">tasks</span><span class="p">):</span>
+            <span class="k">return</span> <span class="bp">False</span>
+        <span class="k">if</span> <span class="n">other</span><span class="o">.</span><span class="n">topic</span> <span class="o">!=</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">False</span>
+        <span class="k">for</span> <span class="n">task</span> <span class="ow">in</span> <span class="n">other</span><span class="o">.</span><span class="n">tasks</span><span class="p">:</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">performs</span><span class="p">(</span><span class="n">task</span><span class="p">):</span>
+                <span class="k">return</span> <span class="bp">False</span>
+        <span class="c1"># If one of the identity equals _NO_IDENTITY, then allow it to match...</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_NO_IDENTITY</span> <span class="ow">in</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">identity</span><span class="p">,</span> <span class="n">other</span><span class="o">.</span><span class="n">identity</span><span class="p">):</span>
+            <span class="k">return</span> <span class="bp">True</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">other</span><span class="o">.</span><span class="n">identity</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">identity</span>
+
+    <span class="k">def</span> <span class="fm">__ne__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">other</span><span class="p">):</span>
+        <span class="k">return</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="fm">__eq__</span><span class="p">(</span><span class="n">other</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="fm">__repr__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">r</span> <span class="o">=</span> <span class="n">reflection</span><span class="o">.</span><span class="n">get_class_name</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">fully_qualified</span><span class="o">=</span><span class="bp">False</span><span class="p">)</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">identity</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_NO_IDENTITY</span><span class="p">:</span>
+            <span class="n">r</span> <span class="o">+=</span> <span class="s2">&quot;(identity=</span><span class="si">%s</span><span class="s2">, tasks=</span><span class="si">%s</span><span class="s2">, topic=</span><span class="si">%s</span><span class="s2">)&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">identity</span><span class="p">,</span>
+                                                        <span class="bp">self</span><span class="o">.</span><span class="n">tasks</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">r</span> <span class="o">+=</span> <span class="s2">&quot;(identity=*, tasks=</span><span class="si">%s</span><span class="s2">, topic=</span><span class="si">%s</span><span class="s2">)&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">tasks</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">r</span></div>
+
+
+<div class="viewcode-block" id="ProxyWorkerFinder"><a class="viewcode-back" href="../../../../workers.html#taskflow.engines.worker_based.types.ProxyWorkerFinder">[docs]</a><span class="k">class</span> <span class="nc">ProxyWorkerFinder</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Requests and receives responses about workers topic+task details.&quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">uuid</span><span class="p">,</span> <span class="n">proxy</span><span class="p">,</span> <span class="n">topics</span><span class="p">,</span>
+                 <span class="n">beat_periodicity</span><span class="o">=</span><span class="n">pr</span><span class="o">.</span><span class="n">NOTIFY_PERIOD</span><span class="p">,</span>
+                 <span class="n">worker_expiry</span><span class="o">=</span><span class="n">pr</span><span class="o">.</span><span class="n">EXPIRES_AFTER</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_cond</span> <span class="o">=</span> <span class="n">threading</span><span class="o">.</span><span class="n">Condition</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_proxy</span> <span class="o">=</span> <span class="n">proxy</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_topics</span> <span class="o">=</span> <span class="n">topics</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_workers</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_uuid</span> <span class="o">=</span> <span class="n">uuid</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_seen_workers</span> <span class="o">=</span> <span class="mi">0</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_messages_processed</span> <span class="o">=</span> <span class="mi">0</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_messages_published</span> <span class="o">=</span> <span class="mi">0</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_worker_expiry</span> <span class="o">=</span> <span class="n">worker_expiry</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_watch</span> <span class="o">=</span> <span class="n">timeutils</span><span class="o">.</span><span class="n">StopWatch</span><span class="p">(</span><span class="n">duration</span><span class="o">=</span><span class="n">beat_periodicity</span><span class="p">)</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">total_workers</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Number of workers currently known.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_workers</span><span class="p">)</span>
+
+<div class="viewcode-block" id="ProxyWorkerFinder.wait_for_workers"><a class="viewcode-back" href="../../../../workers.html#taskflow.engines.worker_based.types.ProxyWorkerFinder.wait_for_workers">[docs]</a>    <span class="k">def</span> <span class="nf">wait_for_workers</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">workers</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Waits for geq workers to notify they are ready to do work.</span>
+
+<span class="sd">        NOTE(harlowja): if a timeout is provided this function will wait</span>
+<span class="sd">        until that timeout expires, if the amount of workers does not reach</span>
+<span class="sd">        the desired amount of workers before the timeout expires then this will</span>
+<span class="sd">        return how many workers are still needed, otherwise it will</span>
+<span class="sd">        return zero.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="n">workers</span> <span class="o">&lt;=</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;Worker amount must be greater than zero&quot;</span><span class="p">)</span>
+        <span class="n">watch</span> <span class="o">=</span> <span class="n">timeutils</span><span class="o">.</span><span class="n">StopWatch</span><span class="p">(</span><span class="n">duration</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span>
+        <span class="n">watch</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_cond</span><span class="p">:</span>
+            <span class="k">while</span> <span class="bp">self</span><span class="o">.</span><span class="n">total_workers</span> <span class="o">&lt;</span> <span class="n">workers</span><span class="p">:</span>
+                <span class="k">if</span> <span class="n">watch</span><span class="o">.</span><span class="n">expired</span><span class="p">():</span>
+                    <span class="k">return</span> <span class="nb">max</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">workers</span> <span class="o">-</span> <span class="bp">self</span><span class="o">.</span><span class="n">total_workers</span><span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_cond</span><span class="o">.</span><span class="n">wait</span><span class="p">(</span><span class="n">watch</span><span class="o">.</span><span class="n">leftover</span><span class="p">(</span><span class="n">return_none</span><span class="o">=</span><span class="bp">True</span><span class="p">))</span>
+            <span class="k">return</span> <span class="mi">0</span></div>
+
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span> <span class="nf">_match_worker</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">available_workers</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Select a worker (from geq 1 workers) that can best perform the task.</span>
+
+<span class="sd">        NOTE(harlowja): this method will be activated when there exists</span>
+<span class="sd">        one one greater than one potential workers that can perform a task,</span>
+<span class="sd">        the arguments provided will be the potential workers located and the</span>
+<span class="sd">        task that is being requested to perform and the result should be one</span>
+<span class="sd">        of those workers using whatever best-fit algorithm is possible (or</span>
+<span class="sd">        random at the least).</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">available_workers</span><span class="p">)</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">available_workers</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">random</span><span class="o">.</span><span class="n">choice</span><span class="p">(</span><span class="n">available_workers</span><span class="p">)</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">messages_processed</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;How many notify response messages have been processed.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_messages_processed</span>
+
+    <span class="k">def</span> <span class="nf">_next_worker</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">topic</span><span class="p">,</span> <span class="n">tasks</span><span class="p">,</span> <span class="n">temporary</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">temporary</span><span class="p">:</span>
+            <span class="n">w</span> <span class="o">=</span> <span class="n">TopicWorker</span><span class="p">(</span><span class="n">topic</span><span class="p">,</span> <span class="n">tasks</span><span class="p">,</span> <span class="n">identity</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_seen_workers</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_seen_workers</span> <span class="o">+=</span> <span class="mi">1</span>
+            <span class="k">return</span> <span class="n">w</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">TopicWorker</span><span class="p">(</span><span class="n">topic</span><span class="p">,</span> <span class="n">tasks</span><span class="p">)</span>
+
+<div class="viewcode-block" id="ProxyWorkerFinder.maybe_publish"><a class="viewcode-back" href="../../../../workers.html#taskflow.engines.worker_based.types.ProxyWorkerFinder.maybe_publish">[docs]</a>    <span class="k">def</span> <span class="nf">maybe_publish</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Periodically called to publish notify message to each topic.</span>
+
+<span class="sd">        These messages (especially the responses) are how this find learns</span>
+<span class="sd">        about workers and what tasks they can perform (so that we can then</span>
+<span class="sd">        match workers to tasks to run).</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_messages_published</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_proxy</span><span class="o">.</span><span class="n">publish</span><span class="p">(</span><span class="n">pr</span><span class="o">.</span><span class="n">Notify</span><span class="p">(),</span>
+                                <span class="bp">self</span><span class="o">.</span><span class="n">_topics</span><span class="p">,</span> <span class="n">reply_to</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_uuid</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_messages_published</span> <span class="o">+=</span> <span class="mi">1</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_watch</span><span class="o">.</span><span class="n">restart</span><span class="p">()</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_watch</span><span class="o">.</span><span class="n">expired</span><span class="p">():</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_proxy</span><span class="o">.</span><span class="n">publish</span><span class="p">(</span><span class="n">pr</span><span class="o">.</span><span class="n">Notify</span><span class="p">(),</span>
+                                    <span class="bp">self</span><span class="o">.</span><span class="n">_topics</span><span class="p">,</span> <span class="n">reply_to</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_uuid</span><span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_messages_published</span> <span class="o">+=</span> <span class="mi">1</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_watch</span><span class="o">.</span><span class="n">restart</span><span class="p">()</span></div>
+
+    <span class="k">def</span> <span class="nf">_add</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">topic</span><span class="p">,</span> <span class="n">tasks</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Adds/updates a worker for the topic for the given tasks.&quot;&quot;&quot;</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">worker</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_workers</span><span class="p">[</span><span class="n">topic</span><span class="p">]</span>
+            <span class="c1"># Check if we already have an equivalent worker, if so just</span>
+            <span class="c1"># return it...</span>
+            <span class="k">if</span> <span class="n">worker</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">_next_worker</span><span class="p">(</span><span class="n">topic</span><span class="p">,</span> <span class="n">tasks</span><span class="p">,</span> <span class="n">temporary</span><span class="o">=</span><span class="bp">True</span><span class="p">):</span>
+                <span class="k">return</span> <span class="p">(</span><span class="n">worker</span><span class="p">,</span> <span class="bp">False</span><span class="p">)</span>
+            <span class="c1"># This *fall through* is done so that if someone is using an</span>
+            <span class="c1"># active worker object that already exists that we just create</span>
+            <span class="c1"># a new one; so that the existing object doesn&#39;t get</span>
+            <span class="c1"># affected (workers objects are supposed to be immutable).</span>
+        <span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+            <span class="k">pass</span>
+        <span class="n">worker</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_next_worker</span><span class="p">(</span><span class="n">topic</span><span class="p">,</span> <span class="n">tasks</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_workers</span><span class="p">[</span><span class="n">topic</span><span class="p">]</span> <span class="o">=</span> <span class="n">worker</span>
+        <span class="k">return</span> <span class="p">(</span><span class="n">worker</span><span class="p">,</span> <span class="bp">True</span><span class="p">)</span>
+
+<div class="viewcode-block" id="ProxyWorkerFinder.process_response"><a class="viewcode-back" href="../../../../workers.html#taskflow.engines.worker_based.types.ProxyWorkerFinder.process_response">[docs]</a>    <span class="k">def</span> <span class="nf">process_response</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">data</span><span class="p">,</span> <span class="n">message</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Process notify message sent from remote side.&quot;&quot;&quot;</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Started processing notify response message &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span><span class="p">,</span>
+                  <span class="n">ku</span><span class="o">.</span><span class="n">DelayedPretty</span><span class="p">(</span><span class="n">message</span><span class="p">))</span>
+        <span class="n">response</span> <span class="o">=</span> <span class="n">pr</span><span class="o">.</span><span class="n">Notify</span><span class="p">(</span><span class="o">**</span><span class="n">data</span><span class="p">)</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Extracted notify response &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span><span class="p">,</span> <span class="n">response</span><span class="p">)</span>
+        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_cond</span><span class="p">:</span>
+            <span class="n">worker</span><span class="p">,</span> <span class="n">new_or_updated</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_add</span><span class="p">(</span><span class="n">response</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span>
+                                               <span class="n">response</span><span class="o">.</span><span class="n">tasks</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">new_or_updated</span><span class="p">:</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Updated worker &#39;</span><span class="si">%s</span><span class="s2">&#39; (</span><span class="si">%s</span><span class="s2"> total workers are&quot;</span>
+                          <span class="s2">&quot; currently known)&quot;</span><span class="p">,</span> <span class="n">worker</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">total_workers</span><span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_cond</span><span class="o">.</span><span class="n">notify_all</span><span class="p">()</span>
+            <span class="n">worker</span><span class="o">.</span><span class="n">last_seen</span> <span class="o">=</span> <span class="n">timeutils</span><span class="o">.</span><span class="n">now</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_messages_processed</span> <span class="o">+=</span> <span class="mi">1</span></div>
+
+<div class="viewcode-block" id="ProxyWorkerFinder.clean"><a class="viewcode-back" href="../../../../workers.html#taskflow.engines.worker_based.types.ProxyWorkerFinder.clean">[docs]</a>    <span class="k">def</span> <span class="nf">clean</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Cleans out any dead/expired/not responding workers.</span>
+
+<span class="sd">        Returns how many workers were removed.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="p">(</span><span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_workers</span> <span class="ow">or</span>
+                <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_worker_expiry</span> <span class="ow">is</span> <span class="bp">None</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">_worker_expiry</span> <span class="o">&lt;=</span> <span class="mi">0</span><span class="p">)):</span>
+            <span class="k">return</span> <span class="mi">0</span>
+        <span class="n">dead_workers</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_cond</span><span class="p">:</span>
+            <span class="n">now</span> <span class="o">=</span> <span class="n">timeutils</span><span class="o">.</span><span class="n">now</span><span class="p">()</span>
+            <span class="k">for</span> <span class="n">topic</span><span class="p">,</span> <span class="n">worker</span> <span class="ow">in</span> <span class="n">six</span><span class="o">.</span><span class="n">iteritems</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_workers</span><span class="p">):</span>
+                <span class="k">if</span> <span class="n">worker</span><span class="o">.</span><span class="n">last_seen</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+                    <span class="k">continue</span>
+                <span class="n">secs_since_last_seen</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">now</span> <span class="o">-</span> <span class="n">worker</span><span class="o">.</span><span class="n">last_seen</span><span class="p">)</span>
+                <span class="k">if</span> <span class="n">secs_since_last_seen</span> <span class="o">&gt;=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_worker_expiry</span><span class="p">:</span>
+                    <span class="n">dead_workers</span><span class="p">[</span><span class="n">topic</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span><span class="n">worker</span><span class="p">,</span> <span class="n">secs_since_last_seen</span><span class="p">)</span>
+            <span class="k">for</span> <span class="n">topic</span> <span class="ow">in</span> <span class="n">six</span><span class="o">.</span><span class="n">iterkeys</span><span class="p">(</span><span class="n">dead_workers</span><span class="p">):</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_workers</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="n">topic</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">dead_workers</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_cond</span><span class="o">.</span><span class="n">notify_all</span><span class="p">()</span>
+        <span class="k">if</span> <span class="n">dead_workers</span> <span class="ow">and</span> <span class="n">LOG</span><span class="o">.</span><span class="n">isEnabledFor</span><span class="p">(</span><span class="n">logging</span><span class="o">.</span><span class="n">INFO</span><span class="p">):</span>
+            <span class="k">for</span> <span class="n">worker</span><span class="p">,</span> <span class="n">secs_since_last_seen</span> <span class="ow">in</span> <span class="n">six</span><span class="o">.</span><span class="n">itervalues</span><span class="p">(</span><span class="n">dead_workers</span><span class="p">):</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Removed worker &#39;</span><span class="si">%s</span><span class="s2">&#39; as it has not responded to&quot;</span>
+                         <span class="s2">&quot; notification requests in </span><span class="si">%0.3f</span><span class="s2"> seconds&quot;</span><span class="p">,</span>
+                         <span class="n">worker</span><span class="p">,</span> <span class="n">secs_since_last_seen</span><span class="p">)</span>
+        <span class="k">return</span> <span class="nb">len</span><span class="p">(</span><span class="n">dead_workers</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="ProxyWorkerFinder.reset"><a class="viewcode-back" href="../../../../workers.html#taskflow.engines.worker_based.types.ProxyWorkerFinder.reset">[docs]</a>    <span class="k">def</span> <span class="nf">reset</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Resets finders internal state.&quot;&quot;&quot;</span>
+        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_cond</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_workers</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_messages_processed</span> <span class="o">=</span> <span class="mi">0</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_messages_published</span> <span class="o">=</span> <span class="mi">0</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_seen_workers</span> <span class="o">=</span> <span class="mi">0</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_cond</span><span class="o">.</span><span class="n">notify_all</span><span class="p">()</span></div>
+
+<div class="viewcode-block" id="ProxyWorkerFinder.get_worker_for_task"><a class="viewcode-back" href="../../../../workers.html#taskflow.engines.worker_based.types.ProxyWorkerFinder.get_worker_for_task">[docs]</a>    <span class="k">def</span> <span class="nf">get_worker_for_task</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Gets a worker that can perform a given task.&quot;&quot;&quot;</span>
+        <span class="n">available_workers</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_cond</span><span class="p">:</span>
+            <span class="k">for</span> <span class="n">worker</span> <span class="ow">in</span> <span class="n">six</span><span class="o">.</span><span class="n">itervalues</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_workers</span><span class="p">):</span>
+                <span class="k">if</span> <span class="n">worker</span><span class="o">.</span><span class="n">performs</span><span class="p">(</span><span class="n">task</span><span class="p">):</span>
+                    <span class="n">available_workers</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">worker</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">available_workers</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_match_worker</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">available_workers</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">None</span></div></div>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+  <h3>Navigation</h3>
+  <ul>
+
+    <li><a href="../../../../index.html">Table Of Contents</a></li>
+
+
+
+  </ul>
+
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/taskflow
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../../../index.html">TaskFlow 2.9.1.dev9 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../../../index.html" accesskey="U">Module code</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2017, OpenStack Foundation.
+      Last updated on &#39;Fri Feb 10 20:11:17 2017, commit 643495f&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/TaskFlow");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

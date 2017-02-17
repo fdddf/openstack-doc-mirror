@@ -1,0 +1,296 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Volume Attach/Detach workflow &mdash; cinder 10.0.0.0rc2.dev76 documentation</title>
+    
+    <link rel="stylesheet" href="../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../',
+        VERSION:     '10.0.0.0rc2.dev76',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../_static/jquery.js"></script>
+    <script type="text/javascript" src="../_static/underscore.js"></script>
+    <script type="text/javascript" src="../_static/doctools.js"></script>
+    <link rel="top" title="cinder 10.0.0.0rc2.dev76 documentation" href="../index.html" />
+    <link rel="up" title="Developer Guide" href="index.html" />
+    <link rel="next" title="Threading model" href="threading.html" />
+    <link rel="prev" title="Cinder System Architecture" href="architecture.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="volume-attach-detach-workflow">
+<h1>Volume Attach/Detach workflow<a class="headerlink" href="#volume-attach-detach-workflow" title="Permalink to this headline">¶</a></h1>
+<p>There are six API calls associated with attach/detach of volumes in Cinder
+(3 calls for each operation).  This can lead to some confusion for developers
+trying to work on Cinder.  The convention is actually quite simple, although
+it may be difficult to decipher from the code.</p>
+<div class="section" id="attach-detach-operations-are-multi-part-commands">
+<h2>Attach/Detach Operations are multi-part commands<a class="headerlink" href="#attach-detach-operations-are-multi-part-commands" title="Permalink to this headline">¶</a></h2>
+<p>There are three things that happen in the workflow for an attach or detach call.</p>
+<p>1. Update the status of the volume in the DB (ie attaching/detaching)
+- For Attach, this is the cinder.volume.api.reserve method
+- For Detach, the analogous call is cinder.volume.api.begin_detaching</p>
+<p>2. Handle the connection operations that need to be done on the Volume
+- For Attach, this is the cinder.volume.api.initialize_connection method
+- For Detach, the analogous calls is cinder.volume.api.terminate_connection</p>
+<p>3. Finalize the status of the volume and release the resource
+- For attach, this is the cinder.volume.api.attach method
+- For detach, the analogous call is cinder.volume.api.detach</p>
+</div>
+<div class="section" id="attach-workflow">
+<h2>Attach workflow<a class="headerlink" href="#attach-workflow" title="Permalink to this headline">¶</a></h2>
+<div class="section" id="reserve-volume-self-context-volume">
+<h3>reserve_volume(self, context, volume)<a class="headerlink" href="#reserve-volume-self-context-volume" title="Permalink to this headline">¶</a></h3>
+<p>Probably the most simple call in to Cinder.  This method simply checks that
+the specified volume is in an “available” state and can be attached.
+Any other state results in an Error response notifying Nova that the volume
+is NOT available.  The only valid state for this call to succeed is “available”.</p>
+<p>NOTE: multi-attach will add &#8220;in-use&#8221; to the above acceptable states.</p>
+<p>If the volume is in fact available, we immediately issue an update to the Cinder
+database and mark the status of the volume to “attaching” thereby reserving the
+volume so that it won’t be used by another API call anywhere else.</p>
+</div>
+<div class="section" id="initialize-connection-self-context-volume-connector">
+<h3>initialize_connection(self, context, volume, connector)<a class="headerlink" href="#initialize-connection-self-context-volume-connector" title="Permalink to this headline">¶</a></h3>
+<p>This is the only attach related API call that should be doing any significant
+work.  This method is responsible for building and returning all of the info
+needed by the caller (Nova) to actually attach the specified volume to the
+remote node.  This method returns vital information to the caller that includes
+things like CHAP credential, iqn and lun information.  An example response is
+shown here:</p>
+<dl class="docutils">
+<dt>::</dt>
+<dd><dl class="first last docutils">
+<dt>{‘driver_volume_type&#8217;: ‘iscsi’,  ‘data&#8217;: {‘auth_password&#8217;: ‘YZ2Hceyh7VySh5HY’,</dt>
+<dd>‘target_discovered&#8217;: False,
+‘encrypted&#8217;: False,
+‘qos_specs&#8217;: None,
+‘target_iqn&#8217;: ‘iqn.2010-10.org.openstack:volume-8b1ec3fe-8c5
+‘target_portal&#8217;: ‘11.0.0.8:3260′,
+‘volume_id&#8217;: ‘8b1ec3fe-8c57-45ca-a1cf-a481bfc8fce2′,
+‘target_lun&#8217;: 1,
+‘access_mode&#8217;: ‘rw’,
+‘auth_username&#8217;: ‘nE9PY8juynmmZ95F7Xb7′,
+‘auth_method&#8217;: ‘CHAP’}}``</dd>
+</dl>
+</dd>
+</dl>
+<p>In the process of building this data structure, the Cinder Volume Manager makes a number of
+calls to the backend driver, and builds a volume_attachment entry in the database to store
+the connection information passed in via the connector object.</p>
+<div class="section" id="driver-validate-connector">
+<h4>driver.validate_connector<a class="headerlink" href="#driver-validate-connector" title="Permalink to this headline">¶</a></h4>
+<p>Simply verifies that the initiator data is included in the passed in
+connector (there are some drivers that utilize pieces of this connector
+data, but in the case of the reference, it just verifies it&#8217;s there).</p>
+</div>
+<div class="section" id="driver-create-export">
+<h4>driver.create_export<a class="headerlink" href="#driver-create-export" title="Permalink to this headline">¶</a></h4>
+<p>This is the target specific, persistent data associated with a volume.
+This method is responsible for building an actual iSCSI target, and
+providing the &#8220;location&#8221; and &#8220;auth&#8221; information which will be used to
+form the response data in the parent request.
+We call this infor the model_update and it&#8217;s used to update vital target
+information associated with the volume in the Cinder database.</p>
+</div>
+<div class="section" id="driver-initialize-connection">
+<h4>driver.initialize_connection<a class="headerlink" href="#driver-initialize-connection" title="Permalink to this headline">¶</a></h4>
+<p>Now that we&#8217;ve actually built a target and persisted the important
+bits of information associated with it, we&#8217;re ready to actually assign
+the target to a volume and form the needed info to pass back out
+to our caller.  This is where we finally put everything together and
+form the example data structure response shown earlier.</p>
+<p>This method is sort of deceptive, it does a whole lot of formatting
+of the data we&#8217;ve put together in the create_export call, but it doesn&#8217;t
+really offer any new info.  It&#8217;s completely dependent on the information
+that was gathered in the create_export call and put into the database.  At
+this point, all we&#8217;re doing is taking all the various entries from the database
+and putting it together into the desired format/structure.</p>
+<p>The key method call for updating and obtaining all of this info was
+done by the create_export call.  This formatted data is then passed
+back up to the API and returned as the response back out to Nova.</p>
+<p>At this point, we return attach info to the caller that provides everything
+needed to make the remote iSCSI connection.</p>
+</div>
+</div>
+<div class="section" id="attach-self-context-volume-instance-uuid-host-name-mount-point-mode">
+<h3>attach(self, context, volume, instance_uuid, host_name, mount_point, mode)<a class="headerlink" href="#attach-self-context-volume-instance-uuid-host-name-mount-point-mode" title="Permalink to this headline">¶</a></h3>
+<p>This is the last call that <em>should</em> be pretty simple.  The intent is that this
+is simply used to finalize the attach process.  In other words, we simply
+update the status on the Volume in the database, and provide a mechanism to
+notify the driver that the attachment has completed successfully.</p>
+<p>There&#8217;s some additional information that has been added to this finalize call
+over time like instance_uuid, host_name etc.  Some of these are only provided
+during the actual attach call and may be desired for some drivers for one
+reason or another.</p>
+</div>
+</div>
+<div class="section" id="detach-workflow">
+<h2>Detach workflow<a class="headerlink" href="#detach-workflow" title="Permalink to this headline">¶</a></h2>
+<div class="section" id="begin-detaching-self-context-volume">
+<h3>begin_detaching(self, context, volume)<a class="headerlink" href="#begin-detaching-self-context-volume" title="Permalink to this headline">¶</a></h3>
+<p>Analogous to the Attach workflows <code class="docutils literal"><span class="pre">reserve_volume</span></code> method.
+Performs a simple conditional update of Volume status to <code class="docutils literal"><span class="pre">detaching</span></code>.</p>
+</div>
+<div class="section" id="terminate-connection-self-context-volume-connector-force-false">
+<h3>terminate_connection(self, context, volume, connector, force=False)<a class="headerlink" href="#terminate-connection-self-context-volume-connector-force-false" title="Permalink to this headline">¶</a></h3>
+<p>Analogous to the Attach workflows <code class="docutils literal"><span class="pre">initialize_connection</span></code> method.</p>
+<p>Used to send calls down to drivers/target-drivers to do any sort of cleanup
+they might require.</p>
+<p>For most this is a noop, as connections and <strong>iscsi session management is the
+responsibility of the initiator</strong>.  HOWEVER, there are a number of special
+cases here, particularly for target-drivers like LIO that use
+access-groups, in those cases they remove the initiator from the access
+list during this call which effectively closes sessions from the target
+side.</p>
+</div>
+<div class="section" id="detach-self-context-volume-attachment-id">
+<h3>detach(self, context, volume, attachment_id)<a class="headerlink" href="#detach-self-context-volume-attachment-id" title="Permalink to this headline">¶</a></h3>
+<p>The final update to the DB and yet another opportunity to pass something
+down to the volume-driver.  Initially a simple call-back that now has quite
+a bit of cruft built up in the volume-manager.</p>
+<p>For drivers like LVM this again is a noop and just updates the db entry to
+mark things as complete and set the volume to available again.</p>
+</div>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="../index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Volume Attach/Detach workflow</a><ul>
+<li><a class="reference internal" href="#attach-detach-operations-are-multi-part-commands">Attach/Detach Operations are multi-part commands</a></li>
+<li><a class="reference internal" href="#attach-workflow">Attach workflow</a><ul>
+<li><a class="reference internal" href="#reserve-volume-self-context-volume">reserve_volume(self, context, volume)</a></li>
+<li><a class="reference internal" href="#initialize-connection-self-context-volume-connector">initialize_connection(self, context, volume, connector)</a><ul>
+<li><a class="reference internal" href="#driver-validate-connector">driver.validate_connector</a></li>
+<li><a class="reference internal" href="#driver-create-export">driver.create_export</a></li>
+<li><a class="reference internal" href="#driver-initialize-connection">driver.initialize_connection</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#attach-self-context-volume-instance-uuid-host-name-mount-point-mode">attach(self, context, volume, instance_uuid, host_name, mount_point, mode)</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#detach-workflow">Detach workflow</a><ul>
+<li><a class="reference internal" href="#begin-detaching-self-context-volume">begin_detaching(self, context, volume)</a></li>
+<li><a class="reference internal" href="#terminate-connection-self-context-volume-connector-force-false">terminate_connection(self, context, volume, connector, force=False)</a></li>
+<li><a class="reference internal" href="#detach-self-context-volume-attachment-id">detach(self, context, volume, attachment_id)</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="architecture.html"
+                                  title="previous chapter">Cinder System Architecture</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="threading.html"
+                                  title="next chapter">Threading model</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/cinder
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="../_sources/devref/attach_detach_conventions.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="right" >
+          <a href="threading.html" title="Threading model"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="architecture.html" title="Cinder System Architecture"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../index.html">cinder 10.0.0.0rc2.dev76 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="index.html" accesskey="U">Developer Guide</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2010-present, OpenStack Foundation.
+      Last updated on Tue Feb 14 19:30:39 2017, commit 3c2819f.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/cinder");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

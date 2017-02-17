@@ -1,0 +1,273 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Journal Recovery &mdash; networking-odl 3.1.1.dev185 documentation</title>
+    
+    <link rel="stylesheet" href="../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../',
+        VERSION:     '3.1.1.dev185',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../_static/jquery.js"></script>
+    <script type="text/javascript" src="../_static/underscore.js"></script>
+    <script type="text/javascript" src="../_static/doctools.js"></script>
+    <link rel="top" title="networking-odl 3.1.1.dev185 documentation" href="../index.html" />
+    <link rel="up" title="Neutron networking-odl Project Specifications" href="../specs.html" />
+    <link rel="next" title="Quality of Service Driver for OpenDaylight" href="qos-driver.html" />
+    <link rel="prev" title="Neutron networking-odl Project Specifications" href="../specs.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="journal-recovery">
+<h1>Journal Recovery<a class="headerlink" href="#journal-recovery" title="Permalink to this headline">¶</a></h1>
+<p><a class="reference external" href="https://blueprints.launchpad.net/networking-odl/+spec/journal-recovery">https://blueprints.launchpad.net/networking-odl/+spec/journal-recovery</a></p>
+<p>Journal entries in the failed state need to be handled somehow. This spec will
+try to address the issue and propose a solution.</p>
+<div class="section" id="problem-description">
+<h2>Problem Description<a class="headerlink" href="#problem-description" title="Permalink to this headline">¶</a></h2>
+<p>Currently there is no handling for Journal entries that reach the failed state.
+A journal entry can reach the failed state for several reasons, some of which
+are:</p>
+<ul class="simple">
+<li>Reached maximum failed attempts for retrying the operation.</li>
+<li>Inconsistency between ODL and the Neutron DB.<ul>
+<li>For example: An update fails because the resource doesn&#8217;t exist in ODL.</li>
+</ul>
+</li>
+<li>Bugs that can lead to failure to sync up.</li>
+</ul>
+<p>These entries will be left in the journal table forever which is a bit wasteful
+since they take up some space on the DB storage and also affect the performance
+of the journal table.
+Albeit each entry has a negligble effect on it&#8217;s own, the impact of a large
+number of such entries can become quite significant.</p>
+</div>
+<div class="section" id="proposed-change">
+<h2>Proposed Change<a class="headerlink" href="#proposed-change" title="Permalink to this headline">¶</a></h2>
+<p>A &#8220;journal recovery&#8221; routine will run as part of the current journal
+maintenance process.
+This routine will scan the journal table for rows in the &#8220;failed&#8221; state and
+will try to sync the resource for that entry.</p>
+<p>The procedure can be best described by the following flow chart:</p>
+<p>asciiflow:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>+-----------------+
+| For each entry  |
+| in failed state |
++-------+---------+
+        |
++-------v--------+
+| Query resource |
+| on ODL (REST)  |
++-----+-----+----+
+      |     |                          +-----------+
+   Resource |                          | Determine |
+   exists   +--Resource doesn&#39;t exist--&gt; operation |
+      |                                | type      |
++-----v-----+                          +-----+-----+
+| Determine |                                |
+| operation |                                |
+| type      |                                |
++-----+-----+                                |
+      |              +------------+          |
+      +--Create------&gt; Mark entry &lt;--Delete--+
+      |              | completed  |          |
+      |              +----------^-+       Create/
+      |                         |         Update
+      |                         |            |
+      |          +------------+ |      +-----v-----+
+      +--Delete--&gt; Mark entry | |      | Determine |
+      |          | pending    | |      | parent    |
+      |          +---------^--+ |      | relation  |
+      |                    |    |      +-----+-----+
++-----v------+             |    |            |
+| Compare to +--Different--+    |            |
+| resource   |                  |            |
+| in DB      +--Same------------+            |
++------------+                               |
+                                             |
++-------------------+                        |
+| Create entry for  &lt;-----Has no parent------+
+| resource creation |                        |
++--------^----------+                  Has a parent
+         |                                   |
+         |                         +---------v-----+
+         +------Parent exists------+ Query parent  |
+                                   | on ODL (REST) |
+                                   +---------+-----+
++------------------+                         |
+| Create entry for &lt;---Parent doesn&#39;t exist--+
+| parent creation  |
++------------------+
+</pre></div>
+</div>
+<p>For every error during the process the entry will remain in failed state but
+the error shouldn&#8217;t stop processing of further entries.</p>
+<p>The implementation could be done in two phases where the parent handling is
+done in a second phase.
+For the first phase if we detect an entry that is in failed for a create/update
+operation and the resource doesn&#8217;t exist on ODL we create a new &#8220;create
+resource&#8221; journal entry for the resource.</p>
+<p>This proposal utilises the journal mechanism for it&#8217;s operation while the only
+part that deviates from the standard mode of operation is when it queries ODL
+directly. This direct query has to be done to get ODL&#8217;s representation of the
+resource.</p>
+<div class="section" id="performance-impact">
+<h3>Performance Impact<a class="headerlink" href="#performance-impact" title="Permalink to this headline">¶</a></h3>
+<p>The maintenance thread will have another task to handle. This can lead to
+longer processing time and even cause the thread to skip an iteration.
+This is not an issue since the maintenance thread runs in parallel and doesn&#8217;t
+directly impact the responsiveness of the system.</p>
+<p>Since most operations here involve I/O then CPU probably won&#8217;t be impacted.</p>
+<p>Network traffic would be impacted slightly since we will attempt to fetch the
+resource each time from ODL and we might attempt to fetch it&#8217;s parent.
+This is however negligble as we do this only for failed entries, which are
+expected to appear rarely.</p>
+</div>
+<div class="section" id="alternatives">
+<h3>Alternatives<a class="headerlink" href="#alternatives" title="Permalink to this headline">¶</a></h3>
+<p>The partial sync process could make this process obsolete (along with full
+sync), but it&#8217;s a far more complicated and problematic process.
+It&#8217;s better to start with this process which is more lightweight and doable
+and consider partial sync in the future.</p>
+</div>
+</div>
+<div class="section" id="assignee-s">
+<h2>Assignee(s)<a class="headerlink" href="#assignee-s" title="Permalink to this headline">¶</a></h2>
+<dl class="docutils">
+<dt>Primary assignee:</dt>
+<dd>mkolesni &lt;<a class="reference external" href="mailto:mkolesni&#37;&#52;&#48;redhat&#46;com">mkolesni<span>&#64;</span>redhat<span>&#46;</span>com</a>&gt;</dd>
+<dt>Other contributors:</dt>
+<dd>None</dd>
+</dl>
+</div>
+<div class="section" id="references">
+<h2>References<a class="headerlink" href="#references" title="Permalink to this headline">¶</a></h2>
+<p><a class="reference external" href="https://goo.gl/IOMpzJ">https://goo.gl/IOMpzJ</a></p>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="../index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Journal Recovery</a><ul>
+<li><a class="reference internal" href="#problem-description">Problem Description</a></li>
+<li><a class="reference internal" href="#proposed-change">Proposed Change</a><ul>
+<li><a class="reference internal" href="#performance-impact">Performance Impact</a></li>
+<li><a class="reference internal" href="#alternatives">Alternatives</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#assignee-s">Assignee(s)</a></li>
+<li><a class="reference internal" href="#references">References</a></li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="../specs.html"
+                                  title="previous chapter">Neutron networking-odl Project Specifications</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="qos-driver.html"
+                                  title="next chapter">Quality of Service Driver for OpenDaylight</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/networking-odl
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="../_sources/specs/journal-recovery.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="qos-driver.html" title="Quality of Service Driver for OpenDaylight"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="../specs.html" title="Neutron networking-odl Project Specifications"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../index.html">networking-odl 3.1.1.dev185 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../specs.html" accesskey="U">Neutron networking-odl Project Specifications</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2013, OpenStack Foundation.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/networking-odl");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

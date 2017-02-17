@@ -1,0 +1,403 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Project Gating &mdash; Zuul 2.5.2.dev54 documentation</title>
+    
+    <link rel="stylesheet" href="_static/default.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '2.5.2.dev54',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <link rel="top" title="Zuul 2.5.2.dev54 documentation" href="index.html" />
+    <link rel="next" title="Connections" href="connections.html" />
+    <link rel="prev" title="Quick Start Guide" href="quick-start.html" /> 
+  </head>
+  <body>
+    <div class="related">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="connections.html" title="Connections"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="quick-start.html" title="Quick Start Guide"
+             accesskey="P">previous</a> |</li>
+        <li><a href="index.html">Zuul 2.5.2.dev54 documentation</a> &raquo;</li> 
+      </ul>
+    </div>  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body">
+            
+  <div class="section" id="project-gating">
+<h1>Project Gating<a class="headerlink" href="#project-gating" title="Permalink to this headline">¶</a></h1>
+<p>Traditionally, many software development projects merge changes from
+developers into the repository, and then identify regressions
+resulting from those changes (perhaps by running a test suite with a
+continuous integration system such as Jenkins), followed by more
+patches to fix those bugs.  When the mainline of development is
+broken, it can be very frustrating for developers and can cause lost
+productivity, particularly so when the number of contributors or
+contributions is large.</p>
+<p>The process of gating attempts to prevent changes that introduce
+regressions from being merged.  This keeps the mainline of development
+open and working for all developers, and only when a change is
+confirmed to work without disruption is it merged.</p>
+<p>Many projects practice an informal method of gating where developers
+with mainline commit access ensure that a test suite runs before
+merging a change.  With more developers, more changes, and more
+comprehensive test suites, that process does not scale very well, and
+is not the best use of a developer&#8217;s time.  Zuul can help automate
+this process, with a particular emphasis on ensuring large numbers of
+changes are tested correctly.</p>
+<p>Zuul was designed to handle the workflow of the OpenStack project, but
+can be used with any project.</p>
+<div class="section" id="testing-in-parallel">
+<h2>Testing in parallel<a class="headerlink" href="#testing-in-parallel" title="Permalink to this headline">¶</a></h2>
+<p>A particular focus of Zuul is ensuring correctly ordered testing of
+changes in parallel.  A gating system should always test each change
+applied to the tip of the branch exactly as it is going to be merged.
+A simple way to do that would be to test one change at a time, and
+merge it only if it passes tests.  That works very well, but if
+changes take a long time to test, developers may have to wait a long
+time for their changes to make it into the repository.  With some
+projects, it may take hours to test changes, and it is easy for
+developers to create changes at a rate faster than they can be tested
+and merged.</p>
+<p>Zuul&#8217;s DependentPipelineManager allows for parallel execution of test
+jobs for gating while ensuring changes are tested correctly, exactly
+as if they had been tested one at a time.  It does this by performing
+speculative execution of test jobs; it assumes that all jobs will
+succeed and tests them in parallel accordingly.  If they do succeed,
+they can all be merged.  However, if one fails, then changes that were
+expecting it to succeed are re-tested without the failed change.  In
+the best case, as many changes as execution contexts are available may
+be tested in parallel and merged at once.  In the worst case, changes
+are tested one at a time (as each subsequent change fails, changes
+behind it start again).  In practice, the OpenStack project observes
+something closer to the best case.</p>
+<p>For example, if a core developer approves five changes in rapid
+succession:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="n">A</span><span class="p">,</span> <span class="n">B</span><span class="p">,</span> <span class="n">C</span><span class="p">,</span> <span class="n">D</span><span class="p">,</span> <span class="n">E</span>
+</pre></div>
+</div>
+<p>Zuul queues those changes in the order they were approved, and notes
+that each subsequent change depends on the one ahead of it merging:</p>
+<div><img height="120" src="_images/blockdiag-74cb4b667d015ecf2096ef0f7f6fe0ef44d49fd0.png" width="440" /></div><p>Zuul then starts immediately testing all of the changes in parallel.
+But in the case of changes that depend on others, it instructs the
+test system to include the changes ahead of it, with the assumption
+they pass.  That means jobs testing change <em>B</em> include change <em>A</em> as
+well:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>Jobs for A: merge change A, then test
+Jobs for B: merge changes A and B, then test
+Jobs for C: merge changes A, B and C, then test
+Jobs for D: merge changes A, B, C and D, then test
+Jobs for E: merge changes A, B, C, D and E, then test
+</pre></div>
+</div>
+<p>Hence jobs triggered to tests A will only test A and ignore B, C, D:</p>
+<div><img height="120" src="_images/blockdiag-04cf0d347a6f3d86e55f4ba0c6178bdaf259f46e.png" width="520" /></div><p>The jobs for E would include the whole dependency chain: A, B, C, D, and E.
+E will be tested assuming A, B, C, and D passed:</p>
+<div><img height="120" src="_images/blockdiag-ea8dfe88204552040456bb63924429dc1d2f6f87.png" width="520" /></div><p>If changes <em>A</em> and <em>B</em> pass tests (green), and <em>C</em>, <em>D</em>, and <em>E</em> fail (red):</p>
+<div><img height="120" src="_images/blockdiag-e65fd5a3b000153ec13b37654b3edf10dc1ed64d.png" width="520" /></div><p>Zuul will merge change <em>A</em> followed by change <em>B</em>, leaving this queue:</p>
+<div><img height="120" src="_images/blockdiag-d1376062b40a70a89c46b9ca462a719a9fa43923.png" width="280" /></div><p>Since <em>D</em> was dependent on <em>C</em>, it is not clear whether <em>D</em>&#8216;s failure is the
+result of a defect in <em>D</em> or <em>C</em>:</p>
+<div><img height="120" src="_images/blockdiag-06407e036af2d3ed724a134a91168dd91b6b3449.png" width="280" /></div><p>Since <em>C</em> failed, Zuul will report its failure and drop <em>C</em> from the queue,
+keeping D and E:</p>
+<div><img height="120" src="_images/blockdiag-e602b65a838f5efe4c2492212571af2571fcbb63.png" width="200" /></div><p>This queue is the same as if two new changes had just arrived, so Zuul
+starts the process again testing <em>D</em> against the tip of the branch, and
+<em>E</em> against <em>D</em>:</p>
+<div><img height="120" src="_images/blockdiag-fdbfb16321300562d59efd9f3b3c76afbf84c862.png" width="280" /></div><div><img height="120" src="_images/blockdiag-0792a0ab29a94d2dc24097d7626cec84ae0b787e.png" width="280" /></div></div>
+<div class="section" id="cross-project-testing">
+<h2>Cross Project Testing<a class="headerlink" href="#cross-project-testing" title="Permalink to this headline">¶</a></h2>
+<p>When your projects are closely coupled together, you want to make sure
+changes entering the gate are going to be tested with the version of
+other projects currently enqueued in the gate (since they will
+eventually be merged and might introduce breaking features).</p>
+<p>Such relationships can be defined in Zuul configuration by registering
+a job in a DependentPipeline of several projects. Whenever a change
+enters such a pipeline, it will create references for the other
+projects as well.  As an example, given a main project <tt class="docutils literal"><span class="pre">acme</span></tt> and a
+plugin <tt class="docutils literal"><span class="pre">plugin</span></tt> you can define a job <tt class="docutils literal"><span class="pre">acme-tests</span></tt> which should be
+run for both projects:</p>
+<div class="highlight-yaml"><div class="highlight"><pre><span></span><span class="l l-Scalar l-Scalar-Plain">pipelines</span><span class="p p-Indicator">:</span>
+  <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">name</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">gate</span>
+    <span class="l l-Scalar l-Scalar-Plain">manager</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">DependentPipelineManager</span>
+
+<span class="l l-Scalar l-Scalar-Plain">projects:</span><span class="p p-Indicator">:</span>
+  <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">name</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">acme</span>
+    <span class="l l-Scalar l-Scalar-Plain">gate</span><span class="p p-Indicator">:</span>
+     <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">acme-tests</span>
+  <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">name</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">plugin</span>
+    <span class="l l-Scalar l-Scalar-Plain">gate</span><span class="p p-Indicator">:</span>
+     <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">acme-tests</span>  <span class="c1"># Register job again</span>
+</pre></div>
+</div>
+<p>Whenever a change enters the <tt class="docutils literal"><span class="pre">gate</span></tt> pipeline queue, Zuul creates a reference
+for it.  For each subsequent change, an additional reference is created for the
+changes ahead in the queue.  As a result, you will always be able to fetch the
+future state of your project dependencies for each change in the queue.</p>
+<p>Based on the pipeline and project definitions above, three changes are
+inserted in the <tt class="docutils literal"><span class="pre">gate</span></tt> pipeline with the associated references:</p>
+<blockquote>
+<div><table border="1" class="docutils">
+<colgroup>
+<col width="27%" />
+<col width="23%" />
+<col width="20%" />
+<col width="30%" />
+</colgroup>
+<thead valign="bottom">
+<tr class="row-odd"><th class="head">Change</th>
+<th class="head">Project</th>
+<th class="head">Branch</th>
+<th class="head">Zuul Ref.</th>
+</tr>
+</thead>
+<tbody valign="top">
+<tr class="row-even"><td>Change 1</td>
+<td>acme</td>
+<td>master</td>
+<td>master/Z1</td>
+</tr>
+<tr class="row-odd"><td>Change 2</td>
+<td>plugin</td>
+<td>stable</td>
+<td>stable/Z2</td>
+</tr>
+<tr class="row-even"><td>Change 3</td>
+<td>plugin</td>
+<td>master</td>
+<td>master/Z3</td>
+</tr>
+</tbody>
+</table>
+</div></blockquote>
+<p>Since the changes enter a DependentPipelineManager pipeline, Zuul creates
+additional references:</p>
+<blockquote>
+<div><table border="1" class="docutils">
+<colgroup>
+<col width="12%" />
+<col width="14%" />
+<col width="18%" />
+<col width="57%" />
+</colgroup>
+<thead valign="bottom">
+<tr class="row-odd"><th class="head">Change</th>
+<th class="head">Project</th>
+<th class="head">Zuul Ref.</th>
+<th class="head">Description</th>
+</tr>
+</thead>
+<tbody valign="top">
+<tr class="row-even"><td>1</td>
+<td>acme</td>
+<td>master/Z1</td>
+<td>acme master + change 1</td>
+</tr>
+<tr class="row-odd"><td>2</td>
+<td>acme</td>
+<td>master/Z2</td>
+<td>acme master + change 1</td>
+</tr>
+<tr class="row-even"><td>2</td>
+<td>plugin</td>
+<td>stable/Z2</td>
+<td>plugin stable + change 2</td>
+</tr>
+<tr class="row-odd"><td>3</td>
+<td>acme</td>
+<td>master/Z3</td>
+<td>acme master + change 1</td>
+</tr>
+<tr class="row-even"><td>3</td>
+<td>plugin</td>
+<td>stable/Z3</td>
+<td>plugin stable + change 2</td>
+</tr>
+<tr class="row-odd"><td>3</td>
+<td>plugin</td>
+<td>master/Z3</td>
+<td>plugin master + change 3</td>
+</tr>
+</tbody>
+</table>
+</div></blockquote>
+<p>In order to test change 3, you would clone both repositories and simply
+fetch the Z3 reference for each combination of project/branch you are
+interested in testing. For example, you could fetch <tt class="docutils literal"><span class="pre">acme</span></tt> with
+master/Z3 and <tt class="docutils literal"><span class="pre">plugin</span></tt> with master/Z3 and thus have <tt class="docutils literal"><span class="pre">acme</span></tt> with
+change 1 applied as the expected state for when Change 3 would merge.
+When your job fetches several repositories without changes ahead in the
+queue, they may not have a Z reference in which case you can just check
+out the branch.</p>
+</div>
+<div class="section" id="cross-repository-dependencies">
+<h2>Cross Repository Dependencies<a class="headerlink" href="#cross-repository-dependencies" title="Permalink to this headline">¶</a></h2>
+<p>Zuul permits users to specify dependencies across repositories.  Using
+a special header in Git commit messages, Users may specify that a
+change depends on another change in any repository known to Zuul.</p>
+<p>Zuul&#8217;s cross-repository dependencies (CRD) behave like a directed
+acyclic graph (DAG), like git itself, to indicate a one-way dependency
+relationship between changes in different git repositories.  Change A
+may depend on B, but B may not depend on A.</p>
+<p>To use them, include <tt class="docutils literal"><span class="pre">Depends-On:</span> <span class="pre">&lt;gerrit-change-id&gt;</span></tt> in the footer of
+a commit message.  Use the full Change-ID (&#8216;I&#8217; + 40 characters).</p>
+<div class="section" id="dependent-pipeline">
+<h3>Dependent Pipeline<a class="headerlink" href="#dependent-pipeline" title="Permalink to this headline">¶</a></h3>
+<p>When Zuul sees CRD changes, it serializes them in the usual manner when
+enqueuing them into a pipeline.  This means that if change A depends on
+B, then when they are added to a dependent pipeline, B will appear first
+and A will follow:</p>
+<div align="center" class="align-center"><img height="200" src="_images/blockdiag-06c51a7a8c033a1006065422fc439c49eddaf892.png" width="238" /></div>
+<p>If tests for B fail, both B and A will be removed from the pipeline, and
+it will not be possible for A to merge until B does.</p>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">If changes with CRD do not share a change queue then Zuul is unable
+to enqueue them together, and the first will be required to merge
+before the second is enqueued.</p>
+</div>
+</div>
+<div class="section" id="independent-pipeline">
+<h3>Independent Pipeline<a class="headerlink" href="#independent-pipeline" title="Permalink to this headline">¶</a></h3>
+<p>When changes are enqueued into an independent pipeline, all of the
+related dependencies (both normal git-dependencies that come from parent
+commits as well as CRD changes) appear in a dependency graph, as in a
+dependent pipeline. This means that even in an independent pipeline,
+your change will be tested with its dependencies.  So changes that were
+previously unable to be fully tested until a related change landed in a
+different repository may now be tested together from the start.</p>
+<p>All of the changes are still independent (so you will note that the
+whole pipeline does not share a graph as in a dependent pipeline), but
+for each change tested, all of its dependencies are visually connected
+to it, and they are used to construct the git references that Zuul uses
+when testing.</p>
+<p>When looking at this graph on the status page, you will note that the
+dependencies show up as grey dots, while the actual change tested shows
+up as red or green (depending on the jobs results):</p>
+<div align="center" class="align-center"><img height="200" src="_images/blockdiag-5a92e7f62c4d31811055b37d56ef66a2b80cb9d9.png" width="238" /></div>
+<p>This is to indicate that the grey changes are only there to establish
+dependencies.  Even if one of the dependencies is also being tested, it
+will show up as a grey dot when used as a dependency, but separately and
+additionally will appear as its own red or green dot for its test.</p>
+</div>
+<div class="section" id="multiple-changes">
+<h3>Multiple Changes<a class="headerlink" href="#multiple-changes" title="Permalink to this headline">¶</a></h3>
+<p>A Gerrit change ID may refer to multiple changes (on multiple branches
+of the same project, or even multiple projects).  In these cases, Zuul
+will treat all of the changes with that change ID as dependencies.  So
+if you say that change in project A Depends-On a change ID that has
+changes in two branches of project B, then when testing the change to
+project A, both project B changes will be applied, and when deciding
+whether the project A change can merge, both changes must merge ahead
+of it.</p>
+<div align="center" class="align-center"><img height="280" src="_images/blockdiag-c23d053552e3c0ebeb1dee015f5855ac34294e47.png" width="238" /></div>
+<p>A change may depend on more than one Gerrit change ID as well.  So it
+is possible for a change in project A to depend on a change in project
+B and a change in project C.  Simply add more <tt class="docutils literal"><span class="pre">Depends-On:</span></tt> lines to
+the commit message footer.</p>
+<div align="center" class="align-center"><img height="280" src="_images/blockdiag-b03d9e5d0d87252ccced0dd123a565f20d8b1504.png" width="238" /></div>
+</div>
+<div class="section" id="cycles">
+<h3>Cycles<a class="headerlink" href="#cycles" title="Permalink to this headline">¶</a></h3>
+<p>If a cycle is created by use of CRD, Zuul will abort its work very
+early.  There will be no message in Gerrit and no changes that are part
+of the cycle will be enqueued into any pipeline.  This is to protect
+Zuul from infinite loops.</p>
+</div>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+      <div class="sphinxsidebar">
+        <div class="sphinxsidebarwrapper">
+  <h3><a href="index.html">Table Of Contents</a></h3>
+  <ul>
+<li><a class="reference internal" href="#">Project Gating</a><ul>
+<li><a class="reference internal" href="#testing-in-parallel">Testing in parallel</a></li>
+<li><a class="reference internal" href="#cross-project-testing">Cross Project Testing</a></li>
+<li><a class="reference internal" href="#cross-repository-dependencies">Cross Repository Dependencies</a><ul>
+<li><a class="reference internal" href="#dependent-pipeline">Dependent Pipeline</a></li>
+<li><a class="reference internal" href="#independent-pipeline">Independent Pipeline</a></li>
+<li><a class="reference internal" href="#multiple-changes">Multiple Changes</a></li>
+<li><a class="reference internal" href="#cycles">Cycles</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+  <h4>Previous topic</h4>
+  <p class="topless"><a href="quick-start.html"
+                        title="previous chapter">Quick Start Guide</a></p>
+  <h4>Next topic</h4>
+  <p class="topless"><a href="connections.html"
+                        title="next chapter">Connections</a></p>
+  <h3>This Page</h3>
+  <ul class="this-page-menu">
+    <li><a href="_sources/gating.txt"
+           rel="nofollow">Show Source</a></li>
+  </ul>
+<div id="searchbox" style="display: none">
+  <h3>Quick search</h3>
+    <form class="search" action="search.html" method="get">
+      <input type="text" name="q" />
+      <input type="submit" value="Go" />
+      <input type="hidden" name="check_keywords" value="yes" />
+      <input type="hidden" name="area" value="default" />
+    </form>
+    <p class="searchtip" style="font-size: 90%">
+    Enter search terms or a module, class or function name.
+    </p>
+</div>
+<script type="text/javascript">$('#searchbox').show(0);</script>
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="related">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             >index</a></li>
+        <li class="right" >
+          <a href="connections.html" title="Connections"
+             >next</a> |</li>
+        <li class="right" >
+          <a href="quick-start.html" title="Quick Start Guide"
+             >previous</a> |</li>
+        <li><a href="index.html">Zuul 2.5.2.dev54 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+    <div class="footer">
+        &copy; Copyright 2012, OpenStack.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.2.3.
+    </div>
+  </body>
+</html>

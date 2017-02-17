@@ -1,0 +1,832 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Erasure Code Support &mdash; swift 2.12.1.dev102 documentation</title>
+    
+    <link rel="stylesheet" href="_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '2.12.1.dev102',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <link rel="top" title="swift 2.12.1.dev102 documentation" href="index.html" />
+    <link rel="next" title="Object Encryption" href="overview_encryption.html" />
+    <link rel="prev" title="Cross-domain Policy File" href="crossdomain.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="erasure-code-support">
+<h1>Erasure Code Support<a class="headerlink" href="#erasure-code-support" title="Permalink to this headline">¶</a></h1>
+<div class="section" id="history-and-theory-of-operation">
+<h2>History and Theory of Operation<a class="headerlink" href="#history-and-theory-of-operation" title="Permalink to this headline">¶</a></h2>
+<p>There&#8217;s a lot of good material out there on Erasure Code (EC) theory, this short
+introduction is just meant to provide some basic context to help the reader
+better understand the implementation in Swift.</p>
+<p>Erasure Coding for storage applications grew out of Coding Theory as far back as
+the 1960s with the Reed-Solomon codes.  These codes have been used for years in
+applications ranging from CDs to DVDs to general communications and, yes, even
+in the space program starting with Voyager! The basic idea is that some amount
+of data is broken up into smaller pieces called fragments and coded in such a
+way that it can be transmitted with the ability to tolerate the loss of some
+number of the coded fragments.  That&#8217;s where the word &#8220;erasure&#8221; comes in, if you
+transmit 14 fragments and only 13 are received then one of them is said to be
+&#8220;erased&#8221;.  The word &#8220;erasure&#8221; provides an important distinction with EC; it
+isn&#8217;t about detecting errors, it&#8217;s about dealing with failures.  Another
+important element of EC is that the number of erasures that can be tolerated can
+be adjusted to meet the needs of the application.</p>
+<p>At a high level EC works by using a specific scheme to break up a single data
+buffer into several smaller data buffers then, depending on the scheme,
+performing some encoding operation on that data in order to generate additional
+information.  So you end up with more data than you started with and that extra
+data is often called &#8220;parity&#8221;.  Note that there are many, many different
+encoding techniques that vary both in how they organize and manipulate the data
+as well by what means they use to calculate parity.  For example, one scheme
+might rely on <a class="reference external" href="http://www.ssrc.ucsc.edu/Papers/plank-fast13.pdf">Galois Field Arithmetic</a> while others may work with only XOR. The number of variations and
+details about their differences are well beyond the scope of this introduction,
+but we will talk more about a few of them when we get into the implementation of
+EC in Swift.</p>
+</div>
+<div class="section" id="overview-of-ec-support-in-swift">
+<h2>Overview of EC Support in Swift<a class="headerlink" href="#overview-of-ec-support-in-swift" title="Permalink to this headline">¶</a></h2>
+<p>First and foremost, from an application perspective EC support is totally
+transparent. There are no EC related external API; a container is simply created
+using a Storage Policy defined to use EC and then interaction with the cluster
+is the same as any other durability policy.</p>
+<p>EC is implemented in Swift as a Storage Policy, see <a class="reference internal" href="overview_policies.html"><em>Storage Policies</em></a> for
+complete details on Storage Policies.  Because support is implemented as a
+Storage Policy, all of the storage devices associated with your cluster&#8217;s EC
+capability can be isolated.  It is entirely possible to share devices between
+storage policies, but for EC it may make more sense to not only use separate
+devices but possibly even entire nodes dedicated for EC.</p>
+<p>Which direction one chooses depends on why the EC policy is being deployed.  If,
+for example, there is a production replication policy in place already and the
+goal is to add a cold storage tier such that the existing nodes performing
+replication are impacted as little as possible, adding a new set of nodes
+dedicated to EC might make the most sense but also incurs the most cost.  On the
+other hand, if EC is being added as a capability to provide additional
+durability for a specific set of applications and the existing infrastructure is
+well suited for EC (sufficient number of nodes, zones for the EC scheme that is
+chosen) then leveraging the existing infrastructure such that the EC ring shares
+nodes with the replication ring makes the most sense.  These are some of the
+main considerations:</p>
+<ul class="simple">
+<li>Layout of existing infrastructure.</li>
+<li>Cost of adding dedicated EC nodes (or just dedicated EC devices).</li>
+<li>Intended usage model(s).</li>
+</ul>
+<p>The Swift code base does not include any of the algorithms necessary to perform
+the actual encoding and decoding of data; that is left to external libraries.
+The Storage Policies architecture is leveraged to enable EC on a per container
+basis &#8211; the object rings are still used to determine the placement of EC data
+fragments. Although there are several code paths that are unique to an operation
+associated with an EC policy, an external dependency to an Erasure Code library
+is what Swift counts on to perform the low level EC functions.  The use of an
+external library allows for maximum flexibility as there are a significant
+number of options out there, each with its owns pros and cons that can vary
+greatly from one use case to another.</p>
+</div>
+<div class="section" id="pyeclib-external-erasure-code-library">
+<h2>PyECLib:  External Erasure Code Library<a class="headerlink" href="#pyeclib-external-erasure-code-library" title="Permalink to this headline">¶</a></h2>
+<p>PyECLib is a Python Erasure Coding Library originally designed and written as
+part of the effort to add EC support to the Swift project, however it is an
+independent project.  The library provides a well-defined and simple Python
+interface and internally implements a plug-in architecture allowing it to take
+advantage of many well-known C libraries such as:</p>
+<ul class="simple">
+<li>Jerasure and GFComplete at <a class="reference external" href="http://jerasure.org">http://jerasure.org</a>.</li>
+<li>Intel(R) ISA-L at <a class="reference external" href="http://01.org/intel%C2%AE-storage-acceleration-library-open-source-version">http://01.org/intel%C2%AE-storage-acceleration-library-open-source-version</a>.</li>
+<li>Or write your own!</li>
+</ul>
+<p>PyECLib uses a C based library called liberasurecode to implement the plug in
+infrastructure; liberasure code is available at:</p>
+<ul class="simple">
+<li>liberasurecode: <a class="reference external" href="https://github.com/openstack/liberasurecode">https://github.com/openstack/liberasurecode</a></li>
+</ul>
+<p>PyECLib itself therefore allows for not only choice but further extensibility as
+well. PyECLib also comes with a handy utility to help determine the best
+algorithm to use based on the equipment that will be used (processors and server
+configurations may vary in performance per algorithm).  More on this will be
+covered in the configuration section.  PyECLib is included as a Swift
+requirement.</p>
+<p>For complete details see <a class="reference external" href="https://github.com/openstack/pyeclib">PyECLib</a></p>
+</div>
+<div class="section" id="storing-and-retrieving-objects">
+<h2>Storing and Retrieving Objects<a class="headerlink" href="#storing-and-retrieving-objects" title="Permalink to this headline">¶</a></h2>
+<p>We will discuss the details of how PUT and GET work in the &#8220;Under the Hood&#8221;
+section later on. The key point here is that all of the erasure code work goes
+on behind the scenes; this summary is a high level information overview only.</p>
+<p>The PUT flow looks like this:</p>
+<ol class="arabic simple">
+<li>The proxy server streams in an object and buffers up &#8220;a segment&#8221; of data
+(size is configurable).</li>
+<li>The proxy server calls on PyECLib to encode the data into smaller fragments.</li>
+<li>The proxy streams the encoded fragments out to the storage nodes based on
+ring locations.</li>
+<li>Repeat until the client is done sending data.</li>
+<li>The client is notified of completion when a quorum is met.</li>
+</ol>
+<p>The GET flow looks like this:</p>
+<ol class="arabic simple">
+<li>The proxy server makes simultaneous requests to participating nodes.</li>
+<li>As soon as the proxy has the fragments it needs, it calls on PyECLib to
+decode the data.</li>
+<li>The proxy streams the decoded data it has back to the client.</li>
+<li>Repeat until the proxy is done sending data back to the client.</li>
+</ol>
+<p>It may sound like, from this high level overview, that using EC is going to
+cause an explosion in the number of actual files stored in each node&#8217;s local
+file system.  Although it is true that more files will be stored (because an
+object is broken into pieces), the implementation works to minimize this where
+possible, more details are available in the Under the Hood section.</p>
+</div>
+<div class="section" id="handoff-nodes">
+<h2>Handoff Nodes<a class="headerlink" href="#handoff-nodes" title="Permalink to this headline">¶</a></h2>
+<p>In EC policies, similarly to replication, handoff nodes are a set of storage
+nodes used to augment the list of primary nodes responsible for storing an
+erasure coded object. These handoff nodes are used in the event that one or more
+of the primaries are unavailable.  Handoff nodes are still selected with an
+attempt to achieve maximum separation of the data being placed.</p>
+</div>
+<div class="section" id="reconstruction">
+<h2>Reconstruction<a class="headerlink" href="#reconstruction" title="Permalink to this headline">¶</a></h2>
+<p>For an EC policy, reconstruction is analogous to the process of replication for
+a replication type policy &#8211; essentially &#8220;the reconstructor&#8221; replaces &#8220;the
+replicator&#8221; for EC policy types. The basic framework of reconstruction is very
+similar to that of replication with a few notable exceptions:</p>
+<ul class="simple">
+<li>Because EC does not actually replicate partitions, it needs to operate at a
+finer granularity than what is provided with rsync, therefore EC leverages
+much of ssync behind the scenes (you do not need to manually configure ssync).</li>
+<li>Once a pair of nodes has determined the need to replace a missing object
+fragment, instead of pushing over a copy like replication would do, the
+reconstructor has to read in enough surviving fragments from other nodes and
+perform a local reconstruction before it has the correct data to push to the
+other node.</li>
+<li>A reconstructor does not talk to all other reconstructors in the set of nodes
+responsible for an EC partition, this would be far too chatty, instead each
+reconstructor is responsible for sync&#8217;ing with the partition&#8217;s closest two
+neighbors (closest meaning left and right on the ring).</li>
+</ul>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">EC work (encode and decode) takes place both on the proxy nodes, for PUT/GET
+operations, as well as on the storage nodes for reconstruction.  As with
+replication, reconstruction can be the result of rebalancing, bit-rot, drive
+failure or reverting data from a hand-off node back to its primary.</p>
+</div>
+</div>
+<div class="section" id="performance-considerations">
+<h2>Performance Considerations<a class="headerlink" href="#performance-considerations" title="Permalink to this headline">¶</a></h2>
+<p>In general, EC has different performance characteristics than replicated data.
+EC requires substantially more CPU to read and write data, and is more suited
+for larger objects that are not frequently accessed (eg backups).</p>
+<p>Operators are encouraged to characterize the performance of various EC schemes
+and share their observations with the developer community.</p>
+</div>
+<div class="section" id="using-an-erasure-code-policy">
+<h2>Using an Erasure Code Policy<a class="headerlink" href="#using-an-erasure-code-policy" title="Permalink to this headline">¶</a></h2>
+<p>To use an EC policy, the administrator simply needs to define an EC policy in
+<cite>swift.conf</cite> and create/configure the associated object ring.  An example of how
+an EC policy can be setup is shown below:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>[storage-policy:2]
+name = ec104
+policy_type = erasure_coding
+ec_type = liberasurecode_rs_vand
+ec_num_data_fragments = 10
+ec_num_parity_fragments = 4
+ec_object_segment_size = 1048576
+</pre></div>
+</div>
+<p>Let&#8217;s take a closer look at each configuration parameter:</p>
+<ul class="simple">
+<li><code class="docutils literal"><span class="pre">name</span></code>: This is a standard storage policy parameter.
+See <a class="reference internal" href="overview_policies.html"><em>Storage Policies</em></a> for details.</li>
+<li><code class="docutils literal"><span class="pre">policy_type</span></code>: Set this to <code class="docutils literal"><span class="pre">erasure_coding</span></code> to indicate that this is an EC
+policy.</li>
+<li><code class="docutils literal"><span class="pre">ec_type</span></code>: Set this value according to the available options in the selected
+PyECLib back-end. This specifies the EC scheme that is to be used.  For
+example the option shown here selects Vandermonde Reed-Solomon encoding while
+an option of <code class="docutils literal"><span class="pre">flat_xor_hd_3</span></code> would select Flat-XOR based HD combination
+codes. See the <a class="reference external" href="https://github.com/openstack/pyeclib">PyECLib</a> page for
+full details.</li>
+<li><code class="docutils literal"><span class="pre">ec_num_data_fragments</span></code>: The total number of fragments that will be
+comprised of data.</li>
+<li><code class="docutils literal"><span class="pre">ec_num_parity_fragments</span></code>: The total number of fragments that will be
+comprised of parity.</li>
+<li><code class="docutils literal"><span class="pre">ec_object_segment_size</span></code>: The amount of data that will be buffered up before
+feeding a segment into the encoder/decoder. The default value is 1048576.</li>
+</ul>
+<p>When PyECLib encodes an object, it will break it into N fragments. However, what
+is important during configuration, is how many of those are data and how many
+are parity.  So in the example above, PyECLib will actually break an object in
+14 different fragments, 10 of them will be made up of actual object data and 4
+of them will be made of parity data (calculations depending on ec_type).</p>
+<p>When deciding which devices to use in the EC policy&#8217;s object ring, be sure to
+carefully consider the performance impacts.  Running some performance
+benchmarking in a test environment for your configuration is highly recommended
+before deployment.</p>
+<p>To create the EC policy&#8217;s object ring, the only difference in the usage of the
+<code class="docutils literal"><span class="pre">swift-ring-builder</span> <span class="pre">create</span></code> command is the <code class="docutils literal"><span class="pre">replicas</span></code> parameter.  The
+<code class="docutils literal"><span class="pre">replicas</span></code> value is the number of fragments spread across the object servers
+associated with the ring; <code class="docutils literal"><span class="pre">replicas</span></code> must be equal to the sum of
+<code class="docutils literal"><span class="pre">ec_num_data_fragments</span></code> and <code class="docutils literal"><span class="pre">ec_num_parity_fragments</span></code>. For example:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>swift-ring-builder object-1.builder create 10 14 1
+</pre></div>
+</div>
+<p>Note that in this example the <code class="docutils literal"><span class="pre">replicas</span></code> value of 14 is based on the sum of
+10 EC data fragments and 4 EC parity fragments.</p>
+<p>Once you have configured your EC policy in <cite>swift.conf</cite> and created your object
+ring, your application is ready to start using EC simply by creating a container
+with the specified policy name and interacting as usual.</p>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">It&#8217;s important to note that once you have deployed a policy and have created
+objects with that policy, these configurations options cannot be changed. In
+case a change in the configuration is desired, you must create a new policy
+and migrate the data to a new container.</p>
+</div>
+<div class="section" id="migrating-between-policies">
+<h3>Migrating Between Policies<a class="headerlink" href="#migrating-between-policies" title="Permalink to this headline">¶</a></h3>
+<p>A common usage of EC is to migrate less commonly accessed data from a more
+expensive but lower latency policy such as replication.  When an application
+determines that it wants to move data from a replication policy to an EC policy,
+it simply needs to move the data from the replicated container to an EC
+container that was created with the target durability policy.</p>
+</div>
+<div class="section" id="region-support">
+<h3>Region Support<a class="headerlink" href="#region-support" title="Permalink to this headline">¶</a></h3>
+<p>For at least the initial version of EC, it is not recommended that an EC scheme
+span beyond a single region, neither performance nor functional validation has
+be been done in such a configuration.</p>
+</div>
+</div>
+<div class="section" id="under-the-hood">
+<h2>Under the Hood<a class="headerlink" href="#under-the-hood" title="Permalink to this headline">¶</a></h2>
+<p>Now that we&#8217;ve explained a little about EC support in Swift and how to
+configure/use it, let&#8217;s explore how EC fits in at the nuts-n-bolts level.</p>
+<div class="section" id="terminology">
+<h3>Terminology<a class="headerlink" href="#terminology" title="Permalink to this headline">¶</a></h3>
+<p>The term &#8216;fragment&#8217; has been used already to describe the output of the EC
+process (a series of fragments) however we need to define some other key terms
+here before going any deeper.  Without paying special attention to using the
+correct terms consistently, it is very easy to get confused in a hurry!</p>
+<ul class="simple">
+<li><strong>chunk</strong>: HTTP chunks received over wire (term not used to describe any EC
+specific operation).</li>
+<li><strong>segment</strong>: Not to be confused with SLO/DLO use of the word, in EC we call a
+segment a series of consecutive HTTP chunks buffered up before performing an
+EC operation.</li>
+<li><strong>fragment</strong>: Data and parity &#8216;fragments&#8217; are generated when erasure coding
+transformation is applied to a segment.</li>
+<li><strong>EC archive</strong>: A concatenation of EC fragments; to a storage node this looks
+like an object.</li>
+<li><strong>ec_ndata</strong>: Number of EC data fragments.</li>
+<li><strong>ec_nparity</strong>: Number of EC parity fragments.</li>
+</ul>
+</div>
+<div class="section" id="middleware">
+<h3>Middleware<a class="headerlink" href="#middleware" title="Permalink to this headline">¶</a></h3>
+<p>Middleware remains unchanged.  For most middleware (e.g., SLO/DLO) the fact that
+the proxy is fragmenting incoming objects is transparent.  For list endpoints,
+however, it is a bit different. A caller of list endpoints will get back the
+locations of all of the fragments.  The caller will be unable to re-assemble the
+original object with this information, however the node locations may still
+prove to be useful information for some applications.</p>
+</div>
+<div class="section" id="on-disk-storage">
+<h3>On Disk Storage<a class="headerlink" href="#on-disk-storage" title="Permalink to this headline">¶</a></h3>
+<p>EC archives are stored on disk in their respective objects-N directory based on
+their policy index.  See <a class="reference internal" href="overview_policies.html"><em>Storage Policies</em></a> for details on per policy
+directory information.</p>
+<p>In addition to the object timestamp, the filenames of EC archives encode other
+information related to the archive:</p>
+<ul>
+<li><p class="first">The fragment archive index. This is required for a few reasons. For one, it
+allows us to store fragment archives of different indexes on the same storage
+node which is not typical however it is possible in many circumstances.
+Without unique filenames for the different EC archive files in a set, we
+would be at risk of overwriting one archive of index <cite>n</cite> with another of
+index <cite>m</cite> in some scenarios.</p>
+<p>The index is appended to the filename just before the <code class="docutils literal"><span class="pre">.data</span></code> extension.
+For example, the filename for a fragment archive storing the 5th fragment
+would be:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="mf">1418673556.92690</span><span class="c1">#5.data</span>
+</pre></div>
+</div>
+</li>
+<li><p class="first">The durable state of the archive. The meaning of this will be described in
+more detail later, but a fragment archive that is considered durable has an
+additional <code class="docutils literal"><span class="pre">#d</span></code> string included in its filename immediately before the
+<code class="docutils literal"><span class="pre">.data</span></code> extension. For example:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="mf">1418673556.92690</span><span class="c1">#5#d.data</span>
+</pre></div>
+</div>
+</li>
+</ul>
+<p>A policy-specific transformation function is therefore used to build the
+archive filename. These functions are implemented in the diskfile module as
+methods of policy specific sub classes of <code class="docutils literal"><span class="pre">BaseDiskFileManager</span></code>.</p>
+<p>The transformation function for the replication policy is simply a NOP.</p>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p>In older versions the durable state of an archive was represented by an
+additional file called the <code class="docutils literal"><span class="pre">.durable</span></code> file instead of the <code class="docutils literal"><span class="pre">#d</span></code>
+substring in the <code class="docutils literal"><span class="pre">.data</span></code> filename. The <code class="docutils literal"><span class="pre">.durable</span></code> for the example above
+would be:</p>
+<div class="last highlight-python"><div class="highlight"><pre><span></span><span class="mf">1418673556.92690</span><span class="o">.</span><span class="n">durable</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="section" id="proxy-server">
+<h3>Proxy Server<a class="headerlink" href="#proxy-server" title="Permalink to this headline">¶</a></h3>
+<div class="section" id="high-level">
+<h4>High Level<a class="headerlink" href="#high-level" title="Permalink to this headline">¶</a></h4>
+<p>The Proxy Server handles Erasure Coding in a different manner than replication,
+therefore there are several code paths unique to EC policies either though sub
+classing or simple conditionals.  Taking a closer look at the PUT and the GET
+paths will help make this clearer.  But first, a high level overview of how an
+object flows through the system:</p>
+<img alt="_images/ec_overview.png" src="_images/ec_overview.png" />
+<p>Note how:</p>
+<ul class="simple">
+<li>Incoming objects are buffered into segments at the proxy.</li>
+<li>Segments are erasure coded into fragments at the proxy.</li>
+<li>The proxy stripes fragments across participating nodes such that the on-disk
+stored files that we call a fragment archive is appended with each new
+fragment.</li>
+</ul>
+<p>This scheme makes it possible to minimize the number of on-disk files given our
+segmenting and fragmenting.</p>
+</div>
+<div class="section" id="multi-phase-conversation">
+<h4>Multi_Phase Conversation<a class="headerlink" href="#multi-phase-conversation" title="Permalink to this headline">¶</a></h4>
+<p>Multi-part MIME document support is used to allow the proxy to engage in a
+handshake conversation with the storage node for processing PUT requests.  This
+is required for a few different reasons.</p>
+<ol class="arabic simple">
+<li>From the perspective of the storage node, a fragment archive is really just
+another object, we need a mechanism to send down the original object etag
+after all fragment archives have landed.</li>
+<li>Without introducing strong consistency semantics, the proxy needs a mechanism
+to know when a quorum of fragment archives have actually made it to disk
+before it can inform the client of a successful PUT.</li>
+</ol>
+<p>MIME supports a conversation between the proxy and the storage nodes for every
+PUT. This provides us with the ability to handle a PUT in one connection and
+assure that we have the essence of a 2 phase commit, basically having the proxy
+communicate back to the storage nodes once it has confirmation that a quorum of
+fragment archives in the set have been written.</p>
+<p>For the first phase of the conversation the proxy requires a quorum of
+<cite>ec_ndata + 1</cite> fragment archives to be successfully put to storage nodes. This
+ensures that the object could still be reconstructed even if one of the
+fragment archives becomes unavailable. As described above, each fragment
+archive file is named:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>&lt;ts&gt;#&lt;frag_index&gt;.data
+</pre></div>
+</div>
+<p>where <code class="docutils literal"><span class="pre">ts</span></code> is the timestamp and <code class="docutils literal"><span class="pre">frag_index</span></code> is the fragment archive index.</p>
+<p>During the second phase of the conversation the proxy communicates a
+confirmation to storage nodes that the fragment archive quorum has been
+achieved. This causes each storage node to rename the fragment archive written
+in the first phase of the conversation to include the substring <code class="docutils literal"><span class="pre">#d</span></code> in its
+name:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>&lt;ts&gt;#&lt;frag_index&gt;#d.data
+</pre></div>
+</div>
+<p>This indicates to the object server that this fragment archive is <cite>durable</cite> and
+that there is a set of data files that are durable at timestamp <code class="docutils literal"><span class="pre">ts</span></code>.</p>
+<p>For the second phase of the conversation the proxy requires a quorum of
+<cite>ec_ndata + 1</cite> successful commits on storage nodes. This ensures that there are
+sufficient committed fragment archives for the object to be reconstructed even
+if one becomes unavailable. The reconstructor ensures that the durable state is
+replicated on storage nodes where it may be missing.</p>
+<p>Note that the completion of the commit phase of the conversation
+is also a signal for the object server to go ahead and immediately delete older
+timestamp files for this object. This is critical as we do not want to delete
+the older object until the storage node has confirmation from the proxy, via the
+multi-phase conversation, that the other nodes have landed enough for a quorum.</p>
+<p>The basic flow looks like this:</p>
+<blockquote>
+<div><ul class="simple">
+<li>The Proxy Server erasure codes and streams the object fragments
+(ec_ndata + ec_nparity) to the storage nodes.</li>
+<li>The storage nodes store objects as EC archives and upon finishing object
+data/metadata write, send a 1st-phase response to proxy.</li>
+<li>Upon quorum of storage nodes responses, the proxy initiates 2nd-phase by
+sending commit confirmations to object servers.</li>
+<li>Upon receipt of commit message, object servers rename <code class="docutils literal"><span class="pre">.data</span></code> files to
+include the <code class="docutils literal"><span class="pre">#d</span></code> substring, indicating successful PUT, and send a final
+response to the proxy server.</li>
+<li>The proxy waits for <cite>ec_ndata + 1</cite> object servers to respond with a
+success (2xx) status before responding to the client with a successful
+status.</li>
+</ul>
+</div></blockquote>
+<p>Here is a high level example of what the conversation looks like:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>proxy: PUT /p/a/c/o
+     Transfer-Encoding&#39;: &#39;chunked&#39;
+     Expect&#39;: &#39;100-continue&#39;
+     X-Backend-Obj-Multiphase-Commit: yes
+obj:   100 Continue
+     X-Obj-Multiphase-Commit: yes
+proxy: --MIMEboundary
+     X-Document: object body
+     &lt;obj_data&gt;
+     --MIMEboundary
+     X-Document: object metadata
+     Content-MD5: &lt;footer_meta_cksum&gt;
+     &lt;footer_meta&gt;
+     --MIMEboundary
+&lt;object server writes data, metadata to &lt;ts&gt;#&lt;frag_index&gt;.data file&gt;
+obj:   100 Continue
+&lt;quorum&gt;
+proxy: X-Document: put commit
+     commit_confirmation
+     --MIMEboundary--
+&lt;object server renames &lt;ts&gt;#&lt;frag_index&gt;.data to &lt;ts&gt;#&lt;frag_index&gt;#d.data&gt;
+obj:   20x
+&lt;proxy waits to receive &gt;=2 2xx responses&gt;
+proxy: 2xx -&gt; client
+</pre></div>
+</div>
+<p>A few key points on the durable state of a fragment archive:</p>
+<ul class="simple">
+<li>A durable fragment archive means that there exist sufficient other fragment
+archives elsewhere in the cluster (durable and/or non-durable) to reconstruct
+the object.</li>
+<li>When a proxy does a GET, it will require at least one object server to
+respond with a fragment archive is durable before reconstructing and
+returning the object to the client.</li>
+</ul>
+</div>
+<div class="section" id="partial-put-failures">
+<h4>Partial PUT Failures<a class="headerlink" href="#partial-put-failures" title="Permalink to this headline">¶</a></h4>
+<p>A partial PUT failure has a few different modes.  In one scenario the Proxy
+Server is alive through the entire PUT conversation.  This is a very
+straightforward case. The client will receive a good response if and only if a
+quorum of fragment archives were successfully landed on their storage nodes.
+In this case the Reconstructor will discover the missing fragment archives,
+perform a reconstruction and deliver those fragment archives to their nodes.</p>
+<p>The more interesting case is what happens if the proxy dies in the middle of a
+conversation.  If it turns out that a quorum had been met and the commit phase
+of the conversation finished, its as simple as the previous case in that the
+reconstructor will repair things.  However, if the commit didn&#8217;t get a chance to
+happen then some number of the storage nodes have .data files on them (fragment
+archives) but none of them knows whether there are enough elsewhere for the
+entire object to be reconstructed.  In this case the client will not have
+received a 2xx response so there is no issue there, however, it is left to the
+storage nodes to clean up the stale fragment archives.  Work is ongoing in this
+area to enable the proxy to play a role in reviving these fragment archives,
+however, for the current release, a proxy failure after the start of a
+conversation but before the commit message will simply result in a PUT failure.</p>
+</div>
+<div class="section" id="get">
+<h4>GET<a class="headerlink" href="#get" title="Permalink to this headline">¶</a></h4>
+<p>The GET for EC is different enough from replication that subclassing the
+<cite>BaseObjectController</cite> to the <cite>ECObjectController</cite> enables an efficient way to
+implement the high level steps described earlier:</p>
+<ol class="arabic simple">
+<li>The proxy server makes simultaneous requests to <cite>ec_ndata</cite> primary object
+server nodes with goal of finding a set of <cite>ec_ndata</cite> distinct EC archives
+at the same timestamp, and an indication from at least one object server
+that a durable fragment archive exists for that timestamp. If this goal is
+not achieved with the first <cite>ec_ndata</cite> requests then the proxy server
+continues to issue requests to the remaining primary nodes and then handoff
+nodes.</li>
+<li>As soon as the proxy server has found a usable set of <cite>ec_ndata</cite> EC
+archives, it starts to call PyECLib to decode fragments as they are returned
+by the object server nodes.</li>
+<li>The proxy server creates Etag and content length headers for the client
+response since each EC archive&#8217;s metadata is valid only for that archive.</li>
+<li>The proxy streams the decoded data it has back to the client.</li>
+</ol>
+<p>Note that the proxy does not require all objects servers to have a durable
+fragment archive to return in response to a GET. The proxy will be satisfied if
+just one object server has a durable fragment archive at the same timestamp as
+EC archives returned from other object servers. This means that the proxy can
+successfully GET an object that had missing durable state on some nodes when it
+was PUT (i.e. a partial PUT failure occurred).</p>
+<p>Note also that an object server may inform the proxy server that it has more
+than one EC archive for different timestamps and/or fragment indexes, which may
+cause the proxy server to issue multiple requests for distinct EC archives to
+that object server. (This situation can temporarily occur after a ring
+rebalance when a handoff node storing an archive has become a primary node and
+received its primary archive but not yet moved the handoff archive to its
+primary node.)</p>
+<p>The proxy may receive EC archives having different timestamps, and may
+receive several EC archives having the same index. The proxy therefore
+ensures that it has sufficient EC archives with the same timestamp
+and distinct fragment indexes before considering a GET to be successful.</p>
+</div>
+</div>
+<div class="section" id="object-server">
+<h3>Object Server<a class="headerlink" href="#object-server" title="Permalink to this headline">¶</a></h3>
+<p>The Object Server, like the Proxy Server, supports MIME conversations as
+described in the proxy section earlier. This includes processing of the commit
+message and decoding various sections of the MIME document to extract the footer
+which includes things like the entire object etag.</p>
+<div class="section" id="diskfile">
+<h4>DiskFile<a class="headerlink" href="#diskfile" title="Permalink to this headline">¶</a></h4>
+<p>Erasure code policies use subclassed <code class="docutils literal"><span class="pre">ECDiskFile</span></code>, <code class="docutils literal"><span class="pre">ECDiskFileWriter</span></code>,
+<code class="docutils literal"><span class="pre">ECDiskFileReader</span></code> and <code class="docutils literal"><span class="pre">ECDiskFileManager</span></code> to implement EC specific
+handling of on disk files.  This includes things like file name manipulation to
+include the fragment index and durable state in the filename, construction of
+EC specific <code class="docutils literal"><span class="pre">hashes.pkl</span></code> file to include fragment index information, etc.</p>
+</div>
+</div>
+<div class="section" id="metadata">
+<h3>Metadata<a class="headerlink" href="#metadata" title="Permalink to this headline">¶</a></h3>
+<p>There are few different categories of metadata that are associated with EC:</p>
+<p>System Metadata: EC has a set of object level system metadata that it
+attaches to each of the EC archives.  The metadata is for internal use only:</p>
+<ul class="simple">
+<li><code class="docutils literal"><span class="pre">X-Object-Sysmeta-EC-Etag</span></code>:  The Etag of the original object.</li>
+<li><code class="docutils literal"><span class="pre">X-Object-Sysmeta-EC-Content-Length</span></code>: The content length of the original
+object.</li>
+<li><code class="docutils literal"><span class="pre">X-Object-Sysmeta-EC-Frag-Index</span></code>: The fragment index for the object.</li>
+<li><code class="docutils literal"><span class="pre">X-Object-Sysmeta-EC-Scheme</span></code>: Description of the EC policy used to encode
+the object.</li>
+<li><code class="docutils literal"><span class="pre">X-Object-Sysmeta-EC-Segment-Size</span></code>: The segment size used for the object.</li>
+</ul>
+<p>User Metadata:  User metadata is unaffected by EC, however, a full copy of the
+user metadata is stored with every EC archive.  This is required as the
+reconstructor needs this information and each reconstructor only communicates
+with its closest neighbors on the ring.</p>
+<p>PyECLib Metadata:  PyECLib stores a small amount of metadata on a per fragment
+basis.  This metadata is not documented here as it is opaque to Swift.</p>
+</div>
+<div class="section" id="database-updates">
+<h3>Database Updates<a class="headerlink" href="#database-updates" title="Permalink to this headline">¶</a></h3>
+<p>As account and container rings are not associated with a Storage Policy, there
+is no change to how these database updates occur when using an EC policy.</p>
+</div>
+<div class="section" id="the-reconstructor">
+<h3>The Reconstructor<a class="headerlink" href="#the-reconstructor" title="Permalink to this headline">¶</a></h3>
+<p>The Reconstructor performs analogous functions to the replicator:</p>
+<ol class="arabic simple">
+<li>Recovering from disk drive failure.</li>
+<li>Moving data around because of a rebalance.</li>
+<li>Reverting data back to a primary from a handoff.</li>
+<li>Recovering fragment archives from bit rot discovered by the auditor.</li>
+</ol>
+<p>However, under the hood it operates quite differently.  The following are some
+of the key elements in understanding how the reconstructor operates.</p>
+<p>Unlike the replicator, the work that the reconstructor does is not always as
+easy to break down into the 2 basic tasks of synchronize or revert (move data
+from handoff back to primary) because of the fact that one storage node can
+house fragment archives of various indexes and each index really &#8220;belongs&#8221; to
+a different node.  So, whereas when the replicator is reverting data from a
+handoff it has just one node to send its data to, the reconstructor can have
+several.  Additionally, it is not always the case that the processing of a
+particular suffix directory means one or the other job type for the entire
+directory (as it does for replication). The scenarios that create these mixed
+situations can be pretty complex so we will just focus on what the
+reconstructor does here and not a detailed explanation of why.</p>
+<div class="section" id="job-construction-and-processing">
+<h4>Job Construction and Processing<a class="headerlink" href="#job-construction-and-processing" title="Permalink to this headline">¶</a></h4>
+<p>Because of the nature of the work it has to do as described above, the
+reconstructor builds jobs for a single job processor.  The job itself contains
+all of the information needed for the processor to execute the job which may be
+a synchronization or a data reversion.  There may be a mix of jobs that
+perform both of these operations on the same suffix directory.</p>
+<p>Jobs are constructed on a per-partition basis and then per-fragment-index basis.
+That is, there will be one job for every fragment index in a partition.
+Performing this construction &#8220;up front&#8221; like this helps minimize the
+interaction between nodes collecting hashes.pkl information.</p>
+<p>Once a set of jobs for a partition has been constructed, those jobs are sent off
+to threads for execution. The single job processor then performs the necessary
+actions, working closely with ssync to carry out its instructions.  For data
+reversion, the actual objects themselves are cleaned up via the ssync module and
+once that partition&#8217;s set of jobs is complete, the reconstructor will attempt to
+remove the relevant directory structures.</p>
+<p>Job construction must account for a variety of scenarios, including:</p>
+<ol class="arabic simple">
+<li>A partition directory with all fragment indexes matching the local node
+index.  This is the case where everything is where it belongs and we just
+need to compare hashes and sync if needed. Here we simply sync with our
+partners.</li>
+<li>A partition directory with at least one local fragment index and mix of
+others.  Here we need to sync with our partners where fragment indexes
+matches the local_id, all others are sync&#8217;d with their home nodes and then
+deleted.</li>
+<li>A partition directory with no local fragment index and just one or more of
+others. Here we sync with just the home nodes for the fragment indexes that
+we have and then all the local archives are deleted.  This is the basic
+handoff reversion case.</li>
+</ol>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">A &#8220;home node&#8221; is the node where the fragment index encoded in the
+fragment archive&#8217;s filename matches the node index of a node in the primary
+partition list.</p>
+</div>
+</div>
+<div class="section" id="node-communication">
+<h4>Node Communication<a class="headerlink" href="#node-communication" title="Permalink to this headline">¶</a></h4>
+<p>The replicators talk to all nodes who have a copy of their object, typically
+just 2 other nodes.  For EC, having each reconstructor node talk to all nodes
+would incur a large amount of overhead as there will typically be a much larger
+number of nodes participating in the EC scheme.  Therefore, the reconstructor is
+built to talk to its adjacent nodes on the ring only.  These nodes are typically
+referred to as partners.</p>
+</div>
+<div class="section" id="id2">
+<h4>Reconstruction<a class="headerlink" href="#id2" title="Permalink to this headline">¶</a></h4>
+<p>Reconstruction can be thought of sort of like replication but with an extra step
+in the middle. The reconstructor is hard-wired to use ssync to determine what is
+missing and desired by the other side. However, before an object is sent over
+the wire it needs to be reconstructed from the remaining fragments as the local
+fragment is just that - a different fragment index than what the other end is
+asking for.</p>
+<p>Thus, there are hooks in ssync for EC based policies. One case would be for
+basic reconstruction which, at a high level, looks like this:</p>
+<ul class="simple">
+<li>Determine which nodes need to be contacted to collect other EC archives needed
+to perform reconstruction.</li>
+<li>Update the etag and fragment index metadata elements of the newly constructed
+fragment archive.</li>
+<li>Establish a connection to the target nodes and give ssync a DiskFileLike class
+from which it can stream data.</li>
+</ul>
+<p>The reader in this class gathers fragments from the nodes and uses PyECLib to
+reconstruct each segment before yielding data back to ssync. Essentially what
+this means is that data is buffered, in memory, on a per segment basis at the
+node performing reconstruction and each segment is dynamically reconstructed and
+delivered to <code class="docutils literal"><span class="pre">ssync_sender</span></code> where the <code class="docutils literal"><span class="pre">send_put()</span></code> method will ship them on
+over.  The sender is then responsible for deleting the objects as they are sent
+in the case of data reversion.</p>
+</div>
+</div>
+<div class="section" id="the-auditor">
+<h3>The Auditor<a class="headerlink" href="#the-auditor" title="Permalink to this headline">¶</a></h3>
+<p>Because the auditor already operates on a per storage policy basis, there are no
+specific auditor changes associated with EC.  Each EC archive looks like, and is
+treated like, a regular object from the perspective of the auditor.  Therefore,
+if the auditor finds bit-rot in an EC archive, it simply quarantines it and the
+reconstructor will take care of the rest just as the replicator does for
+replication policies.</p>
+</div>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Erasure Code Support</a><ul>
+<li><a class="reference internal" href="#history-and-theory-of-operation">History and Theory of Operation</a></li>
+<li><a class="reference internal" href="#overview-of-ec-support-in-swift">Overview of EC Support in Swift</a></li>
+<li><a class="reference internal" href="#pyeclib-external-erasure-code-library">PyECLib:  External Erasure Code Library</a></li>
+<li><a class="reference internal" href="#storing-and-retrieving-objects">Storing and Retrieving Objects</a></li>
+<li><a class="reference internal" href="#handoff-nodes">Handoff Nodes</a></li>
+<li><a class="reference internal" href="#reconstruction">Reconstruction</a></li>
+<li><a class="reference internal" href="#performance-considerations">Performance Considerations</a></li>
+<li><a class="reference internal" href="#using-an-erasure-code-policy">Using an Erasure Code Policy</a><ul>
+<li><a class="reference internal" href="#migrating-between-policies">Migrating Between Policies</a></li>
+<li><a class="reference internal" href="#region-support">Region Support</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#under-the-hood">Under the Hood</a><ul>
+<li><a class="reference internal" href="#terminology">Terminology</a></li>
+<li><a class="reference internal" href="#middleware">Middleware</a></li>
+<li><a class="reference internal" href="#on-disk-storage">On Disk Storage</a></li>
+<li><a class="reference internal" href="#proxy-server">Proxy Server</a><ul>
+<li><a class="reference internal" href="#high-level">High Level</a></li>
+<li><a class="reference internal" href="#multi-phase-conversation">Multi_Phase Conversation</a></li>
+<li><a class="reference internal" href="#partial-put-failures">Partial PUT Failures</a></li>
+<li><a class="reference internal" href="#get">GET</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#object-server">Object Server</a><ul>
+<li><a class="reference internal" href="#diskfile">DiskFile</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#metadata">Metadata</a></li>
+<li><a class="reference internal" href="#database-updates">Database Updates</a></li>
+<li><a class="reference internal" href="#the-reconstructor">The Reconstructor</a><ul>
+<li><a class="reference internal" href="#job-construction-and-processing">Job Construction and Processing</a></li>
+<li><a class="reference internal" href="#node-communication">Node Communication</a></li>
+<li><a class="reference internal" href="#id2">Reconstruction</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#the-auditor">The Auditor</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="crossdomain.html"
+                                  title="previous chapter">Cross-domain Policy File</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="overview_encryption.html"
+                                  title="next chapter">Object Encryption</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/swift
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="_sources/overview_erasure_code.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="right" >
+          <a href="overview_encryption.html" title="Object Encryption"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="crossdomain.html" title="Cross-domain Policy File"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="index.html">swift 2.12.1.dev102 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2017, OpenStack Foundation.
+      Last updated on &#39;Tue Feb 14 07:57:22 2017, commit 7cb6882&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/swift");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

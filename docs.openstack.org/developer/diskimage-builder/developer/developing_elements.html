@@ -1,0 +1,600 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Developing Elements &mdash; diskimage-builder 1.27.1.dev17 documentation</title>
+    
+    <link rel="stylesheet" href="../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../',
+        VERSION:     '1.27.1.dev17',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../_static/jquery.js"></script>
+    <script type="text/javascript" src="../_static/underscore.js"></script>
+    <script type="text/javascript" src="../_static/doctools.js"></script>
+    <link rel="top" title="diskimage-builder 1.27.1.dev17 documentation" href="../index.html" />
+    <link rel="up" title="Developer Guide" href="index.html" />
+    <link rel="next" title="dib-lint" href="dib_lint.html" />
+    <link rel="prev" title="Caches and offline mode" href="caches.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="developing-elements">
+<span id="id1"></span><h1>Developing Elements<a class="headerlink" href="#developing-elements" title="Permalink to this headline">¶</a></h1>
+<p>Conform to the following conventions:</p>
+<ul>
+<li><p class="first">Use the environment for overridable defaults, prefixing environment variable
+names with <code class="docutils literal"><span class="pre">DIB_</span></code>. For example:</p>
+<div class="highlight-sh"><div class="highlight"><pre><span></span><span class="nv">DIB_MYDEFAULT</span><span class="o">=</span><span class="si">${</span><span class="nv">DIB_MYDEFAULT</span><span class="k">:-</span><span class="nv">default</span><span class="si">}</span>
+</pre></div>
+</div>
+<p>If you do not use the <code class="docutils literal"><span class="pre">DIB</span></code> prefix you may find that your overrides are
+discarded as the build environment is sanitised.</p>
+</li>
+<li><p class="first">Consider that your element co-exists with many others and try to guard
+against undefined behaviours. Some examples:</p>
+<ul class="simple">
+<li>Two elements use the source-repositories element, but use the same filename
+for the source-repositories config file. Files such as these (and indeed the
+scripts in the various .d directories <a class="reference internal" href="#phase-subdirectories"><span>listed below</span></a>) should be named such that they are unique. If they
+are not unique, when the combined tree is created by disk-image-builder for
+injecting into the build environment, one of the files will be overwritten.</li>
+<li>Two elements copy different scripts into <code class="docutils literal"><span class="pre">/usr/local/bin</span></code> with the same
+name.  If they both use <code class="docutils literal"><span class="pre">set</span> <span class="pre">-e</span></code> and <code class="docutils literal"><span class="pre">cp</span> <span class="pre">-n</span></code> then the conflict will be
+caught and cause the build to fail.</li>
+</ul>
+</li>
+<li><p class="first">If your element mounts anything into the image build tree (<code class="docutils literal"><span class="pre">$TMP_BUILD_DIR</span></code>)
+then it will be automatically unmounted when the build tree is unmounted - and
+not remounted into the filesystem image - if the mount point is needed again,
+your element will need to remount it at that point.</p>
+</li>
+<li><p class="first">If caching is required, elements should use a location under
+<code class="docutils literal"><span class="pre">$DIB_IMAGE_CACHE</span></code>.</p>
+</li>
+<li><p class="first">Elements should allow for remote data to be cached. When <code class="docutils literal"><span class="pre">$DIB_OFFLINE</span></code> is
+set, this cached data should be used if possible.
+See the <a class="reference internal" href="#dev-global-image-build-variables"><span>Global image-build variables</span></a> section of this document for
+more information.</p>
+</li>
+<li><p class="first">Elements in the upstream diskimage-builder elements should not create
+executables which run before 10- or after 90- in any of the phases if
+possible. This is to give downstream elements the ability to easily make
+executables which run after our upstream ones.</p>
+</li>
+</ul>
+<div class="section" id="phase-subdirectories">
+<span id="id2"></span><h2>Phase Subdirectories<a class="headerlink" href="#phase-subdirectories" title="Permalink to this headline">¶</a></h2>
+<p>Make as many of the following subdirectories as you need, depending on what
+part of the process you need to customise. The subdirectories are executed in
+the order given here. Scripts within the subdirectories should be named with a
+two-digit numeric prefix, and are executed in numeric order.</p>
+<p>Only files which are marked executable (+x) will be run, so other files can be
+stored in these directories if needed. As a convention, we try to only store
+executable scripts in the phase subdirectories and store data files elsewhere in
+the element.</p>
+<p>The phases are:</p>
+<ol class="arabic simple">
+<li><code class="docutils literal"><span class="pre">root.d</span></code></li>
+<li><code class="docutils literal"><span class="pre">extra-data.d</span></code></li>
+<li><code class="docutils literal"><span class="pre">pre-install.d</span></code></li>
+<li><code class="docutils literal"><span class="pre">install.d</span></code></li>
+<li><code class="docutils literal"><span class="pre">post-install.d</span></code></li>
+<li><code class="docutils literal"><span class="pre">block-device.d</span></code></li>
+<li><code class="docutils literal"><span class="pre">finalise.d</span></code></li>
+<li><code class="docutils literal"><span class="pre">cleanup.d</span></code></li>
+</ol>
+<dl class="docutils">
+<dt><code class="docutils literal"><span class="pre">root.d</span></code></dt>
+<dd><p class="first">Create or adapt the initial root filesystem content. This is where
+alternative distribution support is added, or customisations such as
+building on an existing image.</p>
+<p>Only one element can use this at a time unless particular care is taken not
+to blindly overwrite but instead to adapt the context extracted by other
+elements.</p>
+<ul class="last simple">
+<li>runs: <strong>outside chroot</strong></li>
+<li>inputs:<ul>
+<li><code class="docutils literal"><span class="pre">$ARCH=i386|amd64|armhf</span></code></li>
+<li><code class="docutils literal"><span class="pre">$TARGET_ROOT=/path/to/target/workarea</span></code></li>
+</ul>
+</li>
+</ul>
+</dd>
+<dt><code class="docutils literal"><span class="pre">extra-data.d</span></code></dt>
+<dd><p class="first">Pull in extra data from the host environment that hooks may
+need during image creation. This should copy any data (such as SSH keys,
+http proxy settings and the like) somewhere under <code class="docutils literal"><span class="pre">$TMP_HOOKS_PATH</span></code>.</p>
+<ul class="last simple">
+<li>runs: <strong>outside chroot</strong></li>
+<li>inputs: <code class="docutils literal"><span class="pre">$TMP_HOOKS_PATH</span></code></li>
+<li>outputs: None</li>
+</ul>
+</dd>
+<dt><code class="docutils literal"><span class="pre">pre-install.d</span></code></dt>
+<dd><p class="first">Run code in the chroot before customisation or packages are installed. A good
+place to add apt repositories.</p>
+<ul class="last simple">
+<li>runs: <strong>in chroot</strong></li>
+</ul>
+</dd>
+<dt><code class="docutils literal"><span class="pre">install.d</span></code></dt>
+<dd><p class="first">Runs after <code class="docutils literal"><span class="pre">pre-install.d</span></code> in the chroot. This is a good place to
+install packages, chain into configuration management tools or do other image
+specific operations.</p>
+<ul class="last simple">
+<li>runs: <strong>in chroot</strong></li>
+</ul>
+</dd>
+<dt><code class="docutils literal"><span class="pre">post-install.d</span></code></dt>
+<dd><p class="first">Run code in the chroot. This is a good place to perform tasks you want to
+handle after the OS/application install but before the first boot of the
+image.  Some examples of use would be:</p>
+<blockquote>
+<div><p>Run <code class="docutils literal"><span class="pre">chkconfig</span></code> to disable unneeded services</p>
+<p>Clean the cache left by the package manager to reduce the size of the image.</p>
+</div></blockquote>
+<ul class="last simple">
+<li>runs: <strong>in chroot</strong></li>
+</ul>
+</dd>
+<dt><code class="docutils literal"><span class="pre">block-device.d</span></code></dt>
+<dd><p class="first">Customise the block device that the image will be made on (for example to
+make partitions). Runs after the target tree has been fully populated but
+before the <code class="docutils literal"><span class="pre">cleanup.d</span></code> phase runs.</p>
+<ul class="last simple">
+<li>runs: <strong>outside chroot</strong></li>
+<li>inputs:<ul>
+<li><code class="docutils literal"><span class="pre">$IMAGE_BLOCK_DEVICE={path}</span></code></li>
+<li><code class="docutils literal"><span class="pre">$TARGET_ROOT={path}</span></code></li>
+</ul>
+</li>
+<li>outputs: <code class="docutils literal"><span class="pre">$IMAGE_BLOCK_DEVICE={path}</span></code></li>
+</ul>
+</dd>
+<dt><code class="docutils literal"><span class="pre">finalise.d</span></code></dt>
+<dd><p class="first">Perform final tuning of the root filesystem. Runs in a chroot after the root
+filesystem content has been copied into the mounted filesystem: this is an
+appropriate place to reset SELinux metadata, install grub bootloaders and so
+on.</p>
+<p>Because this happens inside the final image, it is important to limit
+operations here to only those necessary to affect the filesystem metadata and
+image itself. For most operations, <code class="docutils literal"><span class="pre">post-install.d</span></code> is preferred.</p>
+<ul class="last simple">
+<li>runs: <strong>in chroot</strong></li>
+</ul>
+</dd>
+<dt><code class="docutils literal"><span class="pre">cleanup.d</span></code></dt>
+<dd><p class="first">Perform cleanup of the root filesystem content. For instance, temporary
+settings to use the image build environment HTTP proxy are removed here in
+the dpkg element.</p>
+<ul class="last simple">
+<li>runs: outside chroot</li>
+<li>inputs:<ul>
+<li><code class="docutils literal"><span class="pre">$ARCH=i386|amd64|armhf</span></code></li>
+<li><code class="docutils literal"><span class="pre">$TARGET_ROOT=/path/to/target/workarea</span></code></li>
+</ul>
+</li>
+</ul>
+</dd>
+</dl>
+</div>
+<div class="section" id="other-subdirectories">
+<h2>Other Subdirectories<a class="headerlink" href="#other-subdirectories" title="Permalink to this headline">¶</a></h2>
+<p>Elements may have other subdirectories that are processed by specific elements
+rather than the diskimage-builder tools themselves.</p>
+<p>One example of this is the <code class="docutils literal"><span class="pre">bin</span></code> directory.  The <cite>rpm-distro</cite>,
+<a class="reference internal" href="../elements/dpkg/README.html"><em>dpkg</em></a> and <a class="reference internal" href="../elements/opensuse/README.html"><em>opensuse</em></a> elements
+install all files found in the <code class="docutils literal"><span class="pre">bin</span></code> directory into <code class="docutils literal"><span class="pre">/usr/local/bin</span></code> within
+the image as executable files.</p>
+</div>
+<div class="section" id="environment-variables">
+<h2>Environment Variables<a class="headerlink" href="#environment-variables" title="Permalink to this headline">¶</a></h2>
+<p>To set environment variables for other hooks, add a file to your
+element <code class="docutils literal"><span class="pre">environment.d</span></code>.  This directory contains bash script
+snippets that are sourced before running scripts in each phase.  Note
+that because environment includes are sourced together, they should
+not set global flags like <code class="docutils literal"><span class="pre">set</span> <span class="pre">-x</span></code> because they will affect all
+preceeding imports.</p>
+<p>DIB exposes an internal <code class="docutils literal"><span class="pre">$IMAGE_ELEMENT</span></code> variable which provides elements
+access to the full set of elements that are included in the image build. This
+can be used to process local in-element files across all the elements
+(<code class="docutils literal"><span class="pre">pkg-map</span></code> for example).</p>
+</div>
+<div class="section" id="dependencies">
+<h2>Dependencies<a class="headerlink" href="#dependencies" title="Permalink to this headline">¶</a></h2>
+<p>Each element can use the following files to define or affect dependencies:</p>
+<dl class="docutils">
+<dt><code class="docutils literal"><span class="pre">element-deps</span></code></dt>
+<dd>A plain text, newline separated list of elements which will be added to the
+list of elements built into the image at image creation time.</dd>
+<dt><code class="docutils literal"><span class="pre">element-provides</span></code></dt>
+<dd><p class="first">A plain text, newline separated list of elements which are provided by this
+element.  These elements will be excluded from elements built into the image
+at image creation time.</p>
+<p class="last">For example if element A depends on element B and element C includes element B
+in its <code class="docutils literal"><span class="pre">element-provides</span></code> file and A and C are included when building an
+image, then B is not used.</p>
+</dd>
+</dl>
+</div>
+<div class="section" id="operating-system-elements">
+<h2>Operating system elements<a class="headerlink" href="#operating-system-elements" title="Permalink to this headline">¶</a></h2>
+<p>Some elements define the base structure for an operating system &#8211; for example,
+the <code class="docutils literal"><span class="pre">opensuse</span></code> element builds a base openSUSE system. Such elements have
+more requirements than the other elements:</p>
+<ul class="simple">
+<li>they must have <code class="docutils literal"><span class="pre">operating-system</span></code> in their element-provides, so this
+indicates they are an &#8220;operating system&#8221;.</li>
+<li>they must export the <code class="docutils literal"><span class="pre">DISTRO_NAME</span></code> environment variable with the name
+of the distribution built, using an environment.d script. For example,
+the <code class="docutils literal"><span class="pre">opensuse</span></code> element exports <code class="docutils literal"><span class="pre">DISTRO_NAME=opensuse</span></code>.</li>
+</ul>
+</div>
+<div class="section" id="ramdisk-elements">
+<h2>Ramdisk Elements<a class="headerlink" href="#ramdisk-elements" title="Permalink to this headline">¶</a></h2>
+<p>Ramdisk elements support the following files in their element directories:</p>
+<dl class="docutils">
+<dt><code class="docutils literal"><span class="pre">binary-deps.d</span></code></dt>
+<dd>Text files listing executables required to be fed into the ramdisk. These
+need to be present in <code class="docutils literal"><span class="pre">$PATH</span></code> in the build chroot (i.e. need to be installed
+by your elements as described above).</dd>
+<dt><code class="docutils literal"><span class="pre">init.d</span></code></dt>
+<dd>POSIX shell script fragments that will be appended to the default script
+executed as the ramdisk is booted (<code class="docutils literal"><span class="pre">/init</span></code>).</dd>
+<dt><code class="docutils literal"><span class="pre">ramdisk-install.d</span></code></dt>
+<dd>Called to copy files into the ramdisk. The variable <code class="docutils literal"><span class="pre">$TMP_MOUNT_PATH</span></code> points
+to the root of the tree that will be packed into the ramdisk.</dd>
+<dt><code class="docutils literal"><span class="pre">udev.d</span></code></dt>
+<dd><code class="docutils literal"><span class="pre">udev</span></code> rules files that will be copied into the ramdisk.</dd>
+</dl>
+</div>
+<div class="section" id="element-coding-standard">
+<h2>Element coding standard<a class="headerlink" href="#element-coding-standard" title="Permalink to this headline">¶</a></h2>
+<ul class="simple">
+<li>lines should not include trailing whitespace.</li>
+<li>there should be no hard tabs in the file.</li>
+<li>indents are 4 spaces, and all indentation should be some multiple of
+them.</li>
+<li><cite>do</cite> and <cite>then</cite> keywords should be on the same line as the if, while or
+for conditions.</li>
+</ul>
+<div class="section" id="global-image-build-variables">
+<span id="dev-global-image-build-variables"></span><h3>Global image-build variables<a class="headerlink" href="#global-image-build-variables" title="Permalink to this headline">¶</a></h3>
+<dl class="docutils">
+<dt><code class="docutils literal"><span class="pre">DIB_OFFLINE</span></code></dt>
+<dd>This is always set. When not empty, any operations that perform remote data
+access should avoid it if possible. If not possible the operation should still
+be attempted as the user may have an external cache able to keep the operation
+functional.</dd>
+<dt><code class="docutils literal"><span class="pre">DIB_IMAGE_ROOT_FS_UUID</span></code></dt>
+<dd>This contains the UUID of the root filesystem, when diskimage-builder is
+building a disk image. This works only for ext filesystems.</dd>
+<dt><code class="docutils literal"><span class="pre">DIB_IMAGE_CACHE</span></code></dt>
+<dd>Path to where cached inputs to the build process are stored. Defaults to
+<code class="docutils literal"><span class="pre">~/.cache/image_create</span></code>.</dd>
+</dl>
+</div>
+<div class="section" id="structure-of-an-element">
+<h3>Structure of an element<a class="headerlink" href="#structure-of-an-element" title="Permalink to this headline">¶</a></h3>
+<p>The above-mentioned global content can be further broken down in a way that
+encourages composition of elements and reusability of their components. One
+possible approach to this would be to label elements as either a &#8220;driver&#8221;,
+&#8220;service&#8221;, or &#8220;config&#8221; element. Below are some examples.</p>
+<ul>
+<li><p class="first">Driver-specific elements should only contain the necessary bits for that
+driver:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>elements/
+   driver-mellanox/
+      init           - modprobe line
+      install.d/
+         10-mlx      - package installation
+</pre></div>
+</div>
+</li>
+<li><p class="first">An element that installs and configures Nova might be a bit more complex,
+containing several scripts across several phases:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>elements/
+   service-nova/
+      source-repository-nova - register a source repository
+      pre-install.d/
+         50-my-ppa           - add a PPA
+      install.d/
+         10-user             - common Nova user accts
+         50-my-pack          - install packages from my PPA
+         60-nova             - install nova and some dependencies
+</pre></div>
+</div>
+</li>
+<li><p class="first">In the general case, configuration should probably be handled either by the
+meta-data service (eg, o-r-c) or via normal CM tools
+(eg, salt). That being said, it may occasionally be desirable to create a
+set of elements which express a distinct configuration of the same software
+components.</p>
+</li>
+</ul>
+<p>In this way, depending on the hardware and in which availability zone it is
+to be deployed, an image would be composed of:</p>
+<blockquote>
+<div><ul class="simple">
+<li>zero or more driver-elements</li>
+<li>one or more service-elements</li>
+<li>zero or more config-elements</li>
+</ul>
+</div></blockquote>
+<p>It should be noted that this is merely a naming convention to assist in
+managing elements. Diskimage-builder is not, and should not be, functionally
+dependent upon specific element names.</p>
+<p>diskimage-builder has the ability to retrieve source code for an element and
+place it into a directory on the target image during the extra-data phase. The
+default location/branch can then be overridden by the process running
+diskimage-builder, making it possible to use the same element to track more
+then one branch of a git repository or to get source for a local cache. See
+<a class="reference internal" href="../elements/source-repositories/README.html"><em>source-repositories</em></a> for more information.</p>
+</div>
+<div class="section" id="debugging-elements">
+<h3>Debugging elements<a class="headerlink" href="#debugging-elements" title="Permalink to this headline">¶</a></h3>
+<p>Export <code class="docutils literal"><span class="pre">break</span></code> to drop to a shell during the image build. Break points can be
+set either before or after any of the hook points by exporting
+&#8220;break=[before|after]-hook-name&#8221;. Multiple break points can be specified as a
+comma-delimited string. Some examples:</p>
+<ul class="simple">
+<li><code class="docutils literal"><span class="pre">break=before-block-device-size</span></code> will break before the block device size
+hooks are called.</li>
+<li><code class="docutils literal"><span class="pre">break=before-pre-install</span></code> will break before the pre-install hooks.</li>
+<li><code class="docutils literal"><span class="pre">break=after-error</span></code> will break after an error during an in target hookpoint.</li>
+</ul>
+<p>The <a class="reference internal" href="../elements/manifests/README.html"><em>manifests</em></a> element will make a range of
+manifest information generated by other elements available for
+inspection inside and outside the built image.  Environment and
+command line arguments are captured as described in the documentation
+and can be useful for debugging.</p>
+<p>Images are built such that the Linux kernel is instructed not to switch into
+graphical consoles (i.e. it will not activate KMS). This maximises
+compatibility with remote console interception hardware, such as HP&#8217;s iLO.
+However, you will typically only see kernel messages on the console - init
+daemons (e.g. upstart) will usually be instructed to output to a serial
+console so nova&#8217;s console-log command can function. There is an element in the
+tripleo-image-elements repository called &#8220;remove-serial-console&#8221; which will
+force all boot messages to appear on the main console.</p>
+<p>Ramdisk images can be debugged at run-time by passing <code class="docutils literal"><span class="pre">troubleshoot</span></code> as a
+kernel command line argument, or by pressing &#8220;t&#8221; when an error is reached. This
+will spawn a shell on the console (this can be extremely useful when network
+interfaces or disks are not detected correctly).</p>
+</div>
+<div class="section" id="testing-elements">
+<h3>Testing Elements<a class="headerlink" href="#testing-elements" title="Permalink to this headline">¶</a></h3>
+<p>An element can have functional tests encapsulated inside the element itself. The
+tests can be written either as shell or python unit tests.</p>
+<div class="section" id="shell">
+<h4>shell<a class="headerlink" href="#shell" title="Permalink to this headline">¶</a></h4>
+<p>In order to create a test case, follow these steps:</p>
+<ul>
+<li><p class="first">Create a directory called <code class="docutils literal"><span class="pre">test-elements</span></code> inside your element.</p>
+</li>
+<li><p class="first">Inside the test-elements directory, create a directory with the name of your
+test case. The test case directory should have the same structure as an
+element. For example:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="n">elements</span><span class="o">/</span><span class="n">apt</span><span class="o">-</span><span class="n">sources</span><span class="o">/</span><span class="n">test</span><span class="o">-</span><span class="n">elements</span><span class="o">/</span><span class="n">test</span><span class="o">-</span><span class="n">case</span><span class="o">-</span><span class="mi">1</span>
+</pre></div>
+</div>
+</li>
+<li><p class="first">Assert state during each of the element build phases you would like to test.
+You can exit 1 to indicate a failure.</p>
+</li>
+<li><p class="first">To exit early and indicate a success, touch a file
+<code class="docutils literal"><span class="pre">/tmp/dib-test-should-fail</span></code> in the image chroot, then exit 1.</p>
+</li>
+</ul>
+<p>Tests are run with <code class="docutils literal"><span class="pre">tools/run_functests.sh</span></code>.  Running
+<code class="docutils literal"><span class="pre">run_functests.sh</span> <span class="pre">-l</span></code> will show available tests (the example above
+would be called <code class="docutils literal"><span class="pre">apt-sources/test-case-1</span></code>, for example).  Specify
+your test (or a series of tests as separate arguments) on the command
+line to run it.  If it should not be run as part of the default CI
+run, you can submit a change with it added to <code class="docutils literal"><span class="pre">DEFAULT_SKIP_TESTS</span></code>
+in that file.</p>
+<p>Running the functional tests is time consuming.  Multiple parallel
+jobs can be started by specifying <code class="docutils literal"><span class="pre">-j</span> <span class="pre">&lt;job</span> <span class="pre">count&gt;</span></code>.  Each of the
+jobs uses a lot resources (CPU, disk space, RAM) - therefore the job
+count must carefully be chosen.</p>
+</div>
+<div class="section" id="python">
+<h4>python<a class="headerlink" href="#python" title="Permalink to this headline">¶</a></h4>
+<p>To run functional tests locally, install and start docker, then use
+the following tox command:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="n">tox</span> <span class="o">-</span><span class="n">efunc</span>
+</pre></div>
+</div>
+<p>Note that running functional tests requires <em>sudo</em> rights, thus you may be
+asked for your password.</p>
+<p>To run functional tests for one element, append its name to the command:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>tox -efunc ironic-agent
+</pre></div>
+</div>
+<p>Additionally, elements can be tested using python unittests. To create a
+a python test:</p>
+<ul class="simple">
+<li>Create a directory called <code class="docutils literal"><span class="pre">tests</span></code> in the element directory.</li>
+<li>Create an empty file called <code class="docutils literal"><span class="pre">__init__.py</span></code> to make it into a python
+package.</li>
+<li>Create your test files as <code class="docutils literal"><span class="pre">test\whatever.py</span></code>, using regular python test
+code.</li>
+</ul>
+<p>To run all the tests use testr - <code class="docutils literal"><span class="pre">testr</span> <span class="pre">run</span></code>. To run just some tests provide
+one or more regex filters - tests matching any of them are run -
+<code class="docutils literal"><span class="pre">testr</span> <span class="pre">run</span> <span class="pre">apt-proxy</span></code>.</p>
+</div>
+</div>
+<div class="section" id="third-party-elements">
+<h3>Third party elements<a class="headerlink" href="#third-party-elements" title="Permalink to this headline">¶</a></h3>
+<p>Additional elements can be incorporated by setting <code class="docutils literal"><span class="pre">ELEMENTS_PATH</span></code>, for
+example if one were building tripleo-images, the variable would be set like:</p>
+<blockquote>
+<div><div class="highlight-sh"><div class="highlight"><pre><span></span><span class="nb">export</span> <span class="nv">ELEMENTS_PATH</span><span class="o">=</span>tripleo-image-elements/elements
+disk-image-create rhel7 cinder-api
+</pre></div>
+</div>
+</div></blockquote>
+</div>
+<div class="section" id="linting">
+<h3>Linting<a class="headerlink" href="#linting" title="Permalink to this headline">¶</a></h3>
+<p>You should always run <code class="docutils literal"><span class="pre">bin/dib-lint</span></code> over your elements.  It will
+warn you of common issues.</p>
+<div class="section" id="sudo">
+<h4>sudo<a class="headerlink" href="#sudo" title="Permalink to this headline">¶</a></h4>
+<p>Using <code class="docutils literal"><span class="pre">sudo</span></code> outside the chroot environment can cause breakout
+issues where you accidentally modify parts of the host
+system. <code class="docutils literal"><span class="pre">dib-lint</span></code> will warn if it sees <code class="docutils literal"><span class="pre">sudo</span></code> calls that do not
+use the path arguments given to elements running outside the chroot.</p>
+<p>To disable the error for a call you know is safe, add</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="c1"># dib-lint: safe_sudo</span>
+</pre></div>
+</div>
+<p>to the end of the <code class="docutils literal"><span class="pre">sudo</span></code> command line.  To disable the check for an
+entire file, add</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="c1"># dib-lint: disable=safe_sudo</span>
+</pre></div>
+</div>
+</div>
+</div>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="../index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Developing Elements</a><ul>
+<li><a class="reference internal" href="#phase-subdirectories">Phase Subdirectories</a></li>
+<li><a class="reference internal" href="#other-subdirectories">Other Subdirectories</a></li>
+<li><a class="reference internal" href="#environment-variables">Environment Variables</a></li>
+<li><a class="reference internal" href="#dependencies">Dependencies</a></li>
+<li><a class="reference internal" href="#operating-system-elements">Operating system elements</a></li>
+<li><a class="reference internal" href="#ramdisk-elements">Ramdisk Elements</a></li>
+<li><a class="reference internal" href="#element-coding-standard">Element coding standard</a><ul>
+<li><a class="reference internal" href="#global-image-build-variables">Global image-build variables</a></li>
+<li><a class="reference internal" href="#structure-of-an-element">Structure of an element</a></li>
+<li><a class="reference internal" href="#debugging-elements">Debugging elements</a></li>
+<li><a class="reference internal" href="#testing-elements">Testing Elements</a><ul>
+<li><a class="reference internal" href="#shell">shell</a></li>
+<li><a class="reference internal" href="#python">python</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#third-party-elements">Third party elements</a></li>
+<li><a class="reference internal" href="#linting">Linting</a><ul>
+<li><a class="reference internal" href="#sudo">sudo</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="caches.html"
+                                  title="previous chapter">Caches and offline mode</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="dib_lint.html"
+                                  title="next chapter">dib-lint</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/diskimage-builder
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="../_sources/developer/developing_elements.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="dib_lint.html" title="dib-lint"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="caches.html" title="Caches and offline mode"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../index.html">diskimage-builder 1.27.1.dev17 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="index.html" accesskey="U">Developer Guide</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2015-2016, Various Authors.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/diskimage-builder");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

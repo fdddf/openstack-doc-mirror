@@ -1,0 +1,718 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Coding Guidelines &mdash; OpenStack Charms Guide 0.0.1.dev33 documentation</title>
+    
+    <link rel="stylesheet" href="_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '0.0.1.dev33',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <link rel="top" title="OpenStack Charms Guide 0.0.1.dev33 documentation" href="index.html" />
+    <link rel="up" title="How to contribute" href="how-to-contribute.html" />
+    <link rel="next" title="Testing" href="testing.html" />
+    <link rel="prev" title="How to contribute" href="how-to-contribute.html" /> 
+  </head>
+  <body>
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body">
+            
+  <div class="section" id="coding-guidelines">
+<span id="id1"></span><h1>Coding Guidelines<a class="headerlink" href="#coding-guidelines" title="Permalink to this headline">¶</a></h1>
+<div class="section" id="introduction">
+<h2>Introduction<a class="headerlink" href="#introduction" title="Permalink to this headline">¶</a></h2>
+<p>We write code for OpenStack charms.  Mostly in Python.  They say that code is
+read roughly 20 times more than writing it, and that’s just the process of
+writing code.  Reviewing code and modifying it means that it will be read many,
+many times.  Let’s make it as easy as possible.  We’re lucky(!) with Python as
+the syntax ensures that it roughly always looks the same.</p>
+<p>As OpenStack charms are for OpenStack it’s a good idea to adhere to the
+OpenStack Python coding standard.  So first things first:</p>
+<ul class="simple">
+<li>Read the <a class="reference external" href="http://docs.openstack.org/developer/hacking/">OpenStack Coding standard</a>.</li>
+<li>Read PEP8 (again).</li>
+</ul>
+</div>
+<div class="section" id="topics">
+<h2>Topics<a class="headerlink" href="#topics" title="Permalink to this headline">¶</a></h2>
+<div class="section" id="multiple-roots-symlinks">
+<h3>Multiple roots &#8211; symlinks<a class="headerlink" href="#multiple-roots-symlinks" title="Permalink to this headline">¶</a></h3>
+<p>Multiple roots with symlinks create issues in charms.  This is where, for
+example, charmhelpers is symlinked into both a hooks and actions subdirectory.
+This creates a situation where the <em>same</em> modules are loaded into the Python
+interpreter&#8217;s memory twice at two different module paths.  This creates
+problems with testing as <em>depending on the load time ordering</em> it might not be
+clear which particular module path you&#8217;re trying to mock out and which one is
+first in the module path map.</p>
+<p>So only every have ONE root for your python code in a charm.  e.g. put it in
+<tt class="docutils literal"><span class="pre">/lib</span></tt> and add that to path by <tt class="docutils literal"><span class="pre">sys.path.append(‘lib’).</span></tt></p>
+<p>Incidentally, if you <strong>are</strong> mocking out code in charmhelpers in you charms,
+<strong>it&#8217;s probably not a good idea</strong>.  Only mock code in the target object file,
+rather than an included module.</p>
+</div>
+<div class="section" id="install-time-vs-load-time-vs-runtime-code">
+<h3>Install-time vs Load-time vs Runtime code<a class="headerlink" href="#install-time-vs-load-time-vs-runtime-code" title="Permalink to this headline">¶</a></h3>
+<p>The hooks in charms are effectively short-term running scripts.  However,
+despite being short-lived, the code invoked is often complex with multiple
+modules being imported which also import other modules.</p>
+<p>It’s important to be clear on what is <em>load time</em> code and _runtime_ code.
+Although there is no actual distinction in Python, it’s useful to think of
+<em>runtime</em> starting when the following code is reached:</p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span>if __name__ == ‘__main__’:
+    do_something()
+</pre></div>
+</div>
+<p>I.e. the code execution of <tt class="docutils literal"><span class="pre">do_something()</span></tt> is runtime, with everything
+preceding being loadtime.</p>
+<p>So why is the distinction useful?  Put simply, <em>it’s much harder to test</em>
+load-time code in comparison to runtime code with respect to mocking.  Consider
+these two fragments:</p>
+<p><strong>Bad:</strong></p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span>import a.something
+
+OUR_CONFIG = {
+    ‘some_thing’: a.something.config(‘a-value’),
+}
+</pre></div>
+</div>
+<p><strong>Good:</strong></p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span>import a.something
+
+
+def get_our_config():
+    return {
+        ‘some_thing’: a.something.config(‘a-value’),
+    }
+</pre></div>
+</div>
+<p>If performance is an issue (i.e. multiple calls to <tt class="docutils literal"><span class="pre">config()</span></tt> are expensive)
+then either use a <tt class="docutils literal"><span class="pre">&#64;caching</span></tt> type decorator, or just doing it manually. e.g.</p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span><span class="n">_our_config</span> <span class="o">=</span> <span class="bp">None</span>
+
+<span class="k">def</span> <span class="nf">get_our_config</span><span class="p">():</span>
+    <span class="k">if</span> <span class="n">_our_config</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+        <span class="n">_our_config</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="s1">&#39;some_thing&#39;</span><span class="p">:</span> <span class="n">a</span><span class="o">.</span><span class="n">something</span><span class="o">.</span><span class="n">config</span><span class="p">(</span><span class="s1">&#39;a-value&#39;</span><span class="p">),</span>
+        <span class="p">}</span>
+    <span class="k">return</span> <span class="n">_our_config</span>
+</pre></div>
+</div>
+<p>In the bad example, in order to mock out the config module we have to do
+something like:</p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span>with patch(‘a.something.config’) as mock_config:
+    import a.something.config
+</pre></div>
+</div>
+<p>This also relies on this being the _first_ time that module has been imported.
+Otherwise, the module is already cached and config can’t be mocked out.</p>
+<p>Compare this with the good example.</p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span>def test_out_config(self):
+    with patch(‘module.a.something.config’) as mock_config:
+        mock_config.return_value = ‘thing’
+        x = model.get_out_config()
+</pre></div>
+</div>
+<p>This brings us to:</p>
+</div>
+<div class="section" id="constants-should-be-simple">
+<h3>CONSTANTS should be simple<a class="headerlink" href="#constants-should-be-simple" title="Permalink to this headline">¶</a></h3>
+<p>In the bad example above, the constant <tt class="docutils literal"><span class="pre">OUR_CONFIG</span></tt> is defined as load-time by
+calling <tt class="docutils literal"><span class="pre">a.something.config()</span></tt>.  Thus, in reality, the constant is being
+defined at load-time using a runtime function that returns a value - it&#8217;s
+dynamic.</p>
+<p>Don’t:</p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span>CONFIG = {
+    ‘some_key’: config(‘something’),
+}
+</pre></div>
+</div>
+<p>This is actually a <em>function in disguise</em>.</p>
+<p>Prefer:</p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span>def get_config():
+    return {
+        ‘some_key’: config(‘something’),
+    }
+</pre></div>
+</div>
+<p>Why?</p>
+<p>So that you can mock out <tt class="docutils literal"><span class="pre">get_config()</span></tt> or <tt class="docutils literal"><span class="pre">config()</span></tt> at the test run time,
+rather than before the module loads.  This makes testing easier, more
+predictable, and also makes it obvious that it’s not really a constant, but
+actually a function which returns a structure that is dynamically generated
+from configuration.</p>
+<p>And <strong>definitely</strong> don’t do this at the top level in a file:</p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span><span class="n">CONFIGS</span> <span class="o">=</span> <span class="n">register_configs</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>You’ve just created a load time test problem _and_ created a CONSTANT that
+isn’t really one.  Just use <tt class="docutils literal"><span class="pre">register_configs()</span></tt> directly in the code and write
+<tt class="docutils literal"><span class="pre">register_configs()</span></tt> to be <tt class="docutils literal"><span class="pre">&#64;cached</span></tt> if performance is an issue.</p>
+</div>
+<div class="section" id="decorators">
+<h3>Decorators<a class="headerlink" href="#decorators" title="Permalink to this headline">¶</a></h3>
+<p>There shouldn&#8217;t be much need to write a decorator.  They definitely <strong>should
+not</strong> be used instead of function application or instead of context managers.
+When they are used it&#8217;s preferable that they are orthogonal to the function
+they are decorating, and don&#8217;t change the nature of the function.</p>
+<div class="section" id="functools-wraps-f">
+<h4>functools.wraps(f)<a class="headerlink" href="#functools-wraps-f" title="Permalink to this headline">¶</a></h4>
+<p>If they are used, then they should definitely make use of <tt class="docutils literal"><span class="pre">functools.wraps</span></tt> to
+preserve the function name of the original function and it&#8217;s docstring.  This
+makes stacktraces more readable.  e.g.:</p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span>def my_decorator(f):
+    functools.wraps(f):
+    def decoration(*args, **kwargs):
+        # do soemthing before the function call?
+        r = f(*args, **kwargs)
+        # do soemthing after the function call?
+        return r
+
+    return decoration
+</pre></div>
+</div>
+</div>
+<div class="section" id="mocking-out-decorators">
+<h4>Mocking out decorators<a class="headerlink" href="#mocking-out-decorators" title="Permalink to this headline">¶</a></h4>
+<p>If the decorator&#8217;s functionality is orthogonal to the function, then mocking
+out the decorator shouldn&#8217;t be necessary.  However, if it <em>isn&#8217;t</em> then tweaking
+how the decorator is written can make it easier to mock out the decorator.</p>
+<p>Consider the following code:</p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span><span class="nd">@a_decorator</span><span class="p">(</span><span class="s2">&quot;Hello&quot;</span><span class="p">)</span>
+<span class="k">def</span> <span class="nf">some_function</span><span class="p">():</span>
+    <span class="k">pass</span>
+
+<span class="k">def</span> <span class="nf">a_decorator</span><span class="p">(</span><span class="n">name</span><span class="p">):</span>
+    <span class="k">def</span> <span class="nf">outer</span><span class="p">(</span><span class="n">f</span><span class="p">):</span>
+        <span class="nd">@functools.wraps</span><span class="p">(</span><span class="n">f</span><span class="p">)</span>
+        <span class="k">def</span> <span class="nf">inner</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+            <span class="c1"># do something before the function</span>
+            <span class="n">r</span> <span class="o">=</span> <span class="n">f</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+            <span class="c1"># do something after the function</span>
+            <span class="k">return</span> <span class="n">r</span>
+
+        <span class="k">return</span> <span class="n">inner</span>
+
+    <span class="k">return</span> <span class="n">outer</span>
+</pre></div>
+</div>
+<p>It&#8217;s very difficult to test some_function without invoking the decorator, and
+equally, it&#8217;s difficult to stop the decorator from being applied to the
+function without mocking out <tt class="docutils literal"><span class="pre">&#64;a_decorator</span></tt> before importing the module under
+test.</p>
+<p>However, with a little tweaking of the decorator we can mock out the decorator
+without having to jump through hoops:</p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span><span class="k">def</span> <span class="nf">a_decorator</span><span class="p">(</span><span class="n">name</span><span class="p">):</span>
+    <span class="k">def</span> <span class="nf">outer</span><span class="p">(</span><span class="n">f</span><span class="p">):</span>
+        <span class="nd">@functools.wraps</span><span class="p">(</span><span class="n">f</span><span class="p">)</span>
+        <span class="k">def</span> <span class="nf">inner</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+            <span class="k">return</span> <span class="n">_inner</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">args</span><span class="p">,</span> <span class="n">kwargs</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">inner</span>
+    <span class="k">return</span> <span class="n">outer</span>
+
+<span class="k">def</span> <span class="nf">_inner</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">args</span><span class="p">,</span> <span class="n">kwargs</span><span class="p">):</span>
+    <span class="c1"># do something before the function</span>
+    <span class="n">r</span> <span class="o">=</span> <span class="n">f</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+    <span class="c1"># do something afterwards</span>
+    <span class="k">return</span> <span class="n">r</span>
+</pre></div>
+</div>
+<p>Now, we can easily mock <tt class="docutils literal"><span class="pre">_inner()</span></tt> after the module has been loaded, thus
+changing the function of the decorator _after_ it has been applied.</p>
+</div>
+</div>
+<div class="section" id="import-ordering-and-style">
+<h3>Import ordering and style<a class="headerlink" href="#import-ordering-and-style" title="Permalink to this headline">¶</a></h3>
+<p>Let&#8217;s be consistent and ensure that we have the same import ordering and style
+across all of the charms (and other code) that we release.</p>
+<div class="section" id="use-absolute-imports">
+<h4>Use absolute imports<a class="headerlink" href="#use-absolute-imports" title="Permalink to this headline">¶</a></h4>
+<p>Use absolute imports.  In Python 2 code this means also that we should force
+absolute imports:</p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span><span class="kn">from</span> <span class="nn">__future__</span> <span class="kn">import</span> <span class="n">absolute_import</span>
+</pre></div>
+</div>
+<p>We should use absolute imports so that we don&#8217;t run into module name clashes
+across our own modules, nor with system and 3rd party packages.  See
+<a class="reference external" href="https://www.python.org/dev/peps/pep-0328/#id8">https://www.python.org/dev/peps/pep-0328/#id8</a> for more details.</p>
+</div>
+<div class="section" id="import-ordering">
+<h4>Import ordering<a class="headerlink" href="#import-ordering" title="Permalink to this headline">¶</a></h4>
+<ul class="simple">
+<li>Core Python system packages</li>
+<li>Third party modules</li>
+<li>Local modules</li>
+</ul>
+<p>They should be be alphabetical order, with a single space between them, and
+preferably in alphabetical order.  If load order is important (and it shouldn’t
+be!) then that’s the only reason they shouldn’t be in alpha order.</p>
+</div>
+<div class="section" id="import-style">
+<h4>Import Style<a class="headerlink" href="#import-style" title="Permalink to this headline">¶</a></h4>
+<p>It&#8217;s preferable to import a module rather than an object, class, function or
+instance from a module.</p>
+<p>Prefer:</p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span><span class="kn">import</span> <span class="nn">module</span>
+
+<span class="n">module</span><span class="o">.</span><span class="n">function</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>over:</p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span><span class="kn">from</span> <span class="nn">module</span> <span class="kn">import</span> <span class="n">function</span>
+
+<span class="n">function</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>However, if there are good reasons to import from a module, and there is more
+than one item, then the style is:</p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span><span class="kn">from</span> <span class="nn">module</span> <span class="kn">import</span> <span class="p">(</span>
+    <span class="n">one_import_per_line</span><span class="p">,</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<p>Why?</p>
+<p>Using <tt class="docutils literal"><span class="pre">import</span> <span class="pre">module;</span> <span class="pre">module.function()</span></tt> rather than <tt class="docutils literal"><span class="pre">from</span> <span class="pre">module</span> <span class="pre">import</span>
+<span class="pre">function</span></tt> is preferable because:</p>
+<ul class="simple">
+<li>with multiple imports, more symbols are being brought into the importing
+modules namespace.</li>
+<li>It&#8217;s clearer in the code when an external function is being used, as it is
+always prefixed by the external module name.  This is useful as it makes it
+more obvious what is happening in the code.</li>
+</ul>
+</div>
+</div>
+<div class="section" id="only-patch-mocks-in-the-file-module-under-test">
+<h3>Only patch mocks in the file/module under test<a class="headerlink" href="#only-patch-mocks-in-the-file-module-under-test" title="Permalink to this headline">¶</a></h3>
+<p>A unit test often needs to mock out functions, classes or instances in the file
+under test.  The mocks should _only_ be applied to the file that contains the
+item that is being tested.</p>
+<p>Don&#8217;t:</p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span><span class="c1"># object.py</span>
+<span class="kn">import</span> <span class="nn">something</span>
+
+<span class="k">def</span> <span class="nf">function_under_test</span><span class="p">(</span><span class="n">x</span><span class="p">):</span>
+    <span class="k">return</span> <span class="n">something</span><span class="o">.</span><span class="n">doing</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>In the unit test file: <tt class="docutils literal"><span class="pre">test_unit.py</span></tt>:</p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span><span class="c1"># test_unit.py</span>
+<span class="k">def</span> <span class="nf">unit_test</span><span class="p">():</span>
+    <span class="k">with</span> <span class="n">patch</span><span class="p">(</span><span class="s1">&#39;something.doing&#39;</span><span class="p">)</span> <span class="k">as</span> <span class="n">y</span><span class="p">:</span>
+        <span class="n">y</span><span class="o">.</span><span class="n">return_value</span> <span class="o">=</span> <span class="mi">5</span>
+        <span class="k">assert</span> <span class="n">function_under_test</span><span class="p">(</span><span class="mi">3</span><span class="p">)</span> <span class="o">==</span> <span class="mi">5</span>
+</pre></div>
+</div>
+<p>Prefer:</p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span><span class="c1"># object.py</span>
+<span class="kn">import</span> <span class="nn">something</span>
+
+<span class="k">def</span> <span class="nf">function_under_test</span><span class="p">(</span><span class="n">x</span><span class="p">):</span>
+    <span class="k">return</span> <span class="n">something</span><span class="o">.</span><span class="n">doing</span><span class="p">(</span><span class="n">x</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>In the unit test file: <tt class="docutils literal"><span class="pre">test_unit.py</span></tt>:</p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span><span class="c1"># test_unit.py</span>
+<span class="k">def</span> <span class="nf">unit_test</span><span class="p">():</span>
+    <span class="k">with</span> <span class="n">patch</span><span class="p">(</span><span class="s1">&#39;object.something.doing&#39;</span><span class="p">)</span> <span class="k">as</span> <span class="n">y</span><span class="p">:</span>
+        <span class="n">y</span><span class="o">.</span><span class="n">return_value</span> <span class="o">=</span> <span class="mi">5</span>
+        <span class="k">assert</span> <span class="n">function_under_test</span><span class="p">(</span><span class="mi">3</span><span class="p">)</span> <span class="o">==</span> <span class="mi">5</span>
+</pre></div>
+</div>
+<p>i.e. the thing that is patched is in object.py <strong>not</strong> in the library file
+&#8216;something.py&#8217;</p>
+</div>
+<div class="section" id="don-t-use-underscore-methods-outside-of-the-class">
+<h3>Don&#8217;t use _underscore_methods outside of the class<a class="headerlink" href="#don-t-use-underscore-methods-outside-of-the-class" title="Permalink to this headline">¶</a></h3>
+<p>Underscore methods are supposed to be, by convention, private to the enclosing
+scope, be that a module or a class.  They are used to signal that the method is
+_private_ even though the privacy can&#8217;t be enforced.</p>
+<p>Thus don&#8217;t do this:</p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span><span class="k">class</span> <span class="nc">A</span><span class="p">():</span>
+    <span class="k">def</span> <span class="nf">_private_method</span><span class="p">():</span>
+        <span class="k">pass</span>
+
+<span class="n">x</span> <span class="o">=</span> <span class="n">A</span><span class="p">()</span>
+<span class="n">x</span><span class="o">.</span><span class="n">_private_method</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>Simply rename the method without the underscore.  Otherwise you break the
+convention and people will not understand how you are using <em>private methods</em>.</p>
+<p>Equally, don&#8217;t use them in derived classes _either_.  A private method is
+supposed to be private to the class, and not used in derived classes.</p>
+</div>
+<div class="section" id="only-use-list-comprehensions-when-you-want-the-list">
+<h3>Only use list comprehensions when you want the list<a class="headerlink" href="#only-use-list-comprehensions-when-you-want-the-list" title="Permalink to this headline">¶</a></h3>
+<p>Don’t:</p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span><span class="p">[</span><span class="n">do_something_with</span><span class="p">(</span><span class="n">thing</span><span class="p">)</span> <span class="k">for</span> <span class="n">thing</span> <span class="ow">in</span> <span class="n">mylist</span><span class="p">]</span>
+</pre></div>
+</div>
+<p>Prefer:</p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span><span class="k">for</span> <span class="n">thing</span> <span class="ow">in</span> <span class="n">mylist</span><span class="p">:</span>
+    <span class="n">do_something_with</span><span class="p">(</span><span class="n">thing</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Why?</p>
+<p>You just created a list and then threw it away.  And it’s actually less clear
+what you are doing.  Do use list comprehensions when you actually want a list
+to do something with.</p>
+</div>
+<div class="section" id="avoid-c-style-dictionary-access-in-loops">
+<h3>Avoid C-style dictionary access in loops<a class="headerlink" href="#avoid-c-style-dictionary-access-in-loops" title="Permalink to this headline">¶</a></h3>
+<p>Don’t:</p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span><span class="k">for</span> <span class="n">key</span> <span class="ow">in</span> <span class="n">dictionary</span><span class="p">:</span>
+    <span class="n">do_something_with</span><span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="n">dictionary</span><span class="p">[</span><span class="n">key</span><span class="p">])</span>
+</pre></div>
+</div>
+<p>Prefer:</p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span><span class="k">for</span> <span class="n">key</span><span class="p">,</span> <span class="n">value</span> <span class="ow">in</span> <span class="n">dictionary</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+    <span class="n">do_something_with</span><span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Why?</p>
+<p>Using a list of keys to access a dictionary is less efficient and less obvious
+as to what’s happening.  <tt class="docutils literal"><span class="pre">key,</span> <span class="pre">value</span></tt> could actually be <tt class="docutils literal"><span class="pre">config_name</span></tt> and
+<tt class="docutils literal"><span class="pre">config_item</span></tt> which means the code is more self-documenting.</p>
+<p>Also remember that <tt class="docutils literal"><span class="pre">dictionary.keys()</span></tt> &amp; <tt class="docutils literal"><span class="pre">dictionary.values()</span></tt> exist if you
+want to explicitly iterate just over the keys or values of a dictionary.  Also,
+it’s preferable to iterate of <tt class="docutils literal"><span class="pre">dictionary.keys()</span></tt> rather than <tt class="docutils literal"><span class="pre">dictionary</span></tt>
+because, whilst they do the same thing, it’s not as obvious what is happening.</p>
+<p>If performance is an issue (Python2) then <tt class="docutils literal"><span class="pre">iterkeys()</span></tt> and <tt class="docutils literal"><span class="pre">itervalues()</span></tt> for
+generators, which is the default on Python3.</p>
+</div>
+<div class="section" id="prefer-tuples-to-lists">
+<h3>Prefer tuples to lists<a class="headerlink" href="#prefer-tuples-to-lists" title="Permalink to this headline">¶</a></h3>
+<p>Tuples are non malleable lists, and should be used where the list isn’t going
+to change.  They have (slight) performance advantages, but come with a
+guarantee that the list won’t change - note the objects within the tuple could
+change, just not their position or reference.</p>
+<p>Thus don’t:</p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span>if x in [‘hello’, ‘there’]:
+    do_something()
+</pre></div>
+</div>
+<p>Prefer:</p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span>if x in (‘hello’, ‘there’):
+    do_something()
+</pre></div>
+</div>
+<p>However, remember the caveat.  A single item tuple literal  has to have a
+trailing comma:</p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span>my_tuple = (‘item’, )
+</pre></div>
+</div>
+</div>
+<div class="section" id="prefer-constants-to-string-literals-or-numbers">
+<h3>Prefer CONSTANTS to string literals or numbers<a class="headerlink" href="#prefer-constants-to-string-literals-or-numbers" title="Permalink to this headline">¶</a></h3>
+<p>This is the “No magic numbers” rule. In a lot of the OS charms there is code
+like:</p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span><span class="n">db</span> <span class="o">=</span> <span class="n">kv</span><span class="p">()</span>
+<span class="n">previous_thing</span> <span class="o">=</span> <span class="n">db</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;thing_key&#39;</span><span class="p">,</span> <span class="n">thing</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Prefer:</p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span>THING_KEY = ‘thing_key’
+
+db = kv()
+previous_thing = db.get(THING_KEY, thing)
+</pre></div>
+</div>
+<p>Why?</p>
+<p>String literals introduce a vector for mistakes.  We can’t use the language to
+help prevent spelling mistakes, nor our tools to do autocompletion, nor use
+lint to find ‘undefined’ variables.  This also means that if you use the same
+number or string literal more than once in code you should create a constant
+for that value and use that in code.  This includes fixed array accesses,
+offsets, etc.</p>
+</div>
+<div class="section" id="dont-abuse-call">
+<h3>Don’t abuse __call__()<a class="headerlink" href="#dont-abuse-call" title="Permalink to this headline">¶</a></h3>
+<p><tt class="docutils literal"><span class="pre">__call__()</span></tt> is a method that is invoked when <tt class="docutils literal"><span class="pre">()</span></tt> is invoked on an object &#8211;
+<tt class="docutils literal"><span class="pre">()</span></tt> on a class invokes <tt class="docutils literal"><span class="pre">__call__</span></tt> on the metaclass for the class.</p>
+<p>A good example of abuse of <tt class="docutils literal"><span class="pre">__call__</span></tt> is the class <tt class="docutils literal"><span class="pre">HookData()</span></tt> which, to
+access the context manager, is invoked as:</p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span><span class="k">with</span> <span class="n">HookData</span><span class="p">()()</span> <span class="k">as</span> <span class="n">hd</span><span class="p">:</span>
+    <span class="n">hd</span><span class="o">.</span><span class="n">kv</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="o">...</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>The sequence <tt class="docutils literal"><span class="pre">()()</span></tt> is almost certainly a <em>code smell</em>.  There is hidden
+behaviour that requires you to go to the class to see what is actually
+happening.   It would have been more obvious if that method was just called
+<tt class="docutils literal"><span class="pre">cm()</span></tt> or <tt class="docutils literal"><span class="pre">context()</span></tt>:</p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span><span class="k">with</span> <span class="n">HookData</span><span class="p">()</span><span class="o">.</span><span class="n">context</span><span class="p">()</span> <span class="k">as</span> <span class="n">hd</span><span class="p">:</span>
+    <span class="n">hd</span><span class="o">.</span><span class="n">kv</span><span class="o">.</span><span class="n">set</span><span class="p">(</span><span class="o">...</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+<div class="section" id="dont-use-old-style-string-interpolation">
+<h3>Don’t use old style string interpolation<a class="headerlink" href="#dont-use-old-style-string-interpolation" title="Permalink to this headline">¶</a></h3>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span><span class="n">action_fail</span><span class="p">(</span><span class="s2">&quot;Cannot remove service: </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="n">service</span><span class="o">.</span><span class="n">host</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Prefer:</p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span><span class="n">action_fail</span><span class="p">(</span><span class="s2">&quot;Cannot remove service: {}&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="n">service</span><span class="o">.</span><span class="n">host</span><span class="p">))</span>
+</pre></div>
+</div>
+<p>Why?</p>
+<p>It’s the new style, and the old style is deprecated; eventually it will be
+removed.  Plus the new style is way more powerful: keywords, dictionary
+support, to name but a few.</p>
+</div>
+<div class="section" id="docstrings-and-comments">
+<h3>Docstrings and comments<a class="headerlink" href="#docstrings-and-comments" title="Permalink to this headline">¶</a></h3>
+<p>Every function exported by a module should have a docstring.  Generally, this
+means all functions mentioned in <tt class="docutils literal"><span class="pre">__ALL__</span></tt> or implicitly those that do not
+start with an <tt class="docutils literal"><span class="pre">_</span></tt>.</p>
+<p>The preferred format for documenting parameters and return values is
+ReStructuredText (reST) as described: <a class="reference external" href="http://docutils.sourceforge.net/rst.html">http://docutils.sourceforge.net/rst.html</a></p>
+<p>The field lists are described here:
+<a class="reference external" href="http://www.sphinx-doc.org/en/stable/domains.html#info-field-lists">http://www.sphinx-doc.org/en/stable/domains.html#info-field-lists</a></p>
+<p>An example of an acceptable function docstring is:</p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span><span class="k">def</span> <span class="nf">mult</span><span class="p">(</span><span class="n">a</span><span class="p">,</span> <span class="n">b</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Multiple a * b and return the result.</span>
+
+<span class="sd">    :param a: Number</span>
+<span class="sd">    :param b: Number</span>
+<span class="sd">    :returns Number: a * b</span>
+<span class="sd">    :raises: ValueError, TypeError if the params are not numbers</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">return</span> <span class="n">a</span> <span class="o">*</span> <span class="n">b</span>
+</pre></div>
+</div>
+<p>Other comments should be used to support the code, but not just re-say what the
+code is doing.</p>
+</div>
+<div class="section" id="ensure-there-s-a-comma-on-the-last-item-of-a-dictionary">
+<h3>Ensure there&#8217;s a comma on the last item of a dictionary<a class="headerlink" href="#ensure-there-s-a-comma-on-the-last-item-of-a-dictionary" title="Permalink to this headline">¶</a></h3>
+<p>This helps when the developer adds an item to a dictionary literal, in that
+they don&#8217;t have to edit the previous line to add a comma.  It also means that
+the review doesn&#8217;t indicate that the previous line has changed (due to the
+addition of a comma).</p>
+<p>Prefer:</p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span><span class="n">a_dict</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s1">&#39;one&#39;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span>
+    <span class="s1">&#39;two&#39;</span><span class="p">:</span> <span class="mi">2</span><span class="p">,</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>over:</p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span><span class="n">a_dict</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s1">&#39;one&#39;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span>
+    <span class="s1">&#39;two&#39;</span><span class="p">:</span> <span class="mi">2</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</div>
+<div class="section" id="avoid-dynamic-default-arguments-in-functions">
+<h3>Avoid dynamic default arguments in functions<a class="headerlink" href="#avoid-dynamic-default-arguments-in-functions" title="Permalink to this headline">¶</a></h3>
+<p>Don&#8217;t use a dynamic assignment to a default argument.  e.g.</p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span>def a(b=[]):
+    b.append(&#39;hello&#39;)
+    print b
+
+In [2]: a()
+[&#39;hello&#39;]
+
+In [3]: a()
+[&#39;hello&#39;, &#39;hello&#39;]
+</pre></div>
+</div>
+<p>As you can see, the list is only assigned the first time, and thereafter it
+&#8216;remember&#8217; the previous values.</p>
+<p>Also avoid other default, dynamic, assignments:</p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span>def f():
+    return [&#39;Hello&#39;]
+
+
+def a(b=f()):
+    b.append(&#39;there&#39;)
+    print b
+
+
+In [3]: a()
+[&#39;Hello&#39;, &#39;there&#39;]
+
+In [4]: a()
+[&#39;Hello&#39;, &#39;there&#39;, &#39;there&#39;]
+</pre></div>
+</div>
+<p>Instead, prefer:</p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span>def a(b=None):
+    if b is None:
+        b = f()
+    b.append(&#39;there&#39;)
+    print b
+
+
+In [6]: a()
+[&#39;Hello&#39;, &#39;there&#39;]
+
+In [7]: a()
+[&#39;Hello&#39;, &#39;there&#39;]
+</pre></div>
+</div>
+<p>Why?</p>
+<p>Although it can be a handy side-effect for allowing a function to remember
+previous values, due to a quirk in the interpreter in only assigning the
+reference once, it may be changed in the future and it hides the intention of
+the code.</p>
+</div>
+<div class="section" id="avoid-side-effects-in-adapters-and-contexts">
+<h3>Avoid side effects in Adapters and Contexts<a class="headerlink" href="#avoid-side-effects-in-adapters-and-contexts" title="Permalink to this headline">¶</a></h3>
+<p>Adapters (reactive charms) and Contexts should not alter the unit they are
+running, i.e. should not have unexpected side effects. Some environment
+altering side effects do exist in older contexts, however this should not be
+taken as an indicator that it is acceptable to add more.</p>
+<p>Why?</p>
+<p>Adapters and Contexts are regulary called via the update status hook to assess
+whether a charm is ready. If calling the Context or Adapter has unexpected
+side effects it could interrupt service. See <a class="reference external" href="https://bugs.launchpad.net/charms/+source/nova-cloud-controller/+bug/1605184">Bug #1605184</a> for an example of this issue.</p>
+</div>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Coding Guidelines</a><ul>
+<li><a class="reference internal" href="#introduction">Introduction</a></li>
+<li><a class="reference internal" href="#topics">Topics</a><ul>
+<li><a class="reference internal" href="#multiple-roots-symlinks">Multiple roots &#8211; symlinks</a></li>
+<li><a class="reference internal" href="#install-time-vs-load-time-vs-runtime-code">Install-time vs Load-time vs Runtime code</a></li>
+<li><a class="reference internal" href="#constants-should-be-simple">CONSTANTS should be simple</a></li>
+<li><a class="reference internal" href="#decorators">Decorators</a><ul>
+<li><a class="reference internal" href="#functools-wraps-f">functools.wraps(f)</a></li>
+<li><a class="reference internal" href="#mocking-out-decorators">Mocking out decorators</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#import-ordering-and-style">Import ordering and style</a><ul>
+<li><a class="reference internal" href="#use-absolute-imports">Use absolute imports</a></li>
+<li><a class="reference internal" href="#import-ordering">Import ordering</a></li>
+<li><a class="reference internal" href="#import-style">Import Style</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#only-patch-mocks-in-the-file-module-under-test">Only patch mocks in the file/module under test</a></li>
+<li><a class="reference internal" href="#don-t-use-underscore-methods-outside-of-the-class">Don&#8217;t use _underscore_methods outside of the class</a></li>
+<li><a class="reference internal" href="#only-use-list-comprehensions-when-you-want-the-list">Only use list comprehensions when you want the list</a></li>
+<li><a class="reference internal" href="#avoid-c-style-dictionary-access-in-loops">Avoid C-style dictionary access in loops</a></li>
+<li><a class="reference internal" href="#prefer-tuples-to-lists">Prefer tuples to lists</a></li>
+<li><a class="reference internal" href="#prefer-constants-to-string-literals-or-numbers">Prefer CONSTANTS to string literals or numbers</a></li>
+<li><a class="reference internal" href="#dont-abuse-call">Don’t abuse __call__()</a></li>
+<li><a class="reference internal" href="#dont-use-old-style-string-interpolation">Don’t use old style string interpolation</a></li>
+<li><a class="reference internal" href="#docstrings-and-comments">Docstrings and comments</a></li>
+<li><a class="reference internal" href="#ensure-there-s-a-comma-on-the-last-item-of-a-dictionary">Ensure there&#8217;s a comma on the last item of a dictionary</a></li>
+<li><a class="reference internal" href="#avoid-dynamic-default-arguments-in-functions">Avoid dynamic default arguments in functions</a></li>
+<li><a class="reference internal" href="#avoid-side-effects-in-adapters-and-contexts">Avoid side effects in Adapters and Contexts</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="how-to-contribute.html"
+                                  title="previous chapter">How to contribute</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="testing.html"
+                                  title="next chapter">Testing</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/charm-guide
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="_sources/coding-guidelines.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="testing.html" title="Testing"
+             accesskey="N">next</a></li>
+        <li class="right" >
+          <a href="how-to-contribute.html" title="How to contribute"
+             accesskey="P">previous</a> |</li>
+        <li><a href="index.html">OpenStack Charms Guide 0.0.1.dev33 documentation</a> &raquo;</li>
+          <li><a href="how-to-contribute.html" accesskey="U">How to contribute</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer">
+        &copy; Copyright 2017, OpenStack Contributors - use the <a href="https://git.openstack.org/cgit/openstack/openstack-charms-guide">openstack-charms-guide git repo</a> to propose changes.
+      Last updated on Wed Feb 8 11:51:57 2017, commit d150c32.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.2.3.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/OpenStack Charms Guide");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

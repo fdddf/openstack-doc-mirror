@@ -1,0 +1,498 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Data Sync &mdash; networking-midonet 4.0.1.dev3 documentation</title>
+    
+    <link rel="stylesheet" href="../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../',
+        VERSION:     '4.0.1.dev3',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../_static/doctools.js"></script>
+    <link rel="top" title="networking-midonet 4.0.1.dev3 documentation" href="../../index.html" />
+    <link rel="up" title="Specifications" href="../index.html" />
+    <link rel="next" title="Gateway Device Management API" href="device_management.html" />
+    <link rel="prev" title="Agent Membership API" href="agent_membership.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="data-sync">
+<h1>Data Sync<a class="headerlink" href="#data-sync" title="Permalink to this headline">¶</a></h1>
+<p>In MidoNet 2.0, Neutron is the data store of network configurations and Cluster
+is the backend data store that contains MidoNet-specific data objects
+translated from Neutron data models.</p>
+<p>Also, MidoNet 2.0 includes data syncing feature between Neutron and Cluster,
+which is internally implemented by importing the Neutron data into Cluster
+through the tasks table.  The data sync feature is needed for the following use
+cases:</p>
+<blockquote>
+<div><ul class="simple">
+<li>Operator sets up MidoNet for the first time and wants to initialize the
+Cluster data</li>
+<li>Operator using a non-MidoNet Neutron plugin wishes to migrate over to
+MidoNet</li>
+<li>Operator wants to upgrade to the new version of MidoNet and the MidoNet data
+schema has changed.</li>
+<li>Modifying either the Neutron DB or MidoNet data store directly for some
+operational purpose led to severe data mismatch between Neutron and MidoNet,
+and wishes to re-sync.</li>
+</ul>
+</div></blockquote>
+<p>Each data imported is versioned.  This document describes the data version
+management feature of midonet-db-manage tool that includes syncing Neutron and
+Cluster data, and rolling back to one of the previous data versions.</p>
+<p>The Cluster design of data import, and the upgrade process, are outside the
+scope of this document.</p>
+<div class="section" id="problem-description">
+<h2>Problem Description<a class="headerlink" href="#problem-description" title="Permalink to this headline">¶</a></h2>
+<p>While MidoNet 2.0 is designed to provide the data syncing feature, currently
+there is no tool made available in Neutron to facilitate it.  Without such a
+tool, the data sync feature does not get exposed to the operators, making the
+upgrade process and data re-syncing between Neutron and MidoNet challenging.</p>
+</div>
+<div class="section" id="proposed-change">
+<h2>Proposed Change<a class="headerlink" href="#proposed-change" title="Permalink to this headline">¶</a></h2>
+<p>midonet-db-manage, which manages the tasks table in Neutron DB among other DB
+related features, is enhanced with the following capabilities:</p>
+<blockquote>
+<div><ul class="simple">
+<li>Toggle the write access of the tasks table between read-only and read-write
+modes, which also toggles the API between read-only and read-write
+correspondingly</li>
+<li>Through the tasks table, signal to Cluster that data sync is about to start
+and execute the data import, and signal that the import has completed to
+activate the imported data</li>
+<li>Maintain all the past data sync events and their summaries</li>
+</ul>
+</div></blockquote>
+<p>Deletion of the imported Cluster data is not included in this proposal, but it
+is planned to be included in one of the future releases.</p>
+<div class="section" id="tasks-write-access">
+<h3>Tasks Write Access<a class="headerlink" href="#tasks-write-access" title="Permalink to this headline">¶</a></h3>
+<p>A new column is added to &#8216;midonet_data_state&#8217; table which indicates the write
+access to the tasks table.  The default is read-write.  The data sync operation
+is only allowed in the read-only mode, and the operator cannot switch back to
+read-write while the data sync is taking place.  The plugin will throw 503
+(Service Unavailable) on all the POST/PUT/DELETE Neutron API requests if the
+tasks table is in a read-only mode.</p>
+</div>
+<div class="section" id="data-version">
+<h3>Data Version<a class="headerlink" href="#data-version" title="Permalink to this headline">¶</a></h3>
+<p>Each data sync event is summarized and saved in the &#8216;midonet_data_versions&#8217;
+table as a new &#8216;data version&#8217;.  A data version includes fields that are updated
+only by midonet-db-manage and fields updated only by Cluster.</p>
+<p>The fields updated by midonet-db-manage are:</p>
+<blockquote>
+<div><ul class="simple">
+<li>id: Globally unique identifier of the data version</li>
+<li>sync_started_at: Time the sync started</li>
+<li>sync_tasks_status: Status of sync tasks insertion</li>
+<li>stale: Flag indicating that this data set is out of date</li>
+</ul>
+</div></blockquote>
+<p>The field updated by Cluster is</p>
+<blockquote>
+<div><ul class="simple">
+<li>sync_finished_at: Time all the tasks were processed by Cluster</li>
+</ul>
+</div></blockquote>
+<p>Both midonet-db-manage and Cluster update:</p>
+<blockquote>
+<div><ul>
+<li><dl class="first docutils">
+<dt>sync_status: Status of the sync.  midonet_db_manager updates it when it starts,</dt>
+<dd><p class="first last">and Cluster updates when it finishes processing all the tasks</p>
+</dd>
+</dl>
+</li>
+</ul>
+</div></blockquote>
+<p>How these fields get set are described in Tasks Data Sync section below.</p>
+<p>The data version summary does not include the number of tasks processed but
+such information would be printed and logged from the midonet-db-manage
+command, and may be added to the table if there are clear use cases for it.</p>
+<p>When the midonet-db-manage sync command is issued, &#8216;id&#8217;, &#8216;sync_started_at&#8217; and
+&#8216;sync_tasks_status&#8217; are initialized.  &#8216;sync_tasks_status&#8217; is set to STARTED.</p>
+<p>When the midonet-db-manage finishes adding all the tasks, &#8216;sync_tasks_status&#8217;
+is updated to COMPLETED.</p>
+</div>
+<div class="section" id="tasks-data-sync">
+<h3>Tasks Data Sync<a class="headerlink" href="#tasks-data-sync" title="Permalink to this headline">¶</a></h3>
+<p>The data sync operation is allowed only when the data write access is set to
+read-only.</p>
+<p>The data sync operation is implemented as follows:</p>
+<blockquote>
+<div><ol class="arabic">
+<li><p class="first">midonet-db-manage truncates the tasks table and inserts a DATA_VERSION_SYNC
+task in the first row.  This task instructs Cluster that a new data sync
+has started, and it needs to prepare a new storage for the sync.
+midonet-db-manage sets &#8216;sync_started_at&#8217; to the current time, and
+&#8216;sync_tasks_status&#8217; and &#8216;sync_status&#8217; to STARTED.  Syncing is disallowed in
+the following cases:</p>
+<blockquote>
+<div><ol class="loweralpha simple">
+<li>Sync is already being executed</li>
+<li>There are unprocessed tasks (so that truncate does not delete
+unprocessed tasks)</li>
+</ol>
+</div></blockquote>
+</li>
+<li><p class="first">Immediately following the DATA_VERSION_SYNC task insertion,
+midonet-db-manage queries Neutron DB and generates CREATE tasks for all the
+existing resources.  Cluster processes them as usual and creates these
+resources in the backend.</p>
+</li>
+<li><p class="first">Once all the tasks to re-create the Neutron objects are inserted into the
+tasks table, DATA_VERSION_ACTIVATE task is added to indicate that the import
+has finished. midonet-db-manage updates the &#8216;sync_task_status&#8217; to COMPLETED</p>
+</li>
+</ol>
+</div></blockquote>
+<p>midonet-db-manage sync command exits immediately after DATA_VERSION_ACTIVE task
+has been added to the tasks table, and does not know whether Cluster has
+successfully processed all the tasks.  &#8216;sync_status&#8217; and &#8216;sync_tasks_status&#8217;
+exist to differentiate the statuses of the Cluster processing and the
+midonet-db-manage command.</p>
+<p>Cluster, after processing DATA_VERSION_ACTIVATE task, updates &#8216;sync_status&#8217; to
+COMPLETED.  If Cluster encounters an error, it updates &#8216;sync_status&#8217; to ERROR.
+In both cases, &#8216;sync_finished_at&#8217; is updated.</p>
+<p>If there was an error while inserting sync tasks, midonet-db-manager updates
+&#8216;sync_tasks_status&#8217; to ERROR.  If the sync command was forcefully terminated
+(SIGINT) by the user, then &#8216;sync_tasks_status&#8217; is set to ABORTED.  In both
+cases, the command terminates immediately, and adds DATA_VERSION_ACTIVE task
+with the version ID set to the currently active data version (not the one being
+synced).</p>
+</div>
+<div class="section" id="data-version-activation">
+<h3>Data Version Activation<a class="headerlink" href="#data-version-activation" title="Permalink to this headline">¶</a></h3>
+<p>An active data version means that the data originated from this data sync event
+is what the MidoNet agents are currently using for packet simulation.  At any
+time, exactly one data version may be active.  When a data sync process
+completes, the newly imported data set is automatically activated.</p>
+<p>In addition, midonet-db-manage offers a command to rollback to the previously
+active data version.  A rollback could only happen during one read-only
+session.  Once the operator sets the API to read-write, none of the previously
+synced data could be chosen for a rollback.  You can only rollback to the data
+sync that was completed in the same read-only session.  The operator is
+expected to do all the necessary verifications of the completed data sync
+before the data access is set back to read-write.  When the data is set back to
+read-write, midonet-db-manage sets the &#8216;stale&#8217; field of all the non-active data
+versions to true.</p>
+<p>When a data activation command is issued, midonet-db-manage sets the
+&#8216;sync_status&#8217; and &#8216;task_status&#8217; to STARTED.  When the command completes, it
+sets the &#8216;task_status&#8217; to COMPLETED.  Cluster, when it finishes the activation
+process, updates &#8216;sync_status&#8217; to COMPLETED, and &#8216;active_data_version&#8217; field of
+the midonet-data-state table to the activated version.</p>
+<p>You can not go back to the read-write mode if either &#8216;task_status&#8217; or
+&#8216;sync_status&#8217; field is set to STARTED.</p>
+</div>
+<div class="section" id="rest-api">
+<h3>REST API<a class="headerlink" href="#rest-api" title="Permalink to this headline">¶</a></h3>
+<p>None</p>
+</div>
+<div class="section" id="db-model">
+<h3>DB Model<a class="headerlink" href="#db-model" title="Permalink to this headline">¶</a></h3>
+<p><strong>midonet_data_versions</strong></p>
+<table border="1" class="docutils">
+<colgroup>
+<col width="25%" />
+<col width="12%" />
+<col width="63%" />
+</colgroup>
+<thead valign="bottom">
+<tr class="row-odd"><th class="head">Name</th>
+<th class="head">Type</th>
+<th class="head">Description</th>
+</tr>
+</thead>
+<tbody valign="top">
+<tr class="row-even"><td>id</td>
+<td>Int</td>
+<td>The version of the data</td>
+</tr>
+<tr class="row-odd"><td>sync_started_at</td>
+<td>DateTime</td>
+<td>Time the data sync started</td>
+</tr>
+<tr class="row-even"><td>sync_finished_at</td>
+<td>DateTime</td>
+<td>Time the data sync finished</td>
+</tr>
+<tr class="row-odd"><td>sync_status</td>
+<td>String</td>
+<td>Status of the sync operation</td>
+</tr>
+<tr class="row-even"><td>sync_tasks_status</td>
+<td>String</td>
+<td>Status of the sync tasks insertion</td>
+</tr>
+<tr class="row-odd"><td>stale</td>
+<td>Boolean</td>
+<td>True if the date version is stale</td>
+</tr>
+</tbody>
+</table>
+<p>The &#8216;sync_status&#8217; column could contain one of the following values:</p>
+<blockquote>
+<div><ul class="simple">
+<li>STARTED</li>
+<li>COMPLETED</li>
+<li>ERROR</li>
+</ul>
+</div></blockquote>
+<p>The &#8216;sync_tasks_status&#8217; column could contain one of the following values:</p>
+<blockquote>
+<div><ul class="simple">
+<li>STARTED</li>
+<li>COMPLETED</li>
+<li>ABORTED</li>
+<li>ERROR</li>
+</ul>
+</div></blockquote>
+<p><strong>midonet_data_state</strong></p>
+<p>Rename midonet_task_state to midonet_data_state.</p>
+<p>Add a new column to store the write access to the tasks table.</p>
+<table border="1" class="docutils">
+<colgroup>
+<col width="25%" />
+<col width="12%" />
+<col width="63%" />
+</colgroup>
+<thead valign="bottom">
+<tr class="row-odd"><th class="head">Name</th>
+<th class="head">Type</th>
+<th class="head">Description</th>
+</tr>
+</thead>
+<tbody valign="top">
+<tr class="row-even"><td>active_version</td>
+<td>Int</td>
+<td>Active data version</td>
+</tr>
+<tr class="row-odd"><td>readonly</td>
+<td>Boolean</td>
+<td>If true, tasks table is readonly</td>
+</tr>
+</tbody>
+</table>
+<p>FLUSH task type is deleted, and new resource types, DATA_VERSION_SYNC and
+DATA_VERSION_ACTIVATE are created.</p>
+<p>To start the data sync process, this is added in row 1 of the tasks table:</p>
+<dl class="docutils">
+<dt>::</dt>
+<dd>task_type: DATA_VERSION_SYNC
+resource_type:
+resource_id: &lt;DATA_VERSION&gt;
+data: {}</dd>
+</dl>
+<p>To activate a data version, this is added to the tasks table:</p>
+<dl class="docutils">
+<dt>::</dt>
+<dd>task_type: DATA_VERSION_ACTIVATE
+resource_type:
+resource_id: &lt;DATA_VERSION&gt;
+data: {}</dd>
+</dl>
+</div>
+<div class="section" id="security">
+<h3>Security<a class="headerlink" href="#security" title="Permalink to this headline">¶</a></h3>
+<p>Similar to neutron-db-manage, only the admins are expected to run
+midonet-db-manage.  While there is no special authentication mechanism
+implemented for this tool, the only way to run this script is if you have
+access to the management hosts in the cloud, and preventing unauthorized users
+from gaining such access is out of this document&#8217;s scope.</p>
+</div>
+<div class="section" id="client">
+<h3>Client<a class="headerlink" href="#client" title="Permalink to this headline">¶</a></h3>
+<p>The following command displays the global information about the data, including
+the write access and the last processed task:</p>
+<dl class="docutils">
+<dt>::</dt>
+<dd>midonet-db-manage data-show</dd>
+</dl>
+<p>The following command sets the Neutron data to be read-only:</p>
+<dl class="docutils">
+<dt>::</dt>
+<dd>midonet-db-manage data-readonly</dd>
+</dl>
+<p>The following command sets the Neutron data to be read-write:</p>
+<dl class="docutils">
+<dt>::</dt>
+<dd>midonet-db-manage data-readwrite</dd>
+</dl>
+<p>The following command displays all the data versions:</p>
+<dl class="docutils">
+<dt>::</dt>
+<dd>midonet-db-manage data-version-list</dd>
+</dl>
+<p>The following command starts data sync to create a new version:</p>
+<dl class="docutils">
+<dt>::</dt>
+<dd>midonet-db-manage data-version-sync</dd>
+</dl>
+<p>The following command activates the specified version.  It could be used for
+the rollback:</p>
+<dl class="docutils">
+<dt>::</dt>
+<dd>midonet-db-manage data-version-activate &lt;VERSION_ID&gt;</dd>
+</dl>
+</div>
+<div class="section" id="documentation">
+<h3>Documentation<a class="headerlink" href="#documentation" title="Permalink to this headline">¶</a></h3>
+<p>In the Deployment Guide, the following section is added:</p>
+<blockquote>
+<div><ul class="simple">
+<li>How to initialize the Cluster data when Setting up MidoNet for the first
+time</li>
+<li>How to initialize the Cluster data when migration from a different Neutron
+plugin</li>
+<li>Within the upgrade section, how to sync the data from Neutron to Cluster,
+including how the rollback is accomplished</li>
+</ul>
+</div></blockquote>
+<p>In the Operational Guide, the following section is added:</p>
+<blockquote>
+<div><ul class="simple">
+<li>How to sync data between Neutron and Cluster when the data between them
+become inconsistent due to some operational errors</li>
+</ul>
+</div></blockquote>
+</div>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="../../index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Data Sync</a><ul>
+<li><a class="reference internal" href="#problem-description">Problem Description</a></li>
+<li><a class="reference internal" href="#proposed-change">Proposed Change</a><ul>
+<li><a class="reference internal" href="#tasks-write-access">Tasks Write Access</a></li>
+<li><a class="reference internal" href="#data-version">Data Version</a></li>
+<li><a class="reference internal" href="#tasks-data-sync">Tasks Data Sync</a></li>
+<li><a class="reference internal" href="#data-version-activation">Data Version Activation</a></li>
+<li><a class="reference internal" href="#rest-api">REST API</a></li>
+<li><a class="reference internal" href="#db-model">DB Model</a></li>
+<li><a class="reference internal" href="#security">Security</a></li>
+<li><a class="reference internal" href="#client">Client</a></li>
+<li><a class="reference internal" href="#documentation">Documentation</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="agent_membership.html"
+                                  title="previous chapter">Agent Membership API</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="device_management.html"
+                                  title="next chapter">Gateway Device Management API</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/networking-midonet
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="../../_sources/specs/kilo/data_sync.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="right" >
+          <a href="device_management.html" title="Gateway Device Management API"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="agent_membership.html" title="Agent Membership API"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../index.html">networking-midonet 4.0.1.dev3 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../index.html" accesskey="U">Specifications</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2015, OpenStack Foundation.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/networking-midonet");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

@@ -1,0 +1,291 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Replication &mdash; cinder 10.0.0.0rc2.dev76 documentation</title>
+    
+    <link rel="stylesheet" href="../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../',
+        VERSION:     '10.0.0.0rc2.dev76',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../_static/jquery.js"></script>
+    <script type="text/javascript" src="../_static/underscore.js"></script>
+    <script type="text/javascript" src="../_static/doctools.js"></script>
+    <link rel="top" title="cinder 10.0.0.0rc2.dev76 documentation" href="../index.html" />
+    <link rel="up" title="Developer Guide" href="index.html" />
+    <link rel="next" title="User Messages" href="user_messages.html" />
+    <link rel="prev" title="Guru Meditation Reports" href="gmr.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="replication">
+<h1>Replication<a class="headerlink" href="#replication" title="Permalink to this headline">¶</a></h1>
+<p>How to implement replication features in a backend driver.</p>
+<p>For backend devices that offer replication features, Cinder
+provides a common mechanism for exposing that functionality
+on a volume per volume basis while still trying to allow
+flexibility for the varying implementation and requirements
+of all the different backend devices.</p>
+<p>Most of the configuration is done via the cinder.conf file
+under the driver section and through the use of volume types.</p>
+<p>NOTE:
+This implementation is intended to solve a specific use case.
+It&#8217;s critical that you read the Use Cases section of the spec
+here:
+<a class="reference external" href="https://specs.openstack.org/openstack/cinder-specs/specs/mitaka/cheesecake.html">https://specs.openstack.org/openstack/cinder-specs/specs/mitaka/cheesecake.html</a></p>
+<div class="section" id="config-file-examples">
+<h2>Config file examples<a class="headerlink" href="#config-file-examples" title="Permalink to this headline">¶</a></h2>
+<p>The cinder.conf file is used to specify replication config info
+for a specific driver. There is no concept of managed vs unmanaged,
+ALL replication configurations are expected to work by using the same
+driver.  In other words, rather than trying to perform any magic
+by changing host entries in the DB for a Volume etc, all replication
+targets are considered &#8220;unmanaged&#8221; BUT if a failover is issued, it&#8217;s
+the drivers responsibility to access replication volumes on the replicated
+backend device.</p>
+<p>This results in no changes for the end-user.  For example, He/She can
+still issue an attach call to a replicated volume that has been failed
+over, and the driver will still receive the call BUT the driver will
+need to figure out if it needs to redirect the call to the a different
+backend than the default or not.</p>
+<p>Information regarding if the backend is in a failed over state should
+be stored in the driver, and in the case of a restart, the service
+entry in the DB will have the replication status info and pass it
+in during init to allow the driver to be set in the correct state.</p>
+<p>In the case of a failover event, and a volume was NOT of type
+replicated, that volume will now be UNAVAILABLE and any calls
+to access that volume should return a VolumeNotFound exception.</p>
+<p><strong>replication_device</strong></p>
+<p>Is a multi-dict opt, that should be specified
+for each replication target device the admin would
+like to configure.</p>
+<p><em>NOTE:</em></p>
+<p>There is one standardized and REQUIRED key in the config
+entry, all others are vendor-unique:</p>
+<ul class="simple">
+<li>backend_id:&lt;vendor-identifier-for-rep-target&gt;</li>
+</ul>
+<p>An example driver config for a device with multiple replication targets
+is show below:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>.....
+[driver-biz]
+volume_driver=xxxx
+volume_backend_name=biz
+
+[driver-baz]
+volume_driver=xxxx
+volume_backend_name=baz
+
+[driver-foo]
+volume_driver=xxxx
+volume_backend_name=foo
+replication_device = backend_id:vendor-id-1,unique_key:val....
+replication_device = backend_id:vendor-id-2,unique_key:val....
+</pre></div>
+</div>
+<p>In this example the result is self.configuration.get(&#8216;replication_device) with the list:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="p">[{</span><span class="n">backend_id</span><span class="p">:</span> <span class="n">vendor</span><span class="o">-</span><span class="nb">id</span><span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="n">unique_key</span><span class="p">:</span> <span class="n">val1</span><span class="p">},</span>
+ <span class="p">{</span><span class="n">backend_id</span><span class="p">:</span> <span class="n">vendor</span><span class="o">-</span><span class="nb">id</span><span class="o">-</span><span class="mi">2</span><span class="p">,</span> <span class="n">unique_key</span><span class="p">:</span> <span class="n">val1</span><span class="p">}]</span>
+</pre></div>
+</div>
+</div>
+<div class="section" id="volume-types-extra-specs">
+<h2>Volume Types / Extra Specs<a class="headerlink" href="#volume-types-extra-specs" title="Permalink to this headline">¶</a></h2>
+<p>In order for a user to specify they&#8217;d like a replicated volume, there needs to be
+a corresponding Volume Type created by the Cloud Administrator.</p>
+<p>There&#8217;s a good deal of flexibility by using volume types.  The scheduler can
+send the create request to a backend that provides replication by simply
+providing the replication=enabled key to the extra-specs of the volume type.</p>
+<p>For example, if the type was set to simply create the volume on any (or if you only had one)
+backend that supports replication, the extra-specs entry would be:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="p">{</span><span class="n">replication</span><span class="p">:</span> <span class="n">enabled</span><span class="p">}</span>
+</pre></div>
+</div>
+<dl class="docutils">
+<dt>Additionally you could provide additional details using scoped keys::</dt>
+<dd>{replication: enabled, replication_type: async, replication_count: 2,
+replication_targets: [fake_id1, fake_id2]}</dd>
+</dl>
+<p>It&#8217;s up to the driver to parse the volume type info on create and set things up
+as requested.  While the scoping key can be anything, it&#8217;s strongly recommended that all
+backends utilize the same key (replication) for consistency and to make things easier for
+the Cloud Administrator.</p>
+<p>Additionally it&#8217;s expected that if a backend is configured with 3 replication
+targets, that if a volume of type replication=enabled is issued against that
+backend then it will replicate to ALL THREE of the configured targets.</p>
+</div>
+<div class="section" id="capabilities-reporting">
+<h2>Capabilities reporting<a class="headerlink" href="#capabilities-reporting" title="Permalink to this headline">¶</a></h2>
+<p>The following entries are expected to be added to the stats/capabilities update for
+replication configured devices:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>stats[&quot;replication_enabled&quot;] = True|False
+stats[&quot;replication_targets&quot;] = [&lt;backend-id_1, &lt;backend-id_2&gt;...]
+</pre></div>
+</div>
+<p>NOTICE, we report configured replication targets via volume stats_update
+This information is added to the get_capabilities admin call.</p>
+</div>
+<div class="section" id="required-methods">
+<h2>Required methods<a class="headerlink" href="#required-methods" title="Permalink to this headline">¶</a></h2>
+<p>The number of API methods associated with replication is intentionally very limited,</p>
+<p>Admin only methods.</p>
+<dl class="docutils">
+<dt>They include::</dt>
+<dd>replication_failover(self, context, volumes)</dd>
+</dl>
+<p>Additionally we have freeze/thaw methods that will act on the scheduler
+but may or may not require something from the driver:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="n">freeze_backend</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">)</span>
+<span class="n">thaw_backend</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">)</span>
+</pre></div>
+</div>
+<p><strong>replication_failover</strong></p>
+<p>Used to instruct the backend to fail over to the secondary/target device.
+If not secondary is specified (via backend_id argument) it&#8217;s up to the driver
+to choose which device to failover to.  In the case of only a single
+replication target this argument should be ignored.</p>
+<p>Note that ideally drivers will know how to update the volume reference properly so that Cinder is now
+pointing to the secondary.  Also, while it&#8217;s not required, at this time; ideally the command would
+act as a toggle, allowing to switch back and forth between primary and secondary and back to primary.</p>
+<p>Keep in mind the use case is that the backend has died a horrible death and is
+no longer valid.  Any volumes that were on the primary and NOT of replication
+type should now be unavailable.</p>
+<p>NOTE:  We do not expect things like create requests to go to the driver and
+magically create volumes on the replication target.  The concept is that the
+backend is lost, and we&#8217;re just providing a DR mechanism to preserve user data
+for volumes that were specified as such via type settings.</p>
+<p><strong>freeze_backend</strong>
+Puts a backend host/service into a R/O state for the control plane.  For
+example if a failover is issued, it is likely desirable that while data access
+to existing volumes is maintained, it likely would not be wise to continue
+doing things like creates, deletes, extends etc.</p>
+<p><strong>thaw_backend</strong>
+Clear frozen control plane on a backend.</p>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="../index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Replication</a><ul>
+<li><a class="reference internal" href="#config-file-examples">Config file examples</a></li>
+<li><a class="reference internal" href="#volume-types-extra-specs">Volume Types / Extra Specs</a></li>
+<li><a class="reference internal" href="#capabilities-reporting">Capabilities reporting</a></li>
+<li><a class="reference internal" href="#required-methods">Required methods</a></li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="gmr.html"
+                                  title="previous chapter">Guru Meditation Reports</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="user_messages.html"
+                                  title="next chapter">User Messages</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/cinder
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="../_sources/devref/replication.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="right" >
+          <a href="user_messages.html" title="User Messages"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="gmr.html" title="Guru Meditation Reports"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../index.html">cinder 10.0.0.0rc2.dev76 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="index.html" accesskey="U">Developer Guide</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2010-present, OpenStack Foundation.
+      Last updated on Tue Feb 14 19:30:39 2017, commit 3c2819f.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/cinder");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

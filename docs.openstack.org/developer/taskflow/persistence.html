@@ -1,0 +1,2046 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Persistence &mdash; TaskFlow 2.9.1.dev5 documentation</title>
+    
+    <link rel="stylesheet" href="_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '2.9.1.dev5',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <link rel="top" title="TaskFlow 2.9.1.dev5 documentation" href="index.html" />
+    <link rel="next" title="Resumption" href="resumption.html" />
+    <link rel="prev" title="Notifications and listeners" href="notifications.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="persistence">
+<h1>Persistence<a class="headerlink" href="#persistence" title="Permalink to this headline">¶</a></h1>
+<div class="section" id="overview">
+<h2>Overview<a class="headerlink" href="#overview" title="Permalink to this headline">¶</a></h2>
+<p>In order to be able to receive inputs and create outputs from atoms (or other
+engine processes) in a fault-tolerant way, there is a need to be able to place
+what atoms output in some kind of location where it can be re-used by other
+atoms (or used for other purposes). To accommodate this type of usage TaskFlow
+provides an abstraction (provided by pluggable <a class="reference external" href="http://docs.openstack.org/developer/stevedore/">stevedore</a> backends) that is
+similar in concept to a running programs <em>memory</em>.</p>
+<p>This abstraction serves the following <em>major</em> purposes:</p>
+<ul class="simple">
+<li>Tracking of what was done (introspection).</li>
+<li>Saving <em>memory</em> which allows for restarting from the last saved state
+which is a critical feature to restart and resume workflows (checkpointing).</li>
+<li>Associating additional metadata with atoms while running (without having
+those atoms need to save this data themselves). This makes it possible to
+add-on new metadata in the future without having to change the atoms
+themselves. For example the following can be saved:<ul>
+<li>Timing information (how long a task took to run).</li>
+<li>User information (who the task ran as).</li>
+<li>When a atom/workflow was ran (and why).</li>
+</ul>
+</li>
+<li>Saving historical data (failures, successes, intermediary results...)
+to allow for retry atoms to be able to decide if they should should continue
+vs. stop.</li>
+<li><em>Something you create...</em></li>
+</ul>
+</div>
+<div class="section" id="how-it-is-used">
+<h2>How it is used<a class="headerlink" href="#how-it-is-used" title="Permalink to this headline">¶</a></h2>
+<p>On <a class="reference internal" href="engines.html"><em>engine</em></a> construction typically a backend (it can be
+optional) will be provided which satisfies the
+<a class="reference internal" href="#taskflow.persistence.base.Backend" title="taskflow.persistence.base.Backend"><code class="xref py py-class docutils literal"><span class="pre">Backend</span></code></a> abstraction. Along with
+providing a backend object a
+<a class="reference internal" href="#taskflow.persistence.models.FlowDetail" title="taskflow.persistence.models.FlowDetail"><code class="xref py py-class docutils literal"><span class="pre">FlowDetail</span></code></a> object will also be
+created and provided (this object will contain the details about the flow to be
+ran) to the engine constructor (or associated <a class="reference internal" href="engines.html#taskflow.engines.helpers.load" title="taskflow.engines.helpers.load"><code class="xref py py-meth docutils literal"><span class="pre">load()</span></code></a> helper functions).  Typically a
+<a class="reference internal" href="#taskflow.persistence.models.FlowDetail" title="taskflow.persistence.models.FlowDetail"><code class="xref py py-class docutils literal"><span class="pre">FlowDetail</span></code></a> object is created from a
+<a class="reference internal" href="#taskflow.persistence.models.LogBook" title="taskflow.persistence.models.LogBook"><code class="xref py py-class docutils literal"><span class="pre">LogBook</span></code></a> object (the book object acts
+as a type of container for <a class="reference internal" href="#taskflow.persistence.models.FlowDetail" title="taskflow.persistence.models.FlowDetail"><code class="xref py py-class docutils literal"><span class="pre">FlowDetail</span></code></a>
+and <a class="reference internal" href="#taskflow.persistence.models.AtomDetail" title="taskflow.persistence.models.AtomDetail"><code class="xref py py-class docutils literal"><span class="pre">AtomDetail</span></code></a> objects).</p>
+<p><strong>Preparation</strong>: Once an engine starts to run it will create a
+<a class="reference internal" href="#taskflow.storage.Storage" title="taskflow.storage.Storage"><code class="xref py py-class docutils literal"><span class="pre">Storage</span></code></a> object which will act as the engines
+interface to the underlying backend storage objects (it provides helper
+functions that are commonly used by the engine, avoiding repeating code when
+interacting with the provided
+<a class="reference internal" href="#taskflow.persistence.models.FlowDetail" title="taskflow.persistence.models.FlowDetail"><code class="xref py py-class docutils literal"><span class="pre">FlowDetail</span></code></a> and
+<a class="reference internal" href="#taskflow.persistence.base.Backend" title="taskflow.persistence.base.Backend"><code class="xref py py-class docutils literal"><span class="pre">Backend</span></code></a> objects). As an engine
+initializes it will extract (or create)
+<a class="reference internal" href="#taskflow.persistence.models.AtomDetail" title="taskflow.persistence.models.AtomDetail"><code class="xref py py-class docutils literal"><span class="pre">AtomDetail</span></code></a> objects for each atom in
+the workflow the engine will be executing.</p>
+<p><strong>Execution:</strong> When an engine beings to execute (see <a class="reference internal" href="engines.html"><em>engine</em></a>
+for more of the details about how an engine goes about this process) it will
+examine any previously existing
+<a class="reference internal" href="#taskflow.persistence.models.AtomDetail" title="taskflow.persistence.models.AtomDetail"><code class="xref py py-class docutils literal"><span class="pre">AtomDetail</span></code></a> objects to see if they can
+be used for resuming; see <a class="reference internal" href="resumption.html"><em>resumption</em></a> for more details on
+this subject. For atoms which have not finished (or did not finish correctly
+from a previous run) they will begin executing only after any dependent inputs
+are ready. This is done by analyzing the execution graph and looking at
+predecessor <a class="reference internal" href="#taskflow.persistence.models.AtomDetail" title="taskflow.persistence.models.AtomDetail"><code class="xref py py-class docutils literal"><span class="pre">AtomDetail</span></code></a> outputs and
+states (which may have been persisted in a past run). This will result in
+either using their previous information or by running those predecessors and
+saving their output to the <a class="reference internal" href="#taskflow.persistence.models.FlowDetail" title="taskflow.persistence.models.FlowDetail"><code class="xref py py-class docutils literal"><span class="pre">FlowDetail</span></code></a>
+and <a class="reference internal" href="#taskflow.persistence.base.Backend" title="taskflow.persistence.base.Backend"><code class="xref py py-class docutils literal"><span class="pre">Backend</span></code></a> objects. This
+execution, analysis and interaction with the storage objects continues (what is
+described here is a simplification of what really happens; which is quite a bit
+more complex) until the engine has finished running (at which point the engine
+will have succeeded or failed in its attempt to run the workflow).</p>
+<p><strong>Post-execution:</strong> Typically when an engine is done running the logbook would
+be discarded (to avoid creating a stockpile of useless data) and the backend
+storage would be told to delete any contents for a given execution. For certain
+use-cases though it may be advantageous to retain logbooks and their contents.</p>
+<p>A few scenarios come to mind:</p>
+<ul class="simple">
+<li>Post runtime failure analysis and triage (saving what failed and why).</li>
+<li>Metrics (saving timing information associated with each atom and using it
+to perform offline performance analysis, which enables tuning tasks and/or
+isolating and fixing slow tasks).</li>
+<li>Data mining logbooks to find trends (in failures for example).</li>
+<li>Saving logbooks for further forensics analysis.</li>
+<li>Exporting logbooks to <a class="reference external" href="https://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-hdfs/HdfsUserGuide.html">hdfs</a> (or other no-sql storage) and running some type
+of map-reduce jobs on them.</li>
+</ul>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">It should be emphasized that logbook is the authoritative, and, preferably,
+the <strong>only</strong> (see <a class="reference internal" href="inputs_and_outputs.html"><em>inputs and outputs</em></a>) source of
+run-time state information (breaking this principle makes it
+hard/impossible to restart or resume in any type of automated fashion).
+When an atom returns a result, it should be written directly to a logbook.
+When atom or flow state changes in any way,  logbook is first to know (see
+<a class="reference internal" href="notifications.html"><em>notifications</em></a> for how a user  may also get notified
+of those same state changes). The logbook and a backend and associated
+storage helper class are responsible to store the actual data.  These
+components used together specify the persistence mechanism (how data is
+saved and where &#8211; memory, database, whatever...) and the persistence
+policy (when data is saved &#8211; every time it changes or at some particular
+moments or simply never).</p>
+</div>
+</div>
+<div class="section" id="usage">
+<h2>Usage<a class="headerlink" href="#usage" title="Permalink to this headline">¶</a></h2>
+<p>To select which persistence backend to use you should use the <a class="reference internal" href="#taskflow.persistence.backends.fetch" title="taskflow.persistence.backends.fetch"><code class="xref py py-meth docutils literal"><span class="pre">fetch()</span></code></a> function which uses entrypoints
+(internally using <a class="reference external" href="http://docs.openstack.org/developer/stevedore/">stevedore</a>) to fetch and configure your backend. This makes
+it simpler than accessing the backend data types directly and provides a common
+function from which a backend can be fetched.</p>
+<p>Using this function to fetch a backend might look like:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="kn">from</span> <span class="nn">taskflow.persistence</span> <span class="kn">import</span> <span class="n">backends</span>
+
+<span class="o">...</span>
+<span class="n">persistence</span> <span class="o">=</span> <span class="n">backends</span><span class="o">.</span><span class="n">fetch</span><span class="p">(</span><span class="n">conf</span><span class="o">=</span><span class="p">{</span>
+    <span class="s2">&quot;connection&#39;: &quot;</span><span class="n">mysql</span><span class="s2">&quot;,</span>
+    <span class="s2">&quot;user&quot;</span><span class="p">:</span> <span class="o">...</span><span class="p">,</span>
+    <span class="s2">&quot;password&quot;</span><span class="p">:</span> <span class="o">...</span><span class="p">,</span>
+<span class="p">})</span>
+<span class="n">book</span> <span class="o">=</span> <span class="n">make_and_save_logbook</span><span class="p">(</span><span class="n">persistence</span><span class="p">)</span>
+<span class="o">...</span>
+</pre></div>
+</div>
+<p>As can be seen from above the <code class="docutils literal"><span class="pre">conf</span></code> parameter acts as a dictionary that
+is used to fetch and configure your backend. The restrictions on it are
+the following:</p>
+<ul class="simple">
+<li>a dictionary (or dictionary like type), holding backend type with key
+<code class="docutils literal"><span class="pre">'connection'</span></code> and possibly type-specific backend parameters as other
+keys.</li>
+</ul>
+</div>
+<div class="section" id="types">
+<h2>Types<a class="headerlink" href="#types" title="Permalink to this headline">¶</a></h2>
+<div class="section" id="memory">
+<h3>Memory<a class="headerlink" href="#memory" title="Permalink to this headline">¶</a></h3>
+<p><strong>Connection</strong>: <code class="docutils literal"><span class="pre">'memory'</span></code></p>
+<p>Retains all data in local memory (not persisted to reliable storage). Useful
+for scenarios where persistence is not required (and also in unit tests).</p>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">See <a class="reference internal" href="#taskflow.persistence.backends.impl_memory.MemoryBackend" title="taskflow.persistence.backends.impl_memory.MemoryBackend"><code class="xref py py-class docutils literal"><span class="pre">MemoryBackend</span></code></a>
+for implementation details.</p>
+</div>
+</div>
+<div class="section" id="files">
+<h3>Files<a class="headerlink" href="#files" title="Permalink to this headline">¶</a></h3>
+<p><strong>Connection</strong>: <code class="docutils literal"><span class="pre">'dir'</span></code> or <code class="docutils literal"><span class="pre">'file'</span></code></p>
+<p>Retains all data in a directory &amp; file based structure on local disk. Will be
+persisted <strong>locally</strong> in the case of system failure (allowing for resumption
+from the same local machine only). Useful for cases where a <em>more</em> reliable
+persistence is desired along with the simplicity of files and directories (a
+concept everyone is familiar with).</p>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">See <a class="reference internal" href="#taskflow.persistence.backends.impl_dir.DirBackend" title="taskflow.persistence.backends.impl_dir.DirBackend"><code class="xref py py-class docutils literal"><span class="pre">DirBackend</span></code></a>
+for implementation details.</p>
+</div>
+</div>
+<div class="section" id="sqlalchemy">
+<h3>SQLAlchemy<a class="headerlink" href="#sqlalchemy" title="Permalink to this headline">¶</a></h3>
+<p><strong>Connection</strong>: <code class="docutils literal"><span class="pre">'mysql'</span></code> or <code class="docutils literal"><span class="pre">'postgres'</span></code> or <code class="docutils literal"><span class="pre">'sqlite'</span></code></p>
+<p>Retains all data in a <a class="reference external" href="https://en.wikipedia.org/wiki/ACID">ACID</a> compliant database using the <a class="reference external" href="http://www.sqlalchemy.org/docs/">sqlalchemy</a>
+library for schemas, connections, and database interaction functionality.
+Useful when you need a higher level of durability than offered by the previous
+solutions. When using these connection types it is possible to resume a engine
+from a peer machine (this does not apply when using sqlite).</p>
+<div class="section" id="schema">
+<h4>Schema<a class="headerlink" href="#schema" title="Permalink to this headline">¶</a></h4>
+<p><em>Logbooks</em></p>
+<table border="1" class="docutils">
+<colgroup>
+<col width="32%" />
+<col width="26%" />
+<col width="42%" />
+</colgroup>
+<thead valign="bottom">
+<tr class="row-odd"><th class="head">Name</th>
+<th class="head">Type</th>
+<th class="head">Primary Key</th>
+</tr>
+</thead>
+<tbody valign="top">
+<tr class="row-even"><td>created_at</td>
+<td>DATETIME</td>
+<td>False</td>
+</tr>
+<tr class="row-odd"><td>updated_at</td>
+<td>DATETIME</td>
+<td>False</td>
+</tr>
+<tr class="row-even"><td>uuid</td>
+<td>VARCHAR</td>
+<td>True</td>
+</tr>
+<tr class="row-odd"><td>name</td>
+<td>VARCHAR</td>
+<td>False</td>
+</tr>
+<tr class="row-even"><td>meta</td>
+<td>TEXT</td>
+<td>False</td>
+</tr>
+</tbody>
+</table>
+<p><em>Flow details</em></p>
+<table border="1" class="docutils">
+<colgroup>
+<col width="34%" />
+<col width="25%" />
+<col width="41%" />
+</colgroup>
+<thead valign="bottom">
+<tr class="row-odd"><th class="head">Name</th>
+<th class="head">Type</th>
+<th class="head">Primary Key</th>
+</tr>
+</thead>
+<tbody valign="top">
+<tr class="row-even"><td>created_at</td>
+<td>DATETIME</td>
+<td>False</td>
+</tr>
+<tr class="row-odd"><td>updated_at</td>
+<td>DATETIME</td>
+<td>False</td>
+</tr>
+<tr class="row-even"><td>uuid</td>
+<td>VARCHAR</td>
+<td>True</td>
+</tr>
+<tr class="row-odd"><td>name</td>
+<td>VARCHAR</td>
+<td>False</td>
+</tr>
+<tr class="row-even"><td>meta</td>
+<td>TEXT</td>
+<td>False</td>
+</tr>
+<tr class="row-odd"><td>state</td>
+<td>VARCHAR</td>
+<td>False</td>
+</tr>
+<tr class="row-even"><td>parent_uuid</td>
+<td>VARCHAR</td>
+<td>False</td>
+</tr>
+</tbody>
+</table>
+<p><em>Atom details</em></p>
+<table border="1" class="docutils">
+<colgroup>
+<col width="34%" />
+<col width="25%" />
+<col width="41%" />
+</colgroup>
+<thead valign="bottom">
+<tr class="row-odd"><th class="head">Name</th>
+<th class="head">Type</th>
+<th class="head">Primary Key</th>
+</tr>
+</thead>
+<tbody valign="top">
+<tr class="row-even"><td>created_at</td>
+<td>DATETIME</td>
+<td>False</td>
+</tr>
+<tr class="row-odd"><td>updated_at</td>
+<td>DATETIME</td>
+<td>False</td>
+</tr>
+<tr class="row-even"><td>uuid</td>
+<td>VARCHAR</td>
+<td>True</td>
+</tr>
+<tr class="row-odd"><td>name</td>
+<td>VARCHAR</td>
+<td>False</td>
+</tr>
+<tr class="row-even"><td>meta</td>
+<td>TEXT</td>
+<td>False</td>
+</tr>
+<tr class="row-odd"><td>atom_type</td>
+<td>VARCHAR</td>
+<td>False</td>
+</tr>
+<tr class="row-even"><td>state</td>
+<td>VARCHAR</td>
+<td>False</td>
+</tr>
+<tr class="row-odd"><td>intention</td>
+<td>VARCHAR</td>
+<td>False</td>
+</tr>
+<tr class="row-even"><td>results</td>
+<td>TEXT</td>
+<td>False</td>
+</tr>
+<tr class="row-odd"><td>failure</td>
+<td>TEXT</td>
+<td>False</td>
+</tr>
+<tr class="row-even"><td>version</td>
+<td>TEXT</td>
+<td>False</td>
+</tr>
+<tr class="row-odd"><td>parent_uuid</td>
+<td>VARCHAR</td>
+<td>False</td>
+</tr>
+</tbody>
+</table>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">See <a class="reference internal" href="#taskflow.persistence.backends.impl_sqlalchemy.SQLAlchemyBackend" title="taskflow.persistence.backends.impl_sqlalchemy.SQLAlchemyBackend"><code class="xref py py-class docutils literal"><span class="pre">SQLAlchemyBackend</span></code></a>
+for implementation details.</p>
+</div>
+<div class="admonition warning">
+<p class="first admonition-title">Warning</p>
+<p class="last">Currently there is a size limit (not applicable for <code class="docutils literal"><span class="pre">sqlite</span></code>) that the
+<code class="docutils literal"><span class="pre">results</span></code> will contain. This size limit will restrict how many prior
+failures a retry atom can contain. More information and a future fix
+will be posted to bug <a class="reference external" href="http://bugs.launchpad.net/taskflow/+bug/1416088">1416088</a> (for the meantime try to ensure that
+your retry units history does not grow beyond ~80 prior results). This
+truncation can also be avoided by providing <code class="docutils literal"><span class="pre">mysql_sql_mode</span></code> as
+<code class="docutils literal"><span class="pre">traditional</span></code> when selecting your mysql + sqlalchemy based
+backend (see the <a class="reference external" href="http://dev.mysql.com/doc/refman/5.0/en/sql-mode.html">mysql modes</a> documentation for what this implies).</p>
+</div>
+</div>
+</div>
+<div class="section" id="zookeeper">
+<h3>Zookeeper<a class="headerlink" href="#zookeeper" title="Permalink to this headline">¶</a></h3>
+<p><strong>Connection</strong>: <code class="docutils literal"><span class="pre">'zookeeper'</span></code></p>
+<p>Retains all data in a <a class="reference external" href="http://zookeeper.apache.org">zookeeper</a> backend (zookeeper exposes operations on
+files and directories, similar to the above <code class="docutils literal"><span class="pre">'dir'</span></code> or <code class="docutils literal"><span class="pre">'file'</span></code> connection
+types). Internally the <a class="reference external" href="http://kazoo.readthedocs.org/">kazoo</a> library is used to interact with zookeeper
+to perform reliable, distributed and atomic operations on the contents of a
+logbook represented as znodes. Since zookeeper is also distributed it is also
+able to resume a engine from a peer machine (having similar functionality
+as the database connection types listed previously).</p>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">See <a class="reference internal" href="#taskflow.persistence.backends.impl_zookeeper.ZkBackend" title="taskflow.persistence.backends.impl_zookeeper.ZkBackend"><code class="xref py py-class docutils literal"><span class="pre">ZkBackend</span></code></a>
+for implementation details.</p>
+</div>
+</div>
+</div>
+<div class="section" id="module-taskflow.persistence.backends">
+<span id="interfaces"></span><h2>Interfaces<a class="headerlink" href="#module-taskflow.persistence.backends" title="Permalink to this headline">¶</a></h2>
+<dl class="function">
+<dt id="taskflow.persistence.backends.fetch">
+<code class="descclassname">taskflow.persistence.backends.</code><code class="descname">fetch</code><span class="sig-paren">(</span><em>conf</em>, <em>namespace='taskflow.persistence'</em>, <em>**kwargs</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/backends.html#fetch"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.backends.fetch" title="Permalink to this definition">¶</a></dt>
+<dd><p>Fetch a persistence backend with the given configuration.</p>
+<p>This fetch method will look for the entrypoint name in the entrypoint
+namespace, and then attempt to instantiate that entrypoint using the
+provided configuration and any persistence backend specific kwargs.</p>
+<p>NOTE(harlowja): to aid in making it easy to specify configuration and
+options to a backend the configuration (which is typical just a dictionary)
+can also be a URI string that identifies the entrypoint name and any
+configuration specific to that backend.</p>
+<p>For example, given the following configuration URI:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>mysql://&lt;not-used&gt;/?a=b&amp;c=d
+</pre></div>
+</div>
+<p>This will look for the entrypoint named &#8216;mysql&#8217; and will provide
+a configuration object composed of the URI&#8217;s components, in this case that
+is <code class="docutils literal"><span class="pre">{'a':</span> <span class="pre">'b',</span> <span class="pre">'c':</span> <span class="pre">'d'}</span></code> to the constructor of that persistence backend
+instance.</p>
+</dd></dl>
+
+<dl class="function">
+<dt id="taskflow.persistence.backends.backend">
+<code class="descclassname">taskflow.persistence.backends.</code><code class="descname">backend</code><span class="sig-paren">(</span><em>*args</em>, <em>**kwds</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/backends.html#backend"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.backends.backend" title="Permalink to this definition">¶</a></dt>
+<dd><p>Fetches a backend, connects, upgrades, then closes it on completion.</p>
+<p>This allows a backend instance to be fetched, connected to, have its schema
+upgraded (if the schema is already up to date this is a no-op) and then
+used in a context manager statement with the backend being closed upon
+context manager exit.</p>
+</dd></dl>
+
+<span class="target" id="module-taskflow.persistence.base"></span><dl class="class">
+<dt id="taskflow.persistence.base.Backend">
+<em class="property">class </em><code class="descclassname">taskflow.persistence.base.</code><code class="descname">Backend</code><span class="sig-paren">(</span><em>conf</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/base.html#Backend"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.base.Backend" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>Base class for persistence backends.</p>
+<dl class="method">
+<dt id="taskflow.persistence.base.Backend.get_connection">
+<code class="descname">get_connection</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/base.html#Backend.get_connection"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.base.Backend.get_connection" title="Permalink to this definition">¶</a></dt>
+<dd><p>Return a Connection instance based on the configuration settings.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.base.Backend.close">
+<code class="descname">close</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/base.html#Backend.close"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.base.Backend.close" title="Permalink to this definition">¶</a></dt>
+<dd><p>Closes any resources this backend has open.</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.persistence.base.Connection">
+<em class="property">class </em><code class="descclassname">taskflow.persistence.base.</code><code class="descname">Connection</code><a class="reference internal" href="_modules/taskflow/persistence/base.html#Connection"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.base.Connection" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>Base class for backend connections.</p>
+<dl class="attribute">
+<dt id="taskflow.persistence.base.Connection.backend">
+<code class="descname">backend</code><a class="headerlink" href="#taskflow.persistence.base.Connection.backend" title="Permalink to this definition">¶</a></dt>
+<dd><p>Returns the backend this connection is associated with.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.base.Connection.close">
+<code class="descname">close</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/base.html#Connection.close"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.base.Connection.close" title="Permalink to this definition">¶</a></dt>
+<dd><p>Closes any resources this connection has open.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.base.Connection.upgrade">
+<code class="descname">upgrade</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/base.html#Connection.upgrade"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.base.Connection.upgrade" title="Permalink to this definition">¶</a></dt>
+<dd><p>Migrate the persistence backend to the most recent version.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.base.Connection.clear_all">
+<code class="descname">clear_all</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/base.html#Connection.clear_all"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.base.Connection.clear_all" title="Permalink to this definition">¶</a></dt>
+<dd><p>Clear all entries from this backend.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.base.Connection.validate">
+<code class="descname">validate</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/base.html#Connection.validate"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.base.Connection.validate" title="Permalink to this definition">¶</a></dt>
+<dd><p>Validates that a backend is still ok to be used.</p>
+<p>The semantics of this <em>may</em> vary depending on the backend. On failure a
+backend specific exception should be raised that will indicate why the
+failure occurred.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.base.Connection.update_atom_details">
+<code class="descname">update_atom_details</code><span class="sig-paren">(</span><em>atom_detail</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/base.html#Connection.update_atom_details"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.base.Connection.update_atom_details" title="Permalink to this definition">¶</a></dt>
+<dd><p>Updates a given atom details and returns the updated version.</p>
+<p>NOTE(harlowja): the details that is to be updated must already have
+been created by saving a flow details with the given atom detail inside
+of it.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.base.Connection.update_flow_details">
+<code class="descname">update_flow_details</code><span class="sig-paren">(</span><em>flow_detail</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/base.html#Connection.update_flow_details"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.base.Connection.update_flow_details" title="Permalink to this definition">¶</a></dt>
+<dd><p>Updates a given flow details and returns the updated version.</p>
+<p>NOTE(harlowja): the details that is to be updated must already have
+been created by saving a logbook with the given flow detail inside
+of it.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.base.Connection.save_logbook">
+<code class="descname">save_logbook</code><span class="sig-paren">(</span><em>book</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/base.html#Connection.save_logbook"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.base.Connection.save_logbook" title="Permalink to this definition">¶</a></dt>
+<dd><p>Saves a logbook, and all its contained information.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.base.Connection.destroy_logbook">
+<code class="descname">destroy_logbook</code><span class="sig-paren">(</span><em>book_uuid</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/base.html#Connection.destroy_logbook"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.base.Connection.destroy_logbook" title="Permalink to this definition">¶</a></dt>
+<dd><p>Deletes/destroys a logbook matching the given uuid.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.base.Connection.get_logbook">
+<code class="descname">get_logbook</code><span class="sig-paren">(</span><em>book_uuid</em>, <em>lazy=False</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/base.html#Connection.get_logbook"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.base.Connection.get_logbook" title="Permalink to this definition">¶</a></dt>
+<dd><p>Fetches a logbook object matching the given uuid.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.base.Connection.get_logbooks">
+<code class="descname">get_logbooks</code><span class="sig-paren">(</span><em>lazy=False</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/base.html#Connection.get_logbooks"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.base.Connection.get_logbooks" title="Permalink to this definition">¶</a></dt>
+<dd><p>Return an iterable of logbook objects.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.base.Connection.get_flows_for_book">
+<code class="descname">get_flows_for_book</code><span class="sig-paren">(</span><em>book_uuid</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/base.html#Connection.get_flows_for_book"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.base.Connection.get_flows_for_book" title="Permalink to this definition">¶</a></dt>
+<dd><p>Return an iterable of flowdetails for a given logbook uuid.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.base.Connection.get_flow_details">
+<code class="descname">get_flow_details</code><span class="sig-paren">(</span><em>fd_uuid</em>, <em>lazy=False</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/base.html#Connection.get_flow_details"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.base.Connection.get_flow_details" title="Permalink to this definition">¶</a></dt>
+<dd><p>Fetches a flowdetails object matching the given uuid.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.base.Connection.get_atom_details">
+<code class="descname">get_atom_details</code><span class="sig-paren">(</span><em>ad_uuid</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/base.html#Connection.get_atom_details"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.base.Connection.get_atom_details" title="Permalink to this definition">¶</a></dt>
+<dd><p>Fetches a atomdetails object matching the given uuid.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.base.Connection.get_atoms_for_flow">
+<code class="descname">get_atoms_for_flow</code><span class="sig-paren">(</span><em>fd_uuid</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/base.html#Connection.get_atoms_for_flow"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.base.Connection.get_atoms_for_flow" title="Permalink to this definition">¶</a></dt>
+<dd><p>Return an iterable of atomdetails for a given flowdetails uuid.</p>
+</dd></dl>
+
+</dd></dl>
+
+<span class="target" id="module-taskflow.persistence.path_based"></span><dl class="class">
+<dt id="taskflow.persistence.path_based.PathBasedBackend">
+<em class="property">class </em><code class="descclassname">taskflow.persistence.path_based.</code><code class="descname">PathBasedBackend</code><span class="sig-paren">(</span><em>conf</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/path_based.html#PathBasedBackend"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.path_based.PathBasedBackend" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <a class="reference internal" href="#taskflow.persistence.base.Backend" title="taskflow.persistence.base.Backend"><code class="xref py py-class docutils literal"><span class="pre">taskflow.persistence.base.Backend</span></code></a></p>
+<p>Base class for persistence backends that address data by path</p>
+<p>Subclasses of this backend write logbooks, flow details, and atom details
+to a provided base path in some filesystem-like storage. They will create
+and store those objects in three key directories (one for logbooks, one
+for flow details and one for atom details). They create those associated
+directories and then create files inside those directories that represent
+the contents of those objects for later reading and writing.</p>
+<dl class="attribute">
+<dt id="taskflow.persistence.path_based.PathBasedBackend.DEFAULT_PATH">
+<code class="descname">DEFAULT_PATH</code><em class="property"> = None</em><a class="headerlink" href="#taskflow.persistence.path_based.PathBasedBackend.DEFAULT_PATH" title="Permalink to this definition">¶</a></dt>
+<dd><p>Default path used when none is provided.</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.persistence.path_based.PathBasedConnection">
+<em class="property">class </em><code class="descclassname">taskflow.persistence.path_based.</code><code class="descname">PathBasedConnection</code><span class="sig-paren">(</span><em>backend</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/path_based.html#PathBasedConnection"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.path_based.PathBasedConnection" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <a class="reference internal" href="#taskflow.persistence.base.Connection" title="taskflow.persistence.base.Connection"><code class="xref py py-class docutils literal"><span class="pre">taskflow.persistence.base.Connection</span></code></a></p>
+<p>Base class for path based backend connections.</p>
+</dd></dl>
+
+</div>
+<div class="section" id="module-taskflow.persistence.models">
+<span id="models"></span><h2>Models<a class="headerlink" href="#module-taskflow.persistence.models" title="Permalink to this headline">¶</a></h2>
+<dl class="class">
+<dt id="taskflow.persistence.models.LogBook">
+<em class="property">class </em><code class="descclassname">taskflow.persistence.models.</code><code class="descname">LogBook</code><span class="sig-paren">(</span><em>name</em>, <em>uuid=None</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#LogBook"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.LogBook" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>A collection of flow details and associated metadata.</p>
+<p>Typically this class contains a collection of flow detail entries
+for a given engine (or job) so that those entities can track what &#8216;work&#8217;
+has been completed for resumption, reverting and miscellaneous tracking
+purposes.</p>
+<p>The data contained within this class need <strong>not</strong> be persisted to the
+backend storage in real time. The data in this class will only be
+guaranteed to be persisted when a save occurs via some backend
+connection.</p>
+<p>NOTE(harlowja): the naming of this class is analogous to a ship&#8217;s log or a
+similar type of record used in detailing work that has been completed (or
+work that has not been completed).</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Variables:</th><td class="field-body"><ul class="first last simple">
+<li><strong>created_at</strong> &#8211; A <code class="docutils literal"><span class="pre">datetime.datetime</span></code> object of when this logbook
+was created.</li>
+<li><strong>updated_at</strong> &#8211; A <code class="docutils literal"><span class="pre">datetime.datetime</span></code> object of when this logbook
+was last updated at.</li>
+<li><strong>meta</strong> &#8211; A dictionary of meta-data associated with this logbook.</li>
+</ul>
+</td>
+</tr>
+</tbody>
+</table>
+<dl class="method">
+<dt id="taskflow.persistence.models.LogBook.pformat">
+<code class="descname">pformat</code><span class="sig-paren">(</span><em>indent=0</em>, <em>linesep='\n'</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#LogBook.pformat"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.LogBook.pformat" title="Permalink to this definition">¶</a></dt>
+<dd><p>Pretty formats this logbook into a string.</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="gp">&gt;&gt;&gt; </span><span class="kn">from</span> <span class="nn">taskflow.persistence</span> <span class="kn">import</span> <span class="n">models</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">tmp</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">LogBook</span><span class="p">(</span><span class="s2">&quot;example&quot;</span><span class="p">)</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="k">print</span><span class="p">(</span><span class="n">tmp</span><span class="o">.</span><span class="n">pformat</span><span class="p">())</span>
+<span class="go">LogBook: &#39;example&#39;</span>
+<span class="go"> - uuid = ...</span>
+<span class="go"> - created_at = ...</span>
+</pre></div>
+</div>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.models.LogBook.add">
+<code class="descname">add</code><span class="sig-paren">(</span><em>fd</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#LogBook.add"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.LogBook.add" title="Permalink to this definition">¶</a></dt>
+<dd><p>Adds a new flow detail into this logbook.</p>
+<p>NOTE(harlowja): if an existing flow detail exists with the same
+uuid the existing one will be overwritten with the newly provided
+one.</p>
+<p>Does not <em>guarantee</em> that the details will be immediately saved.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.models.LogBook.find">
+<code class="descname">find</code><span class="sig-paren">(</span><em>flow_uuid</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#LogBook.find"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.LogBook.find" title="Permalink to this definition">¶</a></dt>
+<dd><p>Locate the flow detail corresponding to the given uuid.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Returns:</th><td class="field-body">the flow detail with that uuid</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Return type:</th><td class="field-body"><a class="reference internal" href="#taskflow.persistence.models.FlowDetail" title="taskflow.persistence.models.FlowDetail"><code class="xref py py-class docutils literal"><span class="pre">FlowDetail</span></code></a> (or <code class="docutils literal"><span class="pre">None</span></code> if not found)</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.models.LogBook.merge">
+<code class="descname">merge</code><span class="sig-paren">(</span><em>lb</em>, <em>deep_copy=False</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#LogBook.merge"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.LogBook.merge" title="Permalink to this definition">¶</a></dt>
+<dd><p>Merges the current object state with the given ones state.</p>
+<p>If <code class="docutils literal"><span class="pre">deep_copy</span></code> is provided as truthy then the
+local object will use <code class="docutils literal"><span class="pre">copy.deepcopy</span></code> to replace this objects
+local attributes with the provided objects attributes (<strong>only</strong> if
+there is a difference between this objects attributes and the
+provided attributes). If <code class="docutils literal"><span class="pre">deep_copy</span></code> is falsey (the default) then a
+reference copy will occur instead when a difference is detected.</p>
+<p>NOTE(harlowja): If the provided object is this object itself
+then <strong>no</strong> merging is done. Also note that this does <strong>not</strong> merge
+the flow details contained in either.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Returns:</th><td class="field-body">this logbook (freshly merged with the incoming object)</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Return type:</th><td class="field-body"><a class="reference internal" href="#taskflow.persistence.models.LogBook" title="taskflow.persistence.models.LogBook"><code class="xref py py-class docutils literal"><span class="pre">LogBook</span></code></a></td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.models.LogBook.to_dict">
+<code class="descname">to_dict</code><span class="sig-paren">(</span><em>marshal_time=False</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#LogBook.to_dict"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.LogBook.to_dict" title="Permalink to this definition">¶</a></dt>
+<dd><p>Translates the internal state of this object to a <code class="docutils literal"><span class="pre">dict</span></code>.</p>
+<p>NOTE(harlowja): The returned <code class="docutils literal"><span class="pre">dict</span></code> does <strong>not</strong> include any
+contained flow details.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Returns:</th><td class="field-body">this logbook in <code class="docutils literal"><span class="pre">dict</span></code> form</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="classmethod">
+<dt id="taskflow.persistence.models.LogBook.from_dict">
+<em class="property">classmethod </em><code class="descname">from_dict</code><span class="sig-paren">(</span><em>data</em>, <em>unmarshal_time=False</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#LogBook.from_dict"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.LogBook.from_dict" title="Permalink to this definition">¶</a></dt>
+<dd><p>Translates the given <code class="docutils literal"><span class="pre">dict</span></code> into an instance of this class.</p>
+<p>NOTE(harlowja): the <code class="docutils literal"><span class="pre">dict</span></code> provided should come from a prior
+call to <a class="reference internal" href="#taskflow.persistence.models.LogBook.to_dict" title="taskflow.persistence.models.LogBook.to_dict"><code class="xref py py-meth docutils literal"><span class="pre">to_dict()</span></code></a>.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Returns:</th><td class="field-body">a new logbook</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Return type:</th><td class="field-body"><a class="reference internal" href="#taskflow.persistence.models.LogBook" title="taskflow.persistence.models.LogBook"><code class="xref py py-class docutils literal"><span class="pre">LogBook</span></code></a></td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.persistence.models.LogBook.uuid">
+<code class="descname">uuid</code><a class="headerlink" href="#taskflow.persistence.models.LogBook.uuid" title="Permalink to this definition">¶</a></dt>
+<dd><p>The unique identifer of this logbook.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.persistence.models.LogBook.name">
+<code class="descname">name</code><a class="headerlink" href="#taskflow.persistence.models.LogBook.name" title="Permalink to this definition">¶</a></dt>
+<dd><p>The name of this logbook.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.models.LogBook.copy">
+<code class="descname">copy</code><span class="sig-paren">(</span><em>retain_contents=True</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#LogBook.copy"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.LogBook.copy" title="Permalink to this definition">¶</a></dt>
+<dd><p>Copies this logbook.</p>
+<p>Creates a shallow copy of this logbook. If this logbook contains
+flow details and <code class="docutils literal"><span class="pre">retain_contents</span></code> is truthy (the default) then
+the flow details container will be shallow copied (the flow details
+contained there-in will <strong>not</strong> be copied). If <code class="docutils literal"><span class="pre">retain_contents</span></code> is
+falsey then the copied logbook will have <strong>no</strong> contained flow
+details (but it will have the rest of the local objects attributes
+copied).</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Returns:</th><td class="field-body">a new logbook</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Return type:</th><td class="field-body"><a class="reference internal" href="#taskflow.persistence.models.LogBook" title="taskflow.persistence.models.LogBook"><code class="xref py py-class docutils literal"><span class="pre">LogBook</span></code></a></td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.persistence.models.FlowDetail">
+<em class="property">class </em><code class="descclassname">taskflow.persistence.models.</code><code class="descname">FlowDetail</code><span class="sig-paren">(</span><em>name</em>, <em>uuid</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#FlowDetail"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.FlowDetail" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>A collection of atom details and associated metadata.</p>
+<p>Typically this class contains a collection of atom detail entries that
+represent the atoms in a given flow structure (along with any other needed
+metadata relevant to that flow).</p>
+<p>The data contained within this class need <strong>not</strong> be persisted to the
+backend storage in real time. The data in this class will only be
+guaranteed to be persisted when a save (or update) occurs via some backend
+connection.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Variables:</th><td class="field-body"><ul class="first last simple">
+<li><a class="reference internal" href="jobs.html#taskflow.jobs.base.Job.state" title="taskflow.jobs.base.Job.state"><strong>state</strong></a> &#8211; The state of the flow associated with this flow detail.</li>
+<li><strong>meta</strong> &#8211; A dictionary of meta-data associated with this flow detail.</li>
+</ul>
+</td>
+</tr>
+</tbody>
+</table>
+<dl class="method">
+<dt id="taskflow.persistence.models.FlowDetail.update">
+<code class="descname">update</code><span class="sig-paren">(</span><em>fd</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#FlowDetail.update"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.FlowDetail.update" title="Permalink to this definition">¶</a></dt>
+<dd><p>Updates the objects state to be the same as the given one.</p>
+<p>This will assign the private and public attributes of the given
+flow detail directly to this object (replacing any existing
+attributes in this object; even if they are the <strong>same</strong>).</p>
+<p>NOTE(harlowja): If the provided object is this object itself
+then <strong>no</strong> update is done.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Returns:</th><td class="field-body">this flow detail</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Return type:</th><td class="field-body"><a class="reference internal" href="#taskflow.persistence.models.FlowDetail" title="taskflow.persistence.models.FlowDetail"><code class="xref py py-class docutils literal"><span class="pre">FlowDetail</span></code></a></td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.models.FlowDetail.pformat">
+<code class="descname">pformat</code><span class="sig-paren">(</span><em>indent=0</em>, <em>linesep='\n'</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#FlowDetail.pformat"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.FlowDetail.pformat" title="Permalink to this definition">¶</a></dt>
+<dd><p>Pretty formats this flow detail into a string.</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="gp">&gt;&gt;&gt; </span><span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">uuidutils</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="kn">from</span> <span class="nn">taskflow.persistence</span> <span class="kn">import</span> <span class="n">models</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">flow_detail</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">FlowDetail</span><span class="p">(</span><span class="s2">&quot;example&quot;</span><span class="p">,</span>
+<span class="gp">... </span>                                <span class="n">uuid</span><span class="o">=</span><span class="n">uuidutils</span><span class="o">.</span><span class="n">generate_uuid</span><span class="p">())</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="k">print</span><span class="p">(</span><span class="n">flow_detail</span><span class="o">.</span><span class="n">pformat</span><span class="p">())</span>
+<span class="go">FlowDetail: &#39;example&#39;</span>
+<span class="go"> - uuid = ...</span>
+<span class="go"> - state = ...</span>
+</pre></div>
+</div>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.models.FlowDetail.merge">
+<code class="descname">merge</code><span class="sig-paren">(</span><em>fd</em>, <em>deep_copy=False</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#FlowDetail.merge"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.FlowDetail.merge" title="Permalink to this definition">¶</a></dt>
+<dd><p>Merges the current object state with the given one&#8217;s state.</p>
+<p>If <code class="docutils literal"><span class="pre">deep_copy</span></code> is provided as truthy then the
+local object will use <code class="docutils literal"><span class="pre">copy.deepcopy</span></code> to replace this objects
+local attributes with the provided objects attributes (<strong>only</strong> if
+there is a difference between this objects attributes and the
+provided attributes). If <code class="docutils literal"><span class="pre">deep_copy</span></code> is falsey (the default) then a
+reference copy will occur instead when a difference is detected.</p>
+<p>NOTE(harlowja): If the provided object is this object itself
+then <strong>no</strong> merging is done. Also this does <strong>not</strong> merge the atom
+details contained in either.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Returns:</th><td class="field-body">this flow detail (freshly merged with the incoming object)</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Return type:</th><td class="field-body"><a class="reference internal" href="#taskflow.persistence.models.FlowDetail" title="taskflow.persistence.models.FlowDetail"><code class="xref py py-class docutils literal"><span class="pre">FlowDetail</span></code></a></td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.models.FlowDetail.copy">
+<code class="descname">copy</code><span class="sig-paren">(</span><em>retain_contents=True</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#FlowDetail.copy"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.FlowDetail.copy" title="Permalink to this definition">¶</a></dt>
+<dd><p>Copies this flow detail.</p>
+<p>Creates a shallow copy of this flow detail. If this detail contains
+flow details and <code class="docutils literal"><span class="pre">retain_contents</span></code> is truthy (the default) then
+the atom details container will be shallow copied (the atom details
+contained there-in will <strong>not</strong> be copied). If <code class="docutils literal"><span class="pre">retain_contents</span></code> is
+falsey then the copied flow detail will have <strong>no</strong> contained atom
+details (but it will have the rest of the local objects attributes
+copied).</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Returns:</th><td class="field-body">a new flow detail</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Return type:</th><td class="field-body"><a class="reference internal" href="#taskflow.persistence.models.FlowDetail" title="taskflow.persistence.models.FlowDetail"><code class="xref py py-class docutils literal"><span class="pre">FlowDetail</span></code></a></td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.models.FlowDetail.to_dict">
+<code class="descname">to_dict</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#FlowDetail.to_dict"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.FlowDetail.to_dict" title="Permalink to this definition">¶</a></dt>
+<dd><p>Translates the internal state of this object to a <code class="docutils literal"><span class="pre">dict</span></code>.</p>
+<p>NOTE(harlowja): The returned <code class="docutils literal"><span class="pre">dict</span></code> does <strong>not</strong> include any
+contained atom details.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Returns:</th><td class="field-body">this flow detail in <code class="docutils literal"><span class="pre">dict</span></code> form</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="classmethod">
+<dt id="taskflow.persistence.models.FlowDetail.from_dict">
+<em class="property">classmethod </em><code class="descname">from_dict</code><span class="sig-paren">(</span><em>data</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#FlowDetail.from_dict"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.FlowDetail.from_dict" title="Permalink to this definition">¶</a></dt>
+<dd><p>Translates the given <code class="docutils literal"><span class="pre">dict</span></code> into an instance of this class.</p>
+<p>NOTE(harlowja): the <code class="docutils literal"><span class="pre">dict</span></code> provided should come from a prior
+call to <a class="reference internal" href="#taskflow.persistence.models.FlowDetail.to_dict" title="taskflow.persistence.models.FlowDetail.to_dict"><code class="xref py py-meth docutils literal"><span class="pre">to_dict()</span></code></a>.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Returns:</th><td class="field-body">a new flow detail</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Return type:</th><td class="field-body"><a class="reference internal" href="#taskflow.persistence.models.FlowDetail" title="taskflow.persistence.models.FlowDetail"><code class="xref py py-class docutils literal"><span class="pre">FlowDetail</span></code></a></td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.models.FlowDetail.add">
+<code class="descname">add</code><span class="sig-paren">(</span><em>ad</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#FlowDetail.add"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.FlowDetail.add" title="Permalink to this definition">¶</a></dt>
+<dd><p>Adds a new atom detail into this flow detail.</p>
+<p>NOTE(harlowja): if an existing atom detail exists with the same
+uuid the existing one will be overwritten with the newly provided
+one.</p>
+<p>Does not <em>guarantee</em> that the details will be immediately saved.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.models.FlowDetail.find">
+<code class="descname">find</code><span class="sig-paren">(</span><em>ad_uuid</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#FlowDetail.find"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.FlowDetail.find" title="Permalink to this definition">¶</a></dt>
+<dd><p>Locate the atom detail corresponding to the given uuid.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Returns:</th><td class="field-body">the atom detail with that uuid</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Return type:</th><td class="field-body"><a class="reference internal" href="#taskflow.persistence.models.AtomDetail" title="taskflow.persistence.models.AtomDetail"><code class="xref py py-class docutils literal"><span class="pre">AtomDetail</span></code></a> (or <code class="docutils literal"><span class="pre">None</span></code> if not found)</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.persistence.models.FlowDetail.uuid">
+<code class="descname">uuid</code><a class="headerlink" href="#taskflow.persistence.models.FlowDetail.uuid" title="Permalink to this definition">¶</a></dt>
+<dd><p>The unique identifer of this flow detail.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.persistence.models.FlowDetail.name">
+<code class="descname">name</code><a class="headerlink" href="#taskflow.persistence.models.FlowDetail.name" title="Permalink to this definition">¶</a></dt>
+<dd><p>The name of this flow detail.</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.persistence.models.AtomDetail">
+<em class="property">class </em><code class="descclassname">taskflow.persistence.models.</code><code class="descname">AtomDetail</code><span class="sig-paren">(</span><em>name</em>, <em>uuid</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#AtomDetail"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.AtomDetail" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>A collection of atom specific runtime information and metadata.</p>
+<p>This is a base <strong>abstract</strong> class that contains attributes that are used
+to connect a atom to the persistence layer before, during, or after it is
+running. It includes any results it may have produced, any state that it
+may be in (for example <code class="docutils literal"><span class="pre">FAILURE</span></code>), any exception that occurred when
+running, and any associated stacktrace that may have occurring during an
+exception being thrown. It may also contain any other metadata that
+should also be stored along-side the details about the connected atom.</p>
+<p>The data contained within this class need <strong>not</strong> be persisted to the
+backend storage in real time. The data in this class will only be
+guaranteed to be persisted when a save (or update) occurs via some backend
+connection.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Variables:</th><td class="field-body"><ul class="first last simple">
+<li><a class="reference internal" href="jobs.html#taskflow.jobs.base.Job.state" title="taskflow.jobs.base.Job.state"><strong>state</strong></a> &#8211; The state of the atom associated with this atom detail.</li>
+<li><strong>intention</strong> &#8211; The execution strategy of the atom associated
+with this atom detail (used by an engine/others to
+determine if the associated atom needs to be
+executed, reverted, retried and so-on).</li>
+<li><strong>meta</strong> &#8211; A dictionary of meta-data associated with this atom detail.</li>
+<li><strong>version</strong> &#8211; A version tuple or string that represents the
+atom version this atom detail is associated with (typically
+used for introspection and any data migration
+strategies).</li>
+<li><strong>results</strong> &#8211; Any results the atom produced from either its
+<code class="docutils literal"><span class="pre">execute</span></code> method or from other sources.</li>
+<li><strong>revert_results</strong> &#8211; Any results the atom produced from either its
+<code class="docutils literal"><span class="pre">revert</span></code> method or from other sources.</li>
+<li><a class="reference internal" href="atoms.html#taskflow.retry.History.failure" title="taskflow.retry.History.failure"><strong>failure</strong></a> &#8211; If the atom failed (due to its <code class="docutils literal"><span class="pre">execute</span></code> method
+raising) this will be a
+<a class="reference internal" href="types.html#taskflow.types.failure.Failure" title="taskflow.types.failure.Failure"><code class="xref py py-class docutils literal"><span class="pre">Failure</span></code></a> object that
+represents that failure (if there was no failure this
+will be set to none).</li>
+<li><strong>revert_failure</strong> &#8211; If the atom failed (possibly due to its <code class="docutils literal"><span class="pre">revert</span></code>
+method raising) this will be a
+<a class="reference internal" href="types.html#taskflow.types.failure.Failure" title="taskflow.types.failure.Failure"><code class="xref py py-class docutils literal"><span class="pre">Failure</span></code></a> object
+that represents that failure (if there was no
+failure this will be set to none).</li>
+</ul>
+</td>
+</tr>
+</tbody>
+</table>
+<dl class="attribute">
+<dt id="taskflow.persistence.models.AtomDetail.last_results">
+<code class="descname">last_results</code><a class="headerlink" href="#taskflow.persistence.models.AtomDetail.last_results" title="Permalink to this definition">¶</a></dt>
+<dd><p>Gets the atoms last result.</p>
+<p>If the atom has produced many results (for example if it has been
+retried, reverted, executed and ...) this returns the last one of
+many results.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.models.AtomDetail.update">
+<code class="descname">update</code><span class="sig-paren">(</span><em>ad</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#AtomDetail.update"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.AtomDetail.update" title="Permalink to this definition">¶</a></dt>
+<dd><p>Updates the object&#8217;s state to be the same as the given one.</p>
+<p>This will assign the private and public attributes of the given
+atom detail directly to this object (replacing any existing
+attributes in this object; even if they are the <strong>same</strong>).</p>
+<p>NOTE(harlowja): If the provided object is this object itself
+then <strong>no</strong> update is done.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Returns:</th><td class="field-body">this atom detail</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Return type:</th><td class="field-body"><a class="reference internal" href="#taskflow.persistence.models.AtomDetail" title="taskflow.persistence.models.AtomDetail"><code class="xref py py-class docutils literal"><span class="pre">AtomDetail</span></code></a></td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.models.AtomDetail.merge">
+<code class="descname">merge</code><span class="sig-paren">(</span><em>other</em>, <em>deep_copy=False</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#AtomDetail.merge"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.AtomDetail.merge" title="Permalink to this definition">¶</a></dt>
+<dd><p>Merges the current object state with the given ones state.</p>
+<p>If <code class="docutils literal"><span class="pre">deep_copy</span></code> is provided as truthy then the
+local object will use <code class="docutils literal"><span class="pre">copy.deepcopy</span></code> to replace this objects
+local attributes with the provided objects attributes (<strong>only</strong> if
+there is a difference between this objects attributes and the
+provided attributes). If <code class="docutils literal"><span class="pre">deep_copy</span></code> is falsey (the default) then a
+reference copy will occur instead when a difference is detected.</p>
+<p>NOTE(harlowja): If the provided object is this object itself
+then <strong>no</strong> merging is done. Do note that <strong>no</strong> results are merged
+in this method. That operation <strong>must</strong> to be the responsibilty of
+subclasses to implement and override this abstract method
+and provide that merging themselves as they see fit.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Returns:</th><td class="field-body">this atom detail (freshly merged with the incoming object)</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Return type:</th><td class="field-body"><a class="reference internal" href="#taskflow.persistence.models.AtomDetail" title="taskflow.persistence.models.AtomDetail"><code class="xref py py-class docutils literal"><span class="pre">AtomDetail</span></code></a></td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.models.AtomDetail.put">
+<code class="descname">put</code><span class="sig-paren">(</span><em>state</em>, <em>result</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#AtomDetail.put"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.AtomDetail.put" title="Permalink to this definition">¶</a></dt>
+<dd><p>Puts a result (acquired in the given state) into this detail.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.models.AtomDetail.to_dict">
+<code class="descname">to_dict</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#AtomDetail.to_dict"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.AtomDetail.to_dict" title="Permalink to this definition">¶</a></dt>
+<dd><p>Translates the internal state of this object to a <code class="docutils literal"><span class="pre">dict</span></code>.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Returns:</th><td class="field-body">this atom detail in <code class="docutils literal"><span class="pre">dict</span></code> form</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="classmethod">
+<dt id="taskflow.persistence.models.AtomDetail.from_dict">
+<em class="property">classmethod </em><code class="descname">from_dict</code><span class="sig-paren">(</span><em>data</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#AtomDetail.from_dict"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.AtomDetail.from_dict" title="Permalink to this definition">¶</a></dt>
+<dd><p>Translates the given <code class="docutils literal"><span class="pre">dict</span></code> into an instance of this class.</p>
+<p>NOTE(harlowja): the <code class="docutils literal"><span class="pre">dict</span></code> provided should come from a prior
+call to <a class="reference internal" href="#taskflow.persistence.models.AtomDetail.to_dict" title="taskflow.persistence.models.AtomDetail.to_dict"><code class="xref py py-meth docutils literal"><span class="pre">to_dict()</span></code></a>.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Returns:</th><td class="field-body">a new atom detail</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Return type:</th><td class="field-body"><a class="reference internal" href="#taskflow.persistence.models.AtomDetail" title="taskflow.persistence.models.AtomDetail"><code class="xref py py-class docutils literal"><span class="pre">AtomDetail</span></code></a></td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.persistence.models.AtomDetail.uuid">
+<code class="descname">uuid</code><a class="headerlink" href="#taskflow.persistence.models.AtomDetail.uuid" title="Permalink to this definition">¶</a></dt>
+<dd><p>The unique identifer of this atom detail.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.persistence.models.AtomDetail.name">
+<code class="descname">name</code><a class="headerlink" href="#taskflow.persistence.models.AtomDetail.name" title="Permalink to this definition">¶</a></dt>
+<dd><p>The name of this atom detail.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.models.AtomDetail.reset">
+<code class="descname">reset</code><span class="sig-paren">(</span><em>state</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#AtomDetail.reset"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.AtomDetail.reset" title="Permalink to this definition">¶</a></dt>
+<dd><p>Resets this atom detail and sets <code class="docutils literal"><span class="pre">state</span></code> attribute value.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.models.AtomDetail.copy">
+<code class="descname">copy</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#AtomDetail.copy"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.AtomDetail.copy" title="Permalink to this definition">¶</a></dt>
+<dd><p>Copies this atom detail.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.models.AtomDetail.pformat">
+<code class="descname">pformat</code><span class="sig-paren">(</span><em>indent=0</em>, <em>linesep='\n'</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#AtomDetail.pformat"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.AtomDetail.pformat" title="Permalink to this definition">¶</a></dt>
+<dd><p>Pretty formats this atom detail into a string.</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.persistence.models.TaskDetail">
+<em class="property">class </em><code class="descclassname">taskflow.persistence.models.</code><code class="descname">TaskDetail</code><span class="sig-paren">(</span><em>name</em>, <em>uuid</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#TaskDetail"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.TaskDetail" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <a class="reference internal" href="#taskflow.persistence.models.AtomDetail" title="taskflow.persistence.models.AtomDetail"><code class="xref py py-class docutils literal"><span class="pre">taskflow.persistence.models.AtomDetail</span></code></a></p>
+<p>A task detail (an atom detail typically associated with a <a class="reference internal" href="atoms.html#taskflow.task.Task" title="taskflow.task.Task"><code class="xref py py-class docutils literal"><span class="pre">Task</span></code></a> atom).</p>
+<dl class="method">
+<dt id="taskflow.persistence.models.TaskDetail.reset">
+<code class="descname">reset</code><span class="sig-paren">(</span><em>state</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#TaskDetail.reset"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.TaskDetail.reset" title="Permalink to this definition">¶</a></dt>
+<dd><p>Resets this task detail and sets <code class="docutils literal"><span class="pre">state</span></code> attribute value.</p>
+<p>This sets any previously set <code class="docutils literal"><span class="pre">results</span></code>, <code class="docutils literal"><span class="pre">failure</span></code>,
+and <code class="docutils literal"><span class="pre">revert_results</span></code> attributes back to <code class="docutils literal"><span class="pre">None</span></code> and sets the
+state to the provided one, as well as setting this task
+details <code class="docutils literal"><span class="pre">intention</span></code> attribute to <code class="docutils literal"><span class="pre">EXECUTE</span></code>.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.models.TaskDetail.put">
+<code class="descname">put</code><span class="sig-paren">(</span><em>state</em>, <em>result</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#TaskDetail.put"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.TaskDetail.put" title="Permalink to this definition">¶</a></dt>
+<dd><p>Puts a result (acquired in the given state) into this detail.</p>
+<p>Returns whether this object was modified (or whether it was not).</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.models.TaskDetail.merge">
+<code class="descname">merge</code><span class="sig-paren">(</span><em>other</em>, <em>deep_copy=False</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#TaskDetail.merge"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.TaskDetail.merge" title="Permalink to this definition">¶</a></dt>
+<dd><p>Merges the current task detail with the given one.</p>
+<p>NOTE(harlowja): This merge does <strong>not</strong> copy and replace
+the <code class="docutils literal"><span class="pre">results</span></code> or <code class="docutils literal"><span class="pre">revert_results</span></code> if it differs. Instead the
+current objects <code class="docutils literal"><span class="pre">results</span></code> and <code class="docutils literal"><span class="pre">revert_results</span></code> attributes directly
+becomes (via assignment) the other objects attributes. Also note that
+if the provided object is this object itself then <strong>no</strong> merging is
+done.</p>
+<p>See: <a class="reference external" href="https://bugs.launchpad.net/taskflow/+bug/1452978">https://bugs.launchpad.net/taskflow/+bug/1452978</a> for
+what happens if this is copied at a deeper level (for example by
+using <code class="docutils literal"><span class="pre">copy.deepcopy</span></code> or by using <code class="docutils literal"><span class="pre">copy.copy</span></code>).</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Returns:</th><td class="field-body">this task detail (freshly merged with the incoming object)</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Return type:</th><td class="field-body"><a class="reference internal" href="#taskflow.persistence.models.TaskDetail" title="taskflow.persistence.models.TaskDetail"><code class="xref py py-class docutils literal"><span class="pre">TaskDetail</span></code></a></td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.models.TaskDetail.copy">
+<code class="descname">copy</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#TaskDetail.copy"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.TaskDetail.copy" title="Permalink to this definition">¶</a></dt>
+<dd><p>Copies this task detail.</p>
+<p>Creates a shallow copy of this task detail (any meta-data and
+version information that this object maintains is shallow
+copied via <code class="docutils literal"><span class="pre">copy.copy</span></code>).</p>
+<p>NOTE(harlowja): This copy does <strong>not</strong> copy and replace
+the <code class="docutils literal"><span class="pre">results</span></code> or <code class="docutils literal"><span class="pre">revert_results</span></code> attribute if it differs. Instead
+the current objects <code class="docutils literal"><span class="pre">results</span></code> and <code class="docutils literal"><span class="pre">revert_results</span></code> attributes
+directly becomes (via assignment) the cloned objects attributes.</p>
+<p>See: <a class="reference external" href="https://bugs.launchpad.net/taskflow/+bug/1452978">https://bugs.launchpad.net/taskflow/+bug/1452978</a> for
+what happens if this is copied at a deeper level (for example by
+using <code class="docutils literal"><span class="pre">copy.deepcopy</span></code> or by using <code class="docutils literal"><span class="pre">copy.copy</span></code>).</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Returns:</th><td class="field-body">a new task detail</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Return type:</th><td class="field-body"><a class="reference internal" href="#taskflow.persistence.models.TaskDetail" title="taskflow.persistence.models.TaskDetail"><code class="xref py py-class docutils literal"><span class="pre">TaskDetail</span></code></a></td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.persistence.models.RetryDetail">
+<em class="property">class </em><code class="descclassname">taskflow.persistence.models.</code><code class="descname">RetryDetail</code><span class="sig-paren">(</span><em>name</em>, <em>uuid</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#RetryDetail"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.RetryDetail" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <a class="reference internal" href="#taskflow.persistence.models.AtomDetail" title="taskflow.persistence.models.AtomDetail"><code class="xref py py-class docutils literal"><span class="pre">taskflow.persistence.models.AtomDetail</span></code></a></p>
+<p>A retry detail (an atom detail typically associated with a <a class="reference internal" href="atoms.html#taskflow.retry.Retry" title="taskflow.retry.Retry"><code class="xref py py-class docutils literal"><span class="pre">Retry</span></code></a> atom).</p>
+<dl class="method">
+<dt id="taskflow.persistence.models.RetryDetail.reset">
+<code class="descname">reset</code><span class="sig-paren">(</span><em>state</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#RetryDetail.reset"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.RetryDetail.reset" title="Permalink to this definition">¶</a></dt>
+<dd><p>Resets this retry detail and sets <code class="docutils literal"><span class="pre">state</span></code> attribute value.</p>
+<p>This sets any previously added <code class="docutils literal"><span class="pre">results</span></code> back to an empty list
+and resets the <code class="docutils literal"><span class="pre">failure</span></code> and <code class="docutils literal"><span class="pre">revert_failure</span></code> and
+<code class="docutils literal"><span class="pre">revert_results</span></code> attributes back to <code class="docutils literal"><span class="pre">None</span></code> and sets the state
+to the provided one, as well as setting this retry
+details <code class="docutils literal"><span class="pre">intention</span></code> attribute to <code class="docutils literal"><span class="pre">EXECUTE</span></code>.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.models.RetryDetail.copy">
+<code class="descname">copy</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#RetryDetail.copy"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.RetryDetail.copy" title="Permalink to this definition">¶</a></dt>
+<dd><p>Copies this retry detail.</p>
+<p>Creates a shallow copy of this retry detail (any meta-data and
+version information that this object maintains is shallow
+copied via <code class="docutils literal"><span class="pre">copy.copy</span></code>).</p>
+<p>NOTE(harlowja): This copy does <strong>not</strong> copy
+the incoming objects <code class="docutils literal"><span class="pre">results</span></code> or <code class="docutils literal"><span class="pre">revert_results</span></code> attributes.
+Instead this objects <code class="docutils literal"><span class="pre">results</span></code> attribute list is iterated over and
+a new list is constructed with each <code class="docutils literal"><span class="pre">(data,</span> <span class="pre">failures)</span></code> element in
+that list having its <code class="docutils literal"><span class="pre">failures</span></code> (a dictionary of each named
+<a class="reference internal" href="types.html#taskflow.types.failure.Failure" title="taskflow.types.failure.Failure"><code class="xref py py-class docutils literal"><span class="pre">Failure</span></code></a> object that
+occured) copied but its <code class="docutils literal"><span class="pre">data</span></code> is left untouched. After
+this is done that new list becomes (via assignment) the cloned
+objects <code class="docutils literal"><span class="pre">results</span></code> attribute. The <code class="docutils literal"><span class="pre">revert_results</span></code> is directly
+assigned to the cloned objects <code class="docutils literal"><span class="pre">revert_results</span></code> attribute.</p>
+<p>See: <a class="reference external" href="https://bugs.launchpad.net/taskflow/+bug/1452978">https://bugs.launchpad.net/taskflow/+bug/1452978</a> for
+what happens if the <code class="docutils literal"><span class="pre">data</span></code> in <code class="docutils literal"><span class="pre">results</span></code> is copied at a
+deeper level (for example by using <code class="docutils literal"><span class="pre">copy.deepcopy</span></code> or by
+using <code class="docutils literal"><span class="pre">copy.copy</span></code>).</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Returns:</th><td class="field-body">a new retry detail</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Return type:</th><td class="field-body"><a class="reference internal" href="#taskflow.persistence.models.RetryDetail" title="taskflow.persistence.models.RetryDetail"><code class="xref py py-class docutils literal"><span class="pre">RetryDetail</span></code></a></td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.persistence.models.RetryDetail.last_results">
+<code class="descname">last_results</code><a class="headerlink" href="#taskflow.persistence.models.RetryDetail.last_results" title="Permalink to this definition">¶</a></dt>
+<dd><p>The last result that was produced.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.persistence.models.RetryDetail.last_failures">
+<code class="descname">last_failures</code><a class="headerlink" href="#taskflow.persistence.models.RetryDetail.last_failures" title="Permalink to this definition">¶</a></dt>
+<dd><p>The last failure dictionary that was produced.</p>
+<p>NOTE(harlowja): This is <strong>not</strong> the same as the
+local <code class="docutils literal"><span class="pre">failure</span></code> attribute as the obtained failure dictionary in
+the <code class="docutils literal"><span class="pre">results</span></code> attribute (which is what this returns) is from
+associated atom failures (which is different from the directly
+related failure of the retry unit associated with this
+atom detail).</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.models.RetryDetail.put">
+<code class="descname">put</code><span class="sig-paren">(</span><em>state</em>, <em>result</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#RetryDetail.put"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.RetryDetail.put" title="Permalink to this definition">¶</a></dt>
+<dd><p>Puts a result (acquired in the given state) into this detail.</p>
+<p>Returns whether this object was modified (or whether it was not).</p>
+</dd></dl>
+
+<dl class="classmethod">
+<dt id="taskflow.persistence.models.RetryDetail.from_dict">
+<em class="property">classmethod </em><code class="descname">from_dict</code><span class="sig-paren">(</span><em>data</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#RetryDetail.from_dict"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.RetryDetail.from_dict" title="Permalink to this definition">¶</a></dt>
+<dd><p>Translates the given <code class="docutils literal"><span class="pre">dict</span></code> into an instance of this class.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.models.RetryDetail.to_dict">
+<code class="descname">to_dict</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#RetryDetail.to_dict"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.RetryDetail.to_dict" title="Permalink to this definition">¶</a></dt>
+<dd><p>Translates the internal state of this object to a <code class="docutils literal"><span class="pre">dict</span></code>.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.models.RetryDetail.merge">
+<code class="descname">merge</code><span class="sig-paren">(</span><em>other</em>, <em>deep_copy=False</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/models.html#RetryDetail.merge"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.models.RetryDetail.merge" title="Permalink to this definition">¶</a></dt>
+<dd><p>Merges the current retry detail with the given one.</p>
+<p>NOTE(harlowja): This merge does <strong>not</strong> deep copy
+the incoming objects <code class="docutils literal"><span class="pre">results</span></code> attribute (if it differs). Instead
+the incoming objects <code class="docutils literal"><span class="pre">results</span></code> attribute list is <strong>always</strong> iterated
+over and a new list is constructed with
+each <code class="docutils literal"><span class="pre">(data,</span> <span class="pre">failures)</span></code> element in that list having
+its <code class="docutils literal"><span class="pre">failures</span></code> (a dictionary of each named
+<a class="reference internal" href="types.html#taskflow.types.failure.Failure" title="taskflow.types.failure.Failure"><code class="xref py py-class docutils literal"><span class="pre">Failure</span></code></a> objects that
+occurred) copied but its <code class="docutils literal"><span class="pre">data</span></code> is left untouched. After
+this is done that new list becomes (via assignment) this
+objects <code class="docutils literal"><span class="pre">results</span></code> attribute. Also note that if the provided object
+is this object itself then <strong>no</strong> merging is done.</p>
+<p>See: <a class="reference external" href="https://bugs.launchpad.net/taskflow/+bug/1452978">https://bugs.launchpad.net/taskflow/+bug/1452978</a> for
+what happens if the <code class="docutils literal"><span class="pre">data</span></code> in <code class="docutils literal"><span class="pre">results</span></code> is copied at a
+deeper level (for example by using <code class="docutils literal"><span class="pre">copy.deepcopy</span></code> or by
+using <code class="docutils literal"><span class="pre">copy.copy</span></code>).</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Returns:</th><td class="field-body">this retry detail (freshly merged with the incoming object)</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Return type:</th><td class="field-body"><a class="reference internal" href="#taskflow.persistence.models.RetryDetail" title="taskflow.persistence.models.RetryDetail"><code class="xref py py-class docutils literal"><span class="pre">RetryDetail</span></code></a></td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+</dd></dl>
+
+</div>
+<div class="section" id="implementations">
+<h2>Implementations<a class="headerlink" href="#implementations" title="Permalink to this headline">¶</a></h2>
+<div class="section" id="id4">
+<h3>Memory<a class="headerlink" href="#id4" title="Permalink to this headline">¶</a></h3>
+<span class="target" id="module-taskflow.persistence.backends.impl_memory"></span><dl class="class">
+<dt id="taskflow.persistence.backends.impl_memory.FakeInode">
+<em class="property">class </em><code class="descclassname">taskflow.persistence.backends.impl_memory.</code><code class="descname">FakeInode</code><span class="sig-paren">(</span><em>item</em>, <em>path</em>, <em>value=None</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/backends/impl_memory.html#FakeInode"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.backends.impl_memory.FakeInode" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <a class="reference internal" href="types.html#taskflow.types.tree.Node" title="taskflow.types.tree.Node"><code class="xref py py-class docutils literal"><span class="pre">taskflow.types.tree.Node</span></code></a></p>
+<p>A in-memory filesystem inode-like object.</p>
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.persistence.backends.impl_memory.FakeFilesystem">
+<em class="property">class </em><code class="descclassname">taskflow.persistence.backends.impl_memory.</code><code class="descname">FakeFilesystem</code><span class="sig-paren">(</span><em>deep_copy=True</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/backends/impl_memory.html#FakeFilesystem"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.backends.impl_memory.FakeFilesystem" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>An in-memory filesystem-like structure.</p>
+<p>This filesystem uses posix style paths <strong>only</strong> so users must be careful
+to use the <code class="docutils literal"><span class="pre">posixpath</span></code> module instead of the <code class="docutils literal"><span class="pre">os.path</span></code> one which will
+vary depending on the operating system which the active python is running
+in (the decision to use <code class="docutils literal"><span class="pre">posixpath</span></code> was to avoid the path variations
+which are not relevant in an implementation of a in-memory fake
+filesystem).</p>
+<p><strong>Not</strong> thread-safe when a single filesystem is mutated at the same
+time by multiple threads. For example having multiple threads call into
+<a class="reference internal" href="#taskflow.persistence.backends.impl_memory.FakeFilesystem.clear" title="taskflow.persistence.backends.impl_memory.FakeFilesystem.clear"><code class="xref py py-meth docutils literal"><span class="pre">clear()</span></code></a>
+at the same time could potentially end badly. It is thread-safe when only
+<a class="reference internal" href="#taskflow.persistence.backends.impl_memory.FakeFilesystem.get" title="taskflow.persistence.backends.impl_memory.FakeFilesystem.get"><code class="xref py py-meth docutils literal"><span class="pre">get()</span></code></a>
+or other read-only actions (like calling into
+<a class="reference internal" href="#taskflow.persistence.backends.impl_memory.FakeFilesystem.ls" title="taskflow.persistence.backends.impl_memory.FakeFilesystem.ls"><code class="xref py py-meth docutils literal"><span class="pre">ls()</span></code></a>)
+are occurring at the same time.</p>
+<p>Example usage:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="gp">&gt;&gt;&gt; </span><span class="kn">from</span> <span class="nn">taskflow.persistence.backends</span> <span class="kn">import</span> <span class="n">impl_memory</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">fs</span> <span class="o">=</span> <span class="n">impl_memory</span><span class="o">.</span><span class="n">FakeFilesystem</span><span class="p">()</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">fs</span><span class="o">.</span><span class="n">ensure_path</span><span class="p">(</span><span class="s1">&#39;/a/b/c&#39;</span><span class="p">)</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">fs</span><span class="p">[</span><span class="s1">&#39;/a/b/c&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="s1">&#39;d&#39;</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="k">print</span><span class="p">(</span><span class="n">fs</span><span class="p">[</span><span class="s1">&#39;/a/b/c&#39;</span><span class="p">])</span>
+<span class="go">d</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="k">del</span> <span class="n">fs</span><span class="p">[</span><span class="s1">&#39;/a/b/c&#39;</span><span class="p">]</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">fs</span><span class="o">.</span><span class="n">ls</span><span class="p">(</span><span class="s2">&quot;/a/b&quot;</span><span class="p">)</span>
+<span class="go">[]</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">fs</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;/a/b/c&quot;</span><span class="p">,</span> <span class="s1">&#39;blob&#39;</span><span class="p">)</span>
+<span class="go">&#39;blob&#39;</span>
+</pre></div>
+</div>
+<dl class="attribute">
+<dt id="taskflow.persistence.backends.impl_memory.FakeFilesystem.root_path">
+<code class="descname">root_path</code><em class="property"> = '/'</em><a class="headerlink" href="#taskflow.persistence.backends.impl_memory.FakeFilesystem.root_path" title="Permalink to this definition">¶</a></dt>
+<dd><p>Root path of the in-memory filesystem.</p>
+</dd></dl>
+
+<dl class="classmethod">
+<dt id="taskflow.persistence.backends.impl_memory.FakeFilesystem.normpath">
+<em class="property">classmethod </em><code class="descname">normpath</code><span class="sig-paren">(</span><em>path</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/backends/impl_memory.html#FakeFilesystem.normpath"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.backends.impl_memory.FakeFilesystem.normpath" title="Permalink to this definition">¶</a></dt>
+<dd><p>Return a normalized absolutized version of the pathname path.</p>
+</dd></dl>
+
+<dl class="staticmethod">
+<dt id="taskflow.persistence.backends.impl_memory.FakeFilesystem.split">
+<em class="property">static </em><code class="descname">split</code><span class="sig-paren">(</span><em>p</em><span class="sig-paren">)</span><a class="headerlink" href="#taskflow.persistence.backends.impl_memory.FakeFilesystem.split" title="Permalink to this definition">¶</a></dt>
+<dd><p>Split a pathname into a tuple of <code class="docutils literal"><span class="pre">(head,</span> <span class="pre">tail)</span></code>.</p>
+</dd></dl>
+
+<dl class="staticmethod">
+<dt id="taskflow.persistence.backends.impl_memory.FakeFilesystem.join">
+<em class="property">static </em><code class="descname">join</code><span class="sig-paren">(</span><em>*pieces</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/backends/impl_memory.html#FakeFilesystem.join"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.backends.impl_memory.FakeFilesystem.join" title="Permalink to this definition">¶</a></dt>
+<dd><p>Join many path segments together.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.backends.impl_memory.FakeFilesystem.ensure_path">
+<code class="descname">ensure_path</code><span class="sig-paren">(</span><em>path</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/backends/impl_memory.html#FakeFilesystem.ensure_path"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.backends.impl_memory.FakeFilesystem.ensure_path" title="Permalink to this definition">¶</a></dt>
+<dd><p>Ensure the path (and parents) exists.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.backends.impl_memory.FakeFilesystem.get">
+<code class="descname">get</code><span class="sig-paren">(</span><em>path</em>, <em>default=None</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/backends/impl_memory.html#FakeFilesystem.get"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.backends.impl_memory.FakeFilesystem.get" title="Permalink to this definition">¶</a></dt>
+<dd><p>Fetch the value of given path (and return default if not found).</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.backends.impl_memory.FakeFilesystem.ls_r">
+<code class="descname">ls_r</code><span class="sig-paren">(</span><em>path</em>, <em>absolute=False</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/backends/impl_memory.html#FakeFilesystem.ls_r"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.backends.impl_memory.FakeFilesystem.ls_r" title="Permalink to this definition">¶</a></dt>
+<dd><p>Return list of all children of the given path (recursively).</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.backends.impl_memory.FakeFilesystem.ls">
+<code class="descname">ls</code><span class="sig-paren">(</span><em>path</em>, <em>absolute=False</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/backends/impl_memory.html#FakeFilesystem.ls"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.backends.impl_memory.FakeFilesystem.ls" title="Permalink to this definition">¶</a></dt>
+<dd><p>Return list of all children of the given path (not recursive).</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.backends.impl_memory.FakeFilesystem.clear">
+<code class="descname">clear</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/backends/impl_memory.html#FakeFilesystem.clear"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.backends.impl_memory.FakeFilesystem.clear" title="Permalink to this definition">¶</a></dt>
+<dd><p>Remove all nodes (except the root) from this filesystem.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.backends.impl_memory.FakeFilesystem.delete">
+<code class="descname">delete</code><span class="sig-paren">(</span><em>path</em>, <em>recursive=False</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/backends/impl_memory.html#FakeFilesystem.delete"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.backends.impl_memory.FakeFilesystem.delete" title="Permalink to this definition">¶</a></dt>
+<dd><p>Deletes a node (optionally its children) from this filesystem.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.backends.impl_memory.FakeFilesystem.pformat">
+<code class="descname">pformat</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/backends/impl_memory.html#FakeFilesystem.pformat"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.backends.impl_memory.FakeFilesystem.pformat" title="Permalink to this definition">¶</a></dt>
+<dd><p>Pretty format this in-memory filesystem.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.persistence.backends.impl_memory.FakeFilesystem.symlink">
+<code class="descname">symlink</code><span class="sig-paren">(</span><em>src_path</em>, <em>dest_path</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/backends/impl_memory.html#FakeFilesystem.symlink"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.backends.impl_memory.FakeFilesystem.symlink" title="Permalink to this definition">¶</a></dt>
+<dd><p>Link the destionation path to the source path.</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.persistence.backends.impl_memory.MemoryBackend">
+<em class="property">class </em><code class="descclassname">taskflow.persistence.backends.impl_memory.</code><code class="descname">MemoryBackend</code><span class="sig-paren">(</span><em>conf=None</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/backends/impl_memory.html#MemoryBackend"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.backends.impl_memory.MemoryBackend" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <a class="reference internal" href="#taskflow.persistence.path_based.PathBasedBackend" title="taskflow.persistence.path_based.PathBasedBackend"><code class="xref py py-class docutils literal"><span class="pre">taskflow.persistence.path_based.PathBasedBackend</span></code></a></p>
+<p>A in-memory (non-persistent) backend.</p>
+<p>This backend writes logbooks, flow details, and atom details to a
+in-memory filesystem-like structure (rooted by the <code class="docutils literal"><span class="pre">memory</span></code>
+instance variable).</p>
+<p>This backend does <em>not</em> provide true transactional semantics. It does
+guarantee that there will be no inter-thread race conditions when
+writing and reading by using a read/write locks.</p>
+<dl class="attribute">
+<dt id="taskflow.persistence.backends.impl_memory.MemoryBackend.DEFAULT_PATH">
+<code class="descname">DEFAULT_PATH</code><em class="property"> = '/'</em><a class="headerlink" href="#taskflow.persistence.backends.impl_memory.MemoryBackend.DEFAULT_PATH" title="Permalink to this definition">¶</a></dt>
+<dd><p>Default path used when none is provided.</p>
+</dd></dl>
+
+</dd></dl>
+
+</div>
+<div class="section" id="id5">
+<h3>Files<a class="headerlink" href="#id5" title="Permalink to this headline">¶</a></h3>
+<span class="target" id="module-taskflow.persistence.backends.impl_dir"></span><dl class="class">
+<dt id="taskflow.persistence.backends.impl_dir.DirBackend">
+<em class="property">class </em><code class="descclassname">taskflow.persistence.backends.impl_dir.</code><code class="descname">DirBackend</code><span class="sig-paren">(</span><em>conf</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/backends/impl_dir.html#DirBackend"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.backends.impl_dir.DirBackend" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <a class="reference internal" href="#taskflow.persistence.path_based.PathBasedBackend" title="taskflow.persistence.path_based.PathBasedBackend"><code class="xref py py-class docutils literal"><span class="pre">taskflow.persistence.path_based.PathBasedBackend</span></code></a></p>
+<p>A directory and file based backend.</p>
+<p>This backend does <em>not</em> provide true transactional semantics. It does
+guarantee that there will be no interprocess race conditions when
+writing and reading by using a consistent hierarchy of file based locks.</p>
+<p>Example configuration:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="n">conf</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s2">&quot;path&quot;</span><span class="p">:</span> <span class="s2">&quot;/tmp/taskflow&quot;</span><span class="p">,</span>  <span class="c1"># save data to this root directory</span>
+    <span class="s2">&quot;max_cache_size&quot;</span><span class="p">:</span> <span class="mi">1024</span><span class="p">,</span>  <span class="c1"># keep up-to 1024 entries in memory</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<dl class="attribute">
+<dt id="taskflow.persistence.backends.impl_dir.DirBackend.DEFAULT_FILE_ENCODING">
+<code class="descname">DEFAULT_FILE_ENCODING</code><em class="property"> = 'utf-8'</em><a class="headerlink" href="#taskflow.persistence.backends.impl_dir.DirBackend.DEFAULT_FILE_ENCODING" title="Permalink to this definition">¶</a></dt>
+<dd><p>Default encoding used when decoding or encoding files into or from
+text/unicode into binary or binary into text/unicode.</p>
+</dd></dl>
+
+</dd></dl>
+
+</div>
+<div class="section" id="id6">
+<h3>SQLAlchemy<a class="headerlink" href="#id6" title="Permalink to this headline">¶</a></h3>
+<span class="target" id="module-taskflow.persistence.backends.impl_sqlalchemy"></span><dl class="class">
+<dt id="taskflow.persistence.backends.impl_sqlalchemy.SQLAlchemyBackend">
+<em class="property">class </em><code class="descclassname">taskflow.persistence.backends.impl_sqlalchemy.</code><code class="descname">SQLAlchemyBackend</code><span class="sig-paren">(</span><em>conf</em>, <em>engine=None</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/backends/impl_sqlalchemy.html#SQLAlchemyBackend"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.backends.impl_sqlalchemy.SQLAlchemyBackend" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <a class="reference internal" href="#taskflow.persistence.base.Backend" title="taskflow.persistence.base.Backend"><code class="xref py py-class docutils literal"><span class="pre">taskflow.persistence.base.Backend</span></code></a></p>
+<p>A sqlalchemy backend.</p>
+<p>Example configuration:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="n">conf</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s2">&quot;connection&quot;</span><span class="p">:</span> <span class="s2">&quot;sqlite:////tmp/test.db&quot;</span><span class="p">,</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</dd></dl>
+
+</div>
+<div class="section" id="id7">
+<h3>Zookeeper<a class="headerlink" href="#id7" title="Permalink to this headline">¶</a></h3>
+<span class="target" id="module-taskflow.persistence.backends.impl_zookeeper"></span><dl class="class">
+<dt id="taskflow.persistence.backends.impl_zookeeper.ZkBackend">
+<em class="property">class </em><code class="descclassname">taskflow.persistence.backends.impl_zookeeper.</code><code class="descname">ZkBackend</code><span class="sig-paren">(</span><em>conf</em>, <em>client=None</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/persistence/backends/impl_zookeeper.html#ZkBackend"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.persistence.backends.impl_zookeeper.ZkBackend" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <a class="reference internal" href="#taskflow.persistence.path_based.PathBasedBackend" title="taskflow.persistence.path_based.PathBasedBackend"><code class="xref py py-class docutils literal"><span class="pre">taskflow.persistence.path_based.PathBasedBackend</span></code></a></p>
+<p>A zookeeper-backed backend.</p>
+<p>Example configuration:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="n">conf</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s2">&quot;hosts&quot;</span><span class="p">:</span> <span class="s2">&quot;192.168.0.1:2181,192.168.0.2:2181,192.168.0.3:2181&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;path&quot;</span><span class="p">:</span> <span class="s2">&quot;/taskflow&quot;</span><span class="p">,</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>Do note that the creation of a kazoo client is achieved
+by <a class="reference internal" href="utils.html#taskflow.utils.kazoo_utils.make_client" title="taskflow.utils.kazoo_utils.make_client"><code class="xref py py-func docutils literal"><span class="pre">make_client()</span></code></a> and the transfer
+of this backend configuration to that function to make a
+client may happen at <code class="docutils literal"><span class="pre">__init__</span></code> time. This implies that certain
+parameters from this backend configuration may be provided to
+<a class="reference internal" href="utils.html#taskflow.utils.kazoo_utils.make_client" title="taskflow.utils.kazoo_utils.make_client"><code class="xref py py-func docutils literal"><span class="pre">make_client()</span></code></a> such
+that if a client was not provided by the caller one will be created
+according to <a class="reference internal" href="utils.html#taskflow.utils.kazoo_utils.make_client" title="taskflow.utils.kazoo_utils.make_client"><code class="xref py py-func docutils literal"><span class="pre">make_client()</span></code></a>&#8216;s
+specification</p>
+<dl class="attribute">
+<dt id="taskflow.persistence.backends.impl_zookeeper.ZkBackend.DEFAULT_PATH">
+<code class="descname">DEFAULT_PATH</code><em class="property"> = '/taskflow'</em><a class="headerlink" href="#taskflow.persistence.backends.impl_zookeeper.ZkBackend.DEFAULT_PATH" title="Permalink to this definition">¶</a></dt>
+<dd><p>Default path used when none is provided.</p>
+</dd></dl>
+
+</dd></dl>
+
+</div>
+</div>
+<div class="section" id="module-taskflow.storage">
+<span id="storage"></span><h2>Storage<a class="headerlink" href="#module-taskflow.storage" title="Permalink to this headline">¶</a></h2>
+<dl class="class">
+<dt id="taskflow.storage.Storage">
+<em class="property">class </em><code class="descclassname">taskflow.storage.</code><code class="descname">Storage</code><span class="sig-paren">(</span><em>flow_detail</em>, <em>backend=None</em>, <em>scope_fetcher=None</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/storage.html#Storage"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.storage.Storage" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>Interface between engines and logbook and its backend (if any).</p>
+<p>This class provides a simple interface to save atoms of a given flow and
+associated activity and results to persistence layer (logbook,
+atom_details, flow_details) for use by engines. This makes it easier to
+interact with the underlying storage &amp; backend mechanism through this
+interface rather than accessing those objects directly.</p>
+<p>NOTE(harlowja): if no backend is provided then a in-memory backend will
+be automatically used and the provided flow detail object will be placed
+into it for the duration of this objects existence.</p>
+<dl class="attribute">
+<dt id="taskflow.storage.Storage.injector_name">
+<code class="descname">injector_name</code><em class="property"> = '_TaskFlow_INJECTOR'</em><a class="headerlink" href="#taskflow.storage.Storage.injector_name" title="Permalink to this definition">¶</a></dt>
+<dd><p>Injector task detail name.</p>
+<p>This task detail is a <strong>special</strong> detail that will be automatically
+created and saved to store <strong>persistent</strong> injected values (name conflicts
+with it must be avoided) that are <em>global</em> to the flow being executed.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.storage.Storage.ensure_atoms">
+<code class="descname">ensure_atoms</code><span class="sig-paren">(</span><em>*args</em>, <em>**kwargs</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/storage.html#Storage.ensure_atoms"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.storage.Storage.ensure_atoms" title="Permalink to this definition">¶</a></dt>
+<dd><p>Ensure there is an atomdetail for <strong>each</strong> of the given atoms.</p>
+<p>Returns list of atomdetail uuids for each atom processed.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.storage.Storage.lock">
+<code class="descname">lock</code><a class="headerlink" href="#taskflow.storage.Storage.lock" title="Permalink to this definition">¶</a></dt>
+<dd><p>Reader/writer lock used to ensure multi-thread safety.</p>
+<p>This does <strong>not</strong> protect against the <strong>same</strong> storage objects being
+used by multiple engines/users across multiple processes (or
+different machines); certain backends handle that situation better
+than others (for example by using sequence identifiers) and it&#8217;s a
+ongoing work in progress to make that better).</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.storage.Storage.ensure_atom">
+<code class="descname">ensure_atom</code><span class="sig-paren">(</span><em>atom</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/storage.html#Storage.ensure_atom"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.storage.Storage.ensure_atom" title="Permalink to this definition">¶</a></dt>
+<dd><p>Ensure there is an atomdetail for the <strong>given</strong> atom.</p>
+<p>Returns the uuid for the atomdetail that corresponds to the given atom.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.storage.Storage.flow_name">
+<code class="descname">flow_name</code><a class="headerlink" href="#taskflow.storage.Storage.flow_name" title="Permalink to this definition">¶</a></dt>
+<dd><p>The flow detail name this storage unit is associated with.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.storage.Storage.flow_uuid">
+<code class="descname">flow_uuid</code><a class="headerlink" href="#taskflow.storage.Storage.flow_uuid" title="Permalink to this definition">¶</a></dt>
+<dd><p>The flow detail uuid this storage unit is associated with.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.storage.Storage.flow_meta">
+<code class="descname">flow_meta</code><a class="headerlink" href="#taskflow.storage.Storage.flow_meta" title="Permalink to this definition">¶</a></dt>
+<dd><p>The flow detail metadata this storage unit is associated with.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.storage.Storage.backend">
+<code class="descname">backend</code><a class="headerlink" href="#taskflow.storage.Storage.backend" title="Permalink to this definition">¶</a></dt>
+<dd><p>The backend this storage unit is associated with.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.storage.Storage.get_atom_uuid">
+<code class="descname">get_atom_uuid</code><span class="sig-paren">(</span><em>*args</em>, <em>**kwargs</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/storage.html#Storage.get_atom_uuid"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.storage.Storage.get_atom_uuid" title="Permalink to this definition">¶</a></dt>
+<dd><p>Gets an atoms uuid given a atoms name.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.storage.Storage.set_atom_state">
+<code class="descname">set_atom_state</code><span class="sig-paren">(</span><em>*args</em>, <em>**kwargs</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/storage.html#Storage.set_atom_state"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.storage.Storage.set_atom_state" title="Permalink to this definition">¶</a></dt>
+<dd><p>Sets an atoms state.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.storage.Storage.get_atom_state">
+<code class="descname">get_atom_state</code><span class="sig-paren">(</span><em>*args</em>, <em>**kwargs</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/storage.html#Storage.get_atom_state"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.storage.Storage.get_atom_state" title="Permalink to this definition">¶</a></dt>
+<dd><p>Gets the state of an atom given an atoms name.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.storage.Storage.set_atom_intention">
+<code class="descname">set_atom_intention</code><span class="sig-paren">(</span><em>*args</em>, <em>**kwargs</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/storage.html#Storage.set_atom_intention"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.storage.Storage.set_atom_intention" title="Permalink to this definition">¶</a></dt>
+<dd><p>Sets the intention of an atom given an atoms name.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.storage.Storage.get_atom_intention">
+<code class="descname">get_atom_intention</code><span class="sig-paren">(</span><em>*args</em>, <em>**kwargs</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/storage.html#Storage.get_atom_intention"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.storage.Storage.get_atom_intention" title="Permalink to this definition">¶</a></dt>
+<dd><p>Gets the intention of an atom given an atoms name.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.storage.Storage.get_atoms_states">
+<code class="descname">get_atoms_states</code><span class="sig-paren">(</span><em>*args</em>, <em>**kwargs</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/storage.html#Storage.get_atoms_states"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.storage.Storage.get_atoms_states" title="Permalink to this definition">¶</a></dt>
+<dd><p>Gets a dict of atom name =&gt; (state, intention) given atom names.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.storage.Storage.update_atom_metadata">
+<code class="descname">update_atom_metadata</code><span class="sig-paren">(</span><em>atom_name</em>, <em>update_with</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/storage.html#Storage.update_atom_metadata"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.storage.Storage.update_atom_metadata" title="Permalink to this definition">¶</a></dt>
+<dd><p>Updates a atoms associated metadata.</p>
+<p>This update will take a provided dictionary or a list of (key, value)
+pairs to include in the updated metadata (newer keys will overwrite
+older keys) and after merging saves the updated data into the
+underlying persistence layer.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.storage.Storage.set_task_progress">
+<code class="descname">set_task_progress</code><span class="sig-paren">(</span><em>task_name</em>, <em>progress</em>, <em>details=None</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/storage.html#Storage.set_task_progress"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.storage.Storage.set_task_progress" title="Permalink to this definition">¶</a></dt>
+<dd><p>Set a tasks progress.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><ul class="first last simple">
+<li><strong>task_name</strong> &#8211; task name</li>
+<li><strong>progress</strong> &#8211; tasks progress (0.0 &lt;-&gt; 1.0)</li>
+<li><strong>details</strong> &#8211; any task specific progress details</li>
+</ul>
+</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.storage.Storage.get_task_progress">
+<code class="descname">get_task_progress</code><span class="sig-paren">(</span><em>*args</em>, <em>**kwargs</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/storage.html#Storage.get_task_progress"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.storage.Storage.get_task_progress" title="Permalink to this definition">¶</a></dt>
+<dd><p>Get the progress of a task given a tasks name.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><strong>task_name</strong> &#8211; tasks name</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Returns:</th><td class="field-body">current task progress value</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.storage.Storage.get_task_progress_details">
+<code class="descname">get_task_progress_details</code><span class="sig-paren">(</span><em>*args</em>, <em>**kwargs</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/storage.html#Storage.get_task_progress_details"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.storage.Storage.get_task_progress_details" title="Permalink to this definition">¶</a></dt>
+<dd><p>Get the progress details of a task given a tasks name.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><strong>task_name</strong> &#8211; task name</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Returns:</th><td class="field-body">None if progress_details not defined, else progress_details
+dict</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.storage.Storage.save">
+<code class="descname">save</code><span class="sig-paren">(</span><em>*args</em>, <em>**kwargs</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/storage.html#Storage.save"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.storage.Storage.save" title="Permalink to this definition">¶</a></dt>
+<dd><p>Put result for atom with provided name to storage.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.storage.Storage.save_retry_failure">
+<code class="descname">save_retry_failure</code><span class="sig-paren">(</span><em>*args</em>, <em>**kwargs</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/storage.html#Storage.save_retry_failure"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.storage.Storage.save_retry_failure" title="Permalink to this definition">¶</a></dt>
+<dd><p>Save subflow failure to retry controller history.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.storage.Storage.cleanup_retry_history">
+<code class="descname">cleanup_retry_history</code><span class="sig-paren">(</span><em>*args</em>, <em>**kwargs</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/storage.html#Storage.cleanup_retry_history"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.storage.Storage.cleanup_retry_history" title="Permalink to this definition">¶</a></dt>
+<dd><p>Cleanup history of retry atom with given name.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.storage.Storage.get_execute_result">
+<code class="descname">get_execute_result</code><span class="sig-paren">(</span><em>atom_name</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/storage.html#Storage.get_execute_result"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.storage.Storage.get_execute_result" title="Permalink to this definition">¶</a></dt>
+<dd><p>Gets the <code class="docutils literal"><span class="pre">execute</span></code> results for an atom from storage.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.storage.Storage.get_execute_failures">
+<code class="descname">get_execute_failures</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/storage.html#Storage.get_execute_failures"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.storage.Storage.get_execute_failures" title="Permalink to this definition">¶</a></dt>
+<dd><p>Get all <code class="docutils literal"><span class="pre">execute</span></code> failures that happened with this flow.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.storage.Storage.get">
+<code class="descname">get</code><span class="sig-paren">(</span><em>atom_name</em><span class="sig-paren">)</span><a class="headerlink" href="#taskflow.storage.Storage.get" title="Permalink to this definition">¶</a></dt>
+<dd><p>Gets the <code class="docutils literal"><span class="pre">execute</span></code> results for an atom from storage.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.storage.Storage.get_failures">
+<code class="descname">get_failures</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="headerlink" href="#taskflow.storage.Storage.get_failures" title="Permalink to this definition">¶</a></dt>
+<dd><p>Get all <code class="docutils literal"><span class="pre">execute</span></code> failures that happened with this flow.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.storage.Storage.get_revert_result">
+<code class="descname">get_revert_result</code><span class="sig-paren">(</span><em>atom_name</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/storage.html#Storage.get_revert_result"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.storage.Storage.get_revert_result" title="Permalink to this definition">¶</a></dt>
+<dd><p>Gets the <code class="docutils literal"><span class="pre">revert</span></code> results for an atom from storage.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.storage.Storage.get_revert_failures">
+<code class="descname">get_revert_failures</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/storage.html#Storage.get_revert_failures"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.storage.Storage.get_revert_failures" title="Permalink to this definition">¶</a></dt>
+<dd><p>Get all <code class="docutils literal"><span class="pre">revert</span></code> failures that happened with this flow.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.storage.Storage.has_failures">
+<code class="descname">has_failures</code><span class="sig-paren">(</span><em>*args</em>, <em>**kwargs</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/storage.html#Storage.has_failures"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.storage.Storage.has_failures" title="Permalink to this definition">¶</a></dt>
+<dd><p>Returns true if there are <strong>any</strong> failures in storage.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.storage.Storage.reset">
+<code class="descname">reset</code><span class="sig-paren">(</span><em>*args</em>, <em>**kwargs</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/storage.html#Storage.reset"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.storage.Storage.reset" title="Permalink to this definition">¶</a></dt>
+<dd><p>Reset atom with given name (if the atom is not in a given state).</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.storage.Storage.inject_atom_args">
+<code class="descname">inject_atom_args</code><span class="sig-paren">(</span><em>atom_name</em>, <em>pairs</em>, <em>transient=True</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/storage.html#Storage.inject_atom_args"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.storage.Storage.inject_atom_args" title="Permalink to this definition">¶</a></dt>
+<dd><p>Add values into storage for a specific atom only.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><strong>transient</strong> &#8211; save the data in-memory only instead of persisting
+the data to backend storage (useful for resource-like objects
+or similar objects which can <strong>not</strong> be persisted)</td>
+</tr>
+</tbody>
+</table>
+<p>This method injects a dictionary/pairs of arguments for an atom so that
+when that atom is scheduled for execution it will have immediate access
+to these arguments.</p>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">Injected atom arguments take precedence over arguments
+provided by predecessor atoms or arguments provided by injecting
+into the flow scope (using
+the <a class="reference internal" href="#taskflow.storage.Storage.inject" title="taskflow.storage.Storage.inject"><code class="xref py py-meth docutils literal"><span class="pre">inject()</span></code></a> method).</p>
+</div>
+<div class="admonition warning">
+<p class="first admonition-title">Warning</p>
+<p class="last">It should be noted that injected atom arguments (that are scoped
+to the atom with the given name) <em>should</em> be serializable
+whenever possible. This is a <strong>requirement</strong> for the
+<a class="reference internal" href="workers.html"><em>worker based engine</em></a> which <strong>must</strong>
+serialize (typically using <code class="docutils literal"><span class="pre">json</span></code>) all
+atom <a class="reference internal" href="atoms.html#taskflow.atom.Atom.execute" title="taskflow.atom.Atom.execute"><code class="xref py py-meth docutils literal"><span class="pre">execute()</span></code></a> and
+<a class="reference internal" href="atoms.html#taskflow.atom.Atom.revert" title="taskflow.atom.Atom.revert"><code class="xref py py-meth docutils literal"><span class="pre">revert()</span></code></a> arguments to
+be able to transmit those arguments to the target worker(s). If
+the use-case being applied/desired is to later use the worker
+based engine then it is highly recommended to ensure all injected
+atoms (even transient ones) are serializable to avoid issues
+that <em>may</em> appear later (when a object turned out to not actually
+be serializable).</p>
+</div>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.storage.Storage.inject">
+<code class="descname">inject</code><span class="sig-paren">(</span><em>*args</em>, <em>**kwargs</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/storage.html#Storage.inject"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.storage.Storage.inject" title="Permalink to this definition">¶</a></dt>
+<dd><p>Add values into storage.</p>
+<p>This method should be used to put flow parameters (requirements that
+are not satisfied by any atom in the flow) into storage.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><strong>transient</strong> &#8211; save the data in-memory only instead of persisting
+the data to backend storage (useful for resource-like objects
+or similar objects which can <strong>not</strong> be persisted)</td>
+</tr>
+</tbody>
+</table>
+<div class="admonition warning">
+<p class="first admonition-title">Warning</p>
+<p class="last">It should be noted that injected flow arguments (that are scoped
+to all atoms in this flow) <em>should</em> be serializable whenever
+possible. This is a <strong>requirement</strong> for
+the <a class="reference internal" href="workers.html"><em>worker based engine</em></a> which <strong>must</strong>
+serialize (typically using <code class="docutils literal"><span class="pre">json</span></code>) all
+atom <a class="reference internal" href="atoms.html#taskflow.atom.Atom.execute" title="taskflow.atom.Atom.execute"><code class="xref py py-meth docutils literal"><span class="pre">execute()</span></code></a> and
+<a class="reference internal" href="atoms.html#taskflow.atom.Atom.revert" title="taskflow.atom.Atom.revert"><code class="xref py py-meth docutils literal"><span class="pre">revert()</span></code></a> arguments to
+be able to transmit those arguments to the target worker(s). If
+the use-case being applied/desired is to later use the worker
+based engine then it is highly recommended to ensure all injected
+atoms (even transient ones) are serializable to avoid issues
+that <em>may</em> appear later (when a object turned out to not actually
+be serializable).</p>
+</div>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.storage.Storage.fetch">
+<code class="descname">fetch</code><span class="sig-paren">(</span><em>*args</em>, <em>**kwargs</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/storage.html#Storage.fetch"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.storage.Storage.fetch" title="Permalink to this definition">¶</a></dt>
+<dd><p>Fetch a named <code class="docutils literal"><span class="pre">execute</span></code> result.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.storage.Storage.fetch_unsatisfied_args">
+<code class="descname">fetch_unsatisfied_args</code><span class="sig-paren">(</span><em>*args</em>, <em>**kwargs</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/storage.html#Storage.fetch_unsatisfied_args"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.storage.Storage.fetch_unsatisfied_args" title="Permalink to this definition">¶</a></dt>
+<dd><p>Fetch unsatisfied <code class="docutils literal"><span class="pre">execute</span></code> arguments using an atoms args mapping.</p>
+<p>NOTE(harlowja): this takes into account the provided scope walker
+atoms who should produce the required value at runtime, as well as
+the transient/persistent flow and atom specific injected arguments.
+It does <strong>not</strong> check if the providers actually have produced the
+needed values; it just checks that they are registered to produce
+it in the future.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.storage.Storage.fetch_all">
+<code class="descname">fetch_all</code><span class="sig-paren">(</span><em>*args</em>, <em>**kwargs</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/storage.html#Storage.fetch_all"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.storage.Storage.fetch_all" title="Permalink to this definition">¶</a></dt>
+<dd><p>Fetch all named <code class="docutils literal"><span class="pre">execute</span></code> results known so far.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.storage.Storage.fetch_mapped_args">
+<code class="descname">fetch_mapped_args</code><span class="sig-paren">(</span><em>*args</em>, <em>**kwargs</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/storage.html#Storage.fetch_mapped_args"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.storage.Storage.fetch_mapped_args" title="Permalink to this definition">¶</a></dt>
+<dd><p>Fetch <code class="docutils literal"><span class="pre">execute</span></code> arguments for an atom using its args mapping.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.storage.Storage.set_flow_state">
+<code class="descname">set_flow_state</code><span class="sig-paren">(</span><em>*args</em>, <em>**kwargs</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/storage.html#Storage.set_flow_state"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.storage.Storage.set_flow_state" title="Permalink to this definition">¶</a></dt>
+<dd><p>Set flow details state and save it.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.storage.Storage.update_flow_metadata">
+<code class="descname">update_flow_metadata</code><span class="sig-paren">(</span><em>*args</em>, <em>**kwargs</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/storage.html#Storage.update_flow_metadata"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.storage.Storage.update_flow_metadata" title="Permalink to this definition">¶</a></dt>
+<dd><p>Update flowdetails metadata and save it.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.storage.Storage.change_flow_state">
+<code class="descname">change_flow_state</code><span class="sig-paren">(</span><em>*args</em>, <em>**kwargs</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/storage.html#Storage.change_flow_state"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.storage.Storage.change_flow_state" title="Permalink to this definition">¶</a></dt>
+<dd><p>Transition flow from old state to new state.</p>
+<p>Returns <code class="docutils literal"><span class="pre">(True,</span> <span class="pre">old_state)</span></code> if transition was performed,
+or <code class="docutils literal"><span class="pre">(False,</span> <span class="pre">old_state)</span></code> if it was ignored, or raises a
+<a class="reference internal" href="exceptions.html#taskflow.exceptions.InvalidState" title="taskflow.exceptions.InvalidState"><code class="xref py py-class docutils literal"><span class="pre">InvalidState</span></code></a> exception if transition
+is invalid.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.storage.Storage.get_flow_state">
+<code class="descname">get_flow_state</code><span class="sig-paren">(</span><em>*args</em>, <em>**kwargs</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/storage.html#Storage.get_flow_state"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.storage.Storage.get_flow_state" title="Permalink to this definition">¶</a></dt>
+<dd><p>Get state from flow details.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.storage.Storage.get_retry_history">
+<code class="descname">get_retry_history</code><span class="sig-paren">(</span><em>*args</em>, <em>**kwargs</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/storage.html#Storage.get_retry_history"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.storage.Storage.get_retry_history" title="Permalink to this definition">¶</a></dt>
+<dd><p>Fetch a single retrys history.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.storage.Storage.get_retry_histories">
+<code class="descname">get_retry_histories</code><span class="sig-paren">(</span><em>*args</em>, <em>**kwargs</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/storage.html#Storage.get_retry_histories"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.storage.Storage.get_retry_histories" title="Permalink to this definition">¶</a></dt>
+<dd><p>Fetch all retrys histories.</p>
+</dd></dl>
+
+</dd></dl>
+
+</div>
+<div class="section" id="hierarchy">
+<h2>Hierarchy<a class="headerlink" href="#hierarchy" title="Permalink to this headline">¶</a></h2>
+<p class="graphviz">
+<img src="_images/inheritance-9bfce1980963bf0e0698eabbb3fbda6881325410.png" alt="Inheritance diagram of taskflow.persistence.base, taskflow.persistence.backends.impl_dir, taskflow.persistence.backends.impl_memory, taskflow.persistence.backends.impl_sqlalchemy, taskflow.persistence.backends.impl_zookeeper" usemap="#inheritancefa713a58d9" class="inheritance"/>
+<map id="inheritancefa713a58d9" name="inheritancefa713a58d9">
+<area shape="rect" id="node1" href="#taskflow.persistence.base.Backend" target="_top" title="Base class for persistence backends." alt="" coords="51,219,159,243"/>
+<area shape="rect" id="node6" href="#taskflow.persistence.path_based.PathBasedBackend" target="_top" title="Base class for persistence backends that address data by path" alt="" coords="271,195,486,219"/>
+<area shape="rect" id="node13" href="#taskflow.persistence.backends.impl_sqlalchemy.SQLAlchemyBackend" target="_top" title="A sqlalchemy backend." alt="" coords="251,242,507,266"/>
+<area shape="rect" id="node2" href="#taskflow.persistence.base.Connection" target="_top" title="Base class for backend connections." alt="" coords="43,100,167,124"/>
+<area shape="rect" id="node4" href="#taskflow.persistence.path_based.PathBasedConnection" target="_top" title="Base class for path based backend connections." alt="" coords="263,52,495,77"/>
+<area shape="rect" id="node5" href="#taskflow.persistence.backends.impl_dir.DirBackend" target="_top" title="A directory and file based backend." alt="" coords="587,147,729,172"/>
+<area shape="rect" id="node11" href="#taskflow.persistence.backends.impl_memory.MemoryBackend" target="_top" title="A in&#45;memory (non&#45;persistent) backend." alt="" coords="553,195,763,219"/>
+<area shape="rect" id="node14" href="#taskflow.persistence.backends.impl_zookeeper.ZkBackend" target="_top" title="A zookeeper&#45;backed backend." alt="" coords="563,242,753,266"/>
+<area shape="rect" id="node8" href="#taskflow.persistence.backends.impl_memory.FakeFilesystem" target="_top" title="An in&#45;memory filesystem&#45;like structure." alt="" coords="5,52,205,77"/>
+<area shape="rect" id="node9" href="#taskflow.persistence.backends.impl_memory.FakeInode" target="_top" title="A in&#45;memory filesystem inode&#45;like object." alt="" coords="294,5,463,29"/>
+<area shape="rect" id="node10" href="types.html#taskflow.types.tree.Node" target="_top" title="A n&#45;ary node class that can be used to create tree structures." alt="" coords="63,5,147,29"/>
+</map>
+</p>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Persistence</a><ul>
+<li><a class="reference internal" href="#overview">Overview</a></li>
+<li><a class="reference internal" href="#how-it-is-used">How it is used</a></li>
+<li><a class="reference internal" href="#usage">Usage</a></li>
+<li><a class="reference internal" href="#types">Types</a><ul>
+<li><a class="reference internal" href="#memory">Memory</a></li>
+<li><a class="reference internal" href="#files">Files</a></li>
+<li><a class="reference internal" href="#sqlalchemy">SQLAlchemy</a><ul>
+<li><a class="reference internal" href="#schema">Schema</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#zookeeper">Zookeeper</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#module-taskflow.persistence.backends">Interfaces</a></li>
+<li><a class="reference internal" href="#module-taskflow.persistence.models">Models</a></li>
+<li><a class="reference internal" href="#implementations">Implementations</a><ul>
+<li><a class="reference internal" href="#id4">Memory</a></li>
+<li><a class="reference internal" href="#id5">Files</a></li>
+<li><a class="reference internal" href="#id6">SQLAlchemy</a></li>
+<li><a class="reference internal" href="#id7">Zookeeper</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#module-taskflow.storage">Storage</a></li>
+<li><a class="reference internal" href="#hierarchy">Hierarchy</a></li>
+</ul>
+</li>
+</ul>
+
+  <h3>Navigation</h3>
+  <ul>
+
+    <li><a href="index.html">Table Of Contents</a></li>
+
+
+    <li><a href="resumption.html" title="next chapter">Next topic: Resumption</a></li>
+
+
+    <li><a href="notifications.html" title="previous chapter">Previous topic: Notifications and listeners</a></li>
+
+  </ul>
+
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/taskflow
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="_sources/persistence.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="right" >
+          <a href="resumption.html" title="Resumption"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="notifications.html" title="Notifications and listeners"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="index.html">TaskFlow 2.9.1.dev5 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2017, OpenStack Foundation.
+      Last updated on &#39;Fri Feb 10 20:11:01 2017, commit b7e2fcd&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/TaskFlow");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

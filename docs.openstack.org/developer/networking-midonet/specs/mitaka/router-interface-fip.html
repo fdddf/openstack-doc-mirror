@@ -1,0 +1,347 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Floating IP via router interfaces &mdash; networking-midonet 4.0.1.dev3 documentation</title>
+    
+    <link rel="stylesheet" href="../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../',
+        VERSION:     '4.0.1.dev3',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../_static/doctools.js"></script>
+    <link rel="top" title="networking-midonet 4.0.1.dev3 documentation" href="../../index.html" />
+    <link rel="up" title="Specifications" href="../index.html" />
+    <link rel="next" title="QoS implementaiton for networking-midonet" href="../ocata/midonet-qos.html" />
+    <link rel="prev" title="Logging API for firewall-rules" href="logging-API-for-firewall-rules.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="floating-ip-via-router-interfaces">
+<h1>Floating IP via router interfaces<a class="headerlink" href="#floating-ip-via-router-interfaces" title="Permalink to this headline">¶</a></h1>
+<p>This spec describes an extension to associate floating IPs via router
+interfaces, rather than the router gateway port.</p>
+<div class="section" id="problem-description">
+<h2>Problem Description<a class="headerlink" href="#problem-description" title="Permalink to this headline">¶</a></h2>
+<p>For some use cases <a class="footnote-reference" href="#manila-neutron-integration" id="id1">[1]</a>, it can be useful
+to make floating IP translation happens on non-gateway router interfaces.</p>
+</div>
+<div class="section" id="proposed-change">
+<h2>Proposed Change<a class="headerlink" href="#proposed-change" title="Permalink to this headline">¶</a></h2>
+<p>Introduce &#8220;router-interface-fip&#8221; extension, which allows users to
+associate floating IPs via router interfaces.</p>
+<p>Consider the topology like the following diagram.
+This extension allows to associate floating-ip-B to fixed-ip-X.</p>
+<ul class="simple">
+<li>floating-ip-A is created on network4.</li>
+<li>floating-ip-B is created on network3.</li>
+<li>Both of floating-ip-A and floating-ip-B are associated to fixed-ip-X.</li>
+<li>fixed-ip-Y and fixed-ip-Z don&#8217;t have any floating ip associations.</li>
+</ul>
+<div class="highlight-python"><div class="highlight"><pre><span></span>+-----------------------+
+|  network4             |
+|  (external=True)      |
++------------------+----+
+                   |
+                   |
+                   |router gateway port
+                   |(its primary address is gw-ip)
+         +---------+--------------------------------------------+
+         |      floating-ip-A                                   |
+         |                                                      |
+         |    router                                            |
+         |    (enable_snat=True)                                |
+         |                                                      |
+         |                                        floating-ip-B |
+         +----+-----------------+--------------------+----------+
+              |router           |router              |router
+              |interface        |interface           |interface
+              |                 |                    |
+              |                 |                    |
+  +-----------+-----+    +------+----------+    +----+------------+
+  | network1        |    | network2        |    | network3        |
+  | (external=False)|    | (external=False)|    | (external=True) |
+  +-----+-----------+    +--------+--------+    +------+----------+
+        |                         |                    |
+    +---+-------+             +---+-------+        +---+-------+
+    |fixed-ip-X |             |fixed-ip-Y |        |fixed-ip-Z |
+    +-----------+             +-----------+        +-----------+
+       VM-X                      VM-Y                 VM-Z
+</pre></div>
+</div>
+<p>In case multiple floating ip addresses are associated to a fixed ip address,
+a datapath should be careful which floating ip to use for SNAT:</p>
+<ul class="simple">
+<li>If there&#8217;s a floating ip associated via the egress port, either the
+router gateway port or a router interface, it should be used.
+For example, in the case of the above diagram, if VM-X sends a packet
+&#8220;fixed-ip-X -&gt; fixed-ip-Z&#8221;, floating-ip-B, rather than floating-ip-A,
+should be used.</li>
+<li>Otherwise, if there&#8217;s a floating ip associated via the router gateway
+port, it should be used.  For example, in the case of the above diagram,
+if VM-X sends &#8220;fixed-ip-X -&gt; fixed-ip-Y&#8221;, floating-ip-A should be used.</li>
+<li>Otherwise, the datapath can choose arbitrary one.</li>
+</ul>
+<p>A few interesting cases:</p>
+<ul class="simple">
+<li>If VM-Y sends a packet &#8220;fixed-ip-Y -&gt; floating-ip-A&#8221;, it&#8217;s translated to
+&#8220;gw-ip -&gt; fixed-ip-X&#8221; by the router and VM-X will receive it.
+This behaviour is not specific to this extension.  See bug 1428887
+<a class="footnote-reference" href="#bug-1428887" id="id2">[3]</a> for the reason of the SNAT.</li>
+<li>If VM-Y sends a packet &#8220;fixed-ip-Y -&gt; floating-ip-B&#8221;, it&#8217;s translated to
+&#8220;gw-ip -&gt; fixed-ip-X&#8221; by the router and VM-X will receive it.
+However, its return traffic &#8220;fixed-ip-X -&gt; gw-ip&#8221; will be translated to
+&#8220;floating-ip-A -&gt; fixed-ip-Y&#8221; and probably will not be recognized as
+a return traffic by VM-Z&#8217;s network stack.</li>
+<li>If VM-Z sends a packet &#8220;fixed-ip-Z -&gt; floating-ip-B&#8221;, it&#8217;s translated to
+&#8220;fixed-ip-Z -&gt; fixed-ip-X&#8221; by the router and VM-X will receive it.
+While this case is very similar to the above cases, the SNAT should not
+be applied here.  The datapath can distinguish these cases by the existance
+of the asssociation of a floating-ip via the router interface. (floating-ip-B)
+This behaviour is necessary for the primary use case. <a class="footnote-reference" href="#manila-neutron-integration" id="id3">[1]</a></li>
+<li>If VM-Z sends a packet &#8220;fixed-ip-Z -&gt; floating-ip-A&#8221;, it&#8217;s translated to
+&#8220;fixed-ip-Z -&gt; fixed-ip-X&#8221; by the router and VM-X will receive it.
+However, its return traffic &#8220;fixed-ip-X -&gt; fixed-ip-Z&#8221; will be translated to
+&#8220;floating-ip-B -&gt; fixed-ip-Z&#8221; and probably will not be recognized as
+a return traffic by VM-Z&#8217;s network stack.</li>
+</ul>
+<div class="section" id="api-changes">
+<h3>API changes<a class="headerlink" href="#api-changes" title="Permalink to this headline">¶</a></h3>
+<p>For API, at least following changes are necessary:</p>
+<ul class="simple">
+<li>Add an extension &#8220;router-interface-fip&#8221; for feature discovery.
+The extension does not add any resources or attributes to the REST API.</li>
+<li>Allow floating IP association via a router interface.</li>
+<li>The existing RouterExternalGatewayInUseByFloatingIp check needs to be
+tweaked so that it doesn&#8217;t count floating IPs associated via router
+interfaces.</li>
+<li>A check similar to RouterExternalGatewayInUseByFloatingIp but for
+router interfaces needs to be introduced.</li>
+</ul>
+</div>
+<div class="section" id="datapath-support">
+<h3>Datapath support<a class="headerlink" href="#datapath-support" title="Permalink to this headline">¶</a></h3>
+<p>The datapath needs to be updated to perform actual address translations.</p>
+<p>In case of MidoNet, latest versions have the basic support already. <a class="footnote-reference" href="#midonet-backend-change" id="id4">[2]</a></p>
+<p>The following is an example of a pseudo rules for logical router&#8217;s
+PREROUTING/POSTROUTING processing:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>PREROUTING
+
+    // floating ip dnat
+    [per FIP]
+    (dst) matches (fip) -&gt; float dnat, ACCEPT
+
+    // rev-snat for the default snat
+    [if default SNAT is enabled on the router]
+    (dst) matches (gw port ip) -&gt; rev-snat, ACCEPT
+
+    // rev-snat for MidoNet-specific &quot;same subnet&quot; rules
+    [per RIF]
+    (inport, dst) matches (rif, rif ip) -&gt; rev-snat, ACCEPT
+
+POSTROUTING
+
+    // floating ip snat
+    // multiple rules in order to implement priority (which FIP to use)
+    // Note: &quot;fip port&quot; below is a router port, either the router gateway
+    // port or router interface, which owns the corresponding FIP
+    // configured.
+    [per FIP]
+    (outport, src) matches (fip port, fip) -&gt; float snat, ACCEPT
+
+    ----- ordering barrier
+
+    [per FIP]
+    (src) matches (fip) -&gt; float snat, ACCEPT  // gateway port
+
+    ----- ordering barrier
+
+    [per FIP]
+    (src) matches (fip) -&gt; float snat, ACCEPT  // non gateway port
+
+    ----- ordering barrier
+
+    // do not apply default snat if it came from external-like network
+    // (router interfaces with FIPs, and the gateway port)
+    // Note: iptables based implementations need to &quot;emulate&quot; inport
+    // match (eg. using marks in PREROUTING) as it isn&#39;t available
+    // in POSTROUTING.
+    [per FIP port]
+    (inport) matches (fip port) -&gt; ACCEPT
+    [if default SNAT is enabled on the router]
+    inport == the gateway port -&gt; ACCEPT
+
+    ----- ordering barrier
+
+    // apply the default snat for the gateway port
+    [if default SNAT is enabled on the router]
+    outport == the gateway port -&gt; default snat, ACCEPT
+
+    // for non-float -&gt; float traffic  (cf. bug 1428887)
+    // &quot;dst-rewritten&quot; condition here means float dnat was applied in
+    // prerouting.  in case of iptables based implementations,
+    // &quot;--ctstate DNAT&quot; might be used.
+    [if default SNAT is enabled on the router]
+    dst-rewritten -&gt; default snat, ACCEPT
+
+    // MidoNet-specific &quot;same subnet&quot; rules
+    [per RIF]
+    (inport == outport == rif) &amp;&amp; dst != 169.254.169.254
+        -&gt; snat to rif ip, ACCEPT
+
+    // non-float -&gt; non-float in tenant traffic would come here
+</pre></div>
+</div>
+</div>
+</div>
+<div class="section" id="references">
+<h2>References<a class="headerlink" href="#references" title="Permalink to this headline">¶</a></h2>
+<table class="docutils footnote" frame="void" id="manila-neutron-integration" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label">[1]</td><td><em>(<a class="fn-backref" href="#id1">1</a>, <a class="fn-backref" href="#id3">2</a>)</em> <a class="reference external" href="https://docs.google.com/presentation/d/1-v-bCsaEphyS5HDnhUeI1KM5OssY-8P4WMpQZsOqSOA/edit#slide=id.g1232f85657_0_63">https://docs.google.com/presentation/d/1-v-bCsaEphyS5HDnhUeI1KM5OssY-8P4WMpQZsOqSOA/edit#slide=id.g1232f85657_0_63</a></td></tr>
+</tbody>
+</table>
+<table class="docutils footnote" frame="void" id="midonet-backend-change" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label"><a class="fn-backref" href="#id4">[2]</a></td><td><a class="reference external" href="https://review.gerrithub.io/#/q/I37d22d43e4bf95bcce870679083aa3e129de8ea7">https://review.gerrithub.io/#/q/I37d22d43e4bf95bcce870679083aa3e129de8ea7</a></td></tr>
+</tbody>
+</table>
+<table class="docutils footnote" frame="void" id="bug-1428887" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label"><a class="fn-backref" href="#id2">[3]</a></td><td><a class="reference external" href="https://bugs.launchpad.net/neutron/+bug/1428887">https://bugs.launchpad.net/neutron/+bug/1428887</a></td></tr>
+</tbody>
+</table>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="../../index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Floating IP via router interfaces</a><ul>
+<li><a class="reference internal" href="#problem-description">Problem Description</a></li>
+<li><a class="reference internal" href="#proposed-change">Proposed Change</a><ul>
+<li><a class="reference internal" href="#api-changes">API changes</a></li>
+<li><a class="reference internal" href="#datapath-support">Datapath support</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#references">References</a></li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="logging-API-for-firewall-rules.html"
+                                  title="previous chapter">Logging API for firewall-rules</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="../ocata/midonet-qos.html"
+                                  title="next chapter">QoS implementaiton for networking-midonet</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/networking-midonet
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="../../_sources/specs/mitaka/router-interface-fip.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="right" >
+          <a href="../ocata/midonet-qos.html" title="QoS implementaiton for networking-midonet"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="logging-API-for-firewall-rules.html" title="Logging API for firewall-rules"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../index.html">networking-midonet 4.0.1.dev3 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../index.html" accesskey="U">Specifications</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2015, OpenStack Foundation.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/networking-midonet");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

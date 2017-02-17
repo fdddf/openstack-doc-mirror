@@ -1,0 +1,541 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>ironic.drivers.modules.ilo.management &mdash; Ironic 7.0.1.dev7 documentation</title>
+    
+    <link rel="stylesheet" href="../../../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../../_static/toggle.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../../../',
+        VERSION:     '7.0.1.dev7',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../../../_static/doctools.js"></script>
+    <script type="text/javascript" src="../../../../../_static/toggle.js"></script>
+    <link rel="top" title="Ironic 7.0.1.dev7 documentation" href="../../../../../index.html" />
+    <link rel="up" title="Module code" href="../../../../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for ironic.drivers.modules.ilo.management</h1><div class="highlight"><pre>
+<span></span><span class="c1"># Copyright 2014 Hewlett-Packard Development Company, L.P.</span>
+<span class="c1">#</span>
+<span class="c1"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may</span>
+<span class="c1"># not use this file except in compliance with the License. You may obtain</span>
+<span class="c1"># a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#      http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1"># Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="c1"># WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="c1"># License for the specific language governing permissions and limitations</span>
+<span class="c1"># under the License.</span>
+<span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">iLO Management Interface</span>
+<span class="sd">&quot;&quot;&quot;</span>
+
+<span class="kn">from</span> <span class="nn">ironic_lib</span> <span class="kn">import</span> <span class="n">metrics_utils</span>
+<span class="kn">from</span> <span class="nn">oslo_log</span> <span class="kn">import</span> <span class="n">log</span> <span class="k">as</span> <span class="n">logging</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">excutils</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">importutils</span>
+<span class="kn">import</span> <span class="nn">six</span>
+
+<span class="kn">from</span> <span class="nn">ironic.common</span> <span class="kn">import</span> <span class="n">boot_devices</span>
+<span class="kn">from</span> <span class="nn">ironic.common</span> <span class="kn">import</span> <span class="n">exception</span>
+<span class="kn">from</span> <span class="nn">ironic.common.i18n</span> <span class="kn">import</span> <span class="n">_</span><span class="p">,</span> <span class="n">_LE</span><span class="p">,</span> <span class="n">_LI</span><span class="p">,</span> <span class="n">_LW</span>
+<span class="kn">from</span> <span class="nn">ironic.conductor</span> <span class="kn">import</span> <span class="n">task_manager</span>
+<span class="kn">from</span> <span class="nn">ironic.conf</span> <span class="kn">import</span> <span class="n">CONF</span>
+<span class="kn">from</span> <span class="nn">ironic.drivers</span> <span class="kn">import</span> <span class="n">base</span>
+<span class="kn">from</span> <span class="nn">ironic.drivers.modules.ilo</span> <span class="kn">import</span> <span class="n">common</span> <span class="k">as</span> <span class="n">ilo_common</span>
+<span class="kn">from</span> <span class="nn">ironic.drivers.modules.ilo</span> <span class="kn">import</span> <span class="n">firmware_processor</span>
+<span class="kn">from</span> <span class="nn">ironic.drivers.modules</span> <span class="kn">import</span> <span class="n">ipmitool</span>
+
+<span class="n">LOG</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+<span class="n">METRICS</span> <span class="o">=</span> <span class="n">metrics_utils</span><span class="o">.</span><span class="n">get_metrics_logger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+<span class="n">ilo_error</span> <span class="o">=</span> <span class="n">importutils</span><span class="o">.</span><span class="n">try_import</span><span class="p">(</span><span class="s1">&#39;proliantutils.exception&#39;</span><span class="p">)</span>
+
+<span class="n">BOOT_DEVICE_MAPPING_TO_ILO</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="n">boot_devices</span><span class="o">.</span><span class="n">PXE</span><span class="p">:</span> <span class="s1">&#39;NETWORK&#39;</span><span class="p">,</span>
+    <span class="n">boot_devices</span><span class="o">.</span><span class="n">DISK</span><span class="p">:</span> <span class="s1">&#39;HDD&#39;</span><span class="p">,</span>
+    <span class="n">boot_devices</span><span class="o">.</span><span class="n">CDROM</span><span class="p">:</span> <span class="s1">&#39;CDROM&#39;</span>
+<span class="p">}</span>
+<span class="n">BOOT_DEVICE_ILO_TO_GENERIC</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="n">v</span><span class="p">:</span> <span class="n">k</span> <span class="k">for</span> <span class="n">k</span><span class="p">,</span> <span class="n">v</span> <span class="ow">in</span> <span class="n">BOOT_DEVICE_MAPPING_TO_ILO</span><span class="o">.</span><span class="n">items</span><span class="p">()}</span>
+
+<span class="n">MANAGEMENT_PROPERTIES</span> <span class="o">=</span> <span class="n">ilo_common</span><span class="o">.</span><span class="n">REQUIRED_PROPERTIES</span><span class="o">.</span><span class="n">copy</span><span class="p">()</span>
+<span class="n">MANAGEMENT_PROPERTIES</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">ilo_common</span><span class="o">.</span><span class="n">CLEAN_PROPERTIES</span><span class="p">)</span>
+
+
+<span class="k">def</span> <span class="nf">_execute_ilo_clean_step</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">step</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Executes a particular clean step.</span>
+
+<span class="sd">    :param node: an Ironic node object.</span>
+<span class="sd">    :param step: a clean step to be executed.</span>
+<span class="sd">    :param args: The args to be passed to the clean step.</span>
+<span class="sd">    :param kwargs: The kwargs to be passed to the clean step.</span>
+<span class="sd">    :raises: NodeCleaningFailure, on failure to execute step.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">ilo_object</span> <span class="o">=</span> <span class="n">ilo_common</span><span class="o">.</span><span class="n">get_ilo_object</span><span class="p">(</span><span class="n">node</span><span class="p">)</span>
+
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">clean_step</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">ilo_object</span><span class="p">,</span> <span class="n">step</span><span class="p">)</span>
+    <span class="k">except</span> <span class="ne">AttributeError</span><span class="p">:</span>
+        <span class="c1"># The specified clean step is not present in the proliantutils</span>
+        <span class="c1"># package. Raise exception to update the proliantutils package</span>
+        <span class="c1"># to newer version.</span>
+        <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">NodeCleaningFailure</span><span class="p">(</span>
+            <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Clean step &#39;</span><span class="si">%s</span><span class="s2">&#39; not found. &#39;proliantutils&#39; package needs to be &quot;</span>
+              <span class="s2">&quot;updated.&quot;</span><span class="p">)</span> <span class="o">%</span> <span class="n">step</span><span class="p">)</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">clean_step</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+    <span class="k">except</span> <span class="n">ilo_error</span><span class="o">.</span><span class="n">IloCommandNotSupportedError</span><span class="p">:</span>
+        <span class="c1"># This clean step is not supported on Gen8 and below servers.</span>
+        <span class="c1"># Log the failure and continue with cleaning.</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s2">&quot;&#39;</span><span class="si">%(step)s</span><span class="s2">&#39; clean step is not supported on node &quot;</span>
+                        <span class="s2">&quot;</span><span class="si">%(uuid)s</span><span class="s2">. Skipping the clean step.&quot;</span><span class="p">),</span>
+                    <span class="p">{</span><span class="s1">&#39;step&#39;</span><span class="p">:</span> <span class="n">step</span><span class="p">,</span> <span class="s1">&#39;uuid&#39;</span><span class="p">:</span> <span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">})</span>
+    <span class="k">except</span> <span class="n">ilo_error</span><span class="o">.</span><span class="n">IloError</span> <span class="k">as</span> <span class="n">ilo_exception</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">NodeCleaningFailure</span><span class="p">(</span><span class="n">_</span><span class="p">(</span>
+            <span class="s2">&quot;Clean step </span><span class="si">%(step)s</span><span class="s2"> failed &quot;</span>
+            <span class="s2">&quot;on node </span><span class="si">%(node)s</span><span class="s2"> with error: </span><span class="si">%(err)s</span><span class="s2">&quot;</span><span class="p">)</span> <span class="o">%</span>
+            <span class="p">{</span><span class="s1">&#39;node&#39;</span><span class="p">:</span> <span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="s1">&#39;step&#39;</span><span class="p">:</span> <span class="n">step</span><span class="p">,</span> <span class="s1">&#39;err&#39;</span><span class="p">:</span> <span class="n">ilo_exception</span><span class="p">})</span>
+
+
+<div class="viewcode-block" id="IloManagement"><a class="viewcode-back" href="../../../../../api/ironic.drivers.modules.ilo.management.html#ironic.drivers.modules.ilo.management.IloManagement">[docs]</a><span class="k">class</span> <span class="nc">IloManagement</span><span class="p">(</span><span class="n">base</span><span class="o">.</span><span class="n">ManagementInterface</span><span class="p">):</span>
+
+<div class="viewcode-block" id="IloManagement.get_properties"><a class="viewcode-back" href="../../../../../api/ironic.drivers.modules.ilo.management.html#ironic.drivers.modules.ilo.management.IloManagement.get_properties">[docs]</a>    <span class="k">def</span> <span class="nf">get_properties</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">MANAGEMENT_PROPERTIES</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IloManagement.validate&#39;</span><span class="p">)</span>
+<div class="viewcode-block" id="IloManagement.validate"><a class="viewcode-back" href="../../../../../api/ironic.drivers.modules.ilo.management.html#ironic.drivers.modules.ilo.management.IloManagement.validate">[docs]</a>    <span class="k">def</span> <span class="nf">validate</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Check that &#39;driver_info&#39; contains required ILO credentials.</span>
+
+<span class="sd">        Validates whether the &#39;driver_info&#39; property of the supplied</span>
+<span class="sd">        task&#39;s node contains the required credentials information.</span>
+
+<span class="sd">        :param task: a task from TaskManager.</span>
+<span class="sd">        :raises: InvalidParameterValue if required iLO parameters</span>
+<span class="sd">            are not valid.</span>
+<span class="sd">        :raises: MissingParameterValue if a required parameter is missing.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">ilo_common</span><span class="o">.</span><span class="n">parse_driver_info</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="p">)</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IloManagement.get_supported_boot_devices&#39;</span><span class="p">)</span>
+<div class="viewcode-block" id="IloManagement.get_supported_boot_devices"><a class="viewcode-back" href="../../../../../api/ironic.drivers.modules.ilo.management.html#ironic.drivers.modules.ilo.management.IloManagement.get_supported_boot_devices">[docs]</a>    <span class="k">def</span> <span class="nf">get_supported_boot_devices</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get a list of the supported boot devices.</span>
+
+<span class="sd">        :param task: a task from TaskManager.</span>
+<span class="sd">        :returns: A list with the supported boot devices defined</span>
+<span class="sd">                  in :mod:`ironic.common.boot_devices`.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="nb">list</span><span class="p">(</span><span class="n">BOOT_DEVICE_MAPPING_TO_ILO</span><span class="o">.</span><span class="n">keys</span><span class="p">())</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IloManagement.get_boot_device&#39;</span><span class="p">)</span>
+<div class="viewcode-block" id="IloManagement.get_boot_device"><a class="viewcode-back" href="../../../../../api/ironic.drivers.modules.ilo.management.html#ironic.drivers.modules.ilo.management.IloManagement.get_boot_device">[docs]</a>    <span class="k">def</span> <span class="nf">get_boot_device</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get the current boot device for a node.</span>
+
+<span class="sd">        Returns the current boot device of the node.</span>
+
+<span class="sd">        :param task: a task from TaskManager.</span>
+<span class="sd">        :raises: MissingParameterValue if a required iLO parameter is missing.</span>
+<span class="sd">        :raises: IloOperationError on an error from IloClient library.</span>
+<span class="sd">        :returns: a dictionary containing:</span>
+
+<span class="sd">            :boot_device:</span>
+<span class="sd">                the boot device, one of the supported devices listed in</span>
+<span class="sd">                :mod:`ironic.common.boot_devices` or None if it is unknown.</span>
+<span class="sd">            :persistent:</span>
+<span class="sd">                Whether the boot device will persist to all future boots or</span>
+<span class="sd">                not, None if it is unknown.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">ilo_object</span> <span class="o">=</span> <span class="n">ilo_common</span><span class="o">.</span><span class="n">get_ilo_object</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="p">)</span>
+        <span class="n">persistent</span> <span class="o">=</span> <span class="bp">False</span>
+
+        <span class="k">try</span><span class="p">:</span>
+            <span class="c1"># Return one time boot device if set, else return</span>
+            <span class="c1"># the persistent boot device</span>
+            <span class="n">next_boot</span> <span class="o">=</span> <span class="n">ilo_object</span><span class="o">.</span><span class="n">get_one_time_boot</span><span class="p">()</span>
+            <span class="k">if</span> <span class="n">next_boot</span> <span class="o">==</span> <span class="s1">&#39;Normal&#39;</span><span class="p">:</span>
+                <span class="c1"># One time boot is not set. Check for persistent boot.</span>
+                <span class="n">persistent</span> <span class="o">=</span> <span class="bp">True</span>
+                <span class="n">next_boot</span> <span class="o">=</span> <span class="n">ilo_object</span><span class="o">.</span><span class="n">get_persistent_boot_device</span><span class="p">()</span>
+
+        <span class="k">except</span> <span class="n">ilo_error</span><span class="o">.</span><span class="n">IloError</span> <span class="k">as</span> <span class="n">ilo_exception</span><span class="p">:</span>
+            <span class="n">operation</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Get boot device&quot;</span><span class="p">)</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">IloOperationError</span><span class="p">(</span><span class="n">operation</span><span class="o">=</span><span class="n">operation</span><span class="p">,</span>
+                                              <span class="n">error</span><span class="o">=</span><span class="n">ilo_exception</span><span class="p">)</span>
+
+        <span class="n">boot_device</span> <span class="o">=</span> <span class="n">BOOT_DEVICE_ILO_TO_GENERIC</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">next_boot</span><span class="p">,</span> <span class="bp">None</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">boot_device</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">persistent</span> <span class="o">=</span> <span class="bp">None</span>
+
+        <span class="k">return</span> <span class="p">{</span><span class="s1">&#39;boot_device&#39;</span><span class="p">:</span> <span class="n">boot_device</span><span class="p">,</span> <span class="s1">&#39;persistent&#39;</span><span class="p">:</span> <span class="n">persistent</span><span class="p">}</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IloManagement.set_boot_device&#39;</span><span class="p">)</span>
+    <span class="nd">@task_manager.require_exclusive_lock</span>
+<div class="viewcode-block" id="IloManagement.set_boot_device"><a class="viewcode-back" href="../../../../../api/ironic.drivers.modules.ilo.management.html#ironic.drivers.modules.ilo.management.IloManagement.set_boot_device">[docs]</a>    <span class="k">def</span> <span class="nf">set_boot_device</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">,</span> <span class="n">device</span><span class="p">,</span> <span class="n">persistent</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Set the boot device for a node.</span>
+
+<span class="sd">        Set the boot device to use on next reboot of the node.</span>
+
+<span class="sd">        :param task: a task from TaskManager.</span>
+<span class="sd">        :param device: the boot device, one of the supported devices</span>
+<span class="sd">                       listed in :mod:`ironic.common.boot_devices`.</span>
+<span class="sd">        :param persistent: Boolean value. True if the boot device will</span>
+<span class="sd">                           persist to all future boots, False if not.</span>
+<span class="sd">                           Default: False.</span>
+<span class="sd">        :raises: InvalidParameterValue if an invalid boot device is</span>
+<span class="sd">                 specified.</span>
+<span class="sd">        :raises: MissingParameterValue if a required parameter is missing.</span>
+<span class="sd">        :raises: IloOperationError on an error from IloClient library.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">boot_device</span> <span class="o">=</span> <span class="n">BOOT_DEVICE_MAPPING_TO_ILO</span><span class="p">[</span><span class="n">device</span><span class="p">]</span>
+        <span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">InvalidParameterValue</span><span class="p">(</span><span class="n">_</span><span class="p">(</span>
+                <span class="s2">&quot;Invalid boot device </span><span class="si">%s</span><span class="s2"> specified.&quot;</span><span class="p">)</span> <span class="o">%</span> <span class="n">device</span><span class="p">)</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">ilo_object</span> <span class="o">=</span> <span class="n">ilo_common</span><span class="o">.</span><span class="n">get_ilo_object</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="p">)</span>
+
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">persistent</span><span class="p">:</span>
+                <span class="n">ilo_object</span><span class="o">.</span><span class="n">set_one_time_boot</span><span class="p">(</span><span class="n">boot_device</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">ilo_object</span><span class="o">.</span><span class="n">update_persistent_boot</span><span class="p">([</span><span class="n">boot_device</span><span class="p">])</span>
+
+        <span class="k">except</span> <span class="n">ilo_error</span><span class="o">.</span><span class="n">IloError</span> <span class="k">as</span> <span class="n">ilo_exception</span><span class="p">:</span>
+            <span class="n">operation</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Setting </span><span class="si">%s</span><span class="s2"> as boot device&quot;</span><span class="p">)</span> <span class="o">%</span> <span class="n">device</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">IloOperationError</span><span class="p">(</span><span class="n">operation</span><span class="o">=</span><span class="n">operation</span><span class="p">,</span>
+                                              <span class="n">error</span><span class="o">=</span><span class="n">ilo_exception</span><span class="p">)</span>
+
+        <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Node </span><span class="si">%(uuid)s</span><span class="s2"> set to boot from </span><span class="si">%(device)s</span><span class="s2">.&quot;</span><span class="p">,</span>
+                  <span class="p">{</span><span class="s1">&#39;uuid&#39;</span><span class="p">:</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="s1">&#39;device&#39;</span><span class="p">:</span> <span class="n">device</span><span class="p">})</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IloManagement.get_sensors_data&#39;</span><span class="p">)</span>
+<div class="viewcode-block" id="IloManagement.get_sensors_data"><a class="viewcode-back" href="../../../../../api/ironic.drivers.modules.ilo.management.html#ironic.drivers.modules.ilo.management.IloManagement.get_sensors_data">[docs]</a>    <span class="k">def</span> <span class="nf">get_sensors_data</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get sensors data.</span>
+
+<span class="sd">        :param task: a TaskManager instance.</span>
+<span class="sd">        :raises: FailedToGetSensorData when getting the sensor data fails.</span>
+<span class="sd">        :raises: FailedToParseSensorData when parsing sensor data fails.</span>
+<span class="sd">        :raises: InvalidParameterValue if required ipmi parameters</span>
+<span class="sd">                 are missing.</span>
+<span class="sd">        :raises: MissingParameterValue if a required parameter is missing.</span>
+<span class="sd">        :returns: returns a dict of sensor data group by sensor type.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">ilo_common</span><span class="o">.</span><span class="n">update_ipmi_properties</span><span class="p">(</span><span class="n">task</span><span class="p">)</span>
+        <span class="n">ipmi_management</span> <span class="o">=</span> <span class="n">ipmitool</span><span class="o">.</span><span class="n">IPMIManagement</span><span class="p">()</span>
+        <span class="k">return</span> <span class="n">ipmi_management</span><span class="o">.</span><span class="n">get_sensors_data</span><span class="p">(</span><span class="n">task</span><span class="p">)</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IloManagement.reset_ilo&#39;</span><span class="p">)</span>
+    <span class="nd">@base.clean_step</span><span class="p">(</span><span class="n">priority</span><span class="o">=</span><span class="n">CONF</span><span class="o">.</span><span class="n">ilo</span><span class="o">.</span><span class="n">clean_priority_reset_ilo</span><span class="p">)</span>
+<div class="viewcode-block" id="IloManagement.reset_ilo"><a class="viewcode-back" href="../../../../../api/ironic.drivers.modules.ilo.management.html#ironic.drivers.modules.ilo.management.IloManagement.reset_ilo">[docs]</a>    <span class="k">def</span> <span class="nf">reset_ilo</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Resets the iLO.</span>
+
+<span class="sd">        :param task: a task from TaskManager.</span>
+<span class="sd">        :raises: NodeCleaningFailure, on failure to execute step.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="n">_execute_ilo_clean_step</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="p">,</span> <span class="s1">&#39;reset_ilo&#39;</span><span class="p">)</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IloManagement.reset_ilo_credential&#39;</span><span class="p">)</span>
+    <span class="nd">@base.clean_step</span><span class="p">(</span><span class="n">priority</span><span class="o">=</span><span class="n">CONF</span><span class="o">.</span><span class="n">ilo</span><span class="o">.</span><span class="n">clean_priority_reset_ilo_credential</span><span class="p">)</span>
+<div class="viewcode-block" id="IloManagement.reset_ilo_credential"><a class="viewcode-back" href="../../../../../api/ironic.drivers.modules.ilo.management.html#ironic.drivers.modules.ilo.management.IloManagement.reset_ilo_credential">[docs]</a>    <span class="k">def</span> <span class="nf">reset_ilo_credential</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Resets the iLO password.</span>
+
+<span class="sd">        :param task: a task from TaskManager.</span>
+<span class="sd">        :raises: NodeCleaningFailure, on failure to execute step.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">info</span> <span class="o">=</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">driver_info</span>
+        <span class="n">password</span> <span class="o">=</span> <span class="n">info</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="s1">&#39;ilo_change_password&#39;</span><span class="p">,</span> <span class="bp">None</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">password</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">_LI</span><span class="p">(</span><span class="s2">&quot;Missing &#39;ilo_change_password&#39; parameter in &quot;</span>
+                         <span class="s2">&quot;driver_info. Clean step &#39;reset_ilo_credential&#39; is &quot;</span>
+                         <span class="s2">&quot;not performed on node </span><span class="si">%s</span><span class="s2">.&quot;</span><span class="p">),</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+            <span class="k">return</span>
+
+        <span class="n">_execute_ilo_clean_step</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="p">,</span> <span class="s1">&#39;reset_ilo_credential&#39;</span><span class="p">,</span> <span class="n">password</span><span class="p">)</span>
+
+        <span class="n">info</span><span class="p">[</span><span class="s1">&#39;ilo_password&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">password</span>
+        <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">driver_info</span> <span class="o">=</span> <span class="n">info</span>
+        <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">save</span><span class="p">()</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IloManagement.reset_bios_to_default&#39;</span><span class="p">)</span>
+    <span class="nd">@base.clean_step</span><span class="p">(</span><span class="n">priority</span><span class="o">=</span><span class="n">CONF</span><span class="o">.</span><span class="n">ilo</span><span class="o">.</span><span class="n">clean_priority_reset_bios_to_default</span><span class="p">)</span>
+<div class="viewcode-block" id="IloManagement.reset_bios_to_default"><a class="viewcode-back" href="../../../../../api/ironic.drivers.modules.ilo.management.html#ironic.drivers.modules.ilo.management.IloManagement.reset_bios_to_default">[docs]</a>    <span class="k">def</span> <span class="nf">reset_bios_to_default</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Resets the BIOS settings to default values.</span>
+
+<span class="sd">        Resets BIOS to default settings. This operation is currently supported</span>
+<span class="sd">        only on HP Proliant Gen9 and above servers.</span>
+
+<span class="sd">        :param task: a task from TaskManager.</span>
+<span class="sd">        :raises: NodeCleaningFailure, on failure to execute step.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="n">_execute_ilo_clean_step</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="p">,</span> <span class="s1">&#39;reset_bios_to_default&#39;</span><span class="p">)</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IloManagement.reset_secure_boot_keys_to_default&#39;</span><span class="p">)</span>
+    <span class="nd">@base.clean_step</span><span class="p">(</span><span class="n">priority</span><span class="o">=</span><span class="n">CONF</span><span class="o">.</span><span class="n">ilo</span><span class="o">.</span>
+                     <span class="n">clean_priority_reset_secure_boot_keys_to_default</span><span class="p">)</span>
+<div class="viewcode-block" id="IloManagement.reset_secure_boot_keys_to_default"><a class="viewcode-back" href="../../../../../api/ironic.drivers.modules.ilo.management.html#ironic.drivers.modules.ilo.management.IloManagement.reset_secure_boot_keys_to_default">[docs]</a>    <span class="k">def</span> <span class="nf">reset_secure_boot_keys_to_default</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Reset secure boot keys to manufacturing defaults.</span>
+
+<span class="sd">        Resets the secure boot keys to manufacturing defaults. This</span>
+<span class="sd">        operation is supported only on HP Proliant Gen9 and above servers.</span>
+
+<span class="sd">        :param task: a task from TaskManager.</span>
+<span class="sd">        :raises: NodeCleaningFailure, on failure to execute step.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="n">_execute_ilo_clean_step</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="p">,</span> <span class="s1">&#39;reset_secure_boot_keys&#39;</span><span class="p">)</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IloManagement.clear_secure_boot_keys&#39;</span><span class="p">)</span>
+    <span class="nd">@base.clean_step</span><span class="p">(</span><span class="n">priority</span><span class="o">=</span><span class="n">CONF</span><span class="o">.</span><span class="n">ilo</span><span class="o">.</span><span class="n">clean_priority_clear_secure_boot_keys</span><span class="p">)</span>
+<div class="viewcode-block" id="IloManagement.clear_secure_boot_keys"><a class="viewcode-back" href="../../../../../api/ironic.drivers.modules.ilo.management.html#ironic.drivers.modules.ilo.management.IloManagement.clear_secure_boot_keys">[docs]</a>    <span class="k">def</span> <span class="nf">clear_secure_boot_keys</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Clear all secure boot keys.</span>
+
+<span class="sd">        Clears all the secure boot keys. This operation is supported only</span>
+<span class="sd">        on HP Proliant Gen9 and above servers.</span>
+
+<span class="sd">        :param task: a task from TaskManager.</span>
+<span class="sd">        :raises: NodeCleaningFailure, on failure to execute step.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="n">_execute_ilo_clean_step</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="p">,</span> <span class="s1">&#39;clear_secure_boot_keys&#39;</span><span class="p">)</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IloManagement.activate_license&#39;</span><span class="p">)</span>
+    <span class="nd">@base.clean_step</span><span class="p">(</span><span class="n">priority</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">abortable</span><span class="o">=</span><span class="bp">False</span><span class="p">,</span> <span class="n">argsinfo</span><span class="o">=</span><span class="p">{</span>
+        <span class="s1">&#39;ilo_license_key&#39;</span><span class="p">:</span> <span class="p">{</span>
+            <span class="s1">&#39;description&#39;</span><span class="p">:</span> <span class="p">(</span>
+                <span class="s1">&#39;The HPE iLO Advanced license key to activate enterprise &#39;</span>
+                <span class="s1">&#39;features.&#39;</span>
+            <span class="p">),</span>
+            <span class="s1">&#39;required&#39;</span><span class="p">:</span> <span class="bp">True</span>
+        <span class="p">}</span>
+    <span class="p">})</span>
+<div class="viewcode-block" id="IloManagement.activate_license"><a class="viewcode-back" href="../../../../../api/ironic.drivers.modules.ilo.management.html#ironic.drivers.modules.ilo.management.IloManagement.activate_license">[docs]</a>    <span class="k">def</span> <span class="nf">activate_license</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Activates iLO Advanced license.</span>
+
+<span class="sd">        :param task: a TaskManager object.</span>
+<span class="sd">        :raises: InvalidParameterValue, if any of the arguments are invalid.</span>
+<span class="sd">        :raises: NodeCleaningFailure, on failure to execute clean step.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">ilo_license_key</span> <span class="o">=</span> <span class="n">kwargs</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;ilo_license_key&#39;</span><span class="p">)</span>
+        <span class="n">node</span> <span class="o">=</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">ilo_license_key</span><span class="p">,</span> <span class="n">six</span><span class="o">.</span><span class="n">string_types</span><span class="p">):</span>
+            <span class="n">msg</span> <span class="o">=</span> <span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s2">&quot;Value of &#39;ilo_license_key&#39; must be a string instead of &quot;</span>
+                     <span class="s2">&quot;&#39;</span><span class="si">%(value)s</span><span class="s2">&#39;. Step &#39;activate_license&#39; is not executed &quot;</span>
+                     <span class="s2">&quot;for </span><span class="si">%(node)s</span><span class="s2">.&quot;</span><span class="p">)</span>
+                   <span class="o">%</span> <span class="p">{</span><span class="s1">&#39;value&#39;</span><span class="p">:</span> <span class="n">ilo_license_key</span><span class="p">,</span> <span class="s1">&#39;node&#39;</span><span class="p">:</span> <span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">})</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">msg</span><span class="p">)</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">InvalidParameterValue</span><span class="p">(</span><span class="n">msg</span><span class="p">)</span>
+
+        <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Activating iLO license for node </span><span class="si">%(node)s</span><span class="s2"> ...&quot;</span><span class="p">,</span>
+                  <span class="p">{</span><span class="s1">&#39;node&#39;</span><span class="p">:</span> <span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">})</span>
+        <span class="n">_execute_ilo_clean_step</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="s1">&#39;activate_license&#39;</span><span class="p">,</span> <span class="n">ilo_license_key</span><span class="p">)</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">_LI</span><span class="p">(</span><span class="s2">&quot;iLO license activated for node </span><span class="si">%(node)s</span><span class="s2">.&quot;</span><span class="p">),</span>
+                 <span class="p">{</span><span class="s1">&#39;node&#39;</span><span class="p">:</span> <span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">})</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IloManagement.update_firmware&#39;</span><span class="p">)</span>
+    <span class="nd">@base.clean_step</span><span class="p">(</span><span class="n">priority</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">abortable</span><span class="o">=</span><span class="bp">False</span><span class="p">,</span> <span class="n">argsinfo</span><span class="o">=</span><span class="p">{</span>
+        <span class="s1">&#39;firmware_update_mode&#39;</span><span class="p">:</span> <span class="p">{</span>
+            <span class="s1">&#39;description&#39;</span><span class="p">:</span> <span class="p">(</span>
+                <span class="s2">&quot;This argument indicates the mode (or mechanism) of firmware &quot;</span>
+                <span class="s2">&quot;update procedure. Supported value is &#39;ilo&#39;.&quot;</span>
+            <span class="p">),</span>
+            <span class="s1">&#39;required&#39;</span><span class="p">:</span> <span class="bp">True</span>
+        <span class="p">},</span>
+        <span class="s1">&#39;firmware_images&#39;</span><span class="p">:</span> <span class="p">{</span>
+            <span class="s1">&#39;description&#39;</span><span class="p">:</span> <span class="p">(</span>
+                <span class="s2">&quot;This argument represents the ordered list of JSON &quot;</span>
+                <span class="s2">&quot;dictionaries of firmware images. Each firmware image &quot;</span>
+                <span class="s2">&quot;dictionary consists of three mandatory fields, namely &#39;url&#39;, &quot;</span>
+                <span class="s2">&quot;&#39;checksum&#39; and &#39;component&#39;. These fields represent firmware &quot;</span>
+                <span class="s2">&quot;image location URL, md5 checksum of image file and firmware &quot;</span>
+                <span class="s2">&quot;component type respectively. The supported firmware URL &quot;</span>
+                <span class="s2">&quot;schemes are &#39;file&#39;, &#39;http&#39;, &#39;https&#39; and &#39;swift&#39;. The &quot;</span>
+                <span class="s2">&quot;supported values for firmware component are &#39;ilo&#39;, &#39;cpld&#39;, &quot;</span>
+                <span class="s2">&quot;&#39;power_pic&#39;, &#39;bios&#39; and &#39;chassis&#39;. The firmware images will &quot;</span>
+                <span class="s2">&quot;be applied (in the order given) one by one on the baremetal &quot;</span>
+                <span class="s2">&quot;server. For more information, see &quot;</span>
+                <span class="s2">&quot;http://docs.openstack.org/developer/ironic/drivers/ilo.html#initiating-firmware-update-as-manual-clean-step&quot;</span>  <span class="c1"># noqa</span>
+            <span class="p">),</span>
+            <span class="s1">&#39;required&#39;</span><span class="p">:</span> <span class="bp">True</span>
+        <span class="p">}</span>
+    <span class="p">})</span>
+    <span class="nd">@firmware_processor.verify_firmware_update_args</span>
+<div class="viewcode-block" id="IloManagement.update_firmware"><a class="viewcode-back" href="../../../../../api/ironic.drivers.modules.ilo.management.html#ironic.drivers.modules.ilo.management.IloManagement.update_firmware">[docs]</a>    <span class="k">def</span> <span class="nf">update_firmware</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Updates the firmware.</span>
+
+<span class="sd">        :param task: a TaskManager object.</span>
+<span class="sd">        :raises: InvalidParameterValue if update firmware mode is not &#39;ilo&#39;.</span>
+<span class="sd">                 Even applicable for invalid input cases.</span>
+<span class="sd">        :raises: NodeCleaningFailure, on failure to execute step.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">node</span> <span class="o">=</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span>
+        <span class="n">fw_location_objs_n_components</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="n">firmware_images</span> <span class="o">=</span> <span class="n">kwargs</span><span class="p">[</span><span class="s1">&#39;firmware_images&#39;</span><span class="p">]</span>
+        <span class="c1"># Note(deray): Processing of firmware images happens here. As part</span>
+        <span class="c1"># of processing checksum validation is also done for the firmware file.</span>
+        <span class="c1"># Processing of firmware file essentially means downloading the file</span>
+        <span class="c1"># on the conductor, validating the checksum of the downloaded content,</span>
+        <span class="c1"># extracting the raw firmware file from its compact format, if it is,</span>
+        <span class="c1"># and hosting the file on a web server or a swift store based on the</span>
+        <span class="c1"># need of the baremetal server iLO firmware update method.</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">for</span> <span class="n">firmware_image_info</span> <span class="ow">in</span> <span class="n">firmware_images</span><span class="p">:</span>
+                <span class="n">url</span><span class="p">,</span> <span class="n">checksum</span><span class="p">,</span> <span class="n">component</span> <span class="o">=</span> <span class="p">(</span>
+                    <span class="n">firmware_processor</span><span class="o">.</span><span class="n">get_and_validate_firmware_image_info</span><span class="p">(</span>
+                        <span class="n">firmware_image_info</span><span class="p">))</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Processing of firmware file: </span><span class="si">%(firmware_file)s</span><span class="s2"> on &quot;</span>
+                          <span class="s2">&quot;node: </span><span class="si">%(node)s</span><span class="s2"> ... in progress&quot;</span><span class="p">,</span>
+                          <span class="p">{</span><span class="s1">&#39;firmware_file&#39;</span><span class="p">:</span> <span class="n">url</span><span class="p">,</span> <span class="s1">&#39;node&#39;</span><span class="p">:</span> <span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">})</span>
+
+                <span class="n">fw_processor</span> <span class="o">=</span> <span class="n">firmware_processor</span><span class="o">.</span><span class="n">FirmwareProcessor</span><span class="p">(</span><span class="n">url</span><span class="p">)</span>
+                <span class="n">fw_location_obj</span> <span class="o">=</span> <span class="n">fw_processor</span><span class="o">.</span><span class="n">process_fw_on</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">checksum</span><span class="p">)</span>
+                <span class="n">fw_location_objs_n_components</span><span class="o">.</span><span class="n">append</span><span class="p">(</span>
+                    <span class="p">(</span><span class="n">fw_location_obj</span><span class="p">,</span> <span class="n">component</span><span class="p">))</span>
+
+                <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Processing of firmware file: </span><span class="si">%(firmware_file)s</span><span class="s2"> on &quot;</span>
+                          <span class="s2">&quot;node: </span><span class="si">%(node)s</span><span class="s2"> ... done&quot;</span><span class="p">,</span>
+                          <span class="p">{</span><span class="s1">&#39;firmware_file&#39;</span><span class="p">:</span> <span class="n">url</span><span class="p">,</span> <span class="s1">&#39;node&#39;</span><span class="p">:</span> <span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">})</span>
+        <span class="k">except</span> <span class="n">exception</span><span class="o">.</span><span class="n">IronicException</span> <span class="k">as</span> <span class="n">ilo_exc</span><span class="p">:</span>
+            <span class="c1"># delete all the files extracted so far from the extracted list</span>
+            <span class="c1"># and re-raise the exception</span>
+            <span class="k">for</span> <span class="n">fw_loc_obj_n_comp_tup</span> <span class="ow">in</span> <span class="n">fw_location_objs_n_components</span><span class="p">:</span>
+                <span class="n">fw_loc_obj_n_comp_tup</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">remove</span><span class="p">()</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">_LE</span><span class="p">(</span><span class="s2">&quot;Processing of firmware image: </span><span class="si">%(firmware_image)s</span><span class="s2"> &quot;</span>
+                          <span class="s2">&quot;on node: </span><span class="si">%(node)s</span><span class="s2"> ... failed&quot;</span><span class="p">),</span>
+                      <span class="p">{</span><span class="s1">&#39;firmware_image&#39;</span><span class="p">:</span> <span class="n">firmware_image_info</span><span class="p">,</span>
+                       <span class="s1">&#39;node&#39;</span><span class="p">:</span> <span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">})</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">NodeCleaningFailure</span><span class="p">(</span><span class="n">node</span><span class="o">=</span><span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="n">reason</span><span class="o">=</span><span class="n">ilo_exc</span><span class="p">)</span>
+
+        <span class="c1"># Updating of firmware images happen here.</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">for</span> <span class="n">fw_location_obj</span><span class="p">,</span> <span class="n">component</span> <span class="ow">in</span> <span class="n">fw_location_objs_n_components</span><span class="p">:</span>
+                <span class="n">fw_location</span> <span class="o">=</span> <span class="n">fw_location_obj</span><span class="o">.</span><span class="n">fw_image_location</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Firmware update for </span><span class="si">%(firmware_file)s</span><span class="s2"> on &quot;</span>
+                          <span class="s2">&quot;node: </span><span class="si">%(node)s</span><span class="s2"> ... in progress&quot;</span><span class="p">,</span>
+                          <span class="p">{</span><span class="s1">&#39;firmware_file&#39;</span><span class="p">:</span> <span class="n">fw_location</span><span class="p">,</span> <span class="s1">&#39;node&#39;</span><span class="p">:</span> <span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">})</span>
+
+                <span class="n">_execute_ilo_clean_step</span><span class="p">(</span>
+                    <span class="n">node</span><span class="p">,</span> <span class="s1">&#39;update_firmware&#39;</span><span class="p">,</span> <span class="n">fw_location</span><span class="p">,</span> <span class="n">component</span><span class="p">)</span>
+
+                <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Firmware update for </span><span class="si">%(firmware_file)s</span><span class="s2"> on &quot;</span>
+                          <span class="s2">&quot;node: </span><span class="si">%(node)s</span><span class="s2"> ... done&quot;</span><span class="p">,</span>
+                          <span class="p">{</span><span class="s1">&#39;firmware_file&#39;</span><span class="p">:</span> <span class="n">fw_location</span><span class="p">,</span> <span class="s1">&#39;node&#39;</span><span class="p">:</span> <span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">})</span>
+        <span class="k">except</span> <span class="n">exception</span><span class="o">.</span><span class="n">NodeCleaningFailure</span><span class="p">:</span>
+            <span class="k">with</span> <span class="n">excutils</span><span class="o">.</span><span class="n">save_and_reraise_exception</span><span class="p">():</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">_LE</span><span class="p">(</span><span class="s2">&quot;Firmware update for </span><span class="si">%(firmware_file)s</span><span class="s2"> on &quot;</span>
+                              <span class="s2">&quot;node: </span><span class="si">%(node)s</span><span class="s2"> failed.&quot;</span><span class="p">),</span>
+                          <span class="p">{</span><span class="s1">&#39;firmware_file&#39;</span><span class="p">:</span> <span class="n">fw_location</span><span class="p">,</span> <span class="s1">&#39;node&#39;</span><span class="p">:</span> <span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">})</span>
+        <span class="k">finally</span><span class="p">:</span>
+            <span class="k">for</span> <span class="n">fw_loc_obj_n_comp_tup</span> <span class="ow">in</span> <span class="n">fw_location_objs_n_components</span><span class="p">:</span>
+                <span class="n">fw_loc_obj_n_comp_tup</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">remove</span><span class="p">()</span>
+
+        <span class="n">LOG</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">_LI</span><span class="p">(</span><span class="s2">&quot;All Firmware update operations completed successfully &quot;</span>
+                     <span class="s2">&quot;for node: </span><span class="si">%s</span><span class="s2">.&quot;</span><span class="p">),</span> <span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span></div></div>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/ironic
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../../../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../../../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../../../../index.html">Ironic 7.0.1.dev7 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../../../../index.html" accesskey="U">Module code</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright OpenStack Foundation.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/Ironic");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

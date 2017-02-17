@@ -1,0 +1,403 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Using Swift as Backing Store for Service Data &mdash; swift 2.12.1.dev102 documentation</title>
+    
+    <link rel="stylesheet" href="_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '2.12.1.dev102',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <link rel="top" title="swift 2.12.1.dev102 documentation" href="index.html" />
+    <link rel="next" title="Building a Consistent Hashing Ring" href="ring_background.html" />
+    <link rel="prev" title="Object Encryption" href="overview_encryption.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="using-swift-as-backing-store-for-service-data">
+<h1>Using Swift as Backing Store for Service Data<a class="headerlink" href="#using-swift-as-backing-store-for-service-data" title="Permalink to this headline">¶</a></h1>
+<div class="section" id="background">
+<h2>Background<a class="headerlink" href="#background" title="Permalink to this headline">¶</a></h2>
+<p>This section provides guidance to OpenStack Service developers for how to
+store your users&#8217; data in Swift. An example of this is that a user requests
+that Nova save a snapshot of a VM. Nova passes the request to Glance,
+Glance writes the image to a Swift container as a set of objects.</p>
+<p>Throughout this section, the following terminology and concepts are used:</p>
+<ul class="simple">
+<li>User or end-user. This is a person making a request that will result in
+an OpenStack Service making a request to Swift.</li>
+<li>Project (also known as Tenant). This is the unit of resource ownership.
+While data such as snapshot images or block volume backups may be
+stored as a result of an end-user&#8217;s request, the reality is that these
+are project data.</li>
+<li>Service. This is a program or system used by end-users. Specifically, it
+is any program or system that is capable of receiving end-user&#8217;s tokens and
+validating the token with the Keystone Service and has a need to store
+data in Swift. Glance and Cinder are examples of such Services.</li>
+<li>Service User. This is a Keystone user that has been assigned to a Service.
+This allows the Service to generate and use its own tokens so that it
+can interact with other Services as itself.</li>
+<li>Service Project. This is a project (tenant) that is associated with a
+Service. There may be a single project shared by many Services or there
+may be a project dedicated to each Service. In this document, the
+main purpose of the Service Project is to allow the system operator
+to configure specific roles for each Service User.</li>
+</ul>
+</div>
+<div class="section" id="alternate-backing-store-schemes">
+<h2>Alternate Backing Store Schemes<a class="headerlink" href="#alternate-backing-store-schemes" title="Permalink to this headline">¶</a></h2>
+<p>There are three schemes described here:</p>
+<ul>
+<li><p class="first">Dedicated Service Account (Single Tenant)</p>
+<p>Your Service has a dedicated Service Project (hence a single dedicated
+Swift account). Data for all users and projects are stored in this
+account. Your Service must have a user assigned to it (the Service User).
+When you have data to store on behalf of one of your users, you use the
+Service User credentials to get a token for the Service Project and
+request Swift to store the data in the Service Project.</p>
+<p>With this scheme, data for all users is stored in a single account. This
+is transparent to your users and since the credentials for the Service User
+are typically not shared with anyone, your users&#8217; cannot access their
+data by making a request directly to Swift. However, since data belonging
+to all users is stored in one account, it presents a single point of
+vulnerably to accidental deletion or a leak of the service-user
+credentials.</p>
+</li>
+<li><p class="first">Multi Project (Multi Tenant)</p>
+<p>Data belonging to a project is stored in the Swift account
+associated with the project. Users make requests to your Service using
+a token scoped to a project in the normal way. You can then use this
+same token to store the user data in the project&#8217;s Swift account.</p>
+<p>The effect is that data is stored in multiple projects (aka tenants).
+Hence this scheme has been known as the &#8220;multi tenant&#8221; scheme.</p>
+<p>With this scheme, access is controlled by Keystone. The users must
+have a role that allows them to perform the request to your Service. In
+addition, they must have a role that also allows them to store data in
+the Swift account. By default, the admin or swiftoperator roles are
+used for this purpose (specific systems may use other role names). If the
+user does not have the appropriate roles, when your Service attempts
+to access Swift, the operation will fail.</p>
+<p>Since you are using the user&#8217;s token to access the data, it follows that
+the user can use the same token to access Swift directly &#8211; bypassing your
+Service. When end-users are browsing containers, they will also see
+your Service&#8217;s containers and objects &#8211; and may potentially delete
+the data. Conversely, there is no single account where all data so leakage
+of credentials will only affect a single project/tenant.</p>
+</li>
+<li><p class="first">Service Prefix Account</p>
+<p>Data belonging to a project is stored in a Swift account associated
+with the project. This is similar to the Multi Project scheme described
+above. However, the Swift account is different than the account that
+users access. Specifically, it has a different account prefix. For example,
+for the project 1234, the user account is named AUTH_1234. Your Service uses
+a different account, for example, SERVICE_1234.</p>
+<p>To access the SERVICE_1234 account, you must present two tokens: the user&#8217;s
+token is put in the X-Auth-Token header. You present your Service&#8217;s token
+in the X-Service-Token header. Swift is configured such that only when both
+tokens are presented will it allow access. Specifically, the user cannot
+bypass your Service because they only have their own token. Conversely, your
+Service can only access the data while it has a copy of the user&#8217;s token &#8211;
+the Service&#8217;s token by itself will not grant access.</p>
+<p>The data stored in the Service Prefix Account cannot be seen by end-users.
+So they cannot delete this data &#8211; they can only access the data if they
+make a request through your Service. The data is also more secure. To make
+an unauthorized access, someone would need to compromise both an end-user&#8217;s
+and your Service User credentials. Even then, this would only expose one
+project &#8211; not other projects.</p>
+</li>
+</ul>
+<p>The Service Prefix Account scheme combines features of the Dedicated Service
+Account and Multi Project schemes. It has the private, dedicated,
+characteristics of the Dedicated Service Account scheme but does not present
+a single point of attack. Using the Service Prefix Account scheme is a little
+more involved than the other schemes, so the rest of this document describes
+it more detail.</p>
+</div>
+<div class="section" id="service-prefix-account-overview">
+<h2>Service Prefix Account Overview<a class="headerlink" href="#service-prefix-account-overview" title="Permalink to this headline">¶</a></h2>
+<p>The following diagram shows the flow through the system from the end-user,
+to your Service and then onto Swift:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>client
+   \
+    \   &lt;request&gt;: &lt;path-specific-to-the-service&gt;
+     \  x-auth-token: &lt;user-token&gt;
+      \
+    SERVICE
+       \
+        \    PUT: /v1/SERVICE_1234/&lt;container&gt;/&lt;object&gt;
+         \   x-auth-token: &lt;user-token&gt;
+          \  x-service-token: &lt;service-token&gt;
+           \
+          Swift
+</pre></div>
+</div>
+<p>The sequence of events and actions are as follows:</p>
+<ul>
+<li><p class="first">Request arrives at your Service</p>
+</li>
+<li><p class="first">The &lt;user-token&gt; is validated by the keystonemiddleware.auth_token
+middleware. The user&#8217;s role(s) are used to determine if the user
+can perform the request. See <a class="reference internal" href="overview_auth.html"><em>The Auth System</em></a> for technical
+information on the authentication system.</p>
+</li>
+<li><p class="first">As part of this request, your Service needs to access Swift (either to
+write or read a container or object). In this example, you want to perform
+a PUT on &lt;container&gt;/&lt;object&gt;.</p>
+</li>
+<li><p class="first">In the wsgi environment, the auth_token module will have populated the
+HTTP_X_SERVICE_CATALOG item. This lists the Swift endpoint and account.
+This is something such as <a class="reference external" href="https:/">https:/</a>/&lt;netloc&gt;/v1/AUTH_1234 where <code class="docutils literal"><span class="pre">AUTH_</span></code>
+is a prefix and <code class="docutils literal"><span class="pre">1234</span></code> is the project id.</p>
+</li>
+<li><p class="first">The <code class="docutils literal"><span class="pre">AUTH_</span></code> prefix is the default value. However, your system may use a
+different prefix. To determine the actual prefix, search for the first
+underscore (&#8216;_&#8217;) character in the account name. If there is no underscore
+character in the account name, this means there is no prefix.</p>
+</li>
+<li><p class="first">Your Service should have a configuration parameter that provides the
+appropriate prefix to use for storing data in Swift. There is more
+discussion of this below, but for now assume the prefix is <code class="docutils literal"><span class="pre">SERVICE_</span></code>.</p>
+</li>
+<li><p class="first">Replace the prefix (<code class="docutils literal"><span class="pre">AUTH_</span></code> in above examples) in the path with
+<code class="docutils literal"><span class="pre">SERVICE_</span></code>, so the full URL to access the object becomes
+<a class="reference external" href="https:/">https:/</a>/&lt;netloc&gt;/v1/SERVICE_1234/&lt;container&gt;/&lt;object&gt;.</p>
+</li>
+<li><p class="first">Make the request to Swift, using this URL. In the X-Auth-Token header place
+a copy of the &lt;user-token&gt;. In the X-Service-Token header, place your
+Service&#8217;s token. If you use python-swiftclient you can achieve this
+by:</p>
+<blockquote>
+<div><ul class="simple">
+<li>Putting the URL in the <code class="docutils literal"><span class="pre">preauthurl</span></code> parameter</li>
+<li>Putting the &lt;user-token&gt; in <code class="docutils literal"><span class="pre">preauthtoken</span></code> paramater</li>
+<li>Adding the X-Service-Token to the <code class="docutils literal"><span class="pre">headers</span></code> parameter</li>
+</ul>
+</div></blockquote>
+</li>
+</ul>
+<div class="section" id="using-the-http-x-service-catalog-to-get-swift-account-name">
+<h3>Using the HTTP_X_SERVICE_CATALOG to get Swift Account Name<a class="headerlink" href="#using-the-http-x-service-catalog-to-get-swift-account-name" title="Permalink to this headline">¶</a></h3>
+<p>The auth_token middleware populates the wsgi environment with information when
+it validates the user&#8217;s token. The HTTP_X_SERVICE_CATALOG item is a JSON
+string containing  details of the OpenStack endpoints. For Swift, this also
+contains the project&#8217;s Swift account name. Here is an example of a catalog
+entry for Swift:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>&quot;serviceCatalog&quot;: [
+    ...
+    {
+        ....
+        &quot;type&quot;: &quot;object-store&quot;,
+        &quot;endpoints&quot;: [
+           ...
+           {
+               ...
+               &quot;publicURL&quot;: &quot;https://&lt;netloc&gt;/v1/AUTH_1234&quot;,
+               &quot;region&quot;: &quot;&lt;region-name&gt;&quot;
+               ...
+           }
+           ...
+     ...
+     }
+}
+</pre></div>
+</div>
+<p>To get the End-user&#8217;s account:</p>
+<ul class="simple">
+<li>Look for an entry with <code class="docutils literal"><span class="pre">type</span></code> of <code class="docutils literal"><span class="pre">object-store</span></code></li>
+<li>If there are several regions, there will be several endpoints. Use the
+appropriate region name and select the <code class="docutils literal"><span class="pre">publicURL</span></code> item.</li>
+<li>The Swift account name is the final item in the path (&#8220;AUTH_1234&#8221; in this
+example).</li>
+</ul>
+</div>
+<div class="section" id="getting-a-service-token">
+<h3>Getting a Service Token<a class="headerlink" href="#getting-a-service-token" title="Permalink to this headline">¶</a></h3>
+<p>A Service Token is no different than any other token and is requested
+from Keystone using user credentials and project in the usual way. The core
+requirement is that your Service User has the appropriate role. In practice:</p>
+<ul>
+<li><p class="first">Your Service must have a user assigned to it (the Service User).</p>
+</li>
+<li><p class="first">Your Service has a project assigned to it (the Service Project).</p>
+</li>
+<li><p class="first">The Service User must have a role on the Service Project. This role is
+distinct from any of the normal end-user roles.</p>
+</li>
+<li><p class="first">The role used must the role configured in the /etc/swift/proxy-server.conf.
+This is the <code class="docutils literal"><span class="pre">&lt;prefix&gt;_service_roles</span></code> option. In this example, the role
+is the <code class="docutils literal"><span class="pre">service</span></code> role:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="p">[</span><span class="n">keystoneauth</span><span class="p">]</span>
+<span class="n">reseller_prefix</span> <span class="o">=</span> <span class="n">AUTH_</span><span class="p">,</span> <span class="n">SERVICE_</span>
+<span class="n">SERVICE_service_role</span> <span class="o">=</span> <span class="n">service</span>
+</pre></div>
+</div>
+</li>
+</ul>
+<p>The <code class="docutils literal"><span class="pre">service</span></code> role should only be granted to OpenStack Services. It should
+not be granted to users.</p>
+</div>
+<div class="section" id="single-or-multiple-service-prefixes">
+<h3>Single or multiple Service Prefixes?<a class="headerlink" href="#single-or-multiple-service-prefixes" title="Permalink to this headline">¶</a></h3>
+<p>Most of the examples used in this document used a single prefix. The
+prefix, <code class="docutils literal"><span class="pre">SERVICE</span></code> was used. By using a single prefix, an operator is
+allowing all OpenStack Services to share the same account for data
+associated with a given project. For test systems or deployments well protected
+on private firewalled networks, this is appropriate.</p>
+<p>However, if one Service is compromised, that Service can access
+data created by another Service. To prevent this, multiple Service Prefixes may
+be used. This also requires that the operator configure multiple service
+roles. For example, in a system that has Glance and Cinder, the following
+Swift configuration could be used:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="p">[</span><span class="n">keystoneauth</span><span class="p">]</span>
+<span class="n">reseller_prefix</span> <span class="o">=</span> <span class="n">AUTH_</span><span class="p">,</span> <span class="n">IMAGE_</span><span class="p">,</span> <span class="n">BLOCK_</span>
+<span class="n">IMAGE_service_roles</span> <span class="o">=</span> <span class="n">image_service</span>
+<span class="n">BLOCK_service_roles</span> <span class="o">=</span> <span class="n">block_service</span>
+</pre></div>
+</div>
+<p>The Service User for Glance would be granted the <code class="docutils literal"><span class="pre">image_service</span></code> role on its
+Service Project and the Cinder Service user is granted the <code class="docutils literal"><span class="pre">block_service</span></code>
+role on its project. In this scheme, if the Cinder Service was compromised,
+it would not be able to access any Glance data.</p>
+</div>
+<div class="section" id="container-naming">
+<h3>Container Naming<a class="headerlink" href="#container-naming" title="Permalink to this headline">¶</a></h3>
+<p>Since a single Service Prefix is possible, container names should be prefixed
+with a unique string to prevent name clashes. We suggest you use the service
+type field (as used in the service catalog). For example, The Glance Service
+would use &#8220;image&#8221; as a prefix.</p>
+</div>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Using Swift as Backing Store for Service Data</a><ul>
+<li><a class="reference internal" href="#background">Background</a></li>
+<li><a class="reference internal" href="#alternate-backing-store-schemes">Alternate Backing Store Schemes</a></li>
+<li><a class="reference internal" href="#service-prefix-account-overview">Service Prefix Account Overview</a><ul>
+<li><a class="reference internal" href="#using-the-http-x-service-catalog-to-get-swift-account-name">Using the HTTP_X_SERVICE_CATALOG to get Swift Account Name</a></li>
+<li><a class="reference internal" href="#getting-a-service-token">Getting a Service Token</a></li>
+<li><a class="reference internal" href="#single-or-multiple-service-prefixes">Single or multiple Service Prefixes?</a></li>
+<li><a class="reference internal" href="#container-naming">Container Naming</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="overview_encryption.html"
+                                  title="previous chapter">Object Encryption</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="ring_background.html"
+                                  title="next chapter">Building a Consistent Hashing Ring</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/swift
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="_sources/overview_backing_store.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="right" >
+          <a href="ring_background.html" title="Building a Consistent Hashing Ring"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="overview_encryption.html" title="Object Encryption"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="index.html">swift 2.12.1.dev102 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2017, OpenStack Foundation.
+      Last updated on &#39;Tue Feb 14 07:57:22 2017, commit 7cb6882&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/swift");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

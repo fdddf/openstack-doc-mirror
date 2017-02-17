@@ -1,0 +1,1439 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>heat.engine.hot.functions &mdash; heat 8.0.0.0rc2.dev38 documentation</title>
+    
+    <link rel="stylesheet" href="../../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../../',
+        VERSION:     '8.0.0.0rc2.dev38',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../../_static/doctools.js"></script>
+    <link rel="top" title="heat 8.0.0.0rc2.dev38 documentation" href="../../../../index.html" />
+    <link rel="up" title="Module code" href="../../../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for heat.engine.hot.functions</h1><div class="highlight"><pre>
+<span></span><span class="c1">#</span>
+<span class="c1">#    Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may</span>
+<span class="c1">#    not use this file except in compliance with the License. You may obtain</span>
+<span class="c1">#    a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#         http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1">#    Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1">#    distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="c1">#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="c1">#    License for the specific language governing permissions and limitations</span>
+<span class="c1">#    under the License.</span>
+
+<span class="kn">import</span> <span class="nn">collections</span>
+<span class="kn">import</span> <span class="nn">hashlib</span>
+<span class="kn">import</span> <span class="nn">itertools</span>
+
+<span class="kn">from</span> <span class="nn">oslo_config</span> <span class="kn">import</span> <span class="n">cfg</span>
+<span class="kn">from</span> <span class="nn">oslo_serialization</span> <span class="kn">import</span> <span class="n">jsonutils</span>
+<span class="kn">import</span> <span class="nn">six</span>
+<span class="kn">import</span> <span class="nn">yaql</span>
+<span class="kn">from</span> <span class="nn">yaql.language</span> <span class="kn">import</span> <span class="n">exceptions</span>
+
+<span class="kn">from</span> <span class="nn">heat.common</span> <span class="kn">import</span> <span class="n">exception</span>
+<span class="kn">from</span> <span class="nn">heat.common.i18n</span> <span class="kn">import</span> <span class="n">_</span>
+<span class="kn">from</span> <span class="nn">heat.engine</span> <span class="kn">import</span> <span class="n">attributes</span>
+<span class="kn">from</span> <span class="nn">heat.engine</span> <span class="kn">import</span> <span class="n">function</span>
+
+<span class="n">opts</span> <span class="o">=</span> <span class="p">[</span>
+    <span class="n">cfg</span><span class="o">.</span><span class="n">IntOpt</span><span class="p">(</span><span class="s1">&#39;limit_iterators&#39;</span><span class="p">,</span>
+               <span class="n">default</span><span class="o">=</span><span class="mi">200</span><span class="p">,</span>
+               <span class="n">help</span><span class="o">=</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;The maximum number of elements in collection &#39;</span>
+                      <span class="s1">&#39;expression can take for its evaluation.&#39;</span><span class="p">)),</span>
+    <span class="n">cfg</span><span class="o">.</span><span class="n">IntOpt</span><span class="p">(</span><span class="s1">&#39;memory_quota&#39;</span><span class="p">,</span>
+               <span class="n">default</span><span class="o">=</span><span class="mi">10000</span><span class="p">,</span>
+               <span class="n">help</span><span class="o">=</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;The maximum size of memory in bytes that &#39;</span>
+                      <span class="s1">&#39;expression can take for its evaluation.&#39;</span><span class="p">))</span>
+<span class="p">]</span>
+<span class="n">cfg</span><span class="o">.</span><span class="n">CONF</span><span class="o">.</span><span class="n">register_opts</span><span class="p">(</span><span class="n">opts</span><span class="p">,</span> <span class="n">group</span><span class="o">=</span><span class="s1">&#39;yaql&#39;</span><span class="p">)</span>
+
+
+<div class="viewcode-block" id="GetParam"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.GetParam">[docs]</a><span class="k">class</span> <span class="nc">GetParam</span><span class="p">(</span><span class="n">function</span><span class="o">.</span><span class="n">Function</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A function for resolving parameter references.</span>
+
+<span class="sd">    Takes the form::</span>
+
+<span class="sd">        get_param: &lt;param_name&gt;</span>
+
+<span class="sd">    or::</span>
+
+<span class="sd">        get_param:</span>
+<span class="sd">          - &lt;param_name&gt;</span>
+<span class="sd">          - &lt;path1&gt;</span>
+<span class="sd">          - ...</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">stack</span><span class="p">,</span> <span class="n">fn_name</span><span class="p">,</span> <span class="n">args</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">GetParam</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">stack</span><span class="p">,</span> <span class="n">fn_name</span><span class="p">,</span> <span class="n">args</span><span class="p">)</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">parameters</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">stack</span><span class="o">.</span><span class="n">parameters</span>
+
+<div class="viewcode-block" id="GetParam.result"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.GetParam.result">[docs]</a>    <span class="k">def</span> <span class="nf">result</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">args</span> <span class="o">=</span> <span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">args</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Function &quot;</span><span class="si">%s</span><span class="s1">&quot; must have arguments&#39;</span><span class="p">)</span> <span class="o">%</span>
+                             <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="n">six</span><span class="o">.</span><span class="n">string_types</span><span class="p">):</span>
+            <span class="n">param_name</span> <span class="o">=</span> <span class="n">args</span>
+            <span class="n">path_components</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="n">collections</span><span class="o">.</span><span class="n">Sequence</span><span class="p">):</span>
+            <span class="n">param_name</span> <span class="o">=</span> <span class="n">args</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+            <span class="n">path_components</span> <span class="o">=</span> <span class="n">args</span><span class="p">[</span><span class="mi">1</span><span class="p">:]</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Argument to &quot;</span><span class="si">%s</span><span class="s1">&quot; must be string or list&#39;</span><span class="p">)</span> <span class="o">%</span>
+                            <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">param_name</span><span class="p">,</span> <span class="n">six</span><span class="o">.</span><span class="n">string_types</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Parameter name in &quot;</span><span class="si">%s</span><span class="s1">&quot; must be string&#39;</span><span class="p">)</span> <span class="o">%</span>
+                            <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">parameter</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">parameters</span><span class="p">[</span><span class="n">param_name</span><span class="p">]</span>
+        <span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">UserParameterMissing</span><span class="p">(</span><span class="n">key</span><span class="o">=</span><span class="n">param_name</span><span class="p">)</span>
+
+        <span class="k">def</span> <span class="nf">get_path_component</span><span class="p">(</span><span class="n">collection</span><span class="p">,</span> <span class="n">key</span><span class="p">):</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">collection</span><span class="p">,</span> <span class="p">(</span><span class="n">collections</span><span class="o">.</span><span class="n">Mapping</span><span class="p">,</span>
+                                           <span class="n">collections</span><span class="o">.</span><span class="n">Sequence</span><span class="p">)):</span>
+                <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;&quot;</span><span class="si">%s</span><span class="s1">&quot; can</span><span class="se">\&#39;</span><span class="s1">t traverse path&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+
+            <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="p">(</span><span class="n">six</span><span class="o">.</span><span class="n">string_types</span><span class="p">,</span> <span class="nb">int</span><span class="p">)):</span>
+                <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Path components in &quot;</span><span class="si">%s</span><span class="s1">&quot; &#39;</span>
+                                  <span class="s1">&#39;must be strings&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+
+            <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">collection</span><span class="p">,</span> <span class="n">collections</span><span class="o">.</span><span class="n">Sequence</span>
+                          <span class="p">)</span> <span class="ow">and</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="n">six</span><span class="o">.</span><span class="n">string_types</span><span class="p">):</span>
+                <span class="k">try</span><span class="p">:</span>
+                    <span class="n">key</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">key</span><span class="p">)</span>
+                <span class="k">except</span> <span class="ne">ValueError</span><span class="p">:</span>
+                    <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s2">&quot;Path components in &#39;</span><span class="si">%s</span><span class="s2">&#39; &quot;</span>
+                                      <span class="s2">&quot;must be a string that can be &quot;</span>
+                                      <span class="s2">&quot;parsed into an &quot;</span>
+                                      <span class="s2">&quot;integer.&quot;</span><span class="p">)</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+            <span class="k">return</span> <span class="n">collection</span><span class="p">[</span><span class="n">key</span><span class="p">]</span>
+
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">six</span><span class="o">.</span><span class="n">moves</span><span class="o">.</span><span class="n">reduce</span><span class="p">(</span><span class="n">get_path_component</span><span class="p">,</span> <span class="n">path_components</span><span class="p">,</span>
+                                    <span class="n">parameter</span><span class="p">)</span>
+        <span class="k">except</span> <span class="p">(</span><span class="ne">KeyError</span><span class="p">,</span> <span class="ne">IndexError</span><span class="p">,</span> <span class="ne">TypeError</span><span class="p">):</span>
+            <span class="k">return</span> <span class="s1">&#39;&#39;</span></div></div>
+
+
+<div class="viewcode-block" id="GetResource"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.GetResource">[docs]</a><span class="k">class</span> <span class="nc">GetResource</span><span class="p">(</span><span class="n">function</span><span class="o">.</span><span class="n">Function</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A function for resolving resource references.</span>
+
+<span class="sd">    Takes the form::</span>
+
+<span class="sd">        get_resource: &lt;resource_name&gt;</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="nf">_resource</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="o">=</span><span class="s1">&#39;unknown&#39;</span><span class="p">):</span>
+        <span class="n">resource_name</span> <span class="o">=</span> <span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">)</span>
+
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">stack</span><span class="p">[</span><span class="n">resource_name</span><span class="p">]</span>
+        <span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">InvalidTemplateReference</span><span class="p">(</span><span class="n">resource</span><span class="o">=</span><span class="n">resource_name</span><span class="p">,</span>
+                                                     <span class="n">key</span><span class="o">=</span><span class="n">path</span><span class="p">)</span>
+
+<div class="viewcode-block" id="GetResource.dependencies"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.GetResource.dependencies">[docs]</a>    <span class="k">def</span> <span class="nf">dependencies</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">itertools</span><span class="o">.</span><span class="n">chain</span><span class="p">(</span><span class="nb">super</span><span class="p">(</span><span class="n">GetResource</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">dependencies</span><span class="p">(</span><span class="n">path</span><span class="p">),</span>
+                               <span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">_resource</span><span class="p">(</span><span class="n">path</span><span class="p">)])</span></div>
+
+<div class="viewcode-block" id="GetResource.result"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.GetResource.result">[docs]</a>    <span class="k">def</span> <span class="nf">result</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_resource</span><span class="p">()</span><span class="o">.</span><span class="n">FnGetRefId</span><span class="p">()</span></div></div>
+
+
+<div class="viewcode-block" id="GetAttThenSelect"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.GetAttThenSelect">[docs]</a><span class="k">class</span> <span class="nc">GetAttThenSelect</span><span class="p">(</span><span class="n">function</span><span class="o">.</span><span class="n">Function</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A function for resolving resource attributes.</span>
+
+<span class="sd">    Takes the form::</span>
+
+<span class="sd">        get_attr:</span>
+<span class="sd">          - &lt;resource_name&gt;</span>
+<span class="sd">          - &lt;attribute_name&gt;</span>
+<span class="sd">          - &lt;path1&gt;</span>
+<span class="sd">          - ...</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">stack</span><span class="p">,</span> <span class="n">fn_name</span><span class="p">,</span> <span class="n">args</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">GetAttThenSelect</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">stack</span><span class="p">,</span> <span class="n">fn_name</span><span class="p">,</span> <span class="n">args</span><span class="p">)</span>
+
+        <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_resource_name</span><span class="p">,</span>
+         <span class="bp">self</span><span class="o">.</span><span class="n">_attribute</span><span class="p">,</span>
+         <span class="bp">self</span><span class="o">.</span><span class="n">_path_components</span><span class="p">)</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_parse_args</span><span class="p">()</span>
+
+    <span class="k">def</span> <span class="nf">_parse_args</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="p">(</span><span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">,</span> <span class="n">collections</span><span class="o">.</span><span class="n">Sequence</span><span class="p">)</span> <span class="ow">or</span>
+                <span class="nb">isinstance</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">,</span> <span class="n">six</span><span class="o">.</span><span class="n">string_types</span><span class="p">)):</span>
+            <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Argument to &quot;</span><span class="si">%s</span><span class="s1">&quot; must be a list&#39;</span><span class="p">)</span> <span class="o">%</span>
+                            <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">)</span> <span class="o">&lt;</span> <span class="mi">2</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Arguments to &quot;</span><span class="si">%s</span><span class="s1">&quot; must be of the form &#39;</span>
+                               <span class="s1">&#39;[resource_name, attribute, (path), ...]&#39;</span><span class="p">)</span> <span class="o">%</span>
+                             <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">[</span><span class="mi">1</span><span class="p">],</span> <span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">[</span><span class="mi">2</span><span class="p">:]</span>
+
+    <span class="k">def</span> <span class="nf">_res_name</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_resource_name</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_resource</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="o">=</span><span class="s1">&#39;unknown&#39;</span><span class="p">):</span>
+        <span class="n">resource_name</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_res_name</span><span class="p">()</span>
+
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">stack</span><span class="p">[</span><span class="n">resource_name</span><span class="p">]</span>
+        <span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">InvalidTemplateReference</span><span class="p">(</span><span class="n">resource</span><span class="o">=</span><span class="n">resource_name</span><span class="p">,</span>
+                                                     <span class="n">key</span><span class="o">=</span><span class="n">path</span><span class="p">)</span>
+
+<div class="viewcode-block" id="GetAttThenSelect.dep_attrs"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.GetAttThenSelect.dep_attrs">[docs]</a>    <span class="k">def</span> <span class="nf">dep_attrs</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">resource_name</span><span class="p">):</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_res_name</span><span class="p">()</span> <span class="o">==</span> <span class="n">resource_name</span><span class="p">:</span>
+            <span class="n">attrs</span> <span class="o">=</span> <span class="p">[</span><span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_attribute</span><span class="p">)]</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">attrs</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">return</span> <span class="n">itertools</span><span class="o">.</span><span class="n">chain</span><span class="p">(</span><span class="nb">super</span><span class="p">(</span><span class="n">GetAttThenSelect</span><span class="p">,</span>
+                                     <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">dep_attrs</span><span class="p">(</span><span class="n">resource_name</span><span class="p">),</span>
+                               <span class="n">attrs</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="GetAttThenSelect.dependencies"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.GetAttThenSelect.dependencies">[docs]</a>    <span class="k">def</span> <span class="nf">dependencies</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">itertools</span><span class="o">.</span><span class="n">chain</span><span class="p">(</span><span class="nb">super</span><span class="p">(</span><span class="n">GetAttThenSelect</span><span class="p">,</span>
+                                     <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">dependencies</span><span class="p">(</span><span class="n">path</span><span class="p">),</span>
+                               <span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">_resource</span><span class="p">(</span><span class="n">path</span><span class="p">)])</span></div>
+
+    <span class="k">def</span> <span class="nf">_allow_without_attribute_name</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">False</span>
+
+<div class="viewcode-block" id="GetAttThenSelect.validate"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.GetAttThenSelect.validate">[docs]</a>    <span class="k">def</span> <span class="nf">validate</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">GetAttThenSelect</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">validate</span><span class="p">()</span>
+        <span class="n">res</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_resource</span><span class="p">()</span>
+
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_allow_without_attribute_name</span><span class="p">():</span>
+            <span class="c1"># if allow without attribute_name, then don&#39;t check</span>
+            <span class="c1"># when attribute_name is None</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_attribute</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="k">return</span>
+
+        <span class="n">attr</span> <span class="o">=</span> <span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_attribute</span><span class="p">)</span>
+        <span class="kn">from</span> <span class="nn">heat.engine</span> <span class="kn">import</span> <span class="n">resource</span>
+        <span class="k">if</span> <span class="p">(</span><span class="nb">type</span><span class="p">(</span><span class="n">res</span><span class="p">)</span><span class="o">.</span><span class="n">get_attribute</span> <span class="o">==</span> <span class="n">resource</span><span class="o">.</span><span class="n">Resource</span><span class="o">.</span><span class="n">get_attribute</span> <span class="ow">and</span>
+                <span class="n">attr</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">res</span><span class="o">.</span><span class="n">attributes_schema</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">InvalidTemplateAttribute</span><span class="p">(</span>
+                <span class="n">resource</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_resource_name</span><span class="p">,</span> <span class="n">key</span><span class="o">=</span><span class="n">attr</span><span class="p">)</span></div>
+
+    <span class="k">def</span> <span class="nf">_result_ready</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">r</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">r</span><span class="o">.</span><span class="n">action</span> <span class="ow">in</span> <span class="p">(</span><span class="n">r</span><span class="o">.</span><span class="n">CREATE</span><span class="p">,</span> <span class="n">r</span><span class="o">.</span><span class="n">ADOPT</span><span class="p">,</span> <span class="n">r</span><span class="o">.</span><span class="n">SUSPEND</span><span class="p">,</span> <span class="n">r</span><span class="o">.</span><span class="n">RESUME</span><span class="p">,</span>
+                        <span class="n">r</span><span class="o">.</span><span class="n">UPDATE</span><span class="p">,</span> <span class="n">r</span><span class="o">.</span><span class="n">ROLLBACK</span><span class="p">,</span> <span class="n">r</span><span class="o">.</span><span class="n">SNAPSHOT</span><span class="p">,</span> <span class="n">r</span><span class="o">.</span><span class="n">CHECK</span><span class="p">):</span>
+            <span class="k">return</span> <span class="bp">True</span>
+
+        <span class="c1"># NOTE(sirushtim): Add r.INIT to states above once convergence</span>
+        <span class="c1"># is the default.</span>
+        <span class="k">if</span> <span class="n">r</span><span class="o">.</span><span class="n">stack</span><span class="o">.</span><span class="n">has_cache_data</span><span class="p">(</span><span class="n">r</span><span class="o">.</span><span class="n">name</span><span class="p">)</span> <span class="ow">and</span> <span class="n">r</span><span class="o">.</span><span class="n">action</span> <span class="o">==</span> <span class="n">r</span><span class="o">.</span><span class="n">INIT</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">True</span>
+
+        <span class="k">return</span> <span class="bp">False</span>
+
+<div class="viewcode-block" id="GetAttThenSelect.result"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.GetAttThenSelect.result">[docs]</a>    <span class="k">def</span> <span class="nf">result</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">attr_name</span> <span class="o">=</span> <span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_attribute</span><span class="p">)</span>
+
+        <span class="n">resource</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_resource</span><span class="p">()</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_result_ready</span><span class="p">(</span><span class="n">resource</span><span class="p">):</span>
+            <span class="n">attribute</span> <span class="o">=</span> <span class="n">resource</span><span class="o">.</span><span class="n">FnGetAtt</span><span class="p">(</span><span class="n">attr_name</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">attribute</span> <span class="o">=</span> <span class="bp">None</span>
+
+        <span class="k">if</span> <span class="n">attribute</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">None</span>
+
+        <span class="n">path_components</span> <span class="o">=</span> <span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_path_components</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">attributes</span><span class="o">.</span><span class="n">select_from_attribute</span><span class="p">(</span><span class="n">attribute</span><span class="p">,</span> <span class="n">path_components</span><span class="p">)</span></div></div>
+
+
+<div class="viewcode-block" id="GetAtt"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.GetAtt">[docs]</a><span class="k">class</span> <span class="nc">GetAtt</span><span class="p">(</span><span class="n">GetAttThenSelect</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A function for resolving resource attributes.</span>
+
+<span class="sd">    Takes the form::</span>
+
+<span class="sd">        get_attr:</span>
+<span class="sd">          - &lt;resource_name&gt;</span>
+<span class="sd">          - &lt;attribute_name&gt;</span>
+<span class="sd">          - &lt;path1&gt;</span>
+<span class="sd">          - ...</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+<div class="viewcode-block" id="GetAtt.result"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.GetAtt.result">[docs]</a>    <span class="k">def</span> <span class="nf">result</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">path_components</span> <span class="o">=</span> <span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_path_components</span><span class="p">)</span>
+        <span class="n">attribute</span> <span class="o">=</span> <span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_attribute</span><span class="p">)</span>
+
+        <span class="n">resource</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_resource</span><span class="p">()</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_result_ready</span><span class="p">(</span><span class="n">resource</span><span class="p">):</span>
+            <span class="k">return</span> <span class="n">resource</span><span class="o">.</span><span class="n">FnGetAtt</span><span class="p">(</span><span class="n">attribute</span><span class="p">,</span> <span class="o">*</span><span class="n">path_components</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">None</span></div>
+
+<div class="viewcode-block" id="GetAtt.dep_attrs"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.GetAtt.dep_attrs">[docs]</a>    <span class="k">def</span> <span class="nf">dep_attrs</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">resource_name</span><span class="p">):</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_res_name</span><span class="p">()</span> <span class="o">==</span> <span class="n">resource_name</span><span class="p">:</span>
+            <span class="n">path</span> <span class="o">=</span> <span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_path_components</span><span class="p">)</span>
+            <span class="n">attr</span> <span class="o">=</span> <span class="p">[</span><span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_attribute</span><span class="p">)]</span>
+            <span class="k">if</span> <span class="n">path</span><span class="p">:</span>
+                <span class="n">attrs</span> <span class="o">=</span> <span class="p">[</span><span class="nb">tuple</span><span class="p">(</span><span class="n">attr</span> <span class="o">+</span> <span class="n">path</span><span class="p">)]</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">attrs</span> <span class="o">=</span> <span class="n">attr</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">attrs</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">return</span> <span class="n">itertools</span><span class="o">.</span><span class="n">chain</span><span class="p">(</span><span class="n">function</span><span class="o">.</span><span class="n">dep_attrs</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">,</span> <span class="n">resource_name</span><span class="p">),</span>
+                               <span class="n">attrs</span><span class="p">)</span></div></div>
+
+
+<div class="viewcode-block" id="GetAttAllAttributes"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.GetAttAllAttributes">[docs]</a><span class="k">class</span> <span class="nc">GetAttAllAttributes</span><span class="p">(</span><span class="n">GetAtt</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A function for resolving resource attributes.</span>
+
+<span class="sd">    Takes the form::</span>
+
+<span class="sd">        get_attr:</span>
+<span class="sd">          - &lt;resource_name&gt;</span>
+<span class="sd">          - &lt;attributes_name&gt;</span>
+<span class="sd">          - &lt;path1&gt;</span>
+<span class="sd">          - ...</span>
+
+<span class="sd">    where &lt;attributes_name&gt; and &lt;path1&gt;, ... are optional arguments. If there</span>
+<span class="sd">    is no &lt;attributes_name&gt;, result will be dict of all resource&#39;s attributes.</span>
+<span class="sd">    Else function returns resolved resource&#39;s attribute.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="nf">_parse_args</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Arguments to &quot;</span><span class="si">%s</span><span class="s1">&quot; can be of the next &#39;</span>
+                               <span class="s1">&#39;forms: [resource_name] or &#39;</span>
+                               <span class="s1">&#39;[resource_name, attribute, (path), ...]&#39;</span>
+                               <span class="p">)</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+        <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">,</span> <span class="n">collections</span><span class="o">.</span><span class="n">Sequence</span><span class="p">):</span>
+            <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">1</span><span class="p">:</span>
+                <span class="k">return</span> <span class="nb">super</span><span class="p">(</span><span class="n">GetAttAllAttributes</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">_parse_args</span><span class="p">()</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="bp">None</span><span class="p">,</span> <span class="p">[]</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Argument to &quot;</span><span class="si">%s</span><span class="s1">&quot; must be a list&#39;</span><span class="p">)</span> <span class="o">%</span>
+                            <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+
+<div class="viewcode-block" id="GetAttAllAttributes.dep_attrs"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.GetAttAllAttributes.dep_attrs">[docs]</a>    <span class="k">def</span> <span class="nf">dep_attrs</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">resource_name</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Check if there is no attribute_name defined, return empty chain.&quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_attribute</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="k">return</span> <span class="nb">super</span><span class="p">(</span><span class="n">GetAttAllAttributes</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">dep_attrs</span><span class="p">(</span><span class="n">resource_name</span><span class="p">)</span>
+        <span class="k">elif</span> <span class="bp">self</span><span class="o">.</span><span class="n">_res_name</span><span class="p">()</span> <span class="o">==</span> <span class="n">resource_name</span><span class="p">:</span>
+            <span class="n">res</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_resource</span><span class="p">()</span>
+            <span class="n">attrs</span> <span class="o">=</span> <span class="n">six</span><span class="o">.</span><span class="n">iterkeys</span><span class="p">(</span><span class="n">res</span><span class="o">.</span><span class="n">attributes_schema</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">attrs</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">return</span> <span class="n">itertools</span><span class="o">.</span><span class="n">chain</span><span class="p">(</span><span class="n">function</span><span class="o">.</span><span class="n">dep_attrs</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">,</span>
+                                                  <span class="n">resource_name</span><span class="p">),</span> <span class="n">attrs</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="GetAttAllAttributes.result"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.GetAttAllAttributes.result">[docs]</a>    <span class="k">def</span> <span class="nf">result</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_attribute</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">r</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_resource</span><span class="p">()</span>
+            <span class="k">if</span> <span class="p">(</span><span class="n">r</span><span class="o">.</span><span class="n">status</span> <span class="ow">in</span> <span class="p">(</span><span class="n">r</span><span class="o">.</span><span class="n">IN_PROGRESS</span><span class="p">,</span> <span class="n">r</span><span class="o">.</span><span class="n">COMPLETE</span><span class="p">)</span> <span class="ow">and</span>
+                    <span class="n">r</span><span class="o">.</span><span class="n">action</span> <span class="ow">in</span> <span class="p">(</span><span class="n">r</span><span class="o">.</span><span class="n">CREATE</span><span class="p">,</span> <span class="n">r</span><span class="o">.</span><span class="n">ADOPT</span><span class="p">,</span> <span class="n">r</span><span class="o">.</span><span class="n">SUSPEND</span><span class="p">,</span> <span class="n">r</span><span class="o">.</span><span class="n">RESUME</span><span class="p">,</span>
+                                 <span class="n">r</span><span class="o">.</span><span class="n">UPDATE</span><span class="p">,</span> <span class="n">r</span><span class="o">.</span><span class="n">CHECK</span><span class="p">,</span> <span class="n">r</span><span class="o">.</span><span class="n">SNAPSHOT</span><span class="p">)):</span>
+                <span class="k">return</span> <span class="n">r</span><span class="o">.</span><span class="n">FnGetAtts</span><span class="p">()</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">return</span> <span class="bp">None</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">return</span> <span class="nb">super</span><span class="p">(</span><span class="n">GetAttAllAttributes</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">result</span><span class="p">()</span></div>
+
+    <span class="k">def</span> <span class="nf">_allow_without_attribute_name</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">True</span></div>
+
+
+<div class="viewcode-block" id="Replace"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.Replace">[docs]</a><span class="k">class</span> <span class="nc">Replace</span><span class="p">(</span><span class="n">function</span><span class="o">.</span><span class="n">Function</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A function for performing string substitutions.</span>
+
+<span class="sd">    Takes the form::</span>
+
+<span class="sd">        str_replace:</span>
+<span class="sd">          template: &lt;key_1&gt; &lt;key_2&gt;</span>
+<span class="sd">          params:</span>
+<span class="sd">            &lt;key_1&gt;: &lt;value_1&gt;</span>
+<span class="sd">            &lt;key_2&gt;: &lt;value_2&gt;</span>
+<span class="sd">            ...</span>
+
+<span class="sd">    And resolves to::</span>
+
+<span class="sd">        &quot;&lt;value_1&gt; &lt;value_2&gt;&quot;</span>
+
+<span class="sd">    When keys overlap in the template, longer matches are preferred. For keys</span>
+<span class="sd">    of equal length, lexicographically smaller keys are preferred.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">_strict</span> <span class="o">=</span> <span class="bp">False</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">stack</span><span class="p">,</span> <span class="n">fn_name</span><span class="p">,</span> <span class="n">args</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">Replace</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">stack</span><span class="p">,</span> <span class="n">fn_name</span><span class="p">,</span> <span class="n">args</span><span class="p">)</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">_mapping</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_string</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_parse_args</span><span class="p">()</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_mapping</span><span class="p">,</span>
+                          <span class="p">(</span><span class="n">collections</span><span class="o">.</span><span class="n">Mapping</span><span class="p">,</span> <span class="n">function</span><span class="o">.</span><span class="n">Function</span><span class="p">)):</span>
+            <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;&quot;</span><span class="si">%s</span><span class="s1">&quot; parameters must be a mapping&#39;</span><span class="p">)</span> <span class="o">%</span>
+                            <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_parse_args</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">,</span> <span class="n">collections</span><span class="o">.</span><span class="n">Mapping</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Arguments to &quot;</span><span class="si">%s</span><span class="s1">&quot; must be a map&#39;</span><span class="p">)</span> <span class="o">%</span>
+                            <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">mapping</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">[</span><span class="s1">&#39;params&#39;</span><span class="p">]</span>
+            <span class="n">string</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">[</span><span class="s1">&#39;template&#39;</span><span class="p">]</span>
+        <span class="k">except</span> <span class="p">(</span><span class="ne">KeyError</span><span class="p">,</span> <span class="ne">TypeError</span><span class="p">):</span>
+            <span class="n">example</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;&#39;&#39;</span><span class="si">%s</span><span class="s1">:</span>
+<span class="s1">              template: This is var1 template var2</span>
+<span class="s1">              params:</span>
+<span class="s1">                var1: a</span>
+<span class="s1">                var2: string&#39;&#39;&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span>
+            <span class="k">raise</span> <span class="ne">KeyError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;&quot;</span><span class="si">%(fn_name)s</span><span class="s1">&quot; syntax should be </span><span class="si">%(example)s</span><span class="s1">&#39;</span><span class="p">)</span> <span class="o">%</span>
+                           <span class="p">{</span><span class="s1">&#39;fn_name&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">,</span> <span class="s1">&#39;example&#39;</span><span class="p">:</span> <span class="n">example</span><span class="p">})</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">mapping</span><span class="p">,</span> <span class="n">string</span>
+
+    <span class="k">def</span> <span class="nf">_validate_replacement</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">value</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">value</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="k">return</span> <span class="s1">&#39;&#39;</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">value</span><span class="p">,</span>
+                          <span class="p">(</span><span class="n">six</span><span class="o">.</span><span class="n">string_types</span><span class="p">,</span> <span class="n">six</span><span class="o">.</span><span class="n">integer_types</span><span class="p">,</span>
+                           <span class="nb">float</span><span class="p">,</span> <span class="nb">bool</span><span class="p">)):</span>
+            <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;&quot;</span><span class="si">%s</span><span class="s1">&quot; params must be strings or numbers&#39;</span><span class="p">)</span> <span class="o">%</span>
+                            <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+
+        <span class="k">return</span> <span class="n">six</span><span class="o">.</span><span class="n">text_type</span><span class="p">(</span><span class="n">value</span><span class="p">)</span>
+
+<div class="viewcode-block" id="Replace.result"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.Replace.result">[docs]</a>    <span class="k">def</span> <span class="nf">result</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">template</span> <span class="o">=</span> <span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_string</span><span class="p">)</span>
+        <span class="n">mapping</span> <span class="o">=</span> <span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_mapping</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_strict</span><span class="p">:</span>
+            <span class="n">unreplaced_keys</span> <span class="o">=</span> <span class="nb">set</span><span class="p">(</span><span class="n">mapping</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">template</span><span class="p">,</span> <span class="n">six</span><span class="o">.</span><span class="n">string_types</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;&quot;</span><span class="si">%s</span><span class="s1">&quot; template must be a string&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">mapping</span><span class="p">,</span> <span class="n">collections</span><span class="o">.</span><span class="n">Mapping</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;&quot;</span><span class="si">%s</span><span class="s1">&quot; params must be a map&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+
+        <span class="k">def</span> <span class="nf">replace</span><span class="p">(</span><span class="n">strings</span><span class="p">,</span> <span class="n">keys</span><span class="p">):</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">keys</span><span class="p">:</span>
+                <span class="k">return</span> <span class="n">strings</span>
+
+            <span class="n">placeholder</span> <span class="o">=</span> <span class="n">keys</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">placeholder</span><span class="p">,</span> <span class="n">six</span><span class="o">.</span><span class="n">string_types</span><span class="p">):</span>
+                <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;&quot;</span><span class="si">%s</span><span class="s1">&quot; param placeholders must be strings&#39;</span><span class="p">)</span> <span class="o">%</span>
+                                <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+
+            <span class="n">remaining_keys</span> <span class="o">=</span> <span class="n">keys</span><span class="p">[</span><span class="mi">1</span><span class="p">:]</span>
+            <span class="n">value</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_validate_replacement</span><span class="p">(</span><span class="n">mapping</span><span class="p">[</span><span class="n">placeholder</span><span class="p">])</span>
+
+            <span class="k">def</span> <span class="nf">string_split</span><span class="p">(</span><span class="n">s</span><span class="p">):</span>
+                <span class="n">ss</span> <span class="o">=</span> <span class="n">s</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="n">placeholder</span><span class="p">)</span>
+                <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_strict</span> <span class="ow">and</span> <span class="nb">len</span><span class="p">(</span><span class="n">ss</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">1</span><span class="p">:</span>
+                    <span class="n">unreplaced_keys</span><span class="o">.</span><span class="n">discard</span><span class="p">(</span><span class="n">placeholder</span><span class="p">)</span>
+                <span class="k">return</span> <span class="n">ss</span>
+
+            <span class="k">return</span> <span class="p">[</span><span class="n">value</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">replace</span><span class="p">(</span><span class="n">string_split</span><span class="p">(</span><span class="n">s</span><span class="p">),</span>
+                                       <span class="n">remaining_keys</span><span class="p">))</span> <span class="k">for</span> <span class="n">s</span> <span class="ow">in</span> <span class="n">strings</span><span class="p">]</span>
+
+        <span class="n">ret_val</span> <span class="o">=</span> <span class="n">replace</span><span class="p">([</span><span class="n">template</span><span class="p">],</span> <span class="nb">sorted</span><span class="p">(</span><span class="nb">sorted</span><span class="p">(</span><span class="n">mapping</span><span class="p">),</span>
+                                             <span class="n">key</span><span class="o">=</span><span class="nb">len</span><span class="p">,</span> <span class="n">reverse</span><span class="o">=</span><span class="bp">True</span><span class="p">))[</span><span class="mi">0</span><span class="p">]</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_strict</span> <span class="ow">and</span> <span class="nb">len</span><span class="p">(</span><span class="n">unreplaced_keys</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+                <span class="n">_</span><span class="p">(</span><span class="s2">&quot;The following params were not found in the template: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">)</span> <span class="o">%</span>
+                <span class="s1">&#39;,&#39;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="nb">sorted</span><span class="p">(</span><span class="nb">sorted</span><span class="p">(</span><span class="n">unreplaced_keys</span><span class="p">),</span>
+                                <span class="n">key</span><span class="o">=</span><span class="nb">len</span><span class="p">,</span> <span class="n">reverse</span><span class="o">=</span><span class="bp">True</span><span class="p">)))</span>
+        <span class="k">return</span> <span class="n">ret_val</span></div></div>
+
+
+<div class="viewcode-block" id="ReplaceJson"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.ReplaceJson">[docs]</a><span class="k">class</span> <span class="nc">ReplaceJson</span><span class="p">(</span><span class="n">Replace</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A function for performing string substitutions.</span>
+
+<span class="sd">    Takes the form::</span>
+
+<span class="sd">        str_replace:</span>
+<span class="sd">          template: &lt;key_1&gt; &lt;key_2&gt;</span>
+<span class="sd">          params:</span>
+<span class="sd">            &lt;key_1&gt;: &lt;value_1&gt;</span>
+<span class="sd">            &lt;key_2&gt;: &lt;value_2&gt;</span>
+<span class="sd">            ...</span>
+
+<span class="sd">    And resolves to::</span>
+
+<span class="sd">        &quot;&lt;value_1&gt; &lt;value_2&gt;&quot;</span>
+
+<span class="sd">    When keys overlap in the template, longer matches are preferred. For keys</span>
+<span class="sd">    of equal length, lexicographically smaller keys are preferred.</span>
+
+<span class="sd">    Non-string param values (e.g maps or lists) are serialized as JSON before</span>
+<span class="sd">    being substituted in.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="nf">_validate_replacement</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">value</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">value</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="k">return</span> <span class="s1">&#39;&#39;</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">value</span><span class="p">,</span> <span class="p">(</span><span class="n">six</span><span class="o">.</span><span class="n">string_types</span><span class="p">,</span> <span class="n">six</span><span class="o">.</span><span class="n">integer_types</span><span class="p">,</span>
+                                  <span class="nb">float</span><span class="p">,</span> <span class="nb">bool</span><span class="p">)):</span>
+            <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">value</span><span class="p">,</span> <span class="p">(</span><span class="n">collections</span><span class="o">.</span><span class="n">Mapping</span><span class="p">,</span> <span class="n">collections</span><span class="o">.</span><span class="n">Sequence</span><span class="p">)):</span>
+                <span class="k">try</span><span class="p">:</span>
+                    <span class="k">return</span> <span class="n">jsonutils</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span><span class="n">value</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">sort_keys</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+                <span class="k">except</span> <span class="ne">TypeError</span><span class="p">:</span>
+                    <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;&quot;</span><span class="si">%(name)s</span><span class="s1">&quot; params must be strings, &#39;</span>
+                                      <span class="s1">&#39;numbers, list or map. &#39;</span>
+                                      <span class="s1">&#39;Failed to json serialize </span><span class="si">%(value)s</span><span class="s1">&#39;</span>
+                                      <span class="p">)</span> <span class="o">%</span> <span class="p">{</span><span class="s1">&#39;name&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">,</span>
+                                           <span class="s1">&#39;value&#39;</span><span class="p">:</span> <span class="n">value</span><span class="p">})</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;&quot;</span><span class="si">%s</span><span class="s1">&quot; params must be strings, numbers, &#39;</span>
+                                  <span class="s1">&#39;list or map.&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+
+        <span class="k">return</span> <span class="n">six</span><span class="o">.</span><span class="n">text_type</span><span class="p">(</span><span class="n">value</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="ReplaceJsonStrict"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.ReplaceJsonStrict">[docs]</a><span class="k">class</span> <span class="nc">ReplaceJsonStrict</span><span class="p">(</span><span class="n">ReplaceJson</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A function for performing string substituions.</span>
+
+<span class="sd">    str_replace_strict is identical to the str_replace function, only</span>
+<span class="sd">    a ValueError is raised if any of the params are not present in</span>
+<span class="sd">    the template.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">_strict</span> <span class="o">=</span> <span class="bp">True</span></div>
+
+
+<div class="viewcode-block" id="GetFile"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.GetFile">[docs]</a><span class="k">class</span> <span class="nc">GetFile</span><span class="p">(</span><span class="n">function</span><span class="o">.</span><span class="n">Function</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A function for including a file inline.</span>
+
+<span class="sd">    Takes the form::</span>
+
+<span class="sd">        get_file: &lt;file_key&gt;</span>
+
+<span class="sd">    And resolves to the content stored in the files dictionary under the given</span>
+<span class="sd">    key.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">stack</span><span class="p">,</span> <span class="n">fn_name</span><span class="p">,</span> <span class="n">args</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">GetFile</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">stack</span><span class="p">,</span> <span class="n">fn_name</span><span class="p">,</span> <span class="n">args</span><span class="p">)</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">files</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">stack</span><span class="o">.</span><span class="n">t</span><span class="o">.</span><span class="n">files</span>
+
+<div class="viewcode-block" id="GetFile.result"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.GetFile.result">[docs]</a>    <span class="k">def</span> <span class="nf">result</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">args</span> <span class="o">=</span> <span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="p">(</span><span class="nb">isinstance</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="n">six</span><span class="o">.</span><span class="n">string_types</span><span class="p">)):</span>
+            <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Argument to &quot;</span><span class="si">%s</span><span class="s1">&quot; must be a string&#39;</span><span class="p">)</span> <span class="o">%</span>
+                            <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+
+        <span class="n">f</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">files</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">args</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">f</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">fmt_data</span> <span class="o">=</span> <span class="p">{</span><span class="s1">&#39;fn_name&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">,</span>
+                        <span class="s1">&#39;file_key&#39;</span><span class="p">:</span> <span class="n">args</span><span class="p">}</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;No content found in the &quot;files&quot; section for &#39;</span>
+                               <span class="s1">&#39;</span><span class="si">%(fn_name)s</span><span class="s1"> path: </span><span class="si">%(file_key)s</span><span class="s1">&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="n">fmt_data</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">f</span></div></div>
+
+
+<div class="viewcode-block" id="Join"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.Join">[docs]</a><span class="k">class</span> <span class="nc">Join</span><span class="p">(</span><span class="n">function</span><span class="o">.</span><span class="n">Function</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A function for joining strings.</span>
+
+<span class="sd">    Takes the form::</span>
+
+<span class="sd">        list_join:</span>
+<span class="sd">          - &lt;delim&gt;</span>
+<span class="sd">          - - &lt;string_1&gt;</span>
+<span class="sd">            - &lt;string_2&gt;</span>
+<span class="sd">            - ...</span>
+
+<span class="sd">    And resolves to::</span>
+
+<span class="sd">        &quot;&lt;string_1&gt;&lt;delim&gt;&lt;string_2&gt;&lt;delim&gt;...&quot;</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">stack</span><span class="p">,</span> <span class="n">fn_name</span><span class="p">,</span> <span class="n">args</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">Join</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">stack</span><span class="p">,</span> <span class="n">fn_name</span><span class="p">,</span> <span class="n">args</span><span class="p">)</span>
+
+        <span class="n">example</span> <span class="o">=</span> <span class="s1">&#39;&quot;</span><span class="si">%s</span><span class="s1">&quot; : [ &quot; &quot;, [ &quot;str1&quot;, &quot;str2&quot;]]&#39;</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span>
+        <span class="n">fmt_data</span> <span class="o">=</span> <span class="p">{</span><span class="s1">&#39;fn_name&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">,</span>
+                    <span class="s1">&#39;example&#39;</span><span class="p">:</span> <span class="n">example</span><span class="p">}</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">,</span> <span class="nb">list</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Incorrect arguments to &quot;</span><span class="si">%(fn_name)s</span><span class="s1">&quot; &#39;</span>
+                              <span class="s1">&#39;should be: </span><span class="si">%(example)s</span><span class="s1">&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="n">fmt_data</span><span class="p">)</span>
+
+        <span class="k">try</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_delim</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_strings</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">args</span>
+        <span class="k">except</span> <span class="ne">ValueError</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Incorrect arguments to &quot;</span><span class="si">%(fn_name)s</span><span class="s1">&quot; &#39;</span>
+                               <span class="s1">&#39;should be: </span><span class="si">%(example)s</span><span class="s1">&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="n">fmt_data</span><span class="p">)</span>
+
+<div class="viewcode-block" id="Join.result"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.Join.result">[docs]</a>    <span class="k">def</span> <span class="nf">result</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">strings</span> <span class="o">=</span> <span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_strings</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">strings</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">strings</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">if</span> <span class="p">(</span><span class="nb">isinstance</span><span class="p">(</span><span class="n">strings</span><span class="p">,</span> <span class="n">six</span><span class="o">.</span><span class="n">string_types</span><span class="p">)</span> <span class="ow">or</span>
+                <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">strings</span><span class="p">,</span> <span class="n">collections</span><span class="o">.</span><span class="n">Sequence</span><span class="p">)):</span>
+            <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;&quot;</span><span class="si">%s</span><span class="s1">&quot; must operate on a list&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+
+        <span class="n">delim</span> <span class="o">=</span> <span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_delim</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">delim</span><span class="p">,</span> <span class="n">six</span><span class="o">.</span><span class="n">string_types</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;&quot;</span><span class="si">%s</span><span class="s1">&quot; delimiter must be a string&#39;</span><span class="p">)</span> <span class="o">%</span>
+                            <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+
+        <span class="k">def</span> <span class="nf">ensure_string</span><span class="p">(</span><span class="n">s</span><span class="p">):</span>
+            <span class="k">if</span> <span class="n">s</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="k">return</span> <span class="s1">&#39;&#39;</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">s</span><span class="p">,</span> <span class="n">six</span><span class="o">.</span><span class="n">string_types</span><span class="p">):</span>
+                <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span>
+                    <span class="n">_</span><span class="p">(</span><span class="s1">&#39;Items to join must be strings not </span><span class="si">%s</span><span class="s1">&#39;</span>
+                      <span class="p">)</span> <span class="o">%</span> <span class="p">(</span><span class="nb">repr</span><span class="p">(</span><span class="n">s</span><span class="p">)[:</span><span class="mi">200</span><span class="p">]))</span>
+            <span class="k">return</span> <span class="n">s</span>
+
+        <span class="k">return</span> <span class="n">delim</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">ensure_string</span><span class="p">(</span><span class="n">s</span><span class="p">)</span> <span class="k">for</span> <span class="n">s</span> <span class="ow">in</span> <span class="n">strings</span><span class="p">)</span></div></div>
+
+
+<div class="viewcode-block" id="JoinMultiple"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.JoinMultiple">[docs]</a><span class="k">class</span> <span class="nc">JoinMultiple</span><span class="p">(</span><span class="n">function</span><span class="o">.</span><span class="n">Function</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A function for joining one or more lists of strings.</span>
+
+<span class="sd">    Takes the form::</span>
+
+<span class="sd">        list_join:</span>
+<span class="sd">          - &lt;delim&gt;</span>
+<span class="sd">          - - &lt;string_1&gt;</span>
+<span class="sd">            - &lt;string_2&gt;</span>
+<span class="sd">            - ...</span>
+<span class="sd">          - - ...</span>
+
+<span class="sd">    And resolves to::</span>
+
+<span class="sd">        &quot;&lt;string_1&gt;&lt;delim&gt;&lt;string_2&gt;&lt;delim&gt;...&quot;</span>
+
+<span class="sd">    Optionally multiple lists may be specified, which will also be joined.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">stack</span><span class="p">,</span> <span class="n">fn_name</span><span class="p">,</span> <span class="n">args</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">JoinMultiple</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">stack</span><span class="p">,</span> <span class="n">fn_name</span><span class="p">,</span> <span class="n">args</span><span class="p">)</span>
+        <span class="n">example</span> <span class="o">=</span> <span class="s1">&#39;&quot;</span><span class="si">%s</span><span class="s1">&quot; : [ &quot; &quot;, [ &quot;str1&quot;, &quot;str2&quot;] ...]&#39;</span> <span class="o">%</span> <span class="n">fn_name</span>
+        <span class="n">fmt_data</span> <span class="o">=</span> <span class="p">{</span><span class="s1">&#39;fn_name&#39;</span><span class="p">:</span> <span class="n">fn_name</span><span class="p">,</span>
+                    <span class="s1">&#39;example&#39;</span><span class="p">:</span> <span class="n">example</span><span class="p">}</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="nb">list</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Incorrect arguments to &quot;</span><span class="si">%(fn_name)s</span><span class="s1">&quot; &#39;</span>
+                              <span class="s1">&#39;should be: </span><span class="si">%(example)s</span><span class="s1">&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="n">fmt_data</span><span class="p">)</span>
+
+        <span class="k">try</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_delim</span> <span class="o">=</span> <span class="n">args</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_joinlists</span> <span class="o">=</span> <span class="n">args</span><span class="p">[</span><span class="mi">1</span><span class="p">:]</span>
+            <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_joinlists</span><span class="p">)</span> <span class="o">&lt;</span> <span class="mi">1</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span>
+        <span class="k">except</span> <span class="p">(</span><span class="ne">IndexError</span><span class="p">,</span> <span class="ne">ValueError</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Incorrect arguments to &quot;</span><span class="si">%(fn_name)s</span><span class="s1">&quot; &#39;</span>
+                               <span class="s1">&#39;should be: </span><span class="si">%(example)s</span><span class="s1">&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="n">fmt_data</span><span class="p">)</span>
+
+<div class="viewcode-block" id="JoinMultiple.result"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.JoinMultiple.result">[docs]</a>    <span class="k">def</span> <span class="nf">result</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">r_joinlists</span> <span class="o">=</span> <span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_joinlists</span><span class="p">)</span>
+
+        <span class="n">strings</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">for</span> <span class="n">jl</span> <span class="ow">in</span> <span class="n">r_joinlists</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">jl</span><span class="p">:</span>
+                <span class="k">if</span> <span class="p">(</span><span class="nb">isinstance</span><span class="p">(</span><span class="n">jl</span><span class="p">,</span> <span class="n">six</span><span class="o">.</span><span class="n">string_types</span><span class="p">)</span> <span class="ow">or</span>
+                        <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">jl</span><span class="p">,</span> <span class="n">collections</span><span class="o">.</span><span class="n">Sequence</span><span class="p">)):</span>
+                    <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;&quot;</span><span class="si">%s</span><span class="s1">&quot; must operate on &#39;</span>
+                                      <span class="s1">&#39;a list&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+
+                <span class="n">strings</span> <span class="o">+=</span> <span class="n">jl</span>
+
+        <span class="n">delim</span> <span class="o">=</span> <span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_delim</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">delim</span><span class="p">,</span> <span class="n">six</span><span class="o">.</span><span class="n">string_types</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;&quot;</span><span class="si">%s</span><span class="s1">&quot; delimiter must be a string&#39;</span><span class="p">)</span> <span class="o">%</span>
+                            <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+
+        <span class="k">def</span> <span class="nf">ensure_string</span><span class="p">(</span><span class="n">s</span><span class="p">):</span>
+            <span class="n">msg</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;Items to join must be string, map or list not </span><span class="si">%s</span><span class="s1">&#39;</span>
+                    <span class="p">)</span> <span class="o">%</span> <span class="p">(</span><span class="nb">repr</span><span class="p">(</span><span class="n">s</span><span class="p">)[:</span><span class="mi">200</span><span class="p">])</span>
+            <span class="k">if</span> <span class="n">s</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="k">return</span> <span class="s1">&#39;&#39;</span>
+            <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">s</span><span class="p">,</span> <span class="n">six</span><span class="o">.</span><span class="n">string_types</span><span class="p">):</span>
+                <span class="k">return</span> <span class="n">s</span>
+            <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">s</span><span class="p">,</span> <span class="p">(</span><span class="n">collections</span><span class="o">.</span><span class="n">Mapping</span><span class="p">,</span> <span class="n">collections</span><span class="o">.</span><span class="n">Sequence</span><span class="p">)):</span>
+                <span class="k">try</span><span class="p">:</span>
+                    <span class="k">return</span> <span class="n">jsonutils</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span><span class="n">s</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">sort_keys</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+                <span class="k">except</span> <span class="ne">TypeError</span><span class="p">:</span>
+                    <span class="n">msg</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;Items to join must be string, map or list. &#39;</span>
+                            <span class="s1">&#39;</span><span class="si">%s</span><span class="s1"> failed json serialization&#39;</span>
+                            <span class="p">)</span> <span class="o">%</span> <span class="p">(</span><span class="nb">repr</span><span class="p">(</span><span class="n">s</span><span class="p">)[:</span><span class="mi">200</span><span class="p">])</span>
+
+            <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="n">msg</span><span class="p">)</span>
+
+        <span class="k">return</span> <span class="n">delim</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">ensure_string</span><span class="p">(</span><span class="n">s</span><span class="p">)</span> <span class="k">for</span> <span class="n">s</span> <span class="ow">in</span> <span class="n">strings</span><span class="p">)</span></div></div>
+
+
+<div class="viewcode-block" id="MapMerge"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.MapMerge">[docs]</a><span class="k">class</span> <span class="nc">MapMerge</span><span class="p">(</span><span class="n">function</span><span class="o">.</span><span class="n">Function</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A function for merging maps.</span>
+
+<span class="sd">    Takes the form::</span>
+
+<span class="sd">        map_merge:</span>
+<span class="sd">          - &lt;k1&gt;: &lt;v1&gt;</span>
+<span class="sd">            &lt;k2&gt;: &lt;v2&gt;</span>
+<span class="sd">          - &lt;k1&gt;: &lt;v3&gt;</span>
+
+<span class="sd">    And resolves to::</span>
+
+<span class="sd">        {&quot;&lt;k1&gt;&quot;: &quot;&lt;v2&gt;&quot;, &quot;&lt;k2&gt;&quot;: &quot;&lt;v3&gt;&quot;}</span>
+
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">stack</span><span class="p">,</span> <span class="n">fn_name</span><span class="p">,</span> <span class="n">args</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">MapMerge</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">stack</span><span class="p">,</span> <span class="n">fn_name</span><span class="p">,</span> <span class="n">args</span><span class="p">)</span>
+        <span class="n">example</span> <span class="o">=</span> <span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;&quot;</span><span class="si">%s</span><span class="s1">&quot; : [ { &quot;key1&quot;: &quot;val1&quot; }, { &quot;key2&quot;: &quot;val2&quot; } ]&#39;</span><span class="p">)</span>
+                   <span class="o">%</span> <span class="n">fn_name</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">fmt_data</span> <span class="o">=</span> <span class="p">{</span><span class="s1">&#39;fn_name&#39;</span><span class="p">:</span> <span class="n">fn_name</span><span class="p">,</span> <span class="s1">&#39;example&#39;</span><span class="p">:</span> <span class="n">example</span><span class="p">}</span>
+
+<div class="viewcode-block" id="MapMerge.result"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.MapMerge.result">[docs]</a>    <span class="k">def</span> <span class="nf">result</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">args</span> <span class="o">=</span> <span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="n">collections</span><span class="o">.</span><span class="n">Sequence</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Incorrect arguments to &quot;</span><span class="si">%(fn_name)s</span><span class="s1">&quot; &#39;</span>
+                              <span class="s1">&#39;should be: </span><span class="si">%(example)s</span><span class="s1">&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">fmt_data</span><span class="p">)</span>
+
+        <span class="k">def</span> <span class="nf">ensure_map</span><span class="p">(</span><span class="n">m</span><span class="p">):</span>
+            <span class="k">if</span> <span class="n">m</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="k">return</span> <span class="p">{}</span>
+            <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">m</span><span class="p">,</span> <span class="n">collections</span><span class="o">.</span><span class="n">Mapping</span><span class="p">):</span>
+                <span class="k">return</span> <span class="n">m</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">msg</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;Incorrect arguments: Items to merge must be maps.&#39;</span><span class="p">)</span>
+                <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="n">msg</span><span class="p">)</span>
+
+        <span class="n">ret_map</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="k">for</span> <span class="n">m</span> <span class="ow">in</span> <span class="n">args</span><span class="p">:</span>
+            <span class="n">ret_map</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">ensure_map</span><span class="p">(</span><span class="n">m</span><span class="p">))</span>
+        <span class="k">return</span> <span class="n">ret_map</span></div></div>
+
+
+<div class="viewcode-block" id="MapReplace"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.MapReplace">[docs]</a><span class="k">class</span> <span class="nc">MapReplace</span><span class="p">(</span><span class="n">function</span><span class="o">.</span><span class="n">Function</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A function for performing substitutions on maps.</span>
+
+<span class="sd">    Takes the form::</span>
+
+<span class="sd">        map_replace:</span>
+<span class="sd">          - &lt;k1&gt;: &lt;v1&gt;</span>
+<span class="sd">            &lt;k2&gt;: &lt;v2&gt;</span>
+<span class="sd">          - keys:</span>
+<span class="sd">              &lt;k1&gt;: &lt;K1&gt;</span>
+<span class="sd">            values:</span>
+<span class="sd">              &lt;v2&gt;: &lt;V2&gt;</span>
+
+<span class="sd">    And resolves to::</span>
+
+<span class="sd">        {&quot;&lt;K1&gt;&quot;: &quot;&lt;v1&gt;&quot;, &quot;&lt;k2&gt;&quot;: &quot;&lt;V2&gt;&quot;}</span>
+
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">stack</span><span class="p">,</span> <span class="n">fn_name</span><span class="p">,</span> <span class="n">args</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">MapReplace</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">stack</span><span class="p">,</span> <span class="n">fn_name</span><span class="p">,</span> <span class="n">args</span><span class="p">)</span>
+        <span class="n">example</span> <span class="o">=</span> <span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;&quot;</span><span class="si">%s</span><span class="s1">&quot; : [ { &quot;key1&quot;: &quot;val1&quot; }, &#39;</span>
+                     <span class="s1">&#39;{&quot;keys&quot;: {&quot;key1&quot;: &quot;key2&quot;}, &quot;values&quot;: {&quot;val1&quot;: &quot;val2&quot;}}]&#39;</span><span class="p">)</span>
+                   <span class="o">%</span> <span class="n">fn_name</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">fmt_data</span> <span class="o">=</span> <span class="p">{</span><span class="s1">&#39;fn_name&#39;</span><span class="p">:</span> <span class="n">fn_name</span><span class="p">,</span> <span class="s1">&#39;example&#39;</span><span class="p">:</span> <span class="n">example</span><span class="p">}</span>
+
+<div class="viewcode-block" id="MapReplace.result"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.MapReplace.result">[docs]</a>    <span class="k">def</span> <span class="nf">result</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">args</span> <span class="o">=</span> <span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">)</span>
+
+        <span class="k">def</span> <span class="nf">ensure_map</span><span class="p">(</span><span class="n">m</span><span class="p">):</span>
+            <span class="k">if</span> <span class="n">m</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="k">return</span> <span class="p">{}</span>
+            <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">m</span><span class="p">,</span> <span class="n">collections</span><span class="o">.</span><span class="n">Mapping</span><span class="p">):</span>
+                <span class="k">return</span> <span class="n">m</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">msg</span> <span class="o">=</span> <span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Incorrect arguments: to &quot;</span><span class="si">%(fn_name)s</span><span class="s1">&quot;, arguments &#39;</span>
+                         <span class="s1">&#39;must be a list of maps. Example:  </span><span class="si">%(example)s</span><span class="s1">&#39;</span><span class="p">)</span>
+                       <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">fmt_data</span><span class="p">)</span>
+                <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="n">msg</span><span class="p">)</span>
+
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">in_map</span> <span class="o">=</span> <span class="n">ensure_map</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="mi">0</span><span class="p">))</span>
+            <span class="n">repl_map</span> <span class="o">=</span> <span class="n">ensure_map</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="mi">0</span><span class="p">))</span>
+            <span class="k">if</span> <span class="n">args</span> <span class="o">!=</span> <span class="p">[]:</span>
+                <span class="k">raise</span> <span class="ne">IndexError</span>
+        <span class="k">except</span> <span class="p">(</span><span class="ne">IndexError</span><span class="p">,</span> <span class="ne">AttributeError</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Incorrect arguments to &quot;</span><span class="si">%(fn_name)s</span><span class="s1">&quot; &#39;</span>
+                              <span class="s1">&#39;should be: </span><span class="si">%(example)s</span><span class="s1">&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">fmt_data</span><span class="p">)</span>
+
+        <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="n">repl_map</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">k</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="s1">&#39;keys&#39;</span><span class="p">,</span> <span class="s1">&#39;values&#39;</span><span class="p">):</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Incorrect arguments to &quot;</span><span class="si">%(fn_name)s</span><span class="s1">&quot; &#39;</span>
+                                   <span class="s1">&#39;should be: </span><span class="si">%(example)s</span><span class="s1">&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">fmt_data</span><span class="p">)</span>
+
+        <span class="n">repl_keys</span> <span class="o">=</span> <span class="n">ensure_map</span><span class="p">(</span><span class="n">repl_map</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;keys&#39;</span><span class="p">,</span> <span class="p">{}))</span>
+        <span class="n">repl_values</span> <span class="o">=</span> <span class="n">ensure_map</span><span class="p">(</span><span class="n">repl_map</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;values&#39;</span><span class="p">,</span> <span class="p">{}))</span>
+        <span class="n">ret_map</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="k">for</span> <span class="n">k</span><span class="p">,</span> <span class="n">v</span> <span class="ow">in</span> <span class="n">six</span><span class="o">.</span><span class="n">iteritems</span><span class="p">(</span><span class="n">in_map</span><span class="p">):</span>
+            <span class="n">key</span> <span class="o">=</span> <span class="n">repl_keys</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">k</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">key</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="n">key</span> <span class="o">=</span> <span class="n">k</span>
+            <span class="k">elif</span> <span class="n">key</span> <span class="ow">in</span> <span class="n">in_map</span> <span class="ow">and</span> <span class="n">key</span> <span class="o">!=</span> <span class="n">k</span><span class="p">:</span>
+                <span class="c1"># Keys collide</span>
+                <span class="n">msg</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;key replacement </span><span class="si">%s</span><span class="s1"> collides with &#39;</span>
+                        <span class="s1">&#39;a key in the input map&#39;</span><span class="p">)</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">msg</span> <span class="o">%</span> <span class="n">key</span><span class="p">)</span>
+            <span class="k">elif</span> <span class="n">key</span> <span class="ow">in</span> <span class="n">ret_map</span><span class="p">:</span>
+                <span class="c1"># Keys collide</span>
+                <span class="n">msg</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;key replacement </span><span class="si">%s</span><span class="s1"> collides with &#39;</span>
+                        <span class="s1">&#39;a key in the output map&#39;</span><span class="p">)</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">msg</span> <span class="o">%</span> <span class="n">key</span><span class="p">)</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">value</span> <span class="o">=</span> <span class="n">repl_values</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">v</span><span class="p">,</span> <span class="n">v</span><span class="p">)</span>
+            <span class="k">except</span> <span class="ne">TypeError</span><span class="p">:</span>
+                <span class="c1"># If the value is unhashable, we get here</span>
+                <span class="n">value</span> <span class="o">=</span> <span class="n">v</span>
+            <span class="n">ret_map</span><span class="p">[</span><span class="n">key</span><span class="p">]</span> <span class="o">=</span> <span class="n">value</span>
+        <span class="k">return</span> <span class="n">ret_map</span></div></div>
+
+
+<div class="viewcode-block" id="ResourceFacade"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.ResourceFacade">[docs]</a><span class="k">class</span> <span class="nc">ResourceFacade</span><span class="p">(</span><span class="n">function</span><span class="o">.</span><span class="n">Function</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A function for retrieving data in a parent provider template.</span>
+
+<span class="sd">    A function for obtaining data from the facade resource from within the</span>
+<span class="sd">    corresponding provider template.</span>
+
+<span class="sd">    Takes the form::</span>
+
+<span class="sd">        resource_facade: &lt;attribute_type&gt;</span>
+
+<span class="sd">    where the valid attribute types are &quot;metadata&quot;, &quot;deletion_policy&quot; and</span>
+<span class="sd">    &quot;update_policy&quot;.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">_RESOURCE_ATTRIBUTES</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="n">METADATA</span><span class="p">,</span> <span class="n">DELETION_POLICY</span><span class="p">,</span> <span class="n">UPDATE_POLICY</span><span class="p">,</span>
+    <span class="p">)</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="s1">&#39;metadata&#39;</span><span class="p">,</span> <span class="s1">&#39;deletion_policy&#39;</span><span class="p">,</span> <span class="s1">&#39;update_policy&#39;</span>
+    <span class="p">)</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">stack</span><span class="p">,</span> <span class="n">fn_name</span><span class="p">,</span> <span class="n">args</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">ResourceFacade</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">stack</span><span class="p">,</span> <span class="n">fn_name</span><span class="p">,</span> <span class="n">args</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">args</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_RESOURCE_ATTRIBUTES</span><span class="p">:</span>
+            <span class="n">fmt_data</span> <span class="o">=</span> <span class="p">{</span><span class="s1">&#39;fn_name&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">,</span>
+                        <span class="s1">&#39;allowed&#39;</span><span class="p">:</span> <span class="s1">&#39;, &#39;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_RESOURCE_ATTRIBUTES</span><span class="p">)}</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Incorrect arguments to &quot;</span><span class="si">%(fn_name)s</span><span class="s1">&quot; &#39;</span>
+                               <span class="s1">&#39;should be one of: </span><span class="si">%(allowed)s</span><span class="s1">&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="n">fmt_data</span><span class="p">)</span>
+
+<div class="viewcode-block" id="ResourceFacade.result"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.ResourceFacade.result">[docs]</a>    <span class="k">def</span> <span class="nf">result</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">attr</span> <span class="o">=</span> <span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">attr</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">METADATA</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">stack</span><span class="o">.</span><span class="n">parent_resource</span><span class="o">.</span><span class="n">metadata_get</span><span class="p">()</span>
+        <span class="k">elif</span> <span class="n">attr</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">UPDATE_POLICY</span><span class="p">:</span>
+            <span class="n">up</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">stack</span><span class="o">.</span><span class="n">parent_resource</span><span class="o">.</span><span class="n">t</span><span class="o">.</span><span class="n">_update_policy</span> <span class="ow">or</span> <span class="p">{}</span>
+            <span class="k">return</span> <span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="n">up</span><span class="p">)</span>
+        <span class="k">elif</span> <span class="n">attr</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">DELETION_POLICY</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">stack</span><span class="o">.</span><span class="n">parent_resource</span><span class="o">.</span><span class="n">t</span><span class="o">.</span><span class="n">deletion_policy</span><span class="p">()</span></div></div>
+
+
+<div class="viewcode-block" id="Removed"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.Removed">[docs]</a><span class="k">class</span> <span class="nc">Removed</span><span class="p">(</span><span class="n">function</span><span class="o">.</span><span class="n">Function</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;This function existed in previous versions of HOT, but has been removed.</span>
+
+<span class="sd">    Check the HOT guide for an equivalent native function.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+<div class="viewcode-block" id="Removed.validate"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.Removed.validate">[docs]</a>    <span class="k">def</span> <span class="nf">validate</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">exp</span> <span class="o">=</span> <span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s2">&quot;The function </span><span class="si">%s</span><span class="s2"> is not supported in this version of HOT.&quot;</span><span class="p">)</span> <span class="o">%</span>
+               <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+        <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">InvalidTemplateVersion</span><span class="p">(</span><span class="n">explanation</span><span class="o">=</span><span class="n">exp</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="Removed.result"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.Removed.result">[docs]</a>    <span class="k">def</span> <span class="nf">result</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="nb">super</span><span class="p">(</span><span class="n">Removed</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">result</span><span class="p">()</span></div></div>
+
+
+<div class="viewcode-block" id="Repeat"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.Repeat">[docs]</a><span class="k">class</span> <span class="nc">Repeat</span><span class="p">(</span><span class="n">function</span><span class="o">.</span><span class="n">Function</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A function for iterating over a list of items.</span>
+
+<span class="sd">    Takes the form::</span>
+
+<span class="sd">        repeat:</span>
+<span class="sd">            template:</span>
+<span class="sd">                &lt;body&gt;</span>
+<span class="sd">            for_each:</span>
+<span class="sd">                &lt;var&gt;: &lt;list&gt;</span>
+
+<span class="sd">    The result is a new list of the same size as &lt;list&gt;, where each element</span>
+<span class="sd">    is a copy of &lt;body&gt; with any occurrences of &lt;var&gt; replaced with the</span>
+<span class="sd">    corresponding item of &lt;list&gt;.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">stack</span><span class="p">,</span> <span class="n">fn_name</span><span class="p">,</span> <span class="n">args</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">Repeat</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">stack</span><span class="p">,</span> <span class="n">fn_name</span><span class="p">,</span> <span class="n">args</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">,</span> <span class="n">collections</span><span class="o">.</span><span class="n">Mapping</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Arguments to &quot;</span><span class="si">%s</span><span class="s1">&quot; must be a map&#39;</span><span class="p">)</span> <span class="o">%</span>
+                            <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+
+        <span class="c1"># We don&#39;t check for invalid keys appearing here, which is wrong but</span>
+        <span class="c1"># it&#39;s probably too late to change</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_for_each</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">[</span><span class="s1">&#39;for_each&#39;</span><span class="p">]</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_template</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">[</span><span class="s1">&#39;template&#39;</span><span class="p">]</span>
+        <span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+            <span class="n">example</span> <span class="o">=</span> <span class="p">(</span><span class="s1">&#39;&#39;&#39;repeat:</span>
+<span class="s1">              template: This is %var%</span>
+<span class="s1">              for_each:</span>
+<span class="s1">                %var%: [&#39;a&#39;, &#39;b&#39;, &#39;c&#39;]&#39;&#39;&#39;</span><span class="p">)</span>
+            <span class="k">raise</span> <span class="ne">KeyError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;&quot;repeat&quot; syntax should be </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="n">example</span><span class="p">)</span>
+
+<div class="viewcode-block" id="Repeat.validate"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.Repeat.validate">[docs]</a>    <span class="k">def</span> <span class="nf">validate</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">Repeat</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">validate</span><span class="p">()</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_for_each</span><span class="p">,</span> <span class="n">function</span><span class="o">.</span><span class="n">Function</span><span class="p">):</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_for_each</span><span class="p">,</span> <span class="n">collections</span><span class="o">.</span><span class="n">Mapping</span><span class="p">):</span>
+                <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;The &quot;for_each&quot; argument to &quot;</span><span class="si">%s</span><span class="s1">&quot; must &#39;</span>
+                                  <span class="s1">&#39;contain a map&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span></div>
+
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span> <span class="nf">_valid_arg</span><span class="p">(</span><span class="n">arg</span><span class="p">):</span>
+        <span class="k">return</span> <span class="p">(</span><span class="nb">isinstance</span><span class="p">(</span><span class="n">arg</span><span class="p">,</span> <span class="p">(</span><span class="n">collections</span><span class="o">.</span><span class="n">Sequence</span><span class="p">,</span>
+                                 <span class="n">function</span><span class="o">.</span><span class="n">Function</span><span class="p">))</span> <span class="ow">and</span>
+                <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">arg</span><span class="p">,</span> <span class="n">six</span><span class="o">.</span><span class="n">string_types</span><span class="p">))</span>
+
+    <span class="k">def</span> <span class="nf">_do_replacement</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">keys</span><span class="p">,</span> <span class="n">values</span><span class="p">,</span> <span class="n">template</span><span class="p">):</span>
+        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">template</span><span class="p">,</span> <span class="n">six</span><span class="o">.</span><span class="n">string_types</span><span class="p">):</span>
+            <span class="k">for</span> <span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span> <span class="ow">in</span> <span class="nb">zip</span><span class="p">(</span><span class="n">keys</span><span class="p">,</span> <span class="n">values</span><span class="p">):</span>
+                <span class="n">template</span> <span class="o">=</span> <span class="n">template</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+            <span class="k">return</span> <span class="n">template</span>
+        <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">template</span><span class="p">,</span> <span class="n">collections</span><span class="o">.</span><span class="n">Sequence</span><span class="p">):</span>
+            <span class="k">return</span> <span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">_do_replacement</span><span class="p">(</span><span class="n">keys</span><span class="p">,</span> <span class="n">values</span><span class="p">,</span> <span class="n">elem</span><span class="p">)</span>
+                    <span class="k">for</span> <span class="n">elem</span> <span class="ow">in</span> <span class="n">template</span><span class="p">]</span>
+        <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">template</span><span class="p">,</span> <span class="n">collections</span><span class="o">.</span><span class="n">Mapping</span><span class="p">):</span>
+            <span class="k">return</span> <span class="nb">dict</span><span class="p">((</span><span class="bp">self</span><span class="o">.</span><span class="n">_do_replacement</span><span class="p">(</span><span class="n">keys</span><span class="p">,</span> <span class="n">values</span><span class="p">,</span> <span class="n">k</span><span class="p">),</span>
+                         <span class="bp">self</span><span class="o">.</span><span class="n">_do_replacement</span><span class="p">(</span><span class="n">keys</span><span class="p">,</span> <span class="n">values</span><span class="p">,</span> <span class="n">v</span><span class="p">))</span>
+                        <span class="k">for</span> <span class="p">(</span><span class="n">k</span><span class="p">,</span> <span class="n">v</span><span class="p">)</span> <span class="ow">in</span> <span class="n">template</span><span class="o">.</span><span class="n">items</span><span class="p">())</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">template</span>
+
+<div class="viewcode-block" id="Repeat.result"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.Repeat.result">[docs]</a>    <span class="k">def</span> <span class="nf">result</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">for_each</span> <span class="o">=</span> <span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_for_each</span><span class="p">)</span>
+        <span class="n">keys</span><span class="p">,</span> <span class="n">lists</span> <span class="o">=</span> <span class="n">six</span><span class="o">.</span><span class="n">moves</span><span class="o">.</span><span class="n">zip</span><span class="p">(</span><span class="o">*</span><span class="n">for_each</span><span class="o">.</span><span class="n">items</span><span class="p">())</span>
+
+        <span class="c1"># use empty list for references(None) else validation will fail</span>
+        <span class="n">values</span> <span class="o">=</span> <span class="p">[[]</span> <span class="k">if</span> <span class="n">value</span> <span class="ow">is</span> <span class="bp">None</span> <span class="k">else</span> <span class="n">value</span> <span class="k">for</span> <span class="n">value</span> <span class="ow">in</span> <span class="n">lists</span><span class="p">]</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">all</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_valid_arg</span><span class="p">(</span><span class="n">l</span><span class="p">)</span> <span class="k">for</span> <span class="n">l</span> <span class="ow">in</span> <span class="n">values</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;The values of the &quot;for_each&quot; argument to &#39;</span>
+                              <span class="s1">&#39;&quot;</span><span class="si">%s</span><span class="s1">&quot; must be lists&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+
+        <span class="n">template</span> <span class="o">=</span> <span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_template</span><span class="p">)</span>
+
+        <span class="k">return</span> <span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">_do_replacement</span><span class="p">(</span><span class="n">keys</span><span class="p">,</span> <span class="n">replacements</span><span class="p">,</span> <span class="n">template</span><span class="p">)</span>
+                <span class="k">for</span> <span class="n">replacements</span> <span class="ow">in</span> <span class="n">itertools</span><span class="o">.</span><span class="n">product</span><span class="p">(</span><span class="o">*</span><span class="n">values</span><span class="p">)]</span></div></div>
+
+
+<div class="viewcode-block" id="RepeatWithMap"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.RepeatWithMap">[docs]</a><span class="k">class</span> <span class="nc">RepeatWithMap</span><span class="p">(</span><span class="n">Repeat</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A function for iterating over a list of items.</span>
+
+<span class="sd">    Behaves the same as Replace, but if tolerates a map as</span>
+<span class="sd">    values to be repeated, in which case it iterates the map keys.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span> <span class="nf">_valid_arg</span><span class="p">(</span><span class="n">arg</span><span class="p">):</span>
+        <span class="k">return</span> <span class="p">(</span><span class="nb">isinstance</span><span class="p">(</span><span class="n">arg</span><span class="p">,</span> <span class="p">(</span><span class="n">collections</span><span class="o">.</span><span class="n">Sequence</span><span class="p">,</span>
+                                 <span class="n">collections</span><span class="o">.</span><span class="n">Mapping</span><span class="p">,</span>
+                                 <span class="n">function</span><span class="o">.</span><span class="n">Function</span><span class="p">))</span> <span class="ow">and</span>
+                <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">arg</span><span class="p">,</span> <span class="n">six</span><span class="o">.</span><span class="n">string_types</span><span class="p">))</span></div>
+
+
+<div class="viewcode-block" id="Digest"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.Digest">[docs]</a><span class="k">class</span> <span class="nc">Digest</span><span class="p">(</span><span class="n">function</span><span class="o">.</span><span class="n">Function</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A function for performing digest operations.</span>
+
+<span class="sd">    Takes the form::</span>
+
+<span class="sd">        digest:</span>
+<span class="sd">          - &lt;algorithm&gt;</span>
+<span class="sd">          - &lt;value&gt;</span>
+
+<span class="sd">    Valid algorithms are the ones provided by natively by hashlib (md5, sha1,</span>
+<span class="sd">    sha224, sha256, sha384, and sha512) or any one provided by OpenSSL.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+<div class="viewcode-block" id="Digest.validate_usage"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.Digest.validate_usage">[docs]</a>    <span class="k">def</span> <span class="nf">validate_usage</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">args</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="p">(</span><span class="nb">isinstance</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="nb">list</span><span class="p">)</span> <span class="ow">and</span>
+                <span class="nb">all</span><span class="p">([</span><span class="nb">isinstance</span><span class="p">(</span><span class="n">a</span><span class="p">,</span> <span class="n">six</span><span class="o">.</span><span class="n">string_types</span><span class="p">)</span> <span class="k">for</span> <span class="n">a</span> <span class="ow">in</span> <span class="n">args</span><span class="p">])):</span>
+            <span class="n">msg</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;Argument to function &quot;</span><span class="si">%s</span><span class="s1">&quot; must be a list of strings&#39;</span><span class="p">)</span>
+            <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="n">msg</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">args</span><span class="p">)</span> <span class="o">!=</span> <span class="mi">2</span><span class="p">:</span>
+            <span class="n">msg</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;Function &quot;</span><span class="si">%s</span><span class="s1">&quot; usage: [&quot;&lt;algorithm&gt;&quot;, &quot;&lt;value&gt;&quot;]&#39;</span><span class="p">)</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">msg</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">six</span><span class="o">.</span><span class="n">PY3</span><span class="p">:</span>
+            <span class="n">algorithms</span> <span class="o">=</span> <span class="n">hashlib</span><span class="o">.</span><span class="n">algorithms_available</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">algorithms</span> <span class="o">=</span> <span class="n">hashlib</span><span class="o">.</span><span class="n">algorithms</span>
+
+        <span class="k">if</span> <span class="n">args</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">algorithms</span><span class="p">:</span>
+            <span class="n">msg</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;Algorithm must be one of </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">)</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">msg</span> <span class="o">%</span> <span class="n">six</span><span class="o">.</span><span class="n">text_type</span><span class="p">(</span><span class="n">algorithms</span><span class="p">))</span></div>
+
+<div class="viewcode-block" id="Digest.digest"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.Digest.digest">[docs]</a>    <span class="k">def</span> <span class="nf">digest</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">algorithm</span><span class="p">,</span> <span class="n">value</span><span class="p">):</span>
+        <span class="n">_hash</span> <span class="o">=</span> <span class="n">hashlib</span><span class="o">.</span><span class="n">new</span><span class="p">(</span><span class="n">algorithm</span><span class="p">)</span>
+        <span class="n">_hash</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">six</span><span class="o">.</span><span class="n">b</span><span class="p">(</span><span class="n">value</span><span class="p">))</span>
+
+        <span class="k">return</span> <span class="n">_hash</span><span class="o">.</span><span class="n">hexdigest</span><span class="p">()</span></div>
+
+<div class="viewcode-block" id="Digest.result"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.Digest.result">[docs]</a>    <span class="k">def</span> <span class="nf">result</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">args</span> <span class="o">=</span> <span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">validate_usage</span><span class="p">(</span><span class="n">args</span><span class="p">)</span>
+
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">digest</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">)</span></div></div>
+
+
+<div class="viewcode-block" id="StrSplit"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.StrSplit">[docs]</a><span class="k">class</span> <span class="nc">StrSplit</span><span class="p">(</span><span class="n">function</span><span class="o">.</span><span class="n">Function</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A function for splitting delimited strings into a list.</span>
+
+<span class="sd">    Optionally extracting a specific list member by index.</span>
+
+<span class="sd">    Takes the form::</span>
+
+<span class="sd">        str_split:</span>
+<span class="sd">          - &lt;delimiter&gt;</span>
+<span class="sd">          - &lt;string&gt;</span>
+<span class="sd">          - &lt;index&gt;</span>
+
+<span class="sd">    If &lt;index&gt; is specified, the specified list item will be returned</span>
+<span class="sd">    otherwise, the whole list is returned, similar to get_attr with</span>
+<span class="sd">    path based attributes accessing lists.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">stack</span><span class="p">,</span> <span class="n">fn_name</span><span class="p">,</span> <span class="n">args</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">StrSplit</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">stack</span><span class="p">,</span> <span class="n">fn_name</span><span class="p">,</span> <span class="n">args</span><span class="p">)</span>
+        <span class="n">example</span> <span class="o">=</span> <span class="s1">&#39;&quot;</span><span class="si">%s</span><span class="s1">&quot; : [ &quot;,&quot;, &quot;apples,pears&quot;, &lt;index&gt;]&#39;</span> <span class="o">%</span> <span class="n">fn_name</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">fmt_data</span> <span class="o">=</span> <span class="p">{</span><span class="s1">&#39;fn_name&#39;</span><span class="p">:</span> <span class="n">fn_name</span><span class="p">,</span>
+                         <span class="s1">&#39;example&#39;</span><span class="p">:</span> <span class="n">example</span><span class="p">}</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span> <span class="o">=</span> <span class="n">fn_name</span>
+
+        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="p">(</span><span class="n">six</span><span class="o">.</span><span class="n">string_types</span><span class="p">,</span> <span class="n">collections</span><span class="o">.</span><span class="n">Mapping</span><span class="p">)):</span>
+            <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Incorrect arguments to &quot;</span><span class="si">%(fn_name)s</span><span class="s1">&quot; &#39;</span>
+                              <span class="s1">&#39;should be: </span><span class="si">%(example)s</span><span class="s1">&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">fmt_data</span><span class="p">)</span>
+
+<div class="viewcode-block" id="StrSplit.result"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.StrSplit.result">[docs]</a>    <span class="k">def</span> <span class="nf">result</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">args</span> <span class="o">=</span> <span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">)</span>
+
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">delim</span> <span class="o">=</span> <span class="n">args</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
+            <span class="n">str_to_split</span> <span class="o">=</span> <span class="n">args</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
+        <span class="k">except</span> <span class="p">(</span><span class="ne">AttributeError</span><span class="p">,</span> <span class="ne">IndexError</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Incorrect arguments to &quot;</span><span class="si">%(fn_name)s</span><span class="s1">&quot; &#39;</span>
+                               <span class="s1">&#39;should be: </span><span class="si">%(example)s</span><span class="s1">&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">fmt_data</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">str_to_split</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">None</span>
+
+        <span class="n">split_list</span> <span class="o">=</span> <span class="n">str_to_split</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="n">delim</span><span class="p">)</span>
+
+        <span class="c1"># Optionally allow an index to be specified</span>
+        <span class="k">if</span> <span class="n">args</span><span class="p">:</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">index</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="mi">0</span><span class="p">))</span>
+            <span class="k">except</span> <span class="ne">ValueError</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Incorrect index to &quot;</span><span class="si">%(fn_name)s</span><span class="s1">&quot; &#39;</span>
+                                   <span class="s1">&#39;should be: </span><span class="si">%(example)s</span><span class="s1">&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">fmt_data</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">try</span><span class="p">:</span>
+                    <span class="n">res</span> <span class="o">=</span> <span class="n">split_list</span><span class="p">[</span><span class="n">index</span><span class="p">]</span>
+                <span class="k">except</span> <span class="ne">IndexError</span><span class="p">:</span>
+                    <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Incorrect index to &quot;</span><span class="si">%(fn_name)s</span><span class="s1">&quot; &#39;</span>
+                                       <span class="s1">&#39;should be between 0 and &#39;</span>
+                                       <span class="s1">&#39;</span><span class="si">%(max_index)s</span><span class="s1">&#39;</span><span class="p">)</span>
+                                     <span class="o">%</span> <span class="p">{</span><span class="s1">&#39;fn_name&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">,</span>
+                                        <span class="s1">&#39;max_index&#39;</span><span class="p">:</span> <span class="nb">len</span><span class="p">(</span><span class="n">split_list</span><span class="p">)</span> <span class="o">-</span> <span class="mi">1</span><span class="p">})</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">res</span> <span class="o">=</span> <span class="n">split_list</span>
+        <span class="k">return</span> <span class="n">res</span></div></div>
+
+
+<div class="viewcode-block" id="Yaql"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.Yaql">[docs]</a><span class="k">class</span> <span class="nc">Yaql</span><span class="p">(</span><span class="n">function</span><span class="o">.</span><span class="n">Function</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A function for executing a yaql expression.</span>
+
+<span class="sd">    Takes the form::</span>
+
+<span class="sd">        yaql:</span>
+<span class="sd">            expression:</span>
+<span class="sd">                &lt;body&gt;</span>
+<span class="sd">            data:</span>
+<span class="sd">                &lt;var&gt;: &lt;list&gt;</span>
+
+<span class="sd">    Evaluates expression &lt;body&gt; on the given data.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">_parser</span> <span class="o">=</span> <span class="bp">None</span>
+
+    <span class="nd">@classmethod</span>
+<div class="viewcode-block" id="Yaql.get_yaql_parser"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.Yaql.get_yaql_parser">[docs]</a>    <span class="k">def</span> <span class="nf">get_yaql_parser</span><span class="p">(</span><span class="bp">cls</span><span class="p">):</span>
+        <span class="k">if</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_parser</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">global_options</span> <span class="o">=</span> <span class="p">{</span>
+                <span class="s1">&#39;yaql.limitIterators&#39;</span><span class="p">:</span> <span class="n">cfg</span><span class="o">.</span><span class="n">CONF</span><span class="o">.</span><span class="n">yaql</span><span class="o">.</span><span class="n">limit_iterators</span><span class="p">,</span>
+                <span class="s1">&#39;yaql.memoryQuota&#39;</span><span class="p">:</span> <span class="n">cfg</span><span class="o">.</span><span class="n">CONF</span><span class="o">.</span><span class="n">yaql</span><span class="o">.</span><span class="n">memory_quota</span>
+            <span class="p">}</span>
+            <span class="bp">cls</span><span class="o">.</span><span class="n">_parser</span> <span class="o">=</span> <span class="n">yaql</span><span class="o">.</span><span class="n">YaqlFactory</span><span class="p">()</span><span class="o">.</span><span class="n">create</span><span class="p">(</span><span class="n">global_options</span><span class="p">)</span>
+            <span class="bp">cls</span><span class="o">.</span><span class="n">_context</span> <span class="o">=</span> <span class="n">yaql</span><span class="o">.</span><span class="n">create_context</span><span class="p">()</span>
+        <span class="k">return</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_parser</span></div>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">stack</span><span class="p">,</span> <span class="n">fn_name</span><span class="p">,</span> <span class="n">args</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">Yaql</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">stack</span><span class="p">,</span> <span class="n">fn_name</span><span class="p">,</span> <span class="n">args</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">,</span> <span class="n">collections</span><span class="o">.</span><span class="n">Mapping</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Arguments to &quot;</span><span class="si">%s</span><span class="s1">&quot; must be a map.&#39;</span><span class="p">)</span> <span class="o">%</span>
+                            <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+
+        <span class="k">try</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_expression</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">[</span><span class="s1">&#39;expression&#39;</span><span class="p">]</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_data</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;data&#39;</span><span class="p">,</span> <span class="p">{})</span>
+            <span class="k">if</span> <span class="nb">set</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">)</span> <span class="o">-</span> <span class="nb">set</span><span class="p">([</span><span class="s1">&#39;expression&#39;</span><span class="p">,</span> <span class="s1">&#39;data&#39;</span><span class="p">]):</span>
+                <span class="k">raise</span> <span class="ne">KeyError</span>
+        <span class="k">except</span> <span class="p">(</span><span class="ne">KeyError</span><span class="p">,</span> <span class="ne">TypeError</span><span class="p">):</span>
+            <span class="n">example</span> <span class="o">=</span> <span class="p">(</span><span class="s1">&#39;&#39;&#39;</span><span class="si">%s</span><span class="s1">:</span>
+<span class="s1">              expression: $.data.var1.sum()</span>
+<span class="s1">              data:</span>
+<span class="s1">                var1: [3, 2, 1]&#39;&#39;&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span>
+            <span class="k">raise</span> <span class="ne">KeyError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;&quot;</span><span class="si">%(name)s</span><span class="s1">&quot; syntax should be </span><span class="si">%(example)s</span><span class="s1">&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="p">{</span>
+                <span class="s1">&#39;name&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">,</span> <span class="s1">&#39;example&#39;</span><span class="p">:</span> <span class="n">example</span><span class="p">})</span>
+
+<div class="viewcode-block" id="Yaql.validate"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.Yaql.validate">[docs]</a>    <span class="k">def</span> <span class="nf">validate</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">Yaql</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">validate</span><span class="p">()</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_expression</span><span class="p">,</span> <span class="n">function</span><span class="o">.</span><span class="n">Function</span><span class="p">):</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_parse</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_expression</span><span class="p">)</span></div>
+
+    <span class="k">def</span> <span class="nf">_parse</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">expression</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">expression</span><span class="p">,</span> <span class="n">six</span><span class="o">.</span><span class="n">string_types</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;The &quot;expression&quot; argument to </span><span class="si">%s</span><span class="s1"> must &#39;</span>
+                              <span class="s1">&#39;contain a string.&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+
+        <span class="n">parse</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_yaql_parser</span><span class="p">()</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">parse</span><span class="p">(</span><span class="n">expression</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">YaqlException</span> <span class="k">as</span> <span class="n">yex</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Bad expression </span><span class="si">%s</span><span class="s1">.&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="n">yex</span><span class="p">)</span>
+
+<div class="viewcode-block" id="Yaql.result"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.Yaql.result">[docs]</a>    <span class="k">def</span> <span class="nf">result</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">statement</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_parse</span><span class="p">(</span><span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_expression</span><span class="p">))</span>
+        <span class="n">data</span> <span class="o">=</span> <span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_data</span><span class="p">)</span>
+        <span class="n">context</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_context</span><span class="o">.</span><span class="n">create_child_context</span><span class="p">()</span>
+        <span class="k">return</span> <span class="n">statement</span><span class="o">.</span><span class="n">evaluate</span><span class="p">({</span><span class="s1">&#39;data&#39;</span><span class="p">:</span> <span class="n">data</span><span class="p">},</span> <span class="n">context</span><span class="p">)</span></div></div>
+
+
+<div class="viewcode-block" id="Equals"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.Equals">[docs]</a><span class="k">class</span> <span class="nc">Equals</span><span class="p">(</span><span class="n">function</span><span class="o">.</span><span class="n">Function</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A function for comparing whether two values are equal.</span>
+
+<span class="sd">    Takes the form::</span>
+
+<span class="sd">        equals:</span>
+<span class="sd">          - &lt;value_1&gt;</span>
+<span class="sd">          - &lt;value_2&gt;</span>
+
+<span class="sd">    The value can be any type that you want to compare. Returns true</span>
+<span class="sd">    if the two values are equal or false if they aren&#39;t.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">stack</span><span class="p">,</span> <span class="n">fn_name</span><span class="p">,</span> <span class="n">args</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">Equals</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">stack</span><span class="p">,</span> <span class="n">fn_name</span><span class="p">,</span> <span class="n">args</span><span class="p">)</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">if</span> <span class="p">(</span><span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">args</span> <span class="ow">or</span>
+                    <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">,</span> <span class="nb">list</span><span class="p">)):</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">value1</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">value2</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">args</span>
+        <span class="k">except</span> <span class="ne">ValueError</span><span class="p">:</span>
+            <span class="n">msg</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;Arguments to &quot;</span><span class="si">%s</span><span class="s1">&quot; must be of the form: &#39;</span>
+                    <span class="s1">&#39;[value_1, value_2]&#39;</span><span class="p">)</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">msg</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+
+<div class="viewcode-block" id="Equals.result"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.Equals.result">[docs]</a>    <span class="k">def</span> <span class="nf">result</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">resolved_v1</span> <span class="o">=</span> <span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">value1</span><span class="p">)</span>
+        <span class="n">resolved_v2</span> <span class="o">=</span> <span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">value2</span><span class="p">)</span>
+
+        <span class="k">return</span> <span class="n">resolved_v1</span> <span class="o">==</span> <span class="n">resolved_v2</span></div></div>
+
+
+<div class="viewcode-block" id="If"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.If">[docs]</a><span class="k">class</span> <span class="nc">If</span><span class="p">(</span><span class="n">function</span><span class="o">.</span><span class="n">Macro</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A function to return corresponding value based on condition evaluation.</span>
+
+<span class="sd">    Takes the form::</span>
+
+<span class="sd">        if:</span>
+<span class="sd">          - &lt;condition_name&gt;</span>
+<span class="sd">          - &lt;value_if_true&gt;</span>
+<span class="sd">          - &lt;value_if_false&gt;</span>
+
+<span class="sd">    The value_if_true to be returned if the specified condition evaluates</span>
+<span class="sd">    to true, the value_if_false to be returned if the specified condition</span>
+<span class="sd">    evaluates to false.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+<div class="viewcode-block" id="If.parse_args"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.If.parse_args">[docs]</a>    <span class="k">def</span> <span class="nf">parse_args</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">parse_func</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">if</span> <span class="p">(</span><span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">args</span> <span class="ow">or</span>
+                    <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">,</span> <span class="n">collections</span><span class="o">.</span><span class="n">Sequence</span><span class="p">)</span> <span class="ow">or</span>
+                    <span class="nb">isinstance</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">,</span> <span class="n">six</span><span class="o">.</span><span class="n">string_types</span><span class="p">)):</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">()</span>
+            <span class="n">condition</span><span class="p">,</span> <span class="n">value_if_true</span><span class="p">,</span> <span class="n">value_if_false</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">args</span>
+        <span class="k">except</span> <span class="ne">ValueError</span><span class="p">:</span>
+            <span class="n">msg</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;Arguments to &quot;</span><span class="si">%s</span><span class="s1">&quot; must be of the form: &#39;</span>
+                    <span class="s1">&#39;[condition_name, value_if_true, value_if_false]&#39;</span><span class="p">)</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">msg</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+
+        <span class="n">cond</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">template</span><span class="o">.</span><span class="n">parse_condition</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">stack</span><span class="p">,</span> <span class="n">condition</span><span class="p">,</span>
+                                             <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+        <span class="n">cd</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_condition</span><span class="p">(</span><span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="n">cond</span><span class="p">))</span>
+        <span class="k">return</span> <span class="n">parse_func</span><span class="p">(</span><span class="n">value_if_true</span> <span class="k">if</span> <span class="n">cd</span> <span class="k">else</span> <span class="n">value_if_false</span><span class="p">)</span></div>
+
+    <span class="k">def</span> <span class="nf">_get_condition</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">cond</span><span class="p">):</span>
+        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">cond</span><span class="p">,</span> <span class="nb">bool</span><span class="p">):</span>
+            <span class="k">return</span> <span class="n">cond</span>
+
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">template</span><span class="o">.</span><span class="n">conditions</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">stack</span><span class="p">)</span><span class="o">.</span><span class="n">is_enabled</span><span class="p">(</span><span class="n">cond</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="ConditionBoolean"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.ConditionBoolean">[docs]</a><span class="k">class</span> <span class="nc">ConditionBoolean</span><span class="p">(</span><span class="n">function</span><span class="o">.</span><span class="n">Function</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Abstract parent class of boolean condition functions.&quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">stack</span><span class="p">,</span> <span class="n">fn_name</span><span class="p">,</span> <span class="n">args</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">ConditionBoolean</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">stack</span><span class="p">,</span> <span class="n">fn_name</span><span class="p">,</span> <span class="n">args</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_check_args</span><span class="p">()</span>
+
+    <span class="k">def</span> <span class="nf">_check_args</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="p">(</span><span class="nb">isinstance</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">,</span> <span class="n">collections</span><span class="o">.</span><span class="n">Sequence</span><span class="p">)</span> <span class="ow">and</span>
+                <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">,</span> <span class="n">six</span><span class="o">.</span><span class="n">string_types</span><span class="p">)):</span>
+            <span class="n">msg</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;Arguments to &quot;</span><span class="si">%s</span><span class="s1">&quot; must be a list of conditions&#39;</span><span class="p">)</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">msg</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">args</span> <span class="ow">or</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">)</span> <span class="o">&lt;</span> <span class="mi">2</span><span class="p">:</span>
+            <span class="n">msg</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;The minimum number of condition arguments to &quot;</span><span class="si">%s</span><span class="s1">&quot; is 2.&#39;</span><span class="p">)</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">msg</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_get_condition</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">arg</span><span class="p">):</span>
+        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">arg</span><span class="p">,</span> <span class="nb">bool</span><span class="p">):</span>
+            <span class="k">return</span> <span class="n">arg</span>
+
+        <span class="n">conditions</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">stack</span><span class="o">.</span><span class="n">t</span><span class="o">.</span><span class="n">conditions</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">stack</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">conditions</span><span class="o">.</span><span class="n">is_enabled</span><span class="p">(</span><span class="n">arg</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="Not"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.Not">[docs]</a><span class="k">class</span> <span class="nc">Not</span><span class="p">(</span><span class="n">ConditionBoolean</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A function that acts as a NOT operator on a condition.</span>
+
+<span class="sd">    Takes the form::</span>
+
+<span class="sd">        not: &lt;condition&gt;</span>
+
+<span class="sd">    Returns true for a condition that evaluates to false or</span>
+<span class="sd">    returns false for a condition that evaluates to true.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="nf">_check_args</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">condition</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">args</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">args</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">msg</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;Argument to &quot;</span><span class="si">%s</span><span class="s1">&quot; must be a condition&#39;</span><span class="p">)</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">msg</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+
+<div class="viewcode-block" id="Not.result"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.Not.result">[docs]</a>    <span class="k">def</span> <span class="nf">result</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">cd</span> <span class="o">=</span> <span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">condition</span><span class="p">)</span>
+        <span class="k">return</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_condition</span><span class="p">(</span><span class="n">cd</span><span class="p">)</span></div></div>
+
+
+<div class="viewcode-block" id="And"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.And">[docs]</a><span class="k">class</span> <span class="nc">And</span><span class="p">(</span><span class="n">ConditionBoolean</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A function that acts as an AND operator on conditions.</span>
+
+<span class="sd">    Takes the form::</span>
+
+<span class="sd">        and:</span>
+<span class="sd">          - &lt;condition_1&gt;</span>
+<span class="sd">          - &lt;condition_2&gt;</span>
+<span class="sd">          - ...</span>
+
+<span class="sd">    Returns true if all the specified conditions evaluate to true, or returns</span>
+<span class="sd">    false if any one of the conditions evaluates to false. The minimum number</span>
+<span class="sd">    of conditions that you can include is 2.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+<div class="viewcode-block" id="And.result"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.And.result">[docs]</a>    <span class="k">def</span> <span class="nf">result</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="nb">all</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_get_condition</span><span class="p">(</span><span class="n">cd</span><span class="p">)</span>
+                   <span class="k">for</span> <span class="n">cd</span> <span class="ow">in</span> <span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">))</span></div></div>
+
+
+<div class="viewcode-block" id="Or"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.Or">[docs]</a><span class="k">class</span> <span class="nc">Or</span><span class="p">(</span><span class="n">ConditionBoolean</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A function that acts as an OR operator on conditions.</span>
+
+<span class="sd">    Takes the form::</span>
+
+<span class="sd">        or:</span>
+<span class="sd">          - &lt;condition_1&gt;</span>
+<span class="sd">          - &lt;condition_2&gt;</span>
+<span class="sd">          - ...</span>
+
+<span class="sd">    Returns true if any one of the specified conditions evaluate to true,</span>
+<span class="sd">    or returns false if all of the conditions evaluates to false. The minimum</span>
+<span class="sd">    number of conditions that you can include is 2.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+<div class="viewcode-block" id="Or.result"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.Or.result">[docs]</a>    <span class="k">def</span> <span class="nf">result</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="nb">any</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_get_condition</span><span class="p">(</span><span class="n">cd</span><span class="p">)</span>
+                   <span class="k">for</span> <span class="n">cd</span> <span class="ow">in</span> <span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">))</span></div></div>
+
+
+<div class="viewcode-block" id="Filter"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.Filter">[docs]</a><span class="k">class</span> <span class="nc">Filter</span><span class="p">(</span><span class="n">function</span><span class="o">.</span><span class="n">Function</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A function for filtering out values from lists.</span>
+
+<span class="sd">    Takes the form::</span>
+
+<span class="sd">        filter:</span>
+<span class="sd">          - &lt;values&gt;</span>
+<span class="sd">          - &lt;list&gt;</span>
+
+<span class="sd">    Returns a new list without the values.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">stack</span><span class="p">,</span> <span class="n">fn_name</span><span class="p">,</span> <span class="n">args</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">Filter</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">stack</span><span class="p">,</span> <span class="n">fn_name</span><span class="p">,</span> <span class="n">args</span><span class="p">)</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">_values</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_sequence</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_parse_args</span><span class="p">()</span>
+
+    <span class="k">def</span> <span class="nf">_parse_args</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="p">(</span><span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">,</span> <span class="n">collections</span><span class="o">.</span><span class="n">Sequence</span><span class="p">)</span> <span class="ow">or</span>
+                <span class="nb">isinstance</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">,</span> <span class="n">six</span><span class="o">.</span><span class="n">string_types</span><span class="p">)):</span>
+            <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Argument to &quot;</span><span class="si">%s</span><span class="s1">&quot; must be a list&#39;</span><span class="p">)</span> <span class="o">%</span>
+                            <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">)</span> <span class="o">!=</span> <span class="mi">2</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;&quot;</span><span class="si">%(fn)s</span><span class="s1">&quot; expected 2 arguments of the form &#39;</span>
+                               <span class="s1">&#39;[values, sequence] but got </span><span class="si">%(len)d</span><span class="s1"> arguments &#39;</span>
+                               <span class="s1">&#39;instead&#39;</span><span class="p">)</span> <span class="o">%</span>
+                             <span class="p">{</span><span class="s1">&#39;fn&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">,</span> <span class="s1">&#39;len&#39;</span><span class="p">:</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">)})</span>
+
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="bp">self</span><span class="o">.</span><span class="n">args</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span>
+
+<div class="viewcode-block" id="Filter.result"><a class="viewcode-back" href="../../../../api/heat.engine.hot.functions.html#heat.engine.hot.functions.Filter.result">[docs]</a>    <span class="k">def</span> <span class="nf">result</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">sequence</span> <span class="o">=</span> <span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_sequence</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">sequence</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">sequence</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">sequence</span><span class="p">,</span> <span class="nb">list</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;&quot;</span><span class="si">%s</span><span class="s1">&quot; only works with lists&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+
+        <span class="n">values</span> <span class="o">=</span> <span class="n">function</span><span class="o">.</span><span class="n">resolve</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_values</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">values</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">sequence</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">values</span><span class="p">,</span> <span class="nb">list</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span>
+                <span class="n">_</span><span class="p">(</span><span class="s1">&#39;&quot;</span><span class="si">%(fn)s</span><span class="s1">&quot; filters a list of values&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">fn_name</span><span class="p">)</span>
+        <span class="k">return</span> <span class="p">[</span><span class="n">i</span> <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="n">sequence</span> <span class="k">if</span> <span class="n">i</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">values</span><span class="p">]</span></div></div>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/heat
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../../../index.html">heat 8.0.0.0rc2.dev38 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../../../index.html" accesskey="U">Module code</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2012,2013 Heat Developers.
+      Last updated on &#39;Tue Feb 14 11:42:51 2017, commit 3ffc97c&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/heat");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

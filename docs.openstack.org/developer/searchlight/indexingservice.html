@@ -1,0 +1,405 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Searchlight Indexing &mdash; searchlight 2.0.0.0rc2.dev8 documentation</title>
+    
+    <link rel="stylesheet" href="_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '2.0.0.0rc2.dev8',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <link rel="top" title="searchlight 2.0.0.0rc2.dev8 documentation" href="index.html" />
+    <link rel="next" title="Cinder Plugin Guide" href="plugins/cinder.html" />
+    <link rel="prev" title="Searchlight API" href="searchlightapi.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="searchlight-indexing">
+<h1>Searchlight Indexing<a class="headerlink" href="#searchlight-indexing" title="Permalink to this headline">¶</a></h1>
+<p>In order for the Searchlight API service to return results, information
+must be indexed. The two primary mechanisms by which this happens are indexing
+from the source (which allows a complete index rebuild) and incrementally
+updating the index based on information received via notifications.
+The information indexed is determined by a plugin model.</p>
+<div class="section" id="search-plugins">
+<h2>Search plugins<a class="headerlink" href="#search-plugins" title="Permalink to this headline">¶</a></h2>
+<p>The search service determines the type of information that is indexed and
+searchable via a plugin mechanism.</p>
+<p>See <a class="reference internal" href="plugins.html#searchlight-plugins"><span>Searchlight Plugin Documentation</span></a> for plugin installation and general
+configuration information.</p>
+<p>See each plugin below for detailed information about specific plugins:</p>
+<div class="toctree-wrapper compound">
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="plugins/cinder.html">Cinder Plugin Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="plugins/designate.html">Designate Plugin Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="plugins/glance.html">Glance Plugin Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="plugins/ironic.html">Ironic Plugin Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="plugins/neutron.html">Neutron Plugin Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="plugins/nova.html">Nova Plugin Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="plugins/swift.html">Swift Plugin Guide</a></li>
+</ul>
+</div>
+</div>
+<div class="section" id="indexing-model">
+<span id="id1"></span><h2>Indexing model<a class="headerlink" href="#indexing-model" title="Permalink to this headline">¶</a></h2>
+<p>The Mitaka Searchlight release introduced the ability to continue executing
+search requests while reindexing operations are running. This feature is called
+<em>zero-downtime reindexing</em>. In order to implement zero-downtime indexing, the
+concept of a <em>resource group</em> was introduced.</p>
+<p>A <em>resource group</em> is a collection of plugins that share an Elasticsearch
+index.  Since each plugin represents a <em>resource type</em>, you can think of a
+resource group as a collection of resource types.</p>
+<p>For each resource group, Searchlight creates an index whose name consists of
+the resource group name appended with a timestamp. Each resource group is
+referred to by a pair of Elasticsearch <a class="reference external" href="https://www.elastic.co/guide/en/elasticsearch/reference/current/indices-aliases.html">aliases</a>. One alias is used for
+searching by the API (the <em>search alias</em>), and the other (the <em>listener alias</em>)
+is used to index incoming events.</p>
+<p>During reindexing, a new index is created, and the listener alias is pointed at
+both the old and new indices. Incoming events are therefore indexed into both
+indices. The search alias is left pointing at the old index. Once indexing is
+finished, both aliases are pointed solely at the new index and the old index
+is deleted.</p>
+<p>In order to improve the performance of reindexing, index refresh of the new
+index is disabled during reindexing, and turned on after reindexing is done.
+As a consequence, Documents synced to the new index are not searchable until
+index is refreshed, but document retrieval by IDs still works, because GET
+operation in Elasticsearch is realtime.</p>
+<p>It is important to note that zero-downtime reindexing requires that <strong>all</strong>
+plugins in a resource group are indexed together. When it&#8217;s desired to index an
+individual resource type, an optimization copies existing data directly from
+the old index to the new one to avoid re-harvesting the data from each service
+API.</p>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">Due to some limitations discovered during the Mitaka release, indexing into
+multiple indices (multiple plugin resource groups) is disabled. The newton release
+implemented full support for specifying different resource groups for different
+resource types.</p>
+</div>
+<div class="section" id="sorting-across-resource-groups">
+<span id="using-resource-groups"></span><h3>Sorting across resource groups<a class="headerlink" href="#sorting-across-resource-groups" title="Permalink to this headline">¶</a></h3>
+<p>Using multiple resource groups will impact sort behavior when sorting on fields
+across resource types when all the resource types don&#8217;t have the requested &#8216;sort-by field&#8217;.
+Follow the guidelines below to avoid errors:</p>
+<blockquote>
+<div><a class="reference external" href="https://www.elastic.co/guide/en/elasticsearch/reference/current/search-request-sort.html#_ignoring_unmapped_fields">https://www.elastic.co/guide/en/elasticsearch/reference/current/search-request-sort.html#_ignoring_unmapped_fields</a>
+<a class="reference external" href="https://www.elastic.co/guide/en/elasticsearch/reference/current/search-request-sort.html#_missing_values">https://www.elastic.co/guide/en/elasticsearch/reference/current/search-request-sort.html#_missing_values</a></div></blockquote>
+</div>
+</div>
+<div class="section" id="bulk-indexing">
+<span id="es-bulk-indexing"></span><h2>Bulk indexing<a class="headerlink" href="#bulk-indexing" title="Permalink to this headline">¶</a></h2>
+<p>To initially create the catalog index (or add new resource typs to it later),
+run the following command:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>$ searchlight-manage index sync
+</pre></div>
+</div>
+<p>This will iterate through all registered and enabled search plugins and
+request that they perform a full indexing of all data that&#8217;s available to them.</p>
+<p>It is also possible to index just a single resource, or all resources
+belonging to a resource group. For instance, to index all glance images:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>$ searchlight-manage index sync --type OS::Glance::Image
+</pre></div>
+</div>
+<p>As described above, this will create a new index for all plugins that share a
+resource group with OS::Glance::Image. The management command will retrieve
+up-to-date information from the Glance API. Data for other plugins will be
+bulk-copied from a preexisting index into the new one using the <a class="reference external" href="https://www.elastic.co/guide/en/elasticsearch/reference/current/search-request-scroll.html">scroll</a> and
+<a class="reference external" href="https://www.elastic.co/guide/en/elasticsearch/reference/current/docs-bulk.html">bulk</a> features of Elasticsearch.</p>
+<p>You can use the wildcard character * at the <em>end</em> of the <code class="docutils literal"><span class="pre">type</span></code> argument.
+For instance, the following will match all cinder plugins:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>$ searchlight-manage index sync --type OS::Cinder::*
+</pre></div>
+</div>
+<p>Wildcard characters are only allowed at the end of the argument; they will not
+be matched anywhere else.</p>
+<p>To index all resources in the &#8216;searchlight&#8217; resource group:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>$ searchlight-manage index sync --index searchlight
+</pre></div>
+</div>
+<p>You will be prompted to confirm unless <code class="docutils literal"><span class="pre">--force</span></code> is provided.</p>
+<p>To reindex resources only without notification:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>$ searchlight-manage index sync --notification-less
+</pre></div>
+</div>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">We <em>strongly</em> recommend putting the notification-less plugins in their own
+resource group and scheduling a <a href="#id2"><span class="problematic" id="id3">`cron https://en.wikipedia.org/wiki/Cron`_</span></a>
+job to periodically re-sync the notification plugins to keep the documents
+up to date.</p>
+</div>
+<p>The <code class="docutils literal"><span class="pre">searchlight-manage</span> <span class="pre">index</span> <span class="pre">sync</span></code> command may be re-run at any time to
+perform a full re-index of the data. As described above, there should be no
+or very little impact on search requests during this process.</p>
+</div>
+<div class="section" id="parent-child-relationships">
+<h2>Parent/child relationships<a class="headerlink" href="#parent-child-relationships" title="Permalink to this headline">¶</a></h2>
+<p>Some plugins contain multiple resources with parent/child relationships;
+the Designate plugins are an example. Because reindexing parent data independent
+of child documents does not logically make sense (without orphaning them), it
+is not possible to request indexing of a child resource type:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>$ searchlight-manage index sync --type OS::Designate::RecordSet
+
+&#39;OS::Designate::RecordSet&#39; is a child of &#39;OS::Designate::Zone&#39; and cannot be indexed separately.
+Indexing &#39;OS::Designate::Zone&#39; will re-index all child resource types.
+</pre></div>
+</div>
+<p>You can see parent/child relationships in the list of resources presented prior
+to indexing:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>$ searchlight-manage index sync --type OS::Designate::Zone
+
+Resource types (and indices) matching selection:
+  OS::Designate::Zone (designate)
+      ----&gt;  OS::Designate::RecordSet
+</pre></div>
+</div>
+<p>Child plugins will inherit their resource group name from their parent. Any
+child configuration setting for resource_group_name will be ignored.</p>
+</div>
+<div class="section" id="incremental-updates">
+<h2>Incremental Updates<a class="headerlink" href="#incremental-updates" title="Permalink to this headline">¶</a></h2>
+<p>Once a resource has been indexed, typically you will only need to consume
+incremental updates rather than re-index the entire data set again. The
+preferred methodolgy is to set up notification listening.</p>
+<div class="section" id="notifications">
+<h3>Notifications<a class="headerlink" href="#notifications" title="Permalink to this headline">¶</a></h3>
+<p>Many services publish notifications when there are changes to the resources
+they own. The searchlight listener consumes these notifications and will
+perform incremental updates to the index based on those notifications.</p>
+<p>To start this service, run the following command:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>$ searchlight-listener
+</pre></div>
+</div>
+<p>Note, this will typically require that you have configured notifications
+properly for the service which owns the resource. For example, the glance
+service owns images and metadata definitions. Please check the plugin
+documentation for each service&#8217;s specific configuration requirements.</p>
+</div>
+</div>
+<div class="section" id="multi-thread-support">
+<h2>Multi-Thread Support<a class="headerlink" href="#multi-thread-support" title="Permalink to this headline">¶</a></h2>
+<p>The Newton Searchlight release introduced multiple thread support for
+indexing. Previously when the <code class="docutils literal"><span class="pre">searchlight-manage</span> <span class="pre">index</span> <span class="pre">sync</span></code>
+command was executed, all indexing occurred in a single thread. To boost
+the performance of the indexing functionality, each resource type
+will now index in its own thread. Multiple indexing threads will run
+concurrently.</p>
+<p>By default, the maximum number of simultaneous threads is 3. This limit
+can be modified in the Searchlight configuration file. The setting is
+called <code class="docutils literal"><span class="pre">workers</span></code> and lives under <code class="docutils literal"><span class="pre">[manage]</span></code>. For example, to
+increase the maximum number of threads to 6, the following can be added
+to the Searchlight configuration file:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="p">[</span><span class="n">manage</span><span class="p">]</span>
+<span class="n">workers</span><span class="o">=</span><span class="mi">6</span>
+</pre></div>
+</div>
+<p>The use of threads can also affect the parsing of the log files. The
+default formatting of the log messages include only the process ID,
+but no thread-specific information. This can be changed by modifying
+the formatting string settings in the Searchlight configuration file.
+To add the thread ID for a message, add <code class="docutils literal"><span class="pre">%(thread)d</span></code>. To add the thread
+name, add <code class="docutils literal"><span class="pre">%(threadName)s</span></code>. For example, to add the thread ID and the
+thread name after the process ID to the logging message, the following
+setting can be added to the Searchlight configuration file:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>logging_default_format_string = %(asctime)s.%(msecs)03d %(process)d %(thread)d %(threadName)s %(levelname)s %(name)s [-] %(instance)s%(message)s
+</pre></div>
+</div>
+</div>
+<div class="section" id="force-elasticsearch-indexing">
+<h2>Force Elasticsearch indexing<a class="headerlink" href="#force-elasticsearch-indexing" title="Permalink to this headline">¶</a></h2>
+<p>The Newton Searchlight release introduced the ability to reindex
+from Elasticsearch only, bypassing the plugin APIs altogether.
+This option is useful if there has been a change to the mapping
+definitions or the index settings. This functionality is enabled
+with the option <code class="docutils literal"><span class="pre">--apply-mapping-changes</span></code> for the <code class="docutils literal"><span class="pre">index</span></code> command.</p>
+<p>A sample usage would be:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>$ searchlight-manage index aliases --apply-mapping-changes
+</pre></div>
+</div>
+<p>The <code class="docutils literal"><span class="pre">--type</span></code> option is not compatible with the <code class="docutils literal"><span class="pre">--apply-mapping-changes</span></code>
+option. Specifying both options on the command line will result in an error.</p>
+<div class="admonition warning">
+<p class="first admonition-title">Warning</p>
+<p class="last">The resource group cannot be changed when using this option.
+If you do change the resource group, the underlying index will
+be changed and will result in an empty index.</p>
+</div>
+</div>
+</div>
+<div class="section" id="elasticsearch-index-cleanup">
+<span id="es-index-cleanup"></span><h1>Elasticsearch Index Cleanup<a class="headerlink" href="#elasticsearch-index-cleanup" title="Permalink to this headline">¶</a></h1>
+<p>In some cases, there may be orphaned Searchlight indices in Elasticsearch.
+An orphaned index is one that is no longer used by Searchlight, either
+directly or through an alias.</p>
+<p>To help detect which Searchlight-related indices may be orphaned in
+Elasticsearch, the <code class="docutils literal"><span class="pre">searchlight-manage</span></code> command will display all indices
+that are currently being used by Searchlight. This is the <code class="docutils literal"><span class="pre">aliases</span></code>
+option to the <code class="docutils literal"><span class="pre">index</span></code> command:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>$ searchlight-manage index aliases
+</pre></div>
+</div>
+<p>This command outputs a listing of all indices that are used by
+Searchlight (based on the current configuration file). The aliases
+associated with each index is also shown. A sample output will look
+like this:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>$ searchlight-manage index aliases
+List of Elasticsearch indices (and their associated aliases) used by Searchlight.
+
+Note:
+The indices are based on the current config file.
+To view indices used by other Searchlight config files, use the --config-file option.
+
+Indices are denoted with a &#39;*&#39;
+Aliases are denoted with a &#39;+&#39;
+
+    * searchlight-2016_07_13_17_09_27
+        + searchlight-listener
+        + searchlight-search
+    * sl-swift-2016_07_13_17_09_26
+        + sl-swift-listener
+        + sl-swift-search
+</pre></div>
+</div>
+<p>The example shows that Searchlight is using two indices in Elasticsearch:
+<code class="docutils literal"><span class="pre">searchlight-2016_07_13_17_09_27</span></code> and <code class="docutils literal"><span class="pre">sl-swift-2016_07_13_17_09_26</span></code>.
+The index <code class="docutils literal"><span class="pre">searchlight-2016_07_13_17_09_27</span></code> has two aliases: <code class="docutils literal"><span class="pre">searchlight-listener</span></code>
+and <code class="docutils literal"><span class="pre">searchlight-search</span></code>. The index <code class="docutils literal"><span class="pre">sl-swift-2016_07_13_17_09_26</span></code> has
+two aliases: <code class="docutils literal"><span class="pre">sl-swift-listener</span></code> and <code class="docutils literal"><span class="pre">sl-swift-search</span></code>.</p>
+<p>Any other indices or aliases in Elasticsearch are not used by this specific
+Searchlight configuration. NOTE: If there are other Searchlight
+instances running with a different configuration, their indices and aliases
+will not by displayed by this command. The user will need to rerun the
+<code class="docutils literal"><span class="pre">index</span> <span class="pre">aliases</span></code> command using these other configuration files.</p>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Searchlight Indexing</a><ul>
+<li><a class="reference internal" href="#search-plugins">Search plugins</a></li>
+<li><a class="reference internal" href="#indexing-model">Indexing model</a><ul>
+<li><a class="reference internal" href="#sorting-across-resource-groups">Sorting across resource groups</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#bulk-indexing">Bulk indexing</a></li>
+<li><a class="reference internal" href="#parent-child-relationships">Parent/child relationships</a></li>
+<li><a class="reference internal" href="#incremental-updates">Incremental Updates</a><ul>
+<li><a class="reference internal" href="#notifications">Notifications</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#multi-thread-support">Multi-Thread Support</a></li>
+<li><a class="reference internal" href="#force-elasticsearch-indexing">Force Elasticsearch indexing</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#elasticsearch-index-cleanup">Elasticsearch Index Cleanup</a></li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="searchlightapi.html"
+                                  title="previous chapter">Searchlight API</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="plugins/cinder.html"
+                                  title="next chapter">Cinder Plugin Guide</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/searchlight
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="_sources/indexingservice.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="plugins/cinder.html" title="Cinder Plugin Guide"
+             accesskey="N">next</a></li>
+        <li class="right" >
+          <a href="searchlightapi.html" title="Searchlight API"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="index.html">searchlight 2.0.0.0rc2.dev8 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2010-2015, OpenStack Foundation..
+      Last updated on &#39;Thu Feb 9 15:23:46 2017, commit 40ee622&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/searchlight");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

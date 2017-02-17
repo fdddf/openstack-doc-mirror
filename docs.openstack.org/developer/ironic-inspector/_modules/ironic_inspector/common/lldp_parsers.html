@@ -1,0 +1,480 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>ironic_inspector.common.lldp_parsers &mdash; Ironic Inspector 5.0.1.dev1 documentation</title>
+    
+    <link rel="stylesheet" href="../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../',
+        VERSION:     '5.0.1.dev1',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../_static/doctools.js"></script>
+    <link rel="top" title="Ironic Inspector 5.0.1.dev1 documentation" href="../../../index.html" />
+    <link rel="up" title="Module code" href="../../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for ironic_inspector.common.lldp_parsers</h1><div class="highlight"><pre>
+<span></span><span class="c1"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);</span>
+<span class="c1"># you may not use this file except in compliance with the License.</span>
+<span class="c1"># You may obtain a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#    http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1"># Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,</span>
+<span class="c1"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or</span>
+<span class="c1"># implied.</span>
+<span class="c1"># See the License for the specific language governing permissions and</span>
+<span class="c1"># limitations under the License.</span>
+
+<span class="sd">&quot;&quot;&quot; Names and mapping functions used to map LLDP TLVs to name/value pairs &quot;&quot;&quot;</span>
+
+<span class="kn">import</span> <span class="nn">binascii</span>
+
+<span class="kn">from</span> <span class="nn">construct</span> <span class="kn">import</span> <span class="n">core</span>
+<span class="kn">import</span> <span class="nn">netaddr</span>
+
+<span class="kn">from</span> <span class="nn">ironic_inspector.common.i18n</span> <span class="kn">import</span> <span class="n">_</span><span class="p">,</span> <span class="n">_LW</span>
+<span class="kn">from</span> <span class="nn">ironic_inspector.common</span> <span class="kn">import</span> <span class="n">lldp_tlvs</span> <span class="k">as</span> <span class="n">tlv</span>
+<span class="kn">from</span> <span class="nn">ironic_inspector</span> <span class="kn">import</span> <span class="n">utils</span>
+
+<span class="n">LOG</span> <span class="o">=</span> <span class="n">utils</span><span class="o">.</span><span class="n">getProcessingLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+
+<span class="c1"># Names used in name/value pair from parsed TLVs</span>
+<span class="n">LLDP_CHASSIS_ID_NM</span> <span class="o">=</span> <span class="s1">&#39;switch_chassis_id&#39;</span>
+<span class="n">LLDP_PORT_ID_NM</span> <span class="o">=</span> <span class="s1">&#39;switch_port_id&#39;</span>
+<span class="n">LLDP_PORT_DESC_NM</span> <span class="o">=</span> <span class="s1">&#39;switch_port_description&#39;</span>
+<span class="n">LLDP_SYS_NAME_NM</span> <span class="o">=</span> <span class="s1">&#39;switch_system_name&#39;</span>
+<span class="n">LLDP_SYS_DESC_NM</span> <span class="o">=</span> <span class="s1">&#39;switch_system_description&#39;</span>
+<span class="n">LLDP_SWITCH_CAP_NM</span> <span class="o">=</span> <span class="s1">&#39;switch_capabilities&#39;</span>
+<span class="n">LLDP_CAP_SUPPORT_NM</span> <span class="o">=</span> <span class="s1">&#39;switch_capabilities_support&#39;</span>
+<span class="n">LLDP_CAP_ENABLED_NM</span> <span class="o">=</span> <span class="s1">&#39;switch_capabilities_enabled&#39;</span>
+<span class="n">LLDP_MGMT_ADDRESSES_NM</span> <span class="o">=</span> <span class="s1">&#39;switch_mgmt_addresses&#39;</span>
+<span class="n">LLDP_PORT_VLANID_NM</span> <span class="o">=</span> <span class="s1">&#39;switch_port_untagged_vlan_id&#39;</span>
+<span class="n">LLDP_PORT_PROT_NM</span> <span class="o">=</span> <span class="s1">&#39;switch_port_protocol&#39;</span>
+<span class="n">LLDP_PORT_PROT_VLAN_ENABLED_NM</span> <span class="o">=</span> <span class="s1">&#39;switch_port_protocol_vlan_enabled&#39;</span>
+<span class="n">LLDP_PORT_PROT_VLAN_SUPPORT_NM</span> <span class="o">=</span> <span class="s1">&#39;switch_port_protocol_vlan_support&#39;</span>
+<span class="n">LLDP_PORT_PROT_VLANIDS_NM</span> <span class="o">=</span> <span class="s1">&#39;switch_port_protocol_vlan_ids&#39;</span>
+<span class="n">LLDP_PORT_VLANS_NM</span> <span class="o">=</span> <span class="s1">&#39;switch_port_vlans&#39;</span>
+<span class="n">LLDP_PROTOCOL_IDENTITIES_NM</span> <span class="o">=</span> <span class="s1">&#39;switch_protocol_identities&#39;</span>
+<span class="n">LLDP_PORT_MGMT_VLANID_NM</span> <span class="o">=</span> <span class="s1">&#39;switch_port_management_vlan_id&#39;</span>
+<span class="n">LLDP_PORT_LINK_AGG_NM</span> <span class="o">=</span> <span class="s1">&#39;switch_port_link_aggregation&#39;</span>
+<span class="n">LLDP_PORT_LINK_AGG_ENABLED_NM</span> <span class="o">=</span> <span class="s1">&#39;switch_port_link_aggregation_enabled&#39;</span>
+<span class="n">LLDP_PORT_LINK_AGG_SUPPORT_NM</span> <span class="o">=</span> <span class="s1">&#39;switch_port_link_aggregation_support&#39;</span>
+<span class="n">LLDP_PORT_LINK_AGG_ID_NM</span> <span class="o">=</span> <span class="s1">&#39;switch_port_link_aggregation_id&#39;</span>
+<span class="n">LLDP_PORT_MAC_PHY_NM</span> <span class="o">=</span> <span class="s1">&#39;switch_port_mac_phy_config&#39;</span>
+<span class="n">LLDP_PORT_LINK_AUTONEG_ENABLED_NM</span> <span class="o">=</span> <span class="s1">&#39;switch_port_autonegotiation_enabled&#39;</span>
+<span class="n">LLDP_PORT_LINK_AUTONEG_SUPPORT_NM</span> <span class="o">=</span> <span class="s1">&#39;switch_port_autonegotiation_support&#39;</span>
+<span class="n">LLDP_PORT_CAPABILITIES_NM</span> <span class="o">=</span> <span class="s1">&#39;switch_port_physical_capabilities&#39;</span>
+<span class="n">LLDP_PORT_MAU_TYPE_NM</span> <span class="o">=</span> <span class="s1">&#39;switch_port_mau_type&#39;</span>
+<span class="n">LLDP_MTU_NM</span> <span class="o">=</span> <span class="s1">&#39;switch_port_mtu&#39;</span>
+
+
+<div class="viewcode-block" id="LLDPParser"><a class="viewcode-back" href="../../../api/ironic_inspector.common.lldp_parsers.html#ironic_inspector.common.lldp_parsers.LLDPParser">[docs]</a><span class="k">class</span> <span class="nc">LLDPParser</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Base class to handle parsing of LLDP TLVs</span>
+
+<span class="sd">    Each class that inherits from this base class must provide a parser map.</span>
+<span class="sd">    Parser maps are used to associate a LLDP TLV with a function handler</span>
+<span class="sd">    and arguments necessary to parse the TLV and generate one or more</span>
+<span class="sd">    name/value pairs.  Each LLDP TLV maps to a tuple with the following</span>
+<span class="sd">    fields:</span>
+
+<span class="sd">    function - handler function to generate name/value pairs</span>
+
+<span class="sd">    construct - name of construct definition for TLV</span>
+
+<span class="sd">    name - user-friendly name of TLV. For TLVs that generate only one</span>
+<span class="sd">    name/value pair this is the name used</span>
+
+<span class="sd">    len_check - boolean indicating if length check should be done on construct</span>
+
+<span class="sd">    It&#39;s valid to have a function handler of None, this is for TLVs that</span>
+<span class="sd">    are not mapped to a name/value pair(e.g.LLDP_TLV_TTL).</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">node_info</span><span class="p">,</span> <span class="n">nv</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Create LLDPParser</span>
+
+<span class="sd">        :param node_info - node being introspected</span>
+<span class="sd">        :param nv - dictionary of name/value pairs to use</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">nv_dict</span> <span class="o">=</span> <span class="n">nv</span> <span class="ow">or</span> <span class="p">{}</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">node_info</span> <span class="o">=</span> <span class="n">node_info</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">parser_map</span> <span class="o">=</span> <span class="p">{}</span>
+
+<div class="viewcode-block" id="LLDPParser.set_value"><a class="viewcode-back" href="../../../api/ironic_inspector.common.lldp_parsers.html#ironic_inspector.common.lldp_parsers.LLDPParser.set_value">[docs]</a>    <span class="k">def</span> <span class="nf">set_value</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">value</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Set name value pair in dictionary</span>
+
+<span class="sd">        The value for a name should not be changed if it exists.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">nv_dict</span><span class="o">.</span><span class="n">setdefault</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="LLDPParser.append_value"><a class="viewcode-back" href="../../../api/ironic_inspector.common.lldp_parsers.html#ironic_inspector.common.lldp_parsers.LLDPParser.append_value">[docs]</a>    <span class="k">def</span> <span class="nf">append_value</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">value</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Add value to a list mapped to name&quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">nv_dict</span><span class="o">.</span><span class="n">setdefault</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="p">[])</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">value</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="LLDPParser.add_single_value"><a class="viewcode-back" href="../../../api/ironic_inspector.common.lldp_parsers.html#ironic_inspector.common.lldp_parsers.LLDPParser.add_single_value">[docs]</a>    <span class="k">def</span> <span class="nf">add_single_value</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">struct</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">data</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Add a single name/value pair the the nv dict&quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">set_value</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">struct</span><span class="o">.</span><span class="n">value</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="LLDPParser.parse_tlv"><a class="viewcode-back" href="../../../api/ironic_inspector.common.lldp_parsers.html#ironic_inspector.common.lldp_parsers.LLDPParser.parse_tlv">[docs]</a>    <span class="k">def</span> <span class="nf">parse_tlv</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tlv_type</span><span class="p">,</span> <span class="n">data</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Parse TLVs from mapping table</span>
+
+<span class="sd">        This functions takes the TLV type and the raw data for</span>
+<span class="sd">        this TLV and gets a tuple from the parser_map.  The</span>
+<span class="sd">        construct field in the tuple contains the construct lib</span>
+<span class="sd">        definition of the TLV which can be parsed to access</span>
+<span class="sd">        individual fields.  Once the TLV is parsed, the handler</span>
+<span class="sd">        function for each TLV will store the individual fields as</span>
+<span class="sd">        name/value pairs in nv_dict.</span>
+
+<span class="sd">        If the handler function does not exist, then no name/value pairs</span>
+<span class="sd">        will be added to nv_dict, but since the TLV was handled,</span>
+<span class="sd">        True will be returned.</span>
+
+<span class="sd">        :param: tlv_type - type identifier for TLV</span>
+<span class="sd">        :param: data - raw TLV value</span>
+<span class="sd">        :returns: True if TLV in parser_map and data is valid, otherwise False.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+
+        <span class="n">s</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">parser_map</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">tlv_type</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">s</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">False</span>
+
+        <span class="n">func</span> <span class="o">=</span> <span class="n">s</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>  <span class="c1"># handler</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">func</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">True</span>  <span class="c1"># TLV is handled</span>
+
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">tlv_parser</span> <span class="o">=</span> <span class="n">s</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span>
+            <span class="n">name</span> <span class="o">=</span> <span class="n">s</span><span class="p">[</span><span class="mi">2</span><span class="p">]</span>
+            <span class="n">check_len</span> <span class="o">=</span> <span class="n">s</span><span class="p">[</span><span class="mi">3</span><span class="p">]</span>
+        <span class="k">except</span> <span class="ne">KeyError</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s2">&quot;Key error in TLV table: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">),</span> <span class="n">e</span><span class="p">,</span>
+                        <span class="n">node_info</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">node_info</span><span class="p">)</span>
+            <span class="k">return</span> <span class="bp">False</span>
+
+        <span class="c1"># Some constructs require a length validation to ensure the</span>
+        <span class="c1"># proper number of bytes has been provided, for example</span>
+        <span class="c1"># when a BitStruct is used.</span>
+        <span class="k">if</span> <span class="n">check_len</span> <span class="ow">and</span> <span class="p">(</span><span class="n">tlv_parser</span><span class="o">.</span><span class="n">sizeof</span><span class="p">()</span> <span class="o">!=</span> <span class="nb">len</span><span class="p">(</span><span class="n">data</span><span class="p">)):</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s1">&#39;Invalid data for </span><span class="si">%(name)s</span><span class="s1"> &#39;</span>
+                            <span class="s1">&#39;expected len </span><span class="si">%(expect)d</span><span class="s1">, got </span><span class="si">%(actual)d</span><span class="s1">&#39;</span><span class="p">),</span>
+                        <span class="p">{</span><span class="s1">&#39;name&#39;</span><span class="p">:</span> <span class="n">name</span><span class="p">,</span> <span class="s1">&#39;expect&#39;</span><span class="p">:</span> <span class="n">tlv_parser</span><span class="o">.</span><span class="n">sizeof</span><span class="p">(),</span>
+                        <span class="s1">&#39;actual&#39;</span><span class="p">:</span> <span class="nb">len</span><span class="p">(</span><span class="n">data</span><span class="p">)},</span> <span class="n">node_info</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">node_info</span><span class="p">)</span>
+            <span class="k">return</span> <span class="bp">False</span>
+
+        <span class="c1"># Use the construct parser to parse TLV so that it&#39;s</span>
+        <span class="c1"># individual fields can be accessed</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">struct</span> <span class="o">=</span> <span class="n">tlv_parser</span><span class="o">.</span><span class="n">parse</span><span class="p">(</span><span class="n">data</span><span class="p">)</span>
+        <span class="k">except</span> <span class="p">(</span><span class="n">core</span><span class="o">.</span><span class="n">RangeError</span><span class="p">,</span> <span class="n">core</span><span class="o">.</span><span class="n">FieldError</span><span class="p">,</span> <span class="n">core</span><span class="o">.</span><span class="n">MappingError</span><span class="p">,</span>
+                <span class="n">netaddr</span><span class="o">.</span><span class="n">AddrFormatError</span><span class="p">)</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s2">&quot;TLV parse error: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">),</span> <span class="n">e</span><span class="p">,</span>
+                        <span class="n">node_info</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">node_info</span><span class="p">)</span>
+            <span class="k">return</span> <span class="bp">False</span>
+
+        <span class="c1"># Call functions with parsed structure</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">func</span><span class="p">(</span><span class="n">struct</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">data</span><span class="p">)</span>
+        <span class="k">except</span> <span class="ne">ValueError</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s2">&quot;TLV value error: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">),</span> <span class="n">e</span><span class="p">,</span>
+                        <span class="n">node_info</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">node_info</span><span class="p">)</span>
+            <span class="k">return</span> <span class="bp">False</span>
+
+        <span class="k">return</span> <span class="bp">True</span></div>
+
+<div class="viewcode-block" id="LLDPParser.add_dot1_link_aggregation"><a class="viewcode-back" href="../../../api/ironic_inspector.common.lldp_parsers.html#ironic_inspector.common.lldp_parsers.LLDPParser.add_dot1_link_aggregation">[docs]</a>    <span class="k">def</span> <span class="nf">add_dot1_link_aggregation</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">struct</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">data</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Add name/value pairs for TLV Dot1_LinkAggregationId</span>
+
+<span class="sd">        This is in base class since it can be used by both dot1 and dot3.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">set_value</span><span class="p">(</span><span class="n">LLDP_PORT_LINK_AGG_ENABLED_NM</span><span class="p">,</span>
+                       <span class="n">struct</span><span class="o">.</span><span class="n">status</span><span class="o">.</span><span class="n">enabled</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">set_value</span><span class="p">(</span><span class="n">LLDP_PORT_LINK_AGG_SUPPORT_NM</span><span class="p">,</span>
+                       <span class="n">struct</span><span class="o">.</span><span class="n">status</span><span class="o">.</span><span class="n">supported</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">set_value</span><span class="p">(</span><span class="n">LLDP_PORT_LINK_AGG_ID_NM</span><span class="p">,</span> <span class="n">struct</span><span class="o">.</span><span class="n">portid</span><span class="p">)</span></div></div>
+
+
+<div class="viewcode-block" id="LLDPBasicMgmtParser"><a class="viewcode-back" href="../../../api/ironic_inspector.common.lldp_parsers.html#ironic_inspector.common.lldp_parsers.LLDPBasicMgmtParser">[docs]</a><span class="k">class</span> <span class="nc">LLDPBasicMgmtParser</span><span class="p">(</span><span class="n">LLDPParser</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Class to handle parsing of 802.1AB Basic Management set</span>
+
+<span class="sd">    This class will also handle 802.1Q and 802.3 OUI TLVs.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">nv</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">LLDPBasicMgmtParser</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">nv</span><span class="p">)</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">parser_map</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="n">tlv</span><span class="o">.</span><span class="n">LLDP_TLV_CHASSIS_ID</span><span class="p">:</span>
+                <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">add_single_value</span><span class="p">,</span> <span class="n">tlv</span><span class="o">.</span><span class="n">ChassisId</span><span class="p">,</span>
+                 <span class="n">LLDP_CHASSIS_ID_NM</span><span class="p">,</span> <span class="bp">False</span><span class="p">),</span>
+            <span class="n">tlv</span><span class="o">.</span><span class="n">LLDP_TLV_PORT_ID</span><span class="p">:</span>
+                <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">add_single_value</span><span class="p">,</span> <span class="n">tlv</span><span class="o">.</span><span class="n">PortId</span><span class="p">,</span> <span class="n">LLDP_PORT_ID_NM</span><span class="p">,</span> <span class="bp">False</span><span class="p">),</span>
+            <span class="n">tlv</span><span class="o">.</span><span class="n">LLDP_TLV_TTL</span><span class="p">:</span> <span class="p">(</span><span class="bp">None</span><span class="p">,</span> <span class="bp">None</span><span class="p">,</span> <span class="bp">None</span><span class="p">,</span> <span class="bp">False</span><span class="p">),</span>
+            <span class="n">tlv</span><span class="o">.</span><span class="n">LLDP_TLV_PORT_DESCRIPTION</span><span class="p">:</span>
+                <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">add_single_value</span><span class="p">,</span> <span class="n">tlv</span><span class="o">.</span><span class="n">PortDesc</span><span class="p">,</span> <span class="n">LLDP_PORT_DESC_NM</span><span class="p">,</span>
+                 <span class="bp">False</span><span class="p">),</span>
+            <span class="n">tlv</span><span class="o">.</span><span class="n">LLDP_TLV_SYS_NAME</span><span class="p">:</span>
+                <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">add_single_value</span><span class="p">,</span> <span class="n">tlv</span><span class="o">.</span><span class="n">SysName</span><span class="p">,</span> <span class="n">LLDP_SYS_NAME_NM</span><span class="p">,</span> <span class="bp">False</span><span class="p">),</span>
+            <span class="n">tlv</span><span class="o">.</span><span class="n">LLDP_TLV_SYS_DESCRIPTION</span><span class="p">:</span>
+                <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">add_single_value</span><span class="p">,</span> <span class="n">tlv</span><span class="o">.</span><span class="n">SysDesc</span><span class="p">,</span> <span class="n">LLDP_SYS_DESC_NM</span><span class="p">,</span> <span class="bp">False</span><span class="p">),</span>
+            <span class="n">tlv</span><span class="o">.</span><span class="n">LLDP_TLV_SYS_CAPABILITIES</span><span class="p">:</span>
+                <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">add_capabilities</span><span class="p">,</span> <span class="n">tlv</span><span class="o">.</span><span class="n">SysCapabilities</span><span class="p">,</span>
+                 <span class="n">LLDP_SWITCH_CAP_NM</span><span class="p">,</span> <span class="bp">True</span><span class="p">),</span>
+            <span class="n">tlv</span><span class="o">.</span><span class="n">LLDP_TLV_MGMT_ADDRESS</span><span class="p">:</span>
+                <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">add_mgmt_address</span><span class="p">,</span> <span class="n">tlv</span><span class="o">.</span><span class="n">MgmtAddress</span><span class="p">,</span>
+                 <span class="n">LLDP_MGMT_ADDRESSES_NM</span><span class="p">,</span> <span class="bp">False</span><span class="p">),</span>
+            <span class="n">tlv</span><span class="o">.</span><span class="n">LLDP_TLV_ORG_SPECIFIC</span><span class="p">:</span>
+                <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">handle_org_specific_tlv</span><span class="p">,</span> <span class="n">tlv</span><span class="o">.</span><span class="n">OrgSpecific</span><span class="p">,</span> <span class="bp">None</span><span class="p">,</span> <span class="bp">False</span><span class="p">),</span>
+            <span class="n">tlv</span><span class="o">.</span><span class="n">LLDP_TLV_END_LLDPPDU</span><span class="p">:</span> <span class="p">(</span><span class="bp">None</span><span class="p">,</span> <span class="bp">None</span><span class="p">,</span> <span class="bp">None</span><span class="p">,</span> <span class="bp">False</span><span class="p">)</span>
+        <span class="p">}</span>
+
+<div class="viewcode-block" id="LLDPBasicMgmtParser.add_mgmt_address"><a class="viewcode-back" href="../../../api/ironic_inspector.common.lldp_parsers.html#ironic_inspector.common.lldp_parsers.LLDPBasicMgmtParser.add_mgmt_address">[docs]</a>    <span class="k">def</span> <span class="nf">add_mgmt_address</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">struct</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">data</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Handle LLDP_TLV_MGMT_ADDRESS</span>
+
+<span class="sd">        There can be multiple Mgmt Address TLVs, store in list.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">append_value</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">struct</span><span class="o">.</span><span class="n">address</span><span class="p">)</span></div>
+
+    <span class="k">def</span> <span class="nf">_get_capabilities_list</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">caps</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get capabilities from bit map&quot;&quot;&quot;</span>
+        <span class="n">cap_map</span> <span class="o">=</span> <span class="p">[</span>
+            <span class="p">(</span><span class="n">caps</span><span class="o">.</span><span class="n">repeater</span><span class="p">,</span> <span class="s1">&#39;Repeater&#39;</span><span class="p">),</span>
+            <span class="p">(</span><span class="n">caps</span><span class="o">.</span><span class="n">bridge</span><span class="p">,</span> <span class="s1">&#39;Bridge&#39;</span><span class="p">),</span>
+            <span class="p">(</span><span class="n">caps</span><span class="o">.</span><span class="n">wlan</span><span class="p">,</span> <span class="s1">&#39;WLAN&#39;</span><span class="p">),</span>
+            <span class="p">(</span><span class="n">caps</span><span class="o">.</span><span class="n">router</span><span class="p">,</span> <span class="s1">&#39;Router&#39;</span><span class="p">),</span>
+            <span class="p">(</span><span class="n">caps</span><span class="o">.</span><span class="n">telephone</span><span class="p">,</span> <span class="s1">&#39;Telephone&#39;</span><span class="p">),</span>
+            <span class="p">(</span><span class="n">caps</span><span class="o">.</span><span class="n">docsis</span><span class="p">,</span> <span class="s1">&#39;DOCSIS cable device&#39;</span><span class="p">),</span>
+            <span class="p">(</span><span class="n">caps</span><span class="o">.</span><span class="n">station</span><span class="p">,</span> <span class="s1">&#39;Station only&#39;</span><span class="p">),</span>
+            <span class="p">(</span><span class="n">caps</span><span class="o">.</span><span class="n">cvlan</span><span class="p">,</span> <span class="s1">&#39;C-Vlan&#39;</span><span class="p">),</span>
+            <span class="p">(</span><span class="n">caps</span><span class="o">.</span><span class="n">svlan</span><span class="p">,</span> <span class="s1">&#39;S-Vlan&#39;</span><span class="p">),</span>
+            <span class="p">(</span><span class="n">caps</span><span class="o">.</span><span class="n">tpmr</span><span class="p">,</span> <span class="s1">&#39;TPMR&#39;</span><span class="p">)]</span>
+
+        <span class="k">return</span> <span class="p">[</span><span class="n">cap</span> <span class="k">for</span> <span class="p">(</span><span class="n">bit</span><span class="p">,</span> <span class="n">cap</span><span class="p">)</span> <span class="ow">in</span> <span class="n">cap_map</span> <span class="k">if</span> <span class="n">bit</span><span class="p">]</span>
+
+<div class="viewcode-block" id="LLDPBasicMgmtParser.add_capabilities"><a class="viewcode-back" href="../../../api/ironic_inspector.common.lldp_parsers.html#ironic_inspector.common.lldp_parsers.LLDPBasicMgmtParser.add_capabilities">[docs]</a>    <span class="k">def</span> <span class="nf">add_capabilities</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">struct</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">data</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Handle LLDP_TLV_SYS_CAPABILITIES&quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">set_value</span><span class="p">(</span><span class="n">LLDP_CAP_SUPPORT_NM</span><span class="p">,</span>
+                       <span class="bp">self</span><span class="o">.</span><span class="n">_get_capabilities_list</span><span class="p">(</span><span class="n">struct</span><span class="o">.</span><span class="n">system</span><span class="p">))</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">set_value</span><span class="p">(</span><span class="n">LLDP_CAP_ENABLED_NM</span><span class="p">,</span>
+                       <span class="bp">self</span><span class="o">.</span><span class="n">_get_capabilities_list</span><span class="p">(</span><span class="n">struct</span><span class="o">.</span><span class="n">enabled</span><span class="p">))</span></div>
+
+<div class="viewcode-block" id="LLDPBasicMgmtParser.handle_org_specific_tlv"><a class="viewcode-back" href="../../../api/ironic_inspector.common.lldp_parsers.html#ironic_inspector.common.lldp_parsers.LLDPBasicMgmtParser.handle_org_specific_tlv">[docs]</a>    <span class="k">def</span> <span class="nf">handle_org_specific_tlv</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">struct</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">data</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Handle Organizationally Unique ID TLVs</span>
+
+<span class="sd">        This class supports 802.1Q and 802.3 OUI TLVs.</span>
+
+<span class="sd">        See http://www.ieee802.org/1/pages/802.1Q-2014.html, Annex D</span>
+<span class="sd">        and http://standards.ieee.org/about/get/802/802.3.html</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">oui</span> <span class="o">=</span> <span class="n">binascii</span><span class="o">.</span><span class="n">hexlify</span><span class="p">(</span><span class="n">struct</span><span class="o">.</span><span class="n">oui</span><span class="p">)</span><span class="o">.</span><span class="n">decode</span><span class="p">()</span>
+        <span class="n">subtype</span> <span class="o">=</span> <span class="n">struct</span><span class="o">.</span><span class="n">subtype</span>
+        <span class="n">oui_data</span> <span class="o">=</span> <span class="n">data</span><span class="p">[</span><span class="mi">4</span><span class="p">:]</span>
+
+        <span class="k">if</span> <span class="n">oui</span> <span class="o">==</span> <span class="n">tlv</span><span class="o">.</span><span class="n">LLDP_802dot1_OUI</span><span class="p">:</span>
+            <span class="n">parser</span> <span class="o">=</span> <span class="n">LLDPdot1Parser</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">node_info</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">nv_dict</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">parser</span><span class="o">.</span><span class="n">parse_tlv</span><span class="p">(</span><span class="n">subtype</span><span class="p">,</span> <span class="n">oui_data</span><span class="p">):</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Handled 802.1 subtype </span><span class="si">%d</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">subtype</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Subtype </span><span class="si">%d</span><span class="s2"> not found for 802.1&quot;</span><span class="p">,</span> <span class="n">subtype</span><span class="p">)</span>
+        <span class="k">elif</span> <span class="n">oui</span> <span class="o">==</span> <span class="n">tlv</span><span class="o">.</span><span class="n">LLDP_802dot3_OUI</span><span class="p">:</span>
+            <span class="n">parser</span> <span class="o">=</span> <span class="n">LLDPdot3Parser</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">node_info</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">nv_dict</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">parser</span><span class="o">.</span><span class="n">parse_tlv</span><span class="p">(</span><span class="n">subtype</span><span class="p">,</span> <span class="n">oui_data</span><span class="p">):</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Handled 802.3 subtype </span><span class="si">%d</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">subtype</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Subtype </span><span class="si">%d</span><span class="s2"> not found for 802.3&quot;</span><span class="p">,</span> <span class="n">subtype</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s2">&quot;Organizationally Unique ID </span><span class="si">%s</span><span class="s2"> not &quot;</span>
+                            <span class="s2">&quot;recognized&quot;</span><span class="p">),</span> <span class="n">oui</span><span class="p">,</span> <span class="n">node_info</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">node_info</span><span class="p">)</span></div></div>
+
+
+<div class="viewcode-block" id="LLDPdot1Parser"><a class="viewcode-back" href="../../../api/ironic_inspector.common.lldp_parsers.html#ironic_inspector.common.lldp_parsers.LLDPdot1Parser">[docs]</a><span class="k">class</span> <span class="nc">LLDPdot1Parser</span><span class="p">(</span><span class="n">LLDPParser</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Class to handle parsing of 802.1Q TLVs&quot;&quot;&quot;</span>
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">node_info</span><span class="p">,</span> <span class="n">nv</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">LLDPdot1Parser</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">node_info</span><span class="p">,</span> <span class="n">nv</span><span class="p">)</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">parser_map</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="n">tlv</span><span class="o">.</span><span class="n">dot1_PORT_VLANID</span><span class="p">:</span>
+                <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">add_single_value</span><span class="p">,</span> <span class="n">tlv</span><span class="o">.</span><span class="n">Dot1_UntaggedVlanId</span><span class="p">,</span>
+                 <span class="n">LLDP_PORT_VLANID_NM</span><span class="p">,</span> <span class="bp">False</span><span class="p">),</span>
+            <span class="n">tlv</span><span class="o">.</span><span class="n">dot1_PORT_PROTOCOL_VLANID</span><span class="p">:</span>
+                <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">add_dot1_port_protocol_vlan</span><span class="p">,</span> <span class="n">tlv</span><span class="o">.</span><span class="n">Dot1_PortProtocolVlan</span><span class="p">,</span>
+                 <span class="n">LLDP_PORT_PROT_NM</span><span class="p">,</span> <span class="bp">True</span><span class="p">),</span>
+            <span class="n">tlv</span><span class="o">.</span><span class="n">dot1_VLAN_NAME</span><span class="p">:</span>
+                <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">add_dot1_vlans</span><span class="p">,</span> <span class="n">tlv</span><span class="o">.</span><span class="n">Dot1_VlanName</span><span class="p">,</span> <span class="bp">None</span><span class="p">,</span> <span class="bp">False</span><span class="p">),</span>
+            <span class="n">tlv</span><span class="o">.</span><span class="n">dot1_PROTOCOL_IDENTITY</span><span class="p">:</span>
+                <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">add_dot1_protocol_identities</span><span class="p">,</span> <span class="n">tlv</span><span class="o">.</span><span class="n">Dot1_ProtocolIdentity</span><span class="p">,</span>
+                 <span class="n">LLDP_PROTOCOL_IDENTITIES_NM</span><span class="p">,</span> <span class="bp">False</span><span class="p">),</span>
+            <span class="n">tlv</span><span class="o">.</span><span class="n">dot1_MANAGEMENT_VID</span><span class="p">:</span>
+                <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">add_single_value</span><span class="p">,</span> <span class="n">tlv</span><span class="o">.</span><span class="n">Dot1_MgmtVlanId</span><span class="p">,</span>
+                 <span class="n">LLDP_PORT_MGMT_VLANID_NM</span><span class="p">,</span> <span class="bp">False</span><span class="p">),</span>
+            <span class="n">tlv</span><span class="o">.</span><span class="n">dot1_LINK_AGGREGATION</span><span class="p">:</span>
+                <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">add_dot1_link_aggregation</span><span class="p">,</span> <span class="n">tlv</span><span class="o">.</span><span class="n">Dot1_LinkAggregationId</span><span class="p">,</span>
+                 <span class="n">LLDP_PORT_LINK_AGG_NM</span><span class="p">,</span> <span class="bp">True</span><span class="p">)</span>
+        <span class="p">}</span>
+
+<div class="viewcode-block" id="LLDPdot1Parser.add_dot1_port_protocol_vlan"><a class="viewcode-back" href="../../../api/ironic_inspector.common.lldp_parsers.html#ironic_inspector.common.lldp_parsers.LLDPdot1Parser.add_dot1_port_protocol_vlan">[docs]</a>    <span class="k">def</span> <span class="nf">add_dot1_port_protocol_vlan</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">struct</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">data</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Handle dot1_PORT_PROTOCOL_VLANID&quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">set_value</span><span class="p">(</span><span class="n">LLDP_PORT_PROT_VLAN_ENABLED_NM</span><span class="p">,</span> <span class="n">struct</span><span class="o">.</span><span class="n">flags</span><span class="o">.</span><span class="n">enabled</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">set_value</span><span class="p">(</span><span class="n">LLDP_PORT_PROT_VLAN_SUPPORT_NM</span><span class="p">,</span> <span class="n">struct</span><span class="o">.</span><span class="n">flags</span><span class="o">.</span><span class="n">supported</span><span class="p">)</span>
+
+        <span class="c1"># There can be multiple port/protocol vlans TLVs, store in list</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">append_value</span><span class="p">(</span><span class="n">LLDP_PORT_PROT_VLANIDS_NM</span><span class="p">,</span> <span class="n">struct</span><span class="o">.</span><span class="n">vlanid</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="LLDPdot1Parser.add_dot1_vlans"><a class="viewcode-back" href="../../../api/ironic_inspector.common.lldp_parsers.html#ironic_inspector.common.lldp_parsers.LLDPdot1Parser.add_dot1_vlans">[docs]</a>    <span class="k">def</span> <span class="nf">add_dot1_vlans</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">struct</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">data</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Handle dot1_VLAN_NAME</span>
+
+<span class="sd">        There can be multiple vlan TLVs, add dictionary entry with id/vlan</span>
+<span class="sd">        to list.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">vlan_dict</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="n">vlan_dict</span><span class="p">[</span><span class="s1">&#39;name&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">struct</span><span class="o">.</span><span class="n">vlan_name</span>
+        <span class="n">vlan_dict</span><span class="p">[</span><span class="s1">&#39;id&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">struct</span><span class="o">.</span><span class="n">vlanid</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">append_value</span><span class="p">(</span><span class="n">LLDP_PORT_VLANS_NM</span><span class="p">,</span> <span class="n">vlan_dict</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="LLDPdot1Parser.add_dot1_protocol_identities"><a class="viewcode-back" href="../../../api/ironic_inspector.common.lldp_parsers.html#ironic_inspector.common.lldp_parsers.LLDPdot1Parser.add_dot1_protocol_identities">[docs]</a>    <span class="k">def</span> <span class="nf">add_dot1_protocol_identities</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">struct</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">data</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Handle dot1_PROTOCOL_IDENTITY</span>
+
+<span class="sd">        There can be multiple protocol ids TLVs, store in list</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">append_value</span><span class="p">(</span><span class="n">LLDP_PROTOCOL_IDENTITIES_NM</span><span class="p">,</span>
+                          <span class="n">binascii</span><span class="o">.</span><span class="n">b2a_hex</span><span class="p">(</span><span class="n">struct</span><span class="o">.</span><span class="n">protocol</span><span class="p">)</span><span class="o">.</span><span class="n">decode</span><span class="p">())</span></div></div>
+
+
+<div class="viewcode-block" id="LLDPdot3Parser"><a class="viewcode-back" href="../../../api/ironic_inspector.common.lldp_parsers.html#ironic_inspector.common.lldp_parsers.LLDPdot3Parser">[docs]</a><span class="k">class</span> <span class="nc">LLDPdot3Parser</span><span class="p">(</span><span class="n">LLDPParser</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Class to handle parsing of 802.3 TLVs&quot;&quot;&quot;</span>
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">node_info</span><span class="p">,</span> <span class="n">nv</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">LLDPdot3Parser</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">node_info</span><span class="p">,</span> <span class="n">nv</span><span class="p">)</span>
+
+        <span class="c1"># Note that 802.3 link Aggregation has been deprecated and moved to</span>
+        <span class="c1"># 802.1 spec, but it is in the same format. Use the same function as</span>
+        <span class="c1"># dot1 handler.</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">parser_map</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="n">tlv</span><span class="o">.</span><span class="n">dot3_MACPHY_CONFIG_STATUS</span><span class="p">:</span>
+                <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">add_dot3_macphy_config</span><span class="p">,</span> <span class="n">tlv</span><span class="o">.</span><span class="n">Dot3_MACPhy_Config_Status</span><span class="p">,</span>
+                 <span class="n">LLDP_PORT_MAC_PHY_NM</span><span class="p">,</span> <span class="bp">True</span><span class="p">),</span>
+            <span class="n">tlv</span><span class="o">.</span><span class="n">dot3_LINK_AGGREGATION</span><span class="p">:</span>
+                <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">add_dot1_link_aggregation</span><span class="p">,</span> <span class="n">tlv</span><span class="o">.</span><span class="n">Dot1_LinkAggregationId</span><span class="p">,</span>
+                 <span class="n">LLDP_PORT_LINK_AGG_NM</span><span class="p">,</span> <span class="bp">True</span><span class="p">),</span>
+            <span class="n">tlv</span><span class="o">.</span><span class="n">dot3_MTU</span><span class="p">:</span>
+                <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">add_single_value</span><span class="p">,</span> <span class="n">tlv</span><span class="o">.</span><span class="n">Dot3_MTU</span><span class="p">,</span> <span class="n">LLDP_MTU_NM</span><span class="p">,</span> <span class="bp">False</span><span class="p">)</span>
+        <span class="p">}</span>
+
+<div class="viewcode-block" id="LLDPdot3Parser.add_dot3_macphy_config"><a class="viewcode-back" href="../../../api/ironic_inspector.common.lldp_parsers.html#ironic_inspector.common.lldp_parsers.LLDPdot3Parser.add_dot3_macphy_config">[docs]</a>    <span class="k">def</span> <span class="nf">add_dot3_macphy_config</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">struct</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">data</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Handle dot3_MACPHY_CONFIG_STATUS&quot;&quot;&quot;</span>
+
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">mau_type</span> <span class="o">=</span> <span class="n">tlv</span><span class="o">.</span><span class="n">OPER_MAU_TYPES</span><span class="p">[</span><span class="n">struct</span><span class="o">.</span><span class="n">mau_type</span><span class="p">]</span>
+        <span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Invalid index for mau type&#39;</span><span class="p">))</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">set_value</span><span class="p">(</span><span class="n">LLDP_PORT_LINK_AUTONEG_ENABLED_NM</span><span class="p">,</span>
+                       <span class="n">struct</span><span class="o">.</span><span class="n">autoneg</span><span class="o">.</span><span class="n">enabled</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">set_value</span><span class="p">(</span><span class="n">LLDP_PORT_LINK_AUTONEG_SUPPORT_NM</span><span class="p">,</span>
+                       <span class="n">struct</span><span class="o">.</span><span class="n">autoneg</span><span class="o">.</span><span class="n">supported</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">set_value</span><span class="p">(</span><span class="n">LLDP_PORT_CAPABILITIES_NM</span><span class="p">,</span>
+                       <span class="n">tlv</span><span class="o">.</span><span class="n">get_autoneg_cap</span><span class="p">(</span><span class="n">struct</span><span class="o">.</span><span class="n">pmd_autoneg</span><span class="p">))</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">set_value</span><span class="p">(</span><span class="n">LLDP_PORT_MAU_TYPE_NM</span><span class="p">,</span> <span class="n">mau_type</span><span class="p">)</span></div></div>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/ironic-inspector
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../../index.html">Ironic Inspector 5.0.1.dev1 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../../index.html" accesskey="U">Module code</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright OpenStack Foundation.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/Ironic Inspector");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

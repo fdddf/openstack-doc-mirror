@@ -1,0 +1,484 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>taskflow.conductors.backends.impl_executor &mdash; TaskFlow 2.9.1.dev9 documentation</title>
+    
+    <link rel="stylesheet" href="../../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../../',
+        VERSION:     '2.9.1.dev9',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../../_static/doctools.js"></script>
+    <link rel="top" title="TaskFlow 2.9.1.dev9 documentation" href="../../../../index.html" />
+    <link rel="up" title="taskflow.conductors.backends" href="../backends.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for taskflow.conductors.backends.impl_executor</h1><div class="highlight"><pre>
+<span></span><span class="c1"># -*- coding: utf-8 -*-</span>
+
+<span class="c1">#    Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may</span>
+<span class="c1">#    not use this file except in compliance with the License. You may obtain</span>
+<span class="c1">#    a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#         http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1">#    Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1">#    distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="c1">#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="c1">#    License for the specific language governing permissions and limitations</span>
+<span class="c1">#    under the License.</span>
+
+<span class="kn">import</span> <span class="nn">abc</span>
+<span class="kn">import</span> <span class="nn">functools</span>
+<span class="kn">import</span> <span class="nn">itertools</span>
+<span class="kn">import</span> <span class="nn">threading</span>
+
+<span class="k">try</span><span class="p">:</span>
+    <span class="kn">from</span> <span class="nn">contextlib</span> <span class="kn">import</span> <span class="n">ExitStack</span>  <span class="c1"># noqa</span>
+<span class="k">except</span> <span class="ne">ImportError</span><span class="p">:</span>
+    <span class="kn">from</span> <span class="nn">contextlib2</span> <span class="kn">import</span> <span class="n">ExitStack</span>  <span class="c1"># noqa</span>
+
+<span class="kn">from</span> <span class="nn">debtcollector</span> <span class="kn">import</span> <span class="n">removals</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">excutils</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">timeutils</span>
+<span class="kn">import</span> <span class="nn">six</span>
+
+<span class="kn">from</span> <span class="nn">taskflow.conductors</span> <span class="kn">import</span> <span class="n">base</span>
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">exceptions</span> <span class="k">as</span> <span class="n">excp</span>
+<span class="kn">from</span> <span class="nn">taskflow.listeners</span> <span class="kn">import</span> <span class="n">logging</span> <span class="k">as</span> <span class="n">logging_listener</span>
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">logging</span>
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">states</span>
+<span class="kn">from</span> <span class="nn">taskflow.types</span> <span class="kn">import</span> <span class="n">timing</span> <span class="k">as</span> <span class="n">tt</span>
+<span class="kn">from</span> <span class="nn">taskflow.utils</span> <span class="kn">import</span> <span class="n">iter_utils</span>
+<span class="kn">from</span> <span class="nn">taskflow.utils</span> <span class="kn">import</span> <span class="n">misc</span>
+
+<span class="n">LOG</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+
+<span class="nd">@six.add_metaclass</span><span class="p">(</span><span class="n">abc</span><span class="o">.</span><span class="n">ABCMeta</span><span class="p">)</span>
+<div class="viewcode-block" id="ExecutorConductor"><a class="viewcode-back" href="../../../../conductors.html#taskflow.conductors.backends.impl_executor.ExecutorConductor">[docs]</a><span class="k">class</span> <span class="nc">ExecutorConductor</span><span class="p">(</span><span class="n">base</span><span class="o">.</span><span class="n">Conductor</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Dispatches jobs from blocking :py:meth:`.run` method to some executor.</span>
+
+<span class="sd">    This conductor iterates over jobs in the provided jobboard (waiting for</span>
+<span class="sd">    the given timeout if no jobs exist) and attempts to claim them, work on</span>
+<span class="sd">    those jobs using an executor (potentially blocking further work from being</span>
+<span class="sd">    claimed and consumed) and then consume those work units after</span>
+<span class="sd">    completion. This process will repeat until the conductor has been stopped</span>
+<span class="sd">    or other critical error occurs.</span>
+
+<span class="sd">    NOTE(harlowja): consumption occurs even if a engine fails to run due to</span>
+<span class="sd">    a atom failure. This is only skipped when an execution failure or</span>
+<span class="sd">    a storage failure occurs which are *usually* correctable by re-running on</span>
+<span class="sd">    a different conductor (storage failures and execution failures may be</span>
+<span class="sd">    transient issues that can be worked around by later execution). If a job</span>
+<span class="sd">    after completing can not be consumed or abandoned the conductor relies</span>
+<span class="sd">    upon the jobboard capabilities to automatically abandon these jobs.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">LOG</span> <span class="o">=</span> <span class="bp">None</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Logger that will be used for listening to events (if none then the module</span>
+<span class="sd">    level logger will be used instead).</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">REFRESH_PERIODICITY</span> <span class="o">=</span> <span class="mi">30</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Every 30 seconds the jobboard will be resynced (if for some reason</span>
+<span class="sd">    a watch or set of watches was not received) using the `ensure_fresh`</span>
+<span class="sd">    option to ensure this (for supporting jobboard backends only).</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="c1">#: Default timeout used to idle/wait when no jobs have been found.</span>
+    <span class="n">WAIT_TIMEOUT</span> <span class="o">=</span> <span class="mf">0.5</span>
+
+    <span class="n">MAX_SIMULTANEOUS_JOBS</span> <span class="o">=</span> <span class="o">-</span><span class="mi">1</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Default maximum number of jobs that can be in progress at the same time.</span>
+
+<span class="sd">    Negative or zero values imply no limit (do note that if a executor is</span>
+<span class="sd">    used that is built on a queue, as most are, that this will imply that the</span>
+<span class="sd">    queue will contain a potentially large &amp; unfinished backlog of</span>
+<span class="sd">    submitted jobs). This *may* get better someday if</span>
+<span class="sd">    https://bugs.python.org/issue22737 is ever implemented and released.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="c1">#: Exceptions that will **not** cause consumption to occur.</span>
+    <span class="n">NO_CONSUME_EXCEPTIONS</span> <span class="o">=</span> <span class="nb">tuple</span><span class="p">([</span>
+        <span class="n">excp</span><span class="o">.</span><span class="n">ExecutionFailure</span><span class="p">,</span>
+        <span class="n">excp</span><span class="o">.</span><span class="n">StorageFailure</span><span class="p">,</span>
+    <span class="p">])</span>
+
+    <span class="n">_event_factory</span> <span class="o">=</span> <span class="n">threading</span><span class="o">.</span><span class="n">Event</span>
+    <span class="sd">&quot;&quot;&quot;This attribute *can* be overridden by subclasses (for example if</span>
+<span class="sd">       an eventlet *green* event works better for the conductor user).&quot;&quot;&quot;</span>
+
+    <span class="n">EVENTS_EMITTED</span> <span class="o">=</span> <span class="nb">tuple</span><span class="p">([</span>
+        <span class="s1">&#39;compilation_start&#39;</span><span class="p">,</span> <span class="s1">&#39;compilation_end&#39;</span><span class="p">,</span>
+        <span class="s1">&#39;preparation_start&#39;</span><span class="p">,</span> <span class="s1">&#39;preparation_end&#39;</span><span class="p">,</span>
+        <span class="s1">&#39;validation_start&#39;</span><span class="p">,</span> <span class="s1">&#39;validation_end&#39;</span><span class="p">,</span>
+        <span class="s1">&#39;running_start&#39;</span><span class="p">,</span> <span class="s1">&#39;running_end&#39;</span><span class="p">,</span>
+        <span class="s1">&#39;job_consumed&#39;</span><span class="p">,</span> <span class="s1">&#39;job_abandoned&#39;</span><span class="p">,</span>
+    <span class="p">])</span>
+    <span class="sd">&quot;&quot;&quot;Events will be emitted for each of the events above.  The event is</span>
+<span class="sd">       emitted to listeners registered with the conductor.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">jobboard</span><span class="p">,</span>
+                 <span class="n">persistence</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">engine</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+                 <span class="n">engine_options</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">wait_timeout</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+                 <span class="n">log</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">max_simultaneous_jobs</span><span class="o">=</span><span class="n">MAX_SIMULTANEOUS_JOBS</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">ExecutorConductor</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span>
+            <span class="n">name</span><span class="p">,</span> <span class="n">jobboard</span><span class="p">,</span> <span class="n">persistence</span><span class="o">=</span><span class="n">persistence</span><span class="p">,</span>
+            <span class="n">engine</span><span class="o">=</span><span class="n">engine</span><span class="p">,</span> <span class="n">engine_options</span><span class="o">=</span><span class="n">engine_options</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_wait_timeout</span> <span class="o">=</span> <span class="n">tt</span><span class="o">.</span><span class="n">convert_to_timeout</span><span class="p">(</span>
+            <span class="n">value</span><span class="o">=</span><span class="n">wait_timeout</span><span class="p">,</span> <span class="n">default_value</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">WAIT_TIMEOUT</span><span class="p">,</span>
+            <span class="n">event_factory</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_event_factory</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_dead</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_event_factory</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_log</span> <span class="o">=</span> <span class="n">misc</span><span class="o">.</span><span class="n">pick_first_not_none</span><span class="p">(</span><span class="n">log</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">LOG</span><span class="p">,</span> <span class="n">LOG</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_max_simultaneous_jobs</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span>
+            <span class="n">misc</span><span class="o">.</span><span class="n">pick_first_not_none</span><span class="p">(</span><span class="n">max_simultaneous_jobs</span><span class="p">,</span>
+                                     <span class="bp">self</span><span class="o">.</span><span class="n">MAX_SIMULTANEOUS_JOBS</span><span class="p">))</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_dispatched</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+
+    <span class="k">def</span> <span class="nf">_executor_factory</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Creates an executor to be used during dispatching.&quot;&quot;&quot;</span>
+        <span class="k">raise</span> <span class="n">excp</span><span class="o">.</span><span class="n">NotImplementedError</span><span class="p">(</span><span class="s2">&quot;This method must be implemented but&quot;</span>
+                                       <span class="s2">&quot; it has not been&quot;</span><span class="p">)</span>
+
+    <span class="nd">@removals.removed_kwarg</span><span class="p">(</span><span class="s1">&#39;timeout&#39;</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="s2">&quot;0.8&quot;</span><span class="p">,</span> <span class="n">removal_version</span><span class="o">=</span><span class="s2">&quot;2.0&quot;</span><span class="p">)</span>
+<div class="viewcode-block" id="ExecutorConductor.stop"><a class="viewcode-back" href="../../../../conductors.html#taskflow.conductors.backends.impl_executor.ExecutorConductor.stop">[docs]</a>    <span class="k">def</span> <span class="nf">stop</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Requests the conductor to stop dispatching.</span>
+
+<span class="sd">        This method can be used to request that a conductor stop its</span>
+<span class="sd">        consumption &amp; dispatching loop.</span>
+
+<span class="sd">        The method returns immediately regardless of whether the conductor has</span>
+<span class="sd">        been stopped.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_wait_timeout</span><span class="o">.</span><span class="n">interrupt</span><span class="p">()</span></div>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">dispatching</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Whether or not the dispatching loop is still dispatching.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_dead</span><span class="o">.</span><span class="n">is_set</span><span class="p">()</span>
+
+    <span class="k">def</span> <span class="nf">_listeners_from_job</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">job</span><span class="p">,</span> <span class="n">engine</span><span class="p">):</span>
+        <span class="n">listeners</span> <span class="o">=</span> <span class="nb">super</span><span class="p">(</span><span class="n">ExecutorConductor</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">_listeners_from_job</span><span class="p">(</span>
+            <span class="n">job</span><span class="p">,</span> <span class="n">engine</span><span class="p">)</span>
+        <span class="n">listeners</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">logging_listener</span><span class="o">.</span><span class="n">LoggingListener</span><span class="p">(</span><span class="n">engine</span><span class="p">,</span>
+                                                          <span class="n">log</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_log</span><span class="p">))</span>
+        <span class="k">return</span> <span class="n">listeners</span>
+
+    <span class="k">def</span> <span class="nf">_dispatch_job</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">job</span><span class="p">):</span>
+        <span class="n">engine</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_engine_from_job</span><span class="p">(</span><span class="n">job</span><span class="p">)</span>
+        <span class="n">listeners</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_listeners_from_job</span><span class="p">(</span><span class="n">job</span><span class="p">,</span> <span class="n">engine</span><span class="p">)</span>
+        <span class="k">with</span> <span class="n">ExitStack</span><span class="p">()</span> <span class="k">as</span> <span class="n">stack</span><span class="p">:</span>
+            <span class="k">for</span> <span class="n">listener</span> <span class="ow">in</span> <span class="n">listeners</span><span class="p">:</span>
+                <span class="n">stack</span><span class="o">.</span><span class="n">enter_context</span><span class="p">(</span><span class="n">listener</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_log</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Dispatching engine for job &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span><span class="p">,</span> <span class="n">job</span><span class="p">)</span>
+            <span class="n">consume</span> <span class="o">=</span> <span class="bp">True</span>
+            <span class="n">details</span> <span class="o">=</span> <span class="p">{</span>
+                <span class="s1">&#39;job&#39;</span><span class="p">:</span> <span class="n">job</span><span class="p">,</span>
+                <span class="s1">&#39;engine&#39;</span><span class="p">:</span> <span class="n">engine</span><span class="p">,</span>
+                <span class="s1">&#39;conductor&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="p">,</span>
+            <span class="p">}</span>
+
+            <span class="k">def</span> <span class="nf">_run_engine</span><span class="p">():</span>
+                <span class="n">has_suspended</span> <span class="o">=</span> <span class="bp">False</span>
+                <span class="k">for</span> <span class="n">_state</span> <span class="ow">in</span> <span class="n">engine</span><span class="o">.</span><span class="n">run_iter</span><span class="p">():</span>
+                    <span class="k">if</span> <span class="ow">not</span> <span class="n">has_suspended</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">_wait_timeout</span><span class="o">.</span><span class="n">is_stopped</span><span class="p">():</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">_log</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Conductor stopped, requesting &quot;</span>
+                                       <span class="s2">&quot;suspension of engine running &quot;</span>
+                                       <span class="s2">&quot;job </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">job</span><span class="p">)</span>
+                        <span class="n">engine</span><span class="o">.</span><span class="n">suspend</span><span class="p">()</span>
+                        <span class="n">has_suspended</span> <span class="o">=</span> <span class="bp">True</span>
+
+            <span class="k">try</span><span class="p">:</span>
+                <span class="k">for</span> <span class="n">stage_func</span><span class="p">,</span> <span class="n">event_name</span> <span class="ow">in</span> <span class="p">[(</span><span class="n">engine</span><span class="o">.</span><span class="n">compile</span><span class="p">,</span> <span class="s1">&#39;compilation&#39;</span><span class="p">),</span>
+                                               <span class="p">(</span><span class="n">engine</span><span class="o">.</span><span class="n">prepare</span><span class="p">,</span> <span class="s1">&#39;preparation&#39;</span><span class="p">),</span>
+                                               <span class="p">(</span><span class="n">engine</span><span class="o">.</span><span class="n">validate</span><span class="p">,</span> <span class="s1">&#39;validation&#39;</span><span class="p">),</span>
+                                               <span class="p">(</span><span class="n">_run_engine</span><span class="p">,</span> <span class="s1">&#39;running&#39;</span><span class="p">)]:</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_notifier</span><span class="o">.</span><span class="n">notify</span><span class="p">(</span><span class="s2">&quot;</span><span class="si">%s</span><span class="s2">_start&quot;</span> <span class="o">%</span> <span class="n">event_name</span><span class="p">,</span>  <span class="n">details</span><span class="p">)</span>
+                    <span class="n">stage_func</span><span class="p">()</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_notifier</span><span class="o">.</span><span class="n">notify</span><span class="p">(</span><span class="s2">&quot;</span><span class="si">%s</span><span class="s2">_end&quot;</span> <span class="o">%</span> <span class="n">event_name</span><span class="p">,</span> <span class="n">details</span><span class="p">)</span>
+            <span class="k">except</span> <span class="n">excp</span><span class="o">.</span><span class="n">WrappedFailure</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+                <span class="k">if</span> <span class="nb">all</span><span class="p">((</span><span class="n">f</span><span class="o">.</span><span class="n">check</span><span class="p">(</span><span class="o">*</span><span class="bp">self</span><span class="o">.</span><span class="n">NO_CONSUME_EXCEPTIONS</span><span class="p">)</span> <span class="k">for</span> <span class="n">f</span> <span class="ow">in</span> <span class="n">e</span><span class="p">)):</span>
+                    <span class="n">consume</span> <span class="o">=</span> <span class="bp">False</span>
+                <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_log</span><span class="o">.</span><span class="n">isEnabledFor</span><span class="p">(</span><span class="n">logging</span><span class="o">.</span><span class="n">WARNING</span><span class="p">):</span>
+                    <span class="k">if</span> <span class="n">consume</span><span class="p">:</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">_log</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span>
+                            <span class="s2">&quot;Job execution failed (consumption being&quot;</span>
+                            <span class="s2">&quot; skipped): </span><span class="si">%s</span><span class="s2"> [</span><span class="si">%s</span><span class="s2"> failures]&quot;</span><span class="p">,</span> <span class="n">job</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">e</span><span class="p">))</span>
+                    <span class="k">else</span><span class="p">:</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">_log</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span>
+                            <span class="s2">&quot;Job execution failed (consumption&quot;</span>
+                            <span class="s2">&quot; proceeding): </span><span class="si">%s</span><span class="s2"> [</span><span class="si">%s</span><span class="s2"> failures]&quot;</span><span class="p">,</span> <span class="n">job</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">e</span><span class="p">))</span>
+                    <span class="c1"># Show the failure/s + traceback (if possible)...</span>
+                    <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="n">f</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">e</span><span class="p">):</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">_log</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span><span class="s2">&quot;</span><span class="si">%s</span><span class="s2">. </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">i</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span>
+                                       <span class="n">f</span><span class="o">.</span><span class="n">pformat</span><span class="p">(</span><span class="n">traceback</span><span class="o">=</span><span class="bp">True</span><span class="p">))</span>
+            <span class="k">except</span> <span class="bp">self</span><span class="o">.</span><span class="n">NO_CONSUME_EXCEPTIONS</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_log</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span><span class="s2">&quot;Job execution failed (consumption being&quot;</span>
+                               <span class="s2">&quot; skipped): </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">job</span><span class="p">,</span> <span class="n">exc_info</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+                <span class="n">consume</span> <span class="o">=</span> <span class="bp">False</span>
+            <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_log</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span>
+                    <span class="s2">&quot;Job execution failed (consumption proceeding): </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span>
+                    <span class="n">job</span><span class="p">,</span> <span class="n">exc_info</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">if</span> <span class="n">engine</span><span class="o">.</span><span class="n">storage</span><span class="o">.</span><span class="n">get_flow_state</span><span class="p">()</span> <span class="o">==</span> <span class="n">states</span><span class="o">.</span><span class="n">SUSPENDED</span><span class="p">:</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_log</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Job execution was suspended: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">job</span><span class="p">)</span>
+                    <span class="n">consume</span> <span class="o">=</span> <span class="bp">False</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_log</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Job completed successfully: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">job</span><span class="p">)</span>
+            <span class="k">return</span> <span class="n">consume</span>
+
+    <span class="k">def</span> <span class="nf">_try_finish_job</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">job</span><span class="p">,</span> <span class="n">consume</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">consume</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_jobboard</span><span class="o">.</span><span class="n">consume</span><span class="p">(</span><span class="n">job</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_name</span><span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_notifier</span><span class="o">.</span><span class="n">notify</span><span class="p">(</span><span class="s2">&quot;job_consumed&quot;</span><span class="p">,</span> <span class="p">{</span>
+                    <span class="s1">&#39;job&#39;</span><span class="p">:</span> <span class="n">job</span><span class="p">,</span>
+                    <span class="s1">&#39;conductor&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="p">,</span>
+                    <span class="s1">&#39;persistence&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_persistence</span><span class="p">,</span>
+                <span class="p">})</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_jobboard</span><span class="o">.</span><span class="n">abandon</span><span class="p">(</span><span class="n">job</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_name</span><span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_notifier</span><span class="o">.</span><span class="n">notify</span><span class="p">(</span><span class="s2">&quot;job_abandoned&quot;</span><span class="p">,</span> <span class="p">{</span>
+                    <span class="s1">&#39;job&#39;</span><span class="p">:</span> <span class="n">job</span><span class="p">,</span>
+                    <span class="s1">&#39;conductor&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="p">,</span>
+                    <span class="s1">&#39;persistence&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_persistence</span><span class="p">,</span>
+                <span class="p">})</span>
+        <span class="k">except</span> <span class="p">(</span><span class="n">excp</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">,</span> <span class="n">excp</span><span class="o">.</span><span class="n">NotFound</span><span class="p">):</span>
+            <span class="k">if</span> <span class="n">consume</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_log</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span><span class="s2">&quot;Failed job consumption: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">job</span><span class="p">,</span>
+                               <span class="n">exc_info</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_log</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span><span class="s2">&quot;Failed job abandonment: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">job</span><span class="p">,</span>
+                               <span class="n">exc_info</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_on_job_done</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">job</span><span class="p">,</span> <span class="n">fut</span><span class="p">):</span>
+        <span class="n">consume</span> <span class="o">=</span> <span class="bp">False</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">consume</span> <span class="o">=</span> <span class="n">fut</span><span class="o">.</span><span class="n">result</span><span class="p">()</span>
+        <span class="k">except</span> <span class="ne">KeyboardInterrupt</span><span class="p">:</span>
+            <span class="k">with</span> <span class="n">excutils</span><span class="o">.</span><span class="n">save_and_reraise_exception</span><span class="p">():</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_log</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span><span class="s2">&quot;Job dispatching interrupted: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">job</span><span class="p">)</span>
+        <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_log</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span><span class="s2">&quot;Job dispatching failed: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">job</span><span class="p">,</span> <span class="n">exc_info</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_try_finish_job</span><span class="p">(</span><span class="n">job</span><span class="p">,</span> <span class="n">consume</span><span class="p">)</span>
+        <span class="k">finally</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_dispatched</span><span class="o">.</span><span class="n">discard</span><span class="p">(</span><span class="n">fut</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_can_claim_more_jobs</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">job</span><span class="p">):</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_wait_timeout</span><span class="o">.</span><span class="n">is_stopped</span><span class="p">():</span>
+            <span class="k">return</span> <span class="bp">False</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_max_simultaneous_jobs</span> <span class="o">&lt;=</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">True</span>
+        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_dispatched</span><span class="p">)</span> <span class="o">&gt;=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_max_simultaneous_jobs</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">False</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">True</span>
+
+    <span class="k">def</span> <span class="nf">_run_until_dead</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">executor</span><span class="p">,</span> <span class="n">max_dispatches</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="n">total_dispatched</span> <span class="o">=</span> <span class="mi">0</span>
+        <span class="k">if</span> <span class="n">max_dispatches</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="c1"># NOTE(TheSriram): if max_dispatches is not set,</span>
+            <span class="c1"># then the  conductor will run indefinitely, and not</span>
+            <span class="c1"># stop after &#39;n&#39; number of dispatches</span>
+            <span class="n">max_dispatches</span> <span class="o">=</span> <span class="o">-</span><span class="mi">1</span>
+        <span class="n">dispatch_gen</span> <span class="o">=</span> <span class="n">iter_utils</span><span class="o">.</span><span class="n">iter_forever</span><span class="p">(</span><span class="n">max_dispatches</span><span class="p">)</span>
+        <span class="n">is_stopped</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_wait_timeout</span><span class="o">.</span><span class="n">is_stopped</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="c1"># Don&#39;t even do any work in the first place...</span>
+            <span class="k">if</span> <span class="n">max_dispatches</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="ne">StopIteration</span>
+            <span class="n">fresh_period</span> <span class="o">=</span> <span class="n">timeutils</span><span class="o">.</span><span class="n">StopWatch</span><span class="p">(</span>
+                <span class="n">duration</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">REFRESH_PERIODICITY</span><span class="p">)</span>
+            <span class="n">fresh_period</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+            <span class="k">while</span> <span class="ow">not</span> <span class="n">is_stopped</span><span class="p">():</span>
+                <span class="n">any_dispatched</span> <span class="o">=</span> <span class="bp">False</span>
+                <span class="k">if</span> <span class="n">fresh_period</span><span class="o">.</span><span class="n">expired</span><span class="p">():</span>
+                    <span class="n">ensure_fresh</span> <span class="o">=</span> <span class="bp">True</span>
+                    <span class="n">fresh_period</span><span class="o">.</span><span class="n">restart</span><span class="p">()</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="n">ensure_fresh</span> <span class="o">=</span> <span class="bp">False</span>
+                <span class="n">job_it</span> <span class="o">=</span> <span class="n">itertools</span><span class="o">.</span><span class="n">takewhile</span><span class="p">(</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_can_claim_more_jobs</span><span class="p">,</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_jobboard</span><span class="o">.</span><span class="n">iterjobs</span><span class="p">(</span><span class="n">ensure_fresh</span><span class="o">=</span><span class="n">ensure_fresh</span><span class="p">))</span>
+                <span class="k">for</span> <span class="n">job</span> <span class="ow">in</span> <span class="n">job_it</span><span class="p">:</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_log</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Trying to claim job: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">job</span><span class="p">)</span>
+                    <span class="k">try</span><span class="p">:</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">_jobboard</span><span class="o">.</span><span class="n">claim</span><span class="p">(</span><span class="n">job</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_name</span><span class="p">)</span>
+                    <span class="k">except</span> <span class="p">(</span><span class="n">excp</span><span class="o">.</span><span class="n">UnclaimableJob</span><span class="p">,</span> <span class="n">excp</span><span class="o">.</span><span class="n">NotFound</span><span class="p">):</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">_log</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Job already claimed or&quot;</span>
+                                        <span class="s2">&quot; consumed: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">job</span><span class="p">)</span>
+                    <span class="k">else</span><span class="p">:</span>
+                        <span class="k">try</span><span class="p">:</span>
+                            <span class="n">fut</span> <span class="o">=</span> <span class="n">executor</span><span class="o">.</span><span class="n">submit</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_dispatch_job</span><span class="p">,</span> <span class="n">job</span><span class="p">)</span>
+                        <span class="k">except</span> <span class="ne">RuntimeError</span><span class="p">:</span>
+                            <span class="k">with</span> <span class="n">excutils</span><span class="o">.</span><span class="n">save_and_reraise_exception</span><span class="p">():</span>
+                                <span class="bp">self</span><span class="o">.</span><span class="n">_log</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span><span class="s2">&quot;Job dispatch submitting&quot;</span>
+                                               <span class="s2">&quot; failed: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">job</span><span class="p">)</span>
+                                <span class="bp">self</span><span class="o">.</span><span class="n">_try_finish_job</span><span class="p">(</span><span class="n">job</span><span class="p">,</span> <span class="bp">False</span><span class="p">)</span>
+                        <span class="k">else</span><span class="p">:</span>
+                            <span class="n">fut</span><span class="o">.</span><span class="n">job</span> <span class="o">=</span> <span class="n">job</span>
+                            <span class="bp">self</span><span class="o">.</span><span class="n">_dispatched</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">fut</span><span class="p">)</span>
+                            <span class="n">any_dispatched</span> <span class="o">=</span> <span class="bp">True</span>
+                            <span class="n">fut</span><span class="o">.</span><span class="n">add_done_callback</span><span class="p">(</span>
+                                <span class="n">functools</span><span class="o">.</span><span class="n">partial</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_on_job_done</span><span class="p">,</span> <span class="n">job</span><span class="p">))</span>
+                            <span class="n">total_dispatched</span> <span class="o">=</span> <span class="nb">next</span><span class="p">(</span><span class="n">dispatch_gen</span><span class="p">)</span>
+                <span class="k">if</span> <span class="ow">not</span> <span class="n">any_dispatched</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">is_stopped</span><span class="p">():</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_wait_timeout</span><span class="o">.</span><span class="n">wait</span><span class="p">()</span>
+        <span class="k">except</span> <span class="ne">StopIteration</span><span class="p">:</span>
+            <span class="c1"># This will be raised from &#39;dispatch_gen&#39; if it reaches its</span>
+            <span class="c1"># max dispatch number (which implies we should do no more work).</span>
+            <span class="k">with</span> <span class="n">excutils</span><span class="o">.</span><span class="n">save_and_reraise_exception</span><span class="p">():</span>
+                <span class="k">if</span> <span class="n">max_dispatches</span> <span class="o">&gt;=</span> <span class="mi">0</span> <span class="ow">and</span> <span class="n">total_dispatched</span> <span class="o">&gt;=</span> <span class="n">max_dispatches</span><span class="p">:</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_log</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Maximum dispatch limit of </span><span class="si">%s</span><span class="s2"> reached&quot;</span><span class="p">,</span>
+                                   <span class="n">max_dispatches</span><span class="p">)</span>
+
+<div class="viewcode-block" id="ExecutorConductor.run"><a class="viewcode-back" href="../../../../conductors.html#taskflow.conductors.backends.impl_executor.ExecutorConductor.run">[docs]</a>    <span class="k">def</span> <span class="nf">run</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">max_dispatches</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_dead</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_dispatched</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_jobboard</span><span class="o">.</span><span class="n">register_entity</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">conductor</span><span class="p">)</span>
+            <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_executor_factory</span><span class="p">()</span> <span class="k">as</span> <span class="n">executor</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_run_until_dead</span><span class="p">(</span><span class="n">executor</span><span class="p">,</span>
+                                     <span class="n">max_dispatches</span><span class="o">=</span><span class="n">max_dispatches</span><span class="p">)</span>
+        <span class="k">except</span> <span class="ne">StopIteration</span><span class="p">:</span>
+            <span class="k">pass</span>
+        <span class="k">except</span> <span class="ne">KeyboardInterrupt</span><span class="p">:</span>
+            <span class="k">with</span> <span class="n">excutils</span><span class="o">.</span><span class="n">save_and_reraise_exception</span><span class="p">():</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_log</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span><span class="s2">&quot;Job dispatching interrupted&quot;</span><span class="p">)</span>
+        <span class="k">finally</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_dead</span><span class="o">.</span><span class="n">set</span><span class="p">()</span></div>
+
+    <span class="c1"># Inherit the docs, so we can reference them in our class docstring,</span>
+    <span class="c1"># if we don&#39;t do this sphinx gets confused...</span>
+    <span class="n">run</span><span class="o">.</span><span class="vm">__doc__</span> <span class="o">=</span> <span class="n">base</span><span class="o">.</span><span class="n">Conductor</span><span class="o">.</span><span class="n">run</span><span class="o">.</span><span class="vm">__doc__</span>
+
+<div class="viewcode-block" id="ExecutorConductor.wait"><a class="viewcode-back" href="../../../../conductors.html#taskflow.conductors.backends.impl_executor.ExecutorConductor.wait">[docs]</a>    <span class="k">def</span> <span class="nf">wait</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Waits for the conductor to gracefully exit.</span>
+
+<span class="sd">        This method waits for the conductor to gracefully exit. An optional</span>
+<span class="sd">        timeout can be provided, which will cause the method to return</span>
+<span class="sd">        within the specified timeout. If the timeout is reached, the returned</span>
+<span class="sd">        value will be ``False``, otherwise it will be ``True``.</span>
+
+<span class="sd">        :param timeout: Maximum number of seconds that the :meth:`wait` method</span>
+<span class="sd">                        should block for.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_dead</span><span class="o">.</span><span class="n">wait</span><span class="p">(</span><span class="n">timeout</span><span class="p">)</span></div></div>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+  <h3>Navigation</h3>
+  <ul>
+
+    <li><a href="../../../../index.html">Table Of Contents</a></li>
+
+
+
+  </ul>
+
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/taskflow
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../../../index.html">TaskFlow 2.9.1.dev9 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../../../index.html" >Module code</a> &raquo;</li>
+          <li class="nav-item nav-item-2"><a href="../backends.html" accesskey="U">taskflow.conductors.backends</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2017, OpenStack Foundation.
+      Last updated on &#39;Fri Feb 10 20:11:17 2017, commit 643495f&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/TaskFlow");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

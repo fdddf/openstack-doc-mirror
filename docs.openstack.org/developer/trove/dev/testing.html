@@ -1,0 +1,287 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Notes on Trove Unit Tests &mdash; trove 7.0.0.0rc2.dev2 documentation</title>
+    
+    <link rel="stylesheet" href="../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../',
+        VERSION:     '7.0.0.0rc2.dev2',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../_static/jquery.js"></script>
+    <script type="text/javascript" src="../_static/underscore.js"></script>
+    <script type="text/javascript" src="../_static/doctools.js"></script>
+    <link rel="top" title="trove 7.0.0.0rc2.dev2 documentation" href="../index.html" />
+    <link rel="next" title="Trove Installation" href="install.html" />
+    <link rel="prev" title="Trove Design" href="design.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="notes-on-trove-unit-tests">
+<span id="testing"></span><h1>Notes on Trove Unit Tests<a class="headerlink" href="#notes-on-trove-unit-tests" title="Permalink to this headline">¶</a></h1>
+<div class="section" id="mock-object-library">
+<h2>Mock Object Library<a class="headerlink" href="#mock-object-library" title="Permalink to this headline">¶</a></h2>
+<p>Trove unit tests make a frequent use of the Python Mock library.
+This library lets the caller replace (<em>&#8220;mock&#8221;</em>) parts of the system under test with
+mock objects and make assertions about how they have been used. <a class="footnote-reference" href="#id6" id="id1">[1]</a></p>
+</div>
+<div class="section" id="the-problem-of-dangling-mocks">
+<h2>The Problem of Dangling Mocks<a class="headerlink" href="#the-problem-of-dangling-mocks" title="Permalink to this headline">¶</a></h2>
+<p>Often one needs to mock global functions in shared system modules.
+The caller must restore the original state of the module
+after it is no longer required.</p>
+<p>Dangling mock objects in global modules (mocked members of imported
+modules that never get restored) have been causing various transient
+failures in the unit test suite.</p>
+<p>The main issues posed by dangling mock objects include:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>- Such object references propagate across the entire test suite. Any
+caller may be hit by a non-functional - or worse - crippled module member
+because some other (potentially totally unrelated) test case failed to
+restore it.
+
+- Dangling mock references shared across different test modules may
+lead to unexpected results/behavior in multi-threaded environments. One
+example could be a test case failing because a mock got called multiple
+times from unrelated modules.
+</pre></div>
+</div>
+<p>Such issues are likely to exhibit transient random behavior depending
+on the runtime environment, making them difficult to debug.</p>
+<p>There are several possible strategies available for dealing with dangling
+mock objects (see the section on recommended patterns).
+Further information is available in <a class="footnote-reference" href="#id6" id="id2">[1]</a>, <a class="footnote-reference" href="#id7" id="id3">[2]</a>, <a class="footnote-reference" href="#id8" id="id4">[3]</a>.</p>
+</div>
+<div class="section" id="dangling-mock-detector">
+<h2>Dangling Mock Detector<a class="headerlink" href="#dangling-mock-detector" title="Permalink to this headline">¶</a></h2>
+<p>All Trove unit tests should extend &#8216;trove_testtools.TestCase&#8217;.
+It is a subclass of &#8216;testtools.TestCase&#8217; which automatically checks for
+dangling mock objects at each test class teardown.
+It marks the tests as failed and reports the leaked reference if it
+finds any.</p>
+</div>
+<div class="section" id="recommended-mocking-patterns">
+<h2>Recommended Mocking Patterns<a class="headerlink" href="#recommended-mocking-patterns" title="Permalink to this headline">¶</a></h2>
+<p>Mocking a class or object shared across multiple test cases.
+Use the patcher pattern in conjunction with the setUp()
+method [ see section 26.4.3.5. of <a class="footnote-reference" href="#id6" id="id5">[1]</a> ].</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="k">def</span> <span class="nf">setUp</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="nb">super</span><span class="p">(</span><span class="n">CouchbaseBackupTests</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">setUp</span><span class="p">()</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">exe_timeout_patch</span> <span class="o">=</span> <span class="n">patch</span><span class="o">.</span><span class="n">object</span><span class="p">(</span><span class="n">utils</span><span class="p">,</span> <span class="s1">&#39;execute_with_timeout&#39;</span><span class="p">)</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">addCleanup</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">exe_timeout_patch</span><span class="o">.</span><span class="n">stop</span><span class="p">)</span>
+
+<span class="k">def</span> <span class="nf">test_case</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="n">mock_exe_timeout</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">exe_timeout_patch</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>If the mock object is required in the majority of test cases the following
+pattern may be more efficient.</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="k">def</span> <span class="nf">setUp</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="nb">super</span><span class="p">(</span><span class="n">CouchbaseBackupTests</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">setUp</span><span class="p">()</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">exe_timeout_patch</span> <span class="o">=</span> <span class="n">patch</span><span class="o">.</span><span class="n">object</span><span class="p">(</span><span class="n">utils</span><span class="p">,</span> <span class="s1">&#39;execute_with_timeout&#39;</span><span class="p">)</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">addCleanup</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">exe_timeout_patch</span><span class="o">.</span><span class="n">stop</span><span class="p">)</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">mock_exe_timeout</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">exe_timeout_patch</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+
+<span class="k">def</span> <span class="nf">test_case</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="c1"># All test cases can now reference &#39;self.mock_exe_timeout&#39;.</span>
+</pre></div>
+</div>
+<ul class="simple">
+<li>Note also: patch.stopall()
+This method stops all active patches that were started with start.</li>
+</ul>
+<p>Mocking a class or object for a single entire test case.
+Use the decorator pattern.</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="nd">@patch.object</span><span class="p">(</span><span class="n">utils</span><span class="p">,</span> <span class="s1">&#39;execute_with_timeout&#39;</span><span class="p">)</span>
+<span class="nd">@patch.object</span><span class="p">(</span><span class="n">os</span><span class="p">,</span> <span class="s1">&#39;popen&#39;</span><span class="p">)</span>
+<span class="k">def</span> <span class="nf">test_case</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">popen_mock</span><span class="p">,</span> <span class="n">execute_with_timeout_mock</span><span class="p">):</span>
+    <span class="k">pass</span>
+
+<span class="nd">@patch.multiple</span><span class="p">(</span><span class="n">utils</span><span class="p">,</span> <span class="n">execute_with_timeout</span><span class="o">=</span><span class="n">DEFAULT</span><span class="p">,</span>
+                <span class="n">generate_random_password</span><span class="o">=</span><span class="n">MagicMock</span><span class="p">(</span><span class="n">return_value</span><span class="o">=</span><span class="mi">1</span><span class="p">))</span>
+<span class="k">def</span> <span class="nf">test_case</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">generate_random_password</span><span class="p">,</span> <span class="n">execute_with_timeout</span><span class="p">):</span>
+    <span class="k">pass</span>
+</pre></div>
+</div>
+<p>Mocking a class or object for a smaller scope within one test case.
+Use the context manager pattern.</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="k">def</span> <span class="nf">test_case</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="c1"># Some code using real implementation of &#39;generate_random_password&#39;.</span>
+    <span class="k">with</span> <span class="n">patch</span><span class="o">.</span><span class="n">object</span><span class="p">(</span><span class="n">utils</span><span class="p">,</span> <span class="s1">&#39;generate_random_password&#39;</span><span class="p">)</span> <span class="k">as</span> <span class="n">pwd_mock</span><span class="p">:</span>
+        <span class="c1"># Using the mocked implementation of &#39;generate_random_password&#39;.</span>
+    <span class="c1"># Again code using the actual implementation of the method.</span>
+
+<span class="k">def</span> <span class="nf">test_case</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="k">with</span> <span class="n">patch</span><span class="o">.</span><span class="n">multiple</span><span class="p">(</span><span class="n">utils</span><span class="p">,</span> <span class="n">execute_with_timeout_mock</span><span class="o">=</span><span class="n">DEFAULT</span><span class="p">,</span>
+                        <span class="n">generate_random_password</span><span class="o">=</span><span class="n">MagicMock</span><span class="p">(</span>
+                            <span class="n">return_value</span><span class="o">=</span><span class="mi">1</span><span class="p">))</span> <span class="k">as</span> <span class="n">mocks</span><span class="p">:</span>
+        <span class="n">password_mock</span> <span class="o">=</span> <span class="n">mocks</span><span class="p">[</span><span class="s1">&#39;generate_random_password&#39;</span><span class="p">]</span>
+        <span class="n">execute_mock</span> <span class="o">=</span> <span class="n">mocks</span><span class="p">[</span><span class="s1">&#39;execute_with_timeout_mock&#39;</span><span class="p">]</span>
+</pre></div>
+</div>
+<p>Mocking global configuration properties.
+Use &#8216;patch_conf_property&#8217; method from &#8216;trove_testtools.TestCase&#8217;.</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="k">def</span> <span class="nf">test_case</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">patch_conf_property</span><span class="p">(</span><span class="s1">&#39;max_accepted_volume_size&#39;</span><span class="p">,</span> <span class="mi">10</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Datastore-specific configuration properties can be mocked by passing
+an optional &#8216;section&#8217; argument to the above call.</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="k">def</span> <span class="nf">test_case</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">patch_conf_property</span><span class="p">(</span><span class="s1">&#39;cluster_support&#39;</span><span class="p">,</span> <span class="bp">False</span><span class="p">,</span> <span class="n">section</span><span class="o">=</span><span class="s1">&#39;redis&#39;</span><span class="p">)</span>
+</pre></div>
+</div>
+<ul class="simple">
+<li>Note also: &#8216;patch_datastore_manager()&#8217;
+&#8216;datastore_manager&#8217; name has to be set properly when testing
+datastore-specific code to ensure correct configuration options get loaded.
+This is a convenience method for mocking &#8216;datastore_manager&#8217; name.</li>
+</ul>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="k">def</span> <span class="nf">test_case</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">patch_datastore_manager</span><span class="p">(</span><span class="s1">&#39;cassandra&#39;</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+<div class="section" id="references">
+<h2>References<a class="headerlink" href="#references" title="Permalink to this headline">¶</a></h2>
+<table class="docutils footnote" frame="void" id="id6" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label">[1]</td><td><em>(<a class="fn-backref" href="#id1">1</a>, <a class="fn-backref" href="#id2">2</a>, <a class="fn-backref" href="#id5">3</a>)</em> Mock Guide: <a class="reference external" href="https://docs.python.org/3/library/unittest.mock.html">https://docs.python.org/3/library/unittest.mock.html</a></td></tr>
+</tbody>
+</table>
+<table class="docutils footnote" frame="void" id="id7" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label"><a class="fn-backref" href="#id3">[2]</a></td><td>Python Mock Gotchas: <a class="reference external" href="http://alexmarandon.com/articles/python_mock_gotchas/">http://alexmarandon.com/articles/python_mock_gotchas/</a></td></tr>
+</tbody>
+</table>
+<table class="docutils footnote" frame="void" id="id8" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label"><a class="fn-backref" href="#id4">[3]</a></td><td>Mocking Mistakes: <a class="reference external" href="http://engineroom.trackmaven.com/blog/mocking-mistakes/">http://engineroom.trackmaven.com/blog/mocking-mistakes/</a></td></tr>
+</tbody>
+</table>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="../index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Notes on Trove Unit Tests</a><ul>
+<li><a class="reference internal" href="#mock-object-library">Mock Object Library</a></li>
+<li><a class="reference internal" href="#the-problem-of-dangling-mocks">The Problem of Dangling Mocks</a></li>
+<li><a class="reference internal" href="#dangling-mock-detector">Dangling Mock Detector</a></li>
+<li><a class="reference internal" href="#recommended-mocking-patterns">Recommended Mocking Patterns</a></li>
+<li><a class="reference internal" href="#references">References</a></li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="design.html"
+                                  title="previous chapter">Trove Design</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="install.html"
+                                  title="next chapter">Trove Installation</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/trove
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="../_sources/dev/testing.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="install.html" title="Trove Installation"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="design.html" title="Trove Design"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../index.html">trove 7.0.0.0rc2.dev2 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2013, OpenStack Foundation.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/trove");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

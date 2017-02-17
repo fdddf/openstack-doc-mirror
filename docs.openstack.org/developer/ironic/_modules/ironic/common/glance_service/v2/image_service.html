@@ -1,0 +1,383 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>ironic.common.glance_service.v2.image_service &mdash; Ironic 7.0.1.dev7 documentation</title>
+    
+    <link rel="stylesheet" href="../../../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../../_static/toggle.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../../../',
+        VERSION:     '7.0.1.dev7',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../../../_static/doctools.js"></script>
+    <script type="text/javascript" src="../../../../../_static/toggle.js"></script>
+    <link rel="top" title="Ironic 7.0.1.dev7 documentation" href="../../../../../index.html" />
+    <link rel="up" title="Module code" href="../../../../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for ironic.common.glance_service.v2.image_service</h1><div class="highlight"><pre>
+<span></span><span class="c1"># Copyright 2013 Hewlett-Packard Development Company, L.P.</span>
+<span class="c1"># All Rights Reserved.</span>
+<span class="c1">#</span>
+<span class="c1">#    Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may</span>
+<span class="c1">#    not use this file except in compliance with the License. You may obtain</span>
+<span class="c1">#    a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#         http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1">#    Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1">#    distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="c1">#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="c1">#    License for the specific language governing permissions and limitations</span>
+<span class="c1">#    under the License.</span>
+
+<span class="kn">import</span> <span class="nn">collections</span>
+<span class="kn">import</span> <span class="nn">time</span>
+
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">uuidutils</span>
+<span class="kn">from</span> <span class="nn">six.moves.urllib</span> <span class="kn">import</span> <span class="n">parse</span> <span class="k">as</span> <span class="n">urlparse</span>
+<span class="kn">from</span> <span class="nn">swiftclient</span> <span class="kn">import</span> <span class="n">utils</span> <span class="k">as</span> <span class="n">swift_utils</span>
+
+<span class="kn">from</span> <span class="nn">ironic.common</span> <span class="kn">import</span> <span class="n">exception</span> <span class="k">as</span> <span class="n">exc</span>
+<span class="kn">from</span> <span class="nn">ironic.common.glance_service</span> <span class="kn">import</span> <span class="n">base_image_service</span>
+<span class="kn">from</span> <span class="nn">ironic.common.glance_service</span> <span class="kn">import</span> <span class="n">service</span>
+<span class="kn">from</span> <span class="nn">ironic.common.glance_service</span> <span class="kn">import</span> <span class="n">service_utils</span>
+<span class="kn">from</span> <span class="nn">ironic.common.i18n</span> <span class="kn">import</span> <span class="n">_</span>
+<span class="kn">from</span> <span class="nn">ironic.conf</span> <span class="kn">import</span> <span class="n">CONF</span>
+
+<span class="n">TempUrlCacheElement</span> <span class="o">=</span> <span class="n">collections</span><span class="o">.</span><span class="n">namedtuple</span><span class="p">(</span><span class="s1">&#39;TempUrlCacheElement&#39;</span><span class="p">,</span>
+                                             <span class="p">[</span><span class="s1">&#39;url&#39;</span><span class="p">,</span> <span class="s1">&#39;url_expires_at&#39;</span><span class="p">])</span>
+
+
+<div class="viewcode-block" id="GlanceImageService"><a class="viewcode-back" href="../../../../../api/ironic.common.glance_service.v2.image_service.html#ironic.common.glance_service.v2.image_service.GlanceImageService">[docs]</a><span class="k">class</span> <span class="nc">GlanceImageService</span><span class="p">(</span><span class="n">base_image_service</span><span class="o">.</span><span class="n">BaseImageService</span><span class="p">,</span>
+                         <span class="n">service</span><span class="o">.</span><span class="n">ImageService</span><span class="p">):</span>
+
+    <span class="c1"># A dictionary containing cached temp URLs in namedtuples</span>
+    <span class="c1"># in format:</span>
+    <span class="c1"># {</span>
+    <span class="c1">#     &lt;image_id&gt; : (</span>
+    <span class="c1">#          url=&lt;temp_url&gt;,</span>
+    <span class="c1">#          url_expires_at=&lt;expiration_time&gt;</span>
+    <span class="c1">#     )</span>
+    <span class="c1"># }</span>
+    <span class="n">_cache</span> <span class="o">=</span> <span class="p">{}</span>
+
+<div class="viewcode-block" id="GlanceImageService.detail"><a class="viewcode-back" href="../../../../../api/ironic.common.glance_service.v2.image_service.html#ironic.common.glance_service.v2.image_service.GlanceImageService.detail">[docs]</a>    <span class="k">def</span> <span class="nf">detail</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_detail</span><span class="p">(</span><span class="n">method</span><span class="o">=</span><span class="s1">&#39;list&#39;</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="GlanceImageService.show"><a class="viewcode-back" href="../../../../../api/ironic.common.glance_service.v2.image_service.html#ironic.common.glance_service.v2.image_service.GlanceImageService.show">[docs]</a>    <span class="k">def</span> <span class="nf">show</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">image_id</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_show</span><span class="p">(</span><span class="n">image_id</span><span class="p">,</span> <span class="n">method</span><span class="o">=</span><span class="s1">&#39;get&#39;</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="GlanceImageService.download"><a class="viewcode-back" href="../../../../../api/ironic.common.glance_service.v2.image_service.html#ironic.common.glance_service.v2.image_service.GlanceImageService.download">[docs]</a>    <span class="k">def</span> <span class="nf">download</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">image_id</span><span class="p">,</span> <span class="n">data</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_download</span><span class="p">(</span><span class="n">image_id</span><span class="p">,</span> <span class="n">method</span><span class="o">=</span><span class="s1">&#39;data&#39;</span><span class="p">,</span> <span class="n">data</span><span class="o">=</span><span class="n">data</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="GlanceImageService.create"><a class="viewcode-back" href="../../../../../api/ironic.common.glance_service.v2.image_service.html#ironic.common.glance_service.v2.image_service.GlanceImageService.create">[docs]</a>    <span class="k">def</span> <span class="nf">create</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">image_meta</span><span class="p">,</span> <span class="n">data</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="n">image_id</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_create</span><span class="p">(</span><span class="n">image_meta</span><span class="p">,</span> <span class="n">method</span><span class="o">=</span><span class="s1">&#39;create&#39;</span><span class="p">,</span> <span class="n">data</span><span class="o">=</span><span class="bp">None</span><span class="p">)[</span><span class="s1">&#39;id&#39;</span><span class="p">]</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">image_id</span><span class="p">,</span> <span class="bp">None</span><span class="p">,</span> <span class="n">data</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="GlanceImageService.update"><a class="viewcode-back" href="../../../../../api/ironic.common.glance_service.v2.image_service.html#ironic.common.glance_service.v2.image_service.GlanceImageService.update">[docs]</a>    <span class="k">def</span> <span class="nf">update</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">image_id</span><span class="p">,</span> <span class="n">image_meta</span><span class="p">,</span> <span class="n">data</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">purge_props</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+        <span class="c1"># NOTE(ghe): purge_props not working until bug 1206472 solved</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_update</span><span class="p">(</span><span class="n">image_id</span><span class="p">,</span> <span class="n">image_meta</span><span class="p">,</span> <span class="n">data</span><span class="p">,</span> <span class="n">method</span><span class="o">=</span><span class="s1">&#39;update&#39;</span><span class="p">,</span>
+                            <span class="n">purge_props</span><span class="o">=</span><span class="bp">False</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="GlanceImageService.delete"><a class="viewcode-back" href="../../../../../api/ironic.common.glance_service.v2.image_service.html#ironic.common.glance_service.v2.image_service.GlanceImageService.delete">[docs]</a>    <span class="k">def</span> <span class="nf">delete</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">image_id</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_delete</span><span class="p">(</span><span class="n">image_id</span><span class="p">,</span> <span class="n">method</span><span class="o">=</span><span class="s1">&#39;delete&#39;</span><span class="p">)</span></div>
+
+    <span class="k">def</span> <span class="nf">_generate_temp_url</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">path</span><span class="p">,</span> <span class="n">seconds</span><span class="p">,</span> <span class="n">key</span><span class="p">,</span> <span class="n">method</span><span class="p">,</span> <span class="n">endpoint</span><span class="p">,</span>
+                           <span class="n">image_id</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get Swift temporary URL.</span>
+
+<span class="sd">        Generates (or returns the cached one if caching is enabled) a</span>
+<span class="sd">        temporary URL that gives unauthenticated access to the Swift object.</span>
+
+<span class="sd">        :param path: The full path to the Swift object. Example:</span>
+<span class="sd">            /v1/AUTH_account/c/o.</span>
+<span class="sd">        :param seconds: The amount of time in seconds the temporary URL will</span>
+<span class="sd">            be valid for.</span>
+<span class="sd">        :param key: The secret temporary URL key set on the Swift cluster.</span>
+<span class="sd">        :param method: A HTTP method, typically either GET or PUT, to allow for</span>
+<span class="sd">            this temporary URL.</span>
+<span class="sd">        :param endpoint: Endpoint URL of Swift service.</span>
+<span class="sd">        :param image_id: UUID of a Glance image.</span>
+<span class="sd">        :returns: temporary URL</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+
+        <span class="k">if</span> <span class="n">CONF</span><span class="o">.</span><span class="n">glance</span><span class="o">.</span><span class="n">swift_temp_url_cache_enabled</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_remove_expired_items_from_cache</span><span class="p">()</span>
+            <span class="k">if</span> <span class="n">image_id</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_cache</span><span class="p">:</span>
+                <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_cache</span><span class="p">[</span><span class="n">image_id</span><span class="p">]</span><span class="o">.</span><span class="n">url</span>
+
+        <span class="n">path</span> <span class="o">=</span> <span class="n">swift_utils</span><span class="o">.</span><span class="n">generate_temp_url</span><span class="p">(</span>
+            <span class="n">path</span><span class="o">=</span><span class="n">path</span><span class="p">,</span> <span class="n">seconds</span><span class="o">=</span><span class="n">seconds</span><span class="p">,</span> <span class="n">key</span><span class="o">=</span><span class="n">key</span><span class="p">,</span> <span class="n">method</span><span class="o">=</span><span class="n">method</span><span class="p">)</span>
+
+        <span class="n">temp_url</span> <span class="o">=</span> <span class="s1">&#39;{endpoint_url}{url_path}&#39;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span>
+            <span class="n">endpoint_url</span><span class="o">=</span><span class="n">endpoint</span><span class="p">,</span> <span class="n">url_path</span><span class="o">=</span><span class="n">path</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">CONF</span><span class="o">.</span><span class="n">glance</span><span class="o">.</span><span class="n">swift_temp_url_cache_enabled</span><span class="p">:</span>
+            <span class="n">query</span> <span class="o">=</span> <span class="n">urlparse</span><span class="o">.</span><span class="n">urlparse</span><span class="p">(</span><span class="n">temp_url</span><span class="p">)</span><span class="o">.</span><span class="n">query</span>
+            <span class="n">exp_time_str</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">(</span><span class="n">urlparse</span><span class="o">.</span><span class="n">parse_qsl</span><span class="p">(</span><span class="n">query</span><span class="p">))[</span><span class="s1">&#39;temp_url_expires&#39;</span><span class="p">]</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_cache</span><span class="p">[</span><span class="n">image_id</span><span class="p">]</span> <span class="o">=</span> <span class="n">TempUrlCacheElement</span><span class="p">(</span>
+                <span class="n">url</span><span class="o">=</span><span class="n">temp_url</span><span class="p">,</span> <span class="n">url_expires_at</span><span class="o">=</span><span class="nb">int</span><span class="p">(</span><span class="n">exp_time_str</span><span class="p">)</span>
+            <span class="p">)</span>
+
+        <span class="k">return</span> <span class="n">temp_url</span>
+
+<div class="viewcode-block" id="GlanceImageService.swift_temp_url"><a class="viewcode-back" href="../../../../../api/ironic.common.glance_service.v2.image_service.html#ironic.common.glance_service.v2.image_service.GlanceImageService.swift_temp_url">[docs]</a>    <span class="k">def</span> <span class="nf">swift_temp_url</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">image_info</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Generate a no-auth Swift temporary URL.</span>
+
+<span class="sd">        This function will generate (or return the cached one if temp URL</span>
+<span class="sd">        cache is enabled) the temporary Swift URL using the image</span>
+<span class="sd">        id from Glance and the config options: &#39;swift_endpoint_url&#39;,</span>
+<span class="sd">        &#39;swift_api_version&#39;, &#39;swift_account&#39; and &#39;swift_container&#39;.</span>
+<span class="sd">        The temporary URL will be valid for &#39;swift_temp_url_duration&#39; seconds.</span>
+<span class="sd">        This allows Ironic to download a Glance image without passing around</span>
+<span class="sd">        an auth_token.</span>
+
+<span class="sd">        :param image_info: The return from a GET request to Glance for a</span>
+<span class="sd">            certain image_id. Should be a dictionary, with keys like &#39;name&#39; and</span>
+<span class="sd">            &#39;checksum&#39;. See</span>
+<span class="sd">            http://docs.openstack.org/developer/glance/glanceapi.html for</span>
+<span class="sd">            examples.</span>
+<span class="sd">        :returns: A signed Swift URL from which an image can be downloaded,</span>
+<span class="sd">            without authentication.</span>
+
+<span class="sd">        :raises: InvalidParameterValue if Swift config options are not set</span>
+<span class="sd">            correctly.</span>
+<span class="sd">        :raises: MissingParameterValue if a required parameter is not set.</span>
+<span class="sd">        :raises: ImageUnacceptable if the image info from Glance does not</span>
+<span class="sd">            have a image ID.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_validate_temp_url_config</span><span class="p">()</span>
+
+        <span class="k">if</span> <span class="p">(</span><span class="s1">&#39;id&#39;</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">image_info</span> <span class="ow">or</span> <span class="ow">not</span>
+                <span class="n">uuidutils</span><span class="o">.</span><span class="n">is_uuid_like</span><span class="p">(</span><span class="n">image_info</span><span class="p">[</span><span class="s1">&#39;id&#39;</span><span class="p">])):</span>
+            <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">ImageUnacceptable</span><span class="p">(</span><span class="n">_</span><span class="p">(</span>
+                <span class="s1">&#39;The given image info does not have a valid image id: </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">)</span>
+                <span class="o">%</span> <span class="n">image_info</span><span class="p">)</span>
+
+        <span class="n">image_id</span> <span class="o">=</span> <span class="n">image_info</span><span class="p">[</span><span class="s1">&#39;id&#39;</span><span class="p">]</span>
+
+        <span class="n">url_fragments</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="s1">&#39;api_version&#39;</span><span class="p">:</span> <span class="n">CONF</span><span class="o">.</span><span class="n">glance</span><span class="o">.</span><span class="n">swift_api_version</span><span class="p">,</span>
+            <span class="s1">&#39;account&#39;</span><span class="p">:</span> <span class="n">CONF</span><span class="o">.</span><span class="n">glance</span><span class="o">.</span><span class="n">swift_account</span><span class="p">,</span>
+            <span class="s1">&#39;container&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_swift_container</span><span class="p">(</span><span class="n">image_id</span><span class="p">),</span>
+            <span class="s1">&#39;object_id&#39;</span><span class="p">:</span> <span class="n">image_id</span>
+        <span class="p">}</span>
+
+        <span class="n">endpoint_url</span> <span class="o">=</span> <span class="n">CONF</span><span class="o">.</span><span class="n">glance</span><span class="o">.</span><span class="n">swift_endpoint_url</span>
+        <span class="k">if</span> <span class="n">CONF</span><span class="o">.</span><span class="n">glance</span><span class="o">.</span><span class="n">temp_url_endpoint_type</span> <span class="o">==</span> <span class="s1">&#39;radosgw&#39;</span><span class="p">:</span>
+            <span class="n">chunks</span> <span class="o">=</span> <span class="n">urlparse</span><span class="o">.</span><span class="n">urlsplit</span><span class="p">(</span><span class="n">CONF</span><span class="o">.</span><span class="n">glance</span><span class="o">.</span><span class="n">swift_endpoint_url</span><span class="p">)</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">chunks</span><span class="o">.</span><span class="n">path</span><span class="p">:</span>
+                <span class="n">endpoint_url</span> <span class="o">=</span> <span class="n">urlparse</span><span class="o">.</span><span class="n">urljoin</span><span class="p">(</span>
+                    <span class="n">endpoint_url</span><span class="p">,</span> <span class="s1">&#39;swift&#39;</span><span class="p">)</span>
+            <span class="k">elif</span> <span class="n">chunks</span><span class="o">.</span><span class="n">path</span> <span class="o">!=</span> <span class="s1">&#39;/swift&#39;</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">InvalidParameterValue</span><span class="p">(</span>
+                    <span class="n">_</span><span class="p">(</span><span class="s1">&#39;Swift endpoint URL should only contain scheme, &#39;</span>
+                      <span class="s1">&#39;hostname, optional port and optional /swift path &#39;</span>
+                      <span class="s1">&#39;without trailing slash; provided value is: </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">)</span>
+                    <span class="o">%</span> <span class="n">endpoint_url</span><span class="p">)</span>
+            <span class="n">template</span> <span class="o">=</span> <span class="s1">&#39;/{api_version}/{container}/{object_id}&#39;</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">template</span> <span class="o">=</span> <span class="s1">&#39;/{api_version}/{account}/{container}/{object_id}&#39;</span>
+
+        <span class="n">url_path</span> <span class="o">=</span> <span class="n">template</span><span class="o">.</span><span class="n">format</span><span class="p">(</span><span class="o">**</span><span class="n">url_fragments</span><span class="p">)</span>
+
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_generate_temp_url</span><span class="p">(</span>
+            <span class="n">path</span><span class="o">=</span><span class="n">url_path</span><span class="p">,</span>
+            <span class="n">seconds</span><span class="o">=</span><span class="n">CONF</span><span class="o">.</span><span class="n">glance</span><span class="o">.</span><span class="n">swift_temp_url_duration</span><span class="p">,</span>
+            <span class="n">key</span><span class="o">=</span><span class="n">CONF</span><span class="o">.</span><span class="n">glance</span><span class="o">.</span><span class="n">swift_temp_url_key</span><span class="p">,</span>
+            <span class="n">method</span><span class="o">=</span><span class="s1">&#39;GET&#39;</span><span class="p">,</span>
+            <span class="n">endpoint</span><span class="o">=</span><span class="n">endpoint_url</span><span class="p">,</span>
+            <span class="n">image_id</span><span class="o">=</span><span class="n">image_id</span>
+        <span class="p">)</span></div>
+
+    <span class="k">def</span> <span class="nf">_validate_temp_url_config</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Validate the required settings for a temporary URL.&quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">CONF</span><span class="o">.</span><span class="n">glance</span><span class="o">.</span><span class="n">swift_temp_url_key</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">MissingParameterValue</span><span class="p">(</span><span class="n">_</span><span class="p">(</span>
+                <span class="s1">&#39;Swift temporary URLs require a shared secret to be created. &#39;</span>
+                <span class="s1">&#39;You must provide &quot;swift_temp_url_key&quot; as a config option.&#39;</span><span class="p">))</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">CONF</span><span class="o">.</span><span class="n">glance</span><span class="o">.</span><span class="n">swift_endpoint_url</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">MissingParameterValue</span><span class="p">(</span><span class="n">_</span><span class="p">(</span>
+                <span class="s1">&#39;Swift temporary URLs require a Swift endpoint URL. &#39;</span>
+                <span class="s1">&#39;You must provide &quot;swift_endpoint_url&quot; as a config option.&#39;</span><span class="p">))</span>
+        <span class="k">if</span> <span class="p">(</span><span class="ow">not</span> <span class="n">CONF</span><span class="o">.</span><span class="n">glance</span><span class="o">.</span><span class="n">swift_account</span> <span class="ow">and</span>
+                <span class="n">CONF</span><span class="o">.</span><span class="n">glance</span><span class="o">.</span><span class="n">temp_url_endpoint_type</span> <span class="o">==</span> <span class="s1">&#39;swift&#39;</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">MissingParameterValue</span><span class="p">(</span><span class="n">_</span><span class="p">(</span>
+                <span class="s1">&#39;Swift temporary URLs require a Swift account string. &#39;</span>
+                <span class="s1">&#39;You must provide &quot;swift_account&quot; as a config option.&#39;</span><span class="p">))</span>
+        <span class="k">if</span> <span class="p">(</span><span class="n">CONF</span><span class="o">.</span><span class="n">glance</span><span class="o">.</span><span class="n">swift_temp_url_duration</span> <span class="o">&lt;</span>
+                <span class="n">CONF</span><span class="o">.</span><span class="n">glance</span><span class="o">.</span><span class="n">swift_temp_url_expected_download_start_delay</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">InvalidParameterValue</span><span class="p">(</span><span class="n">_</span><span class="p">(</span>
+                <span class="s1">&#39;&quot;swift_temp_url_duration&quot; must be greater than or equal to &#39;</span>
+                <span class="s1">&#39;&quot;[glance]swift_temp_url_expected_download_start_delay&quot; &#39;</span>
+                <span class="s1">&#39;option, otherwise the Swift temporary URL may expire before &#39;</span>
+                <span class="s1">&#39;the download starts.&#39;</span><span class="p">))</span>
+        <span class="n">seed_num_chars</span> <span class="o">=</span> <span class="n">CONF</span><span class="o">.</span><span class="n">glance</span><span class="o">.</span><span class="n">swift_store_multiple_containers_seed</span>
+        <span class="k">if</span> <span class="p">(</span><span class="n">seed_num_chars</span> <span class="ow">is</span> <span class="bp">None</span> <span class="ow">or</span> <span class="n">seed_num_chars</span> <span class="o">&lt;</span> <span class="mi">0</span>
+                <span class="ow">or</span> <span class="n">seed_num_chars</span> <span class="o">&gt;</span> <span class="mi">32</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">InvalidParameterValue</span><span class="p">(</span><span class="n">_</span><span class="p">(</span>
+                <span class="s2">&quot;An integer value between 0 and 32 is required for&quot;</span>
+                <span class="s2">&quot; swift_store_multiple_containers_seed.&quot;</span><span class="p">))</span>
+
+    <span class="k">def</span> <span class="nf">_get_swift_container</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">image_id</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get the Swift container the image is stored in.</span>
+
+<span class="sd">        Code based on: http://git.openstack.org/cgit/openstack/glance_store/</span>
+<span class="sd">        tree/glance_store/_drivers/swift/</span>
+<span class="sd">        store.py?id=3cd690b37dc9d935445aca0998e8aec34a3e3530#n725</span>
+
+<span class="sd">        Returns appropriate container name depending upon value of</span>
+<span class="sd">        ``swift_store_multiple_containers_seed``. In single-container mode,</span>
+<span class="sd">        which is a seed value of 0, simply returns ``swift_container``.</span>
+<span class="sd">        In multiple-container mode, returns ``swift_container`` as the</span>
+<span class="sd">        prefix plus a suffix determined by the multiple container seed</span>
+
+<span class="sd">        examples:</span>
+<span class="sd">            single-container mode:  &#39;glance&#39;</span>
+<span class="sd">            multiple-container mode: &#39;glance_3a1&#39; for image uuid 3A1xxxxxxx...</span>
+
+<span class="sd">        :param image_id: UUID of image</span>
+<span class="sd">        :returns: The name of the swift container the image is stored in</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">seed_num_chars</span> <span class="o">=</span> <span class="n">CONF</span><span class="o">.</span><span class="n">glance</span><span class="o">.</span><span class="n">swift_store_multiple_containers_seed</span>
+
+        <span class="k">if</span> <span class="n">seed_num_chars</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="n">image_id</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">image_id</span><span class="p">)</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span>
+
+            <span class="n">num_dashes</span> <span class="o">=</span> <span class="n">image_id</span><span class="p">[:</span><span class="n">seed_num_chars</span><span class="p">]</span><span class="o">.</span><span class="n">count</span><span class="p">(</span><span class="s1">&#39;-&#39;</span><span class="p">)</span>
+            <span class="n">num_chars</span> <span class="o">=</span> <span class="n">seed_num_chars</span> <span class="o">+</span> <span class="n">num_dashes</span>
+            <span class="n">name_suffix</span> <span class="o">=</span> <span class="n">image_id</span><span class="p">[:</span><span class="n">num_chars</span><span class="p">]</span>
+            <span class="n">new_container_name</span> <span class="o">=</span> <span class="p">(</span><span class="n">CONF</span><span class="o">.</span><span class="n">glance</span><span class="o">.</span><span class="n">swift_container</span> <span class="o">+</span>
+                                  <span class="s1">&#39;_&#39;</span> <span class="o">+</span> <span class="n">name_suffix</span><span class="p">)</span>
+            <span class="k">return</span> <span class="n">new_container_name</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">CONF</span><span class="o">.</span><span class="n">glance</span><span class="o">.</span><span class="n">swift_container</span>
+
+    <span class="k">def</span> <span class="nf">_get_location</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">image_id</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get storage URL.</span>
+
+<span class="sd">        Returns the direct url representing the backend storage location,</span>
+<span class="sd">        or None if this attribute is not shown by Glance.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">image_meta</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="s1">&#39;get&#39;</span><span class="p">,</span> <span class="n">image_id</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">service_utils</span><span class="o">.</span><span class="n">is_image_available</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">context</span><span class="p">,</span> <span class="n">image_meta</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">ImageNotFound</span><span class="p">(</span><span class="n">image_id</span><span class="o">=</span><span class="n">image_id</span><span class="p">)</span>
+
+        <span class="k">return</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">image_meta</span><span class="p">,</span> <span class="s1">&#39;direct_url&#39;</span><span class="p">,</span> <span class="bp">None</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_remove_expired_items_from_cache</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Remove expired items from temporary URL cache</span>
+
+<span class="sd">        This function removes entries that will expire before the expected</span>
+<span class="sd">        usage time.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">max_valid_time</span> <span class="o">=</span> <span class="p">(</span>
+            <span class="nb">int</span><span class="p">(</span><span class="n">time</span><span class="o">.</span><span class="n">time</span><span class="p">())</span> <span class="o">+</span>
+            <span class="n">CONF</span><span class="o">.</span><span class="n">glance</span><span class="o">.</span><span class="n">swift_temp_url_expected_download_start_delay</span><span class="p">)</span>
+        <span class="n">keys_to_remove</span> <span class="o">=</span> <span class="p">[</span>
+            <span class="n">k</span> <span class="k">for</span> <span class="n">k</span><span class="p">,</span> <span class="n">v</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_cache</span><span class="o">.</span><span class="n">items</span><span class="p">()</span>
+            <span class="k">if</span> <span class="p">(</span><span class="n">v</span><span class="o">.</span><span class="n">url_expires_at</span> <span class="o">&lt;</span> <span class="n">max_valid_time</span><span class="p">)]</span>
+        <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="n">keys_to_remove</span><span class="p">:</span>
+            <span class="k">del</span> <span class="bp">self</span><span class="o">.</span><span class="n">_cache</span><span class="p">[</span><span class="n">k</span><span class="p">]</span></div>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/ironic
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../../../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../../../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../../../../index.html">Ironic 7.0.1.dev7 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../../../../index.html" accesskey="U">Module code</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright OpenStack Foundation.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/Ironic");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

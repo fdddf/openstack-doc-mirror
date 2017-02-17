@@ -1,0 +1,1048 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Overview &mdash; TaskFlow 2.9.1.dev9 documentation</title>
+    
+    <link rel="stylesheet" href="_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '2.9.1.dev9',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <link rel="top" title="TaskFlow 2.9.1.dev9 documentation" href="index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="overview">
+<h1>Overview<a class="headerlink" href="#overview" title="Permalink to this headline">¶</a></h1>
+<p>This is engine that schedules tasks to <strong>workers</strong> &#8211; separate processes
+dedicated for certain atoms execution, possibly running on other machines,
+connected via <a class="reference external" href="http://www.amqp.org/">amqp</a> (or other supported <a class="reference external" href="http://kombu.readthedocs.org/">kombu</a> transports).</p>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">This engine is under active development and is usable and <strong>does</strong> work
+but is missing some features (please check the <a class="reference external" href="https://blueprints.launchpad.net/taskflow?searchtext=wbe">blueprint page</a> for
+known issues and plans) that will make it more production ready.</p>
+</div>
+<div class="section" id="terminology">
+<h2>Terminology<a class="headerlink" href="#terminology" title="Permalink to this headline">¶</a></h2>
+<dl class="docutils">
+<dt>Client</dt>
+<dd>Code or program or service (or user) that uses this library to define
+flows and run them via engines.</dd>
+<dt>Transport + protocol</dt>
+<dd>Mechanism (and <a class="reference external" href="http://en.wikipedia.org/wiki/Communications_protocol">protocol</a> on top of that mechanism) used to pass information
+between the client and worker (for example amqp as a transport and a json
+encoded message format as the protocol).</dd>
+<dt>Executor</dt>
+<dd>Part of the worker-based engine and is used to publish task requests, so
+these requests can be accepted and processed by remote workers.</dd>
+<dt>Worker</dt>
+<dd>Workers are started on remote hosts and each has a list of tasks it can
+perform (on request). Workers accept and process task requests that are
+published by an executor. Several requests can be processed simultaneously
+in separate threads (or processes...). For example, an <a class="reference external" href="https://docs.python.org/dev/library/concurrent.futures.html#executor-objects">executor</a> can be
+passed to the worker and configured to run in as many threads (green or
+not) as desired.</dd>
+<dt>Proxy</dt>
+<dd>Executors interact with workers via a proxy. The proxy maintains the
+underlying transport and publishes messages (and invokes callbacks on message
+reception).</dd>
+</dl>
+</div>
+<div class="section" id="requirements">
+<h2>Requirements<a class="headerlink" href="#requirements" title="Permalink to this headline">¶</a></h2>
+<ul class="simple">
+<li><strong>Transparent:</strong> it should work as ad-hoc replacement for existing
+<em>(local)</em> engines with minimal, if any refactoring (e.g. it should be
+possible to run the same flows on it without changing client code if
+everything is set up and configured properly).</li>
+<li><strong>Transport-agnostic:</strong> the means of transport should be abstracted so that
+we can use <a class="reference external" href="https://wiki.openstack.org/wiki/Oslo/Messaging">oslo.messaging</a>, <a class="reference external" href="http://gearman.org/">gearmand</a>, <a class="reference external" href="http://www.amqp.org/">amqp</a>, <a class="reference external" href="http://zookeeper.org/">zookeeper</a>, <a class="reference external" href="https://wiki.openstack.org/wiki/Marconi">marconi</a>,
+<a class="reference external" href="http://en.wikipedia.org/wiki/WebSocket">websockets</a> or anything else that allows for passing information between a
+client and a worker.</li>
+<li><strong>Simple:</strong> it should be simple to write and deploy.</li>
+<li><strong>Non-uniformity:</strong> it should support non-uniform workers which allows
+different workers to execute different sets of atoms depending on the workers
+published capabilities.</li>
+</ul>
+</div>
+</div>
+<div class="section" id="design">
+<h1>Design<a class="headerlink" href="#design" title="Permalink to this headline">¶</a></h1>
+<p>There are two communication sides, the <em>executor</em> (and associated engine
+derivative) and <em>worker</em> that communicate using a proxy component. The proxy
+is designed to accept/publish messages from/into a named exchange.</p>
+<div class="section" id="high-level-architecture">
+<h2>High level architecture<a class="headerlink" href="#high-level-architecture" title="Permalink to this headline">¶</a></h2>
+<a class="reference internal image-reference" href="_images/worker-engine.svg"><div align="right" class="align-right"><img height="340px" src="_images/worker-engine.svg" /></div>
+</a>
+</div>
+<div class="section" id="executor-and-worker-communication">
+<h2>Executor and worker communication<a class="headerlink" href="#executor-and-worker-communication" title="Permalink to this headline">¶</a></h2>
+<p>Let&#8217;s consider how communication between an executor and a worker happens.
+First of all an engine resolves all atoms dependencies and schedules atoms that
+can be performed at the moment. This uses the same scheduling and dependency
+resolution logic that is used for every other engine type. Then the atoms which
+can be executed immediately (ones that are dependent on outputs of other tasks
+will be executed when that output is ready) are executed by the worker-based
+engine executor in the following manner:</p>
+<ol class="arabic simple">
+<li>The executor initiates task execution/reversion using a proxy object.</li>
+<li><a class="reference internal" href="#taskflow.engines.worker_based.proxy.Proxy" title="taskflow.engines.worker_based.proxy.Proxy"><code class="xref py py-class docutils literal"><span class="pre">Proxy</span></code></a> publishes task
+request (format is described below) into a named exchange using a routing
+key that is used to deliver request to particular workers topic. The
+executor then waits for the task requests to be accepted and confirmed by
+workers. If the executor doesn&#8217;t get a task confirmation from workers within
+the given timeout the task is considered as timed-out and a timeout
+exception is raised.</li>
+<li>A worker receives a request message and starts a new thread for processing
+it.<ol class="arabic">
+<li>The worker dispatches the request (gets desired endpoint that actually
+executes the task).</li>
+<li>If dispatched succeeded then the worker sends a confirmation response
+to the executor otherwise the worker sends a failed response along with
+a serialized <a class="reference internal" href="types.html#taskflow.types.failure.Failure" title="taskflow.types.failure.Failure"><code class="xref py py-class docutils literal"><span class="pre">failure</span></code></a> object
+that contains what has failed (and why).</li>
+<li>The worker executes the task and once it is finished sends the result
+back to the originating executor (every time a task progress event is
+triggered it sends progress notification to the executor where it is
+handled by the engine, dispatching to listeners and so-on).</li>
+</ol>
+</li>
+<li>The executor gets the task request confirmation from the worker and the task
+request state changes from the <code class="docutils literal"><span class="pre">PENDING</span></code> to the <code class="docutils literal"><span class="pre">RUNNING</span></code> state. Once a
+task request is in the <code class="docutils literal"><span class="pre">RUNNING</span></code> state it can&#8217;t be timed-out (considering
+that the task execution process may take an unpredictable amount of time).</li>
+<li>The executor gets the task execution result from the worker and passes it
+back to the executor and worker-based engine to finish task processing (this
+repeats for subsequent tasks).</li>
+</ol>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last"><a class="reference internal" href="types.html#taskflow.types.failure.Failure" title="taskflow.types.failure.Failure"><code class="xref py py-class docutils literal"><span class="pre">Failure</span></code></a> objects are not directly
+json-serializable (they contain references to tracebacks which are not
+serializable), so they are converted to dicts before sending and converted
+from dicts after receiving on both executor &amp; worker sides (this
+translation is lossy since the traceback can&#8217;t be fully retained, due
+to its contents containing internal interpreter references and
+details).</p>
+</div>
+<div class="section" id="id1">
+<h3>Protocol<a class="headerlink" href="#id1" title="Permalink to this headline">¶</a></h3>
+<span class="target" id="module-taskflow.engines.worker_based.protocol"></span><dl class="function">
+<dt id="taskflow.engines.worker_based.protocol.make_an_event">
+<code class="descclassname">taskflow.engines.worker_based.protocol.</code><code class="descname">make_an_event</code><span class="sig-paren">(</span><em>new_state</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/protocol.html#make_an_event"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.protocol.make_an_event" title="Permalink to this definition">¶</a></dt>
+<dd><p>Turns a new/target state into an event name.</p>
+</dd></dl>
+
+<dl class="function">
+<dt id="taskflow.engines.worker_based.protocol.build_a_machine">
+<code class="descclassname">taskflow.engines.worker_based.protocol.</code><code class="descname">build_a_machine</code><span class="sig-paren">(</span><em>freeze=True</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/protocol.html#build_a_machine"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.protocol.build_a_machine" title="Permalink to this definition">¶</a></dt>
+<dd><p>Builds a state machine that requests are allowed to go through.</p>
+</dd></dl>
+
+<dl class="function">
+<dt id="taskflow.engines.worker_based.protocol.failure_to_dict">
+<code class="descclassname">taskflow.engines.worker_based.protocol.</code><code class="descname">failure_to_dict</code><span class="sig-paren">(</span><em>failure</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/protocol.html#failure_to_dict"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.protocol.failure_to_dict" title="Permalink to this definition">¶</a></dt>
+<dd><p>Attempts to convert a failure object into a jsonifyable dictionary.</p>
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.engines.worker_based.protocol.Message">
+<em class="property">class </em><code class="descclassname">taskflow.engines.worker_based.protocol.</code><code class="descname">Message</code><a class="reference internal" href="_modules/taskflow/engines/worker_based/protocol.html#Message"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.protocol.Message" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>Base class for all message types.</p>
+<dl class="method">
+<dt id="taskflow.engines.worker_based.protocol.Message.to_dict">
+<code class="descname">to_dict</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/protocol.html#Message.to_dict"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.protocol.Message.to_dict" title="Permalink to this definition">¶</a></dt>
+<dd><p>Return json-serializable message representation.</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.engines.worker_based.protocol.Notify">
+<em class="property">class </em><code class="descclassname">taskflow.engines.worker_based.protocol.</code><code class="descname">Notify</code><span class="sig-paren">(</span><em>**data</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/protocol.html#Notify"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.protocol.Notify" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <a class="reference internal" href="#taskflow.engines.worker_based.protocol.Message" title="taskflow.engines.worker_based.protocol.Message"><code class="xref py py-class docutils literal"><span class="pre">taskflow.engines.worker_based.protocol.Message</span></code></a></p>
+<p>Represents notify message type.</p>
+<dl class="attribute">
+<dt id="taskflow.engines.worker_based.protocol.Notify.TYPE">
+<code class="descname">TYPE</code><em class="property"> = 'NOTIFY'</em><a class="headerlink" href="#taskflow.engines.worker_based.protocol.Notify.TYPE" title="Permalink to this definition">¶</a></dt>
+<dd><p>String constant representing this message type.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.engines.worker_based.protocol.Notify.RESPONSE_SCHEMA">
+<code class="descname">RESPONSE_SCHEMA</code><em class="property"> = {'additionalProperties': False, 'required': ['topic', 'tasks'], 'properties': {'topic': {'type': 'string'}, 'tasks': {'items': {'type': 'string'}, 'type': 'array'}}, 'type': 'object'}</em><a class="headerlink" href="#taskflow.engines.worker_based.protocol.Notify.RESPONSE_SCHEMA" title="Permalink to this definition">¶</a></dt>
+<dd><p>Expected notify <em>response</em> message schema (in json schema format).</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.engines.worker_based.protocol.Notify.SENDER_SCHEMA">
+<code class="descname">SENDER_SCHEMA</code><em class="property"> = {'additionalProperties': False, 'type': 'object'}</em><a class="headerlink" href="#taskflow.engines.worker_based.protocol.Notify.SENDER_SCHEMA" title="Permalink to this definition">¶</a></dt>
+<dd><p>Expected <em>sender</em> request message schema (in json schema format).</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.engines.worker_based.protocol.Request">
+<em class="property">class </em><code class="descclassname">taskflow.engines.worker_based.protocol.</code><code class="descname">Request</code><span class="sig-paren">(</span><em>task</em>, <em>uuid</em>, <em>action</em>, <em>arguments</em>, <em>timeout=60</em>, <em>result=&lt;object object&gt;</em>, <em>failures=None</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/protocol.html#Request"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.protocol.Request" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <a class="reference internal" href="#taskflow.engines.worker_based.protocol.Message" title="taskflow.engines.worker_based.protocol.Message"><code class="xref py py-class docutils literal"><span class="pre">taskflow.engines.worker_based.protocol.Message</span></code></a></p>
+<p>Represents request with execution results.</p>
+<p>Every request is created in the WAITING state and is expired within the
+given timeout if it does not transition out of the (WAITING, PENDING)
+states.</p>
+<p>State machine a request goes through as it progresses (or expires):</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>+------------+------------+---------+----------+---------+
+|   Start    |   Event    |   End   | On Enter | On Exit |
++------------+------------+---------+----------+---------+
+| FAILURE[$] |     .      |    .    |    .     |    .    |
+|  PENDING   | on_failure | FAILURE |    .     |    .    |
+|  PENDING   | on_running | RUNNING |    .     |    .    |
+|  RUNNING   | on_failure | FAILURE |    .     |    .    |
+|  RUNNING   | on_success | SUCCESS |    .     |    .    |
+| SUCCESS[$] |     .      |    .    |    .     |    .    |
+| WAITING[^] | on_failure | FAILURE |    .     |    .    |
+| WAITING[^] | on_pending | PENDING |    .     |    .    |
++------------+------------+---------+----------+---------+
+</pre></div>
+</div>
+<dl class="attribute">
+<dt id="taskflow.engines.worker_based.protocol.Request.TYPE">
+<code class="descname">TYPE</code><em class="property"> = 'REQUEST'</em><a class="headerlink" href="#taskflow.engines.worker_based.protocol.Request.TYPE" title="Permalink to this definition">¶</a></dt>
+<dd><p>String constant representing this message type.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.engines.worker_based.protocol.Request.SCHEMA">
+<code class="descname">SCHEMA</code><em class="property"> = {'required': ['task_cls', 'task_name', 'task_version', 'action'], 'properties': {'task_cls': {'type': 'string'}, 'result': {}, 'failures': {'type': 'object'}, 'action': {'enum': ['execute', 'revert'], 'type': 'string'}, 'task_version': {'oneOf': [{'type': 'string'}, {'type': 'array'}]}, 'arguments': {'type': 'object'}, 'task_name': {'type': 'string'}}, 'type': 'object'}</em><a class="headerlink" href="#taskflow.engines.worker_based.protocol.Request.SCHEMA" title="Permalink to this definition">¶</a></dt>
+<dd><p>Expected message schema (in json schema format).</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.engines.worker_based.protocol.Request.current_state">
+<code class="descname">current_state</code><a class="headerlink" href="#taskflow.engines.worker_based.protocol.Request.current_state" title="Permalink to this definition">¶</a></dt>
+<dd><p>Current state the request is in.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.worker_based.protocol.Request.set_result">
+<code class="descname">set_result</code><span class="sig-paren">(</span><em>result</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/protocol.html#Request.set_result"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.protocol.Request.set_result" title="Permalink to this definition">¶</a></dt>
+<dd><p>Sets the responses futures result.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.engines.worker_based.protocol.Request.expired">
+<code class="descname">expired</code><a class="headerlink" href="#taskflow.engines.worker_based.protocol.Request.expired" title="Permalink to this definition">¶</a></dt>
+<dd><p>Check if request has expired.</p>
+<p>When new request is created its state is set to the WAITING, creation
+time is stored and timeout is given via constructor arguments.</p>
+<p>Request is considered to be expired when it is in the WAITING/PENDING
+state for more then the given timeout (it is not considered to be
+expired in any other state).</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.worker_based.protocol.Request.to_dict">
+<code class="descname">to_dict</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/protocol.html#Request.to_dict"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.protocol.Request.to_dict" title="Permalink to this definition">¶</a></dt>
+<dd><p>Return json-serializable request.</p>
+<p>To convert requests that have failed due to some exception this will
+convert all <cite>failure.Failure</cite> objects into dictionaries (which will
+then be reconstituted by the receiver).</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.worker_based.protocol.Request.transition_and_log_error">
+<code class="descname">transition_and_log_error</code><span class="sig-paren">(</span><em>new_state</em>, <em>logger=None</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/protocol.html#Request.transition_and_log_error"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.protocol.Request.transition_and_log_error" title="Permalink to this definition">¶</a></dt>
+<dd><p>Transitions <em>and</em> logs an error if that transitioning raises.</p>
+<p>This overlays the transition function and performs nearly the same
+functionality but instead of raising if the transition was not valid
+it logs a warning to the provided logger and returns False to
+indicate that the transition was not performed (note that this
+is <em>different</em> from the transition function where False means
+ignored).</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.worker_based.protocol.Request.transition">
+<code class="descname">transition</code><span class="sig-paren">(</span><em>*args</em>, <em>**kwargs</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/protocol.html#Request.transition"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.protocol.Request.transition" title="Permalink to this definition">¶</a></dt>
+<dd><p>Transitions the request to a new state.</p>
+<p>If transition was performed, it returns True. If transition
+was ignored, it returns False. If transition was not
+valid (and will not be performed), it raises an InvalidState
+exception.</p>
+</dd></dl>
+
+<dl class="staticmethod">
+<dt id="taskflow.engines.worker_based.protocol.Request.from_dict">
+<em class="property">static </em><code class="descname">from_dict</code><span class="sig-paren">(</span><em>data</em>, <em>task_uuid=None</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/protocol.html#Request.from_dict"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.protocol.Request.from_dict" title="Permalink to this definition">¶</a></dt>
+<dd><p>Parses <strong>validated</strong> data into a work unit.</p>
+<p>All <a class="reference internal" href="types.html#taskflow.types.failure.Failure" title="taskflow.types.failure.Failure"><code class="xref py py-class docutils literal"><span class="pre">Failure</span></code></a> objects that have been
+converted to dict(s) on the remote side will now converted back
+to py:class:<cite>~taskflow.types.failure.Failure</cite> objects.</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.engines.worker_based.protocol.Response">
+<em class="property">class </em><code class="descclassname">taskflow.engines.worker_based.protocol.</code><code class="descname">Response</code><span class="sig-paren">(</span><em>state</em>, <em>**data</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/protocol.html#Response"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.protocol.Response" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <a class="reference internal" href="#taskflow.engines.worker_based.protocol.Message" title="taskflow.engines.worker_based.protocol.Message"><code class="xref py py-class docutils literal"><span class="pre">taskflow.engines.worker_based.protocol.Message</span></code></a></p>
+<p>Represents response message type.</p>
+<dl class="attribute">
+<dt id="taskflow.engines.worker_based.protocol.Response.TYPE">
+<code class="descname">TYPE</code><em class="property"> = 'RESPONSE'</em><a class="headerlink" href="#taskflow.engines.worker_based.protocol.Response.TYPE" title="Permalink to this definition">¶</a></dt>
+<dd><p>String constant representing this message type.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.engines.worker_based.protocol.Response.SCHEMA">
+<code class="descname">SCHEMA</code><em class="property"> = {'definitions': {'completion': {'additionalProperties': False, 'required': ['result'], 'properties': {'result': {}}, 'type': 'object'}, 'event': {'additionalProperties': False, 'required': ['event_type', 'details'], 'properties': {'details': {'type': 'object'}, 'event_type': {'type': 'string'}}, 'type': 'object'}, 'empty': {'additionalProperties': False, 'type': 'object'}}, 'additionalProperties': False, 'required': ['state', 'data'], 'properties': {'state': {'enum': ['WAITING', 'PENDING', 'RUNNING', 'SUCCESS', 'FAILURE', 'EVENT'], 'type': 'string'}, 'data': {'anyOf': [{'$ref': '#/definitions/event'}, {'$ref': '#/definitions/completion'}, {'$ref': '#/definitions/empty'}]}}, 'type': 'object'}</em><a class="headerlink" href="#taskflow.engines.worker_based.protocol.Response.SCHEMA" title="Permalink to this definition">¶</a></dt>
+<dd><p>Expected message schema (in json schema format).</p>
+</dd></dl>
+
+</dd></dl>
+
+</div>
+<div class="section" id="examples">
+<h3>Examples<a class="headerlink" href="#examples" title="Permalink to this headline">¶</a></h3>
+<div class="section" id="request-execute">
+<h4>Request (execute)<a class="headerlink" href="#request-execute" title="Permalink to this headline">¶</a></h4>
+<ul class="simple">
+<li><strong>task_name</strong> - full task name to be performed</li>
+<li><strong>task_cls</strong> - full task class name to be performed</li>
+<li><strong>action</strong> - task action to be performed (e.g. execute, revert)</li>
+<li><strong>arguments</strong> - arguments the task action to be called with</li>
+<li><strong>result</strong> - task execution result (result or
+<a class="reference internal" href="types.html#taskflow.types.failure.Failure" title="taskflow.types.failure.Failure"><code class="xref py py-class docutils literal"><span class="pre">Failure</span></code></a>) <em>[passed to revert only]</em></li>
+</ul>
+<p>Additionally, the following parameters are added to the request message:</p>
+<ul class="simple">
+<li><strong>reply_to</strong> - executor named exchange workers will send responses back to</li>
+<li><strong>correlation_id</strong> - executor request id (since there can be multiple request
+being processed simultaneously)</li>
+</ul>
+<p><strong>Example:</strong></p>
+<div class="code json highlight-python"><div class="highlight"><pre><span></span><span class="p">{</span>
+    <span class="s2">&quot;action&quot;</span><span class="p">:</span> <span class="s2">&quot;execute&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;arguments&quot;</span><span class="p">:</span> <span class="p">{</span>
+        <span class="s2">&quot;x&quot;</span><span class="p">:</span> <span class="mi">111</span>
+    <span class="p">},</span>
+    <span class="s2">&quot;task_cls&quot;</span><span class="p">:</span> <span class="s2">&quot;taskflow.tests.utils.TaskOneArgOneReturn&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;task_name&quot;</span><span class="p">:</span> <span class="s2">&quot;taskflow.tests.utils.TaskOneArgOneReturn&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;task_version&quot;</span><span class="p">:</span> <span class="p">[</span>
+        <span class="mi">1</span><span class="p">,</span>
+        <span class="mi">0</span>
+    <span class="p">]</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</div>
+<div class="section" id="request-revert">
+<h4>Request (revert)<a class="headerlink" href="#request-revert" title="Permalink to this headline">¶</a></h4>
+<p>When <strong>reverting:</strong></p>
+<div class="code json highlight-python"><div class="highlight"><pre><span></span><span class="p">{</span>
+    <span class="s2">&quot;action&quot;</span><span class="p">:</span> <span class="s2">&quot;revert&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;arguments&quot;</span><span class="p">:</span> <span class="p">{},</span>
+    <span class="s2">&quot;failures&quot;</span><span class="p">:</span> <span class="p">{</span>
+        <span class="s2">&quot;taskflow.tests.utils.TaskWithFailure&quot;</span><span class="p">:</span> <span class="p">{</span>
+            <span class="s2">&quot;exc_type_names&quot;</span><span class="p">:</span> <span class="p">[</span>
+                <span class="s2">&quot;RuntimeError&quot;</span><span class="p">,</span>
+                <span class="s2">&quot;StandardError&quot;</span><span class="p">,</span>
+                <span class="s2">&quot;Exception&quot;</span>
+            <span class="p">],</span>
+            <span class="s2">&quot;exception_str&quot;</span><span class="p">:</span> <span class="s2">&quot;Woot!&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;traceback_str&quot;</span><span class="p">:</span> <span class="s2">&quot;  File </span><span class="se">\&quot;</span><span class="s2">/homes/harlowja/dev/os/taskflow/taskflow/engines/action_engine/executor.py</span><span class="se">\&quot;</span><span class="s2">, line 56, in _execute_task</span><span class="se">\n</span><span class="s2">    result = task.execute(**arguments)</span><span class="se">\n</span><span class="s2">  File </span><span class="se">\&quot;</span><span class="s2">/homes/harlowja/dev/os/taskflow/taskflow/tests/utils.py</span><span class="se">\&quot;</span><span class="s2">, line 165, in execute</span><span class="se">\n</span><span class="s2">    raise RuntimeError(&#39;Woot!&#39;)</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;version&quot;</span><span class="p">:</span> <span class="mi">1</span>
+        <span class="p">}</span>
+    <span class="p">},</span>
+    <span class="s2">&quot;result&quot;</span><span class="p">:</span> <span class="p">[</span>
+        <span class="s2">&quot;failure&quot;</span><span class="p">,</span>
+        <span class="p">{</span>
+            <span class="s2">&quot;exc_type_names&quot;</span><span class="p">:</span> <span class="p">[</span>
+                <span class="s2">&quot;RuntimeError&quot;</span><span class="p">,</span>
+                <span class="s2">&quot;StandardError&quot;</span><span class="p">,</span>
+                <span class="s2">&quot;Exception&quot;</span>
+            <span class="p">],</span>
+            <span class="s2">&quot;exception_str&quot;</span><span class="p">:</span> <span class="s2">&quot;Woot!&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;traceback_str&quot;</span><span class="p">:</span> <span class="s2">&quot;  File </span><span class="se">\&quot;</span><span class="s2">/homes/harlowja/dev/os/taskflow/taskflow/engines/action_engine/executor.py</span><span class="se">\&quot;</span><span class="s2">, line 56, in _execute_task</span><span class="se">\n</span><span class="s2">    result = task.execute(**arguments)</span><span class="se">\n</span><span class="s2">  File </span><span class="se">\&quot;</span><span class="s2">/homes/harlowja/dev/os/taskflow/taskflow/tests/utils.py</span><span class="se">\&quot;</span><span class="s2">, line 165, in execute</span><span class="se">\n</span><span class="s2">    raise RuntimeError(&#39;Woot!&#39;)</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;version&quot;</span><span class="p">:</span> <span class="mi">1</span>
+        <span class="p">}</span>
+    <span class="p">],</span>
+    <span class="s2">&quot;task_cls&quot;</span><span class="p">:</span> <span class="s2">&quot;taskflow.tests.utils.TaskWithFailure&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;task_name&quot;</span><span class="p">:</span> <span class="s2">&quot;taskflow.tests.utils.TaskWithFailure&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;task_version&quot;</span><span class="p">:</span> <span class="p">[</span>
+        <span class="mi">1</span><span class="p">,</span>
+        <span class="mi">0</span>
+    <span class="p">]</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</div>
+<div class="section" id="worker-response-s">
+<h4>Worker response(s)<a class="headerlink" href="#worker-response-s" title="Permalink to this headline">¶</a></h4>
+<p>When <strong>running:</strong></p>
+<div class="code json highlight-python"><div class="highlight"><pre><span></span><span class="p">{</span>
+    <span class="s2">&quot;data&quot;</span><span class="p">:</span> <span class="p">{},</span>
+    <span class="s2">&quot;state&quot;</span><span class="p">:</span> <span class="s2">&quot;RUNNING&quot;</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>When <strong>progressing:</strong></p>
+<div class="code json highlight-python"><div class="highlight"><pre><span></span><span class="p">{</span>
+    <span class="s2">&quot;details&quot;</span><span class="p">:</span> <span class="p">{</span>
+        <span class="s2">&quot;progress&quot;</span><span class="p">:</span> <span class="mf">0.5</span>
+    <span class="p">},</span>
+    <span class="s2">&quot;event_type&quot;</span><span class="p">:</span> <span class="s2">&quot;update_progress&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;state&quot;</span><span class="p">:</span> <span class="s2">&quot;EVENT&quot;</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>When <strong>succeeded:</strong></p>
+<div class="code json highlight-python"><div class="highlight"><pre><span></span><span class="p">{</span>
+    <span class="s2">&quot;data&quot;</span><span class="p">:</span> <span class="p">{</span>
+        <span class="s2">&quot;result&quot;</span><span class="p">:</span> <span class="mi">666</span>
+    <span class="p">},</span>
+    <span class="s2">&quot;state&quot;</span><span class="p">:</span> <span class="s2">&quot;SUCCESS&quot;</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>When <strong>failed:</strong></p>
+<div class="code json highlight-python"><div class="highlight"><pre><span></span><span class="p">{</span>
+    <span class="s2">&quot;data&quot;</span><span class="p">:</span> <span class="p">{</span>
+        <span class="s2">&quot;result&quot;</span><span class="p">:</span> <span class="p">{</span>
+            <span class="s2">&quot;exc_type_names&quot;</span><span class="p">:</span> <span class="p">[</span>
+                <span class="s2">&quot;RuntimeError&quot;</span><span class="p">,</span>
+                <span class="s2">&quot;StandardError&quot;</span><span class="p">,</span>
+                <span class="s2">&quot;Exception&quot;</span>
+            <span class="p">],</span>
+            <span class="s2">&quot;exception_str&quot;</span><span class="p">:</span> <span class="s2">&quot;Woot!&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;traceback_str&quot;</span><span class="p">:</span> <span class="s2">&quot;  File </span><span class="se">\&quot;</span><span class="s2">/homes/harlowja/dev/os/taskflow/taskflow/engines/action_engine/executor.py</span><span class="se">\&quot;</span><span class="s2">, line 56, in _execute_task</span><span class="se">\n</span><span class="s2">    result = task.execute(**arguments)</span><span class="se">\n</span><span class="s2">  File </span><span class="se">\&quot;</span><span class="s2">/homes/harlowja/dev/os/taskflow/taskflow/tests/utils.py</span><span class="se">\&quot;</span><span class="s2">, line 165, in execute</span><span class="se">\n</span><span class="s2">    raise RuntimeError(&#39;Woot!&#39;)</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;version&quot;</span><span class="p">:</span> <span class="mi">1</span>
+        <span class="p">}</span>
+    <span class="p">},</span>
+    <span class="s2">&quot;state&quot;</span><span class="p">:</span> <span class="s2">&quot;FAILURE&quot;</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</div>
+</div>
+</div>
+<div class="section" id="request-state-transitions">
+<h2>Request state transitions<a class="headerlink" href="#request-state-transitions" title="Permalink to this headline">¶</a></h2>
+<a class="reference internal image-reference" href="_images/wbe_request_states.svg"><div align="center" class="align-center"><img alt="WBE request state transitions" src="_images/wbe_request_states.svg" width="520px" /></div>
+</a>
+<p><strong>WAITING</strong> - Request placed on queue (or other <a class="reference external" href="http://kombu.readthedocs.org/">kombu</a> message bus/transport)
+but not <em>yet</em> consumed.</p>
+<p><strong>PENDING</strong> - Worker accepted request and is pending to run using its
+executor (threads, processes, or other).</p>
+<p><strong>FAILURE</strong> - Worker failed after running request (due to task exception) or
+no worker moved/started executing (by placing the request into <code class="docutils literal"><span class="pre">RUNNING</span></code>
+state) with-in specified time span (this defaults to 60 seconds unless
+overridden).</p>
+<p><strong>RUNNING</strong> - Workers executor (using threads, processes...) has started to
+run requested task (once this state is transitioned to any request timeout no
+longer becomes applicable; since at this point it is unknown how long a task
+will run since it can not be determined if a task is just taking a long time
+or has failed).</p>
+<p><strong>SUCCESS</strong> - Worker finished running task without exception.</p>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">During the <code class="docutils literal"><span class="pre">WAITING</span></code> and <code class="docutils literal"><span class="pre">PENDING</span></code> stages the engine keeps track
+of how long the request has been <em>alive</em> for and if a timeout is reached
+the request will automatically transition to <code class="docutils literal"><span class="pre">FAILURE</span></code> and any further
+transitions from a worker will be disallowed (for example, if a worker
+accepts the request in the future and sets the task to <code class="docutils literal"><span class="pre">PENDING</span></code> this
+transition will be logged and ignored). This timeout can be adjusted and/or
+removed by setting the engine <code class="docutils literal"><span class="pre">transition_timeout</span></code> option to a
+higher/lower value or by setting it to <code class="docutils literal"><span class="pre">None</span></code> (to remove the timeout
+completely). In the future this will be improved to be more dynamic
+by implementing the blueprints associated with <a class="reference external" href="https://blueprints.launchpad.net/taskflow/+spec/wbe-worker-failover">failover</a> and
+<a class="reference external" href="https://blueprints.launchpad.net/taskflow/+spec/wbe-worker-info">info/resilence</a>.</p>
+</div>
+</div>
+</div>
+<div class="section" id="usage">
+<h1>Usage<a class="headerlink" href="#usage" title="Permalink to this headline">¶</a></h1>
+<div class="section" id="workers">
+<h2>Workers<a class="headerlink" href="#workers" title="Permalink to this headline">¶</a></h2>
+<p>To use the worker based engine a set of workers must first be established on
+remote machines. These workers must be provided a list of task objects, task
+names, modules names (or entrypoints that can be examined for valid tasks) they
+can respond to (this is done so that arbitrary code execution is not possible).</p>
+<p>For complete parameters and object usage please visit
+<a class="reference internal" href="#taskflow.engines.worker_based.worker.Worker" title="taskflow.engines.worker_based.worker.Worker"><code class="xref py py-class docutils literal"><span class="pre">Worker</span></code></a>.</p>
+<p><strong>Example:</strong></p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span><span class="kn">from</span> <span class="nn">taskflow.engines.worker_based</span> <span class="kn">import</span> <span class="n">worker</span> <span class="k">as</span> <span class="n">w</span>
+
+<span class="n">config</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s1">&#39;url&#39;</span><span class="p">:</span> <span class="s1">&#39;amqp://guest:guest@localhost:5672//&#39;</span><span class="p">,</span>
+    <span class="s1">&#39;exchange&#39;</span><span class="p">:</span> <span class="s1">&#39;test-exchange&#39;</span><span class="p">,</span>
+    <span class="s1">&#39;topic&#39;</span><span class="p">:</span> <span class="s1">&#39;test-tasks&#39;</span><span class="p">,</span>
+    <span class="s1">&#39;tasks&#39;</span><span class="p">:</span> <span class="p">[</span><span class="s1">&#39;tasks:TestTask1&#39;</span><span class="p">,</span> <span class="s1">&#39;tasks:TestTask2&#39;</span><span class="p">],</span>
+<span class="p">}</span>
+<span class="n">worker</span> <span class="o">=</span> <span class="n">w</span><span class="o">.</span><span class="n">Worker</span><span class="p">(</span><span class="o">**</span><span class="n">config</span><span class="p">)</span>
+<span class="n">worker</span><span class="o">.</span><span class="n">run</span><span class="p">()</span>
+</pre></div>
+</div>
+</div>
+<div class="section" id="engines">
+<h2>Engines<a class="headerlink" href="#engines" title="Permalink to this headline">¶</a></h2>
+<p>To use the worker based engine a flow must be constructed (which contains tasks
+that are visible on remote machines) and the specific worker based engine
+entrypoint must be selected. Certain configuration options must also be
+provided so that the transport backend can be configured and initialized
+correctly. Otherwise the usage should be mostly transparent (and is nearly
+identical to using any other engine type).</p>
+<p>For complete parameters and object usage please see
+<a class="reference internal" href="#taskflow.engines.worker_based.engine.WorkerBasedActionEngine" title="taskflow.engines.worker_based.engine.WorkerBasedActionEngine"><code class="xref py py-class docutils literal"><span class="pre">WorkerBasedActionEngine</span></code></a>.</p>
+<p><strong>Example with amqp transport:</strong></p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span><span class="n">flow</span> <span class="o">=</span> <span class="n">lf</span><span class="o">.</span><span class="n">Flow</span><span class="p">(</span><span class="s1">&#39;simple-linear&#39;</span><span class="p">)</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="o">...</span><span class="p">)</span>
+<span class="n">eng</span> <span class="o">=</span> <span class="n">taskflow</span><span class="o">.</span><span class="n">engines</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">flow</span><span class="p">,</span> <span class="n">engine</span><span class="o">=</span><span class="s1">&#39;worker-based&#39;</span><span class="p">,</span>
+                            <span class="n">url</span><span class="o">=</span><span class="s1">&#39;amqp://guest:guest@localhost:5672//&#39;</span><span class="p">,</span>
+                            <span class="n">exchange</span><span class="o">=</span><span class="s1">&#39;test-exchange&#39;</span><span class="p">,</span>
+                            <span class="n">topics</span><span class="o">=</span><span class="p">[</span><span class="s1">&#39;topic1&#39;</span><span class="p">,</span> <span class="s1">&#39;topic2&#39;</span><span class="p">])</span>
+<span class="n">eng</span><span class="o">.</span><span class="n">run</span><span class="p">()</span>
+</pre></div>
+</div>
+<p><strong>Example with filesystem transport:</strong></p>
+<div class="code python highlight-python"><div class="highlight"><pre><span></span><span class="n">flow</span> <span class="o">=</span> <span class="n">lf</span><span class="o">.</span><span class="n">Flow</span><span class="p">(</span><span class="s1">&#39;simple-linear&#39;</span><span class="p">)</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="o">...</span><span class="p">)</span>
+<span class="n">eng</span> <span class="o">=</span> <span class="n">taskflow</span><span class="o">.</span><span class="n">engines</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">flow</span><span class="p">,</span> <span class="n">engine</span><span class="o">=</span><span class="s1">&#39;worker-based&#39;</span><span class="p">,</span>
+                            <span class="n">exchange</span><span class="o">=</span><span class="s1">&#39;test-exchange&#39;</span><span class="p">,</span>
+                            <span class="n">topics</span><span class="o">=</span><span class="p">[</span><span class="s1">&#39;topic1&#39;</span><span class="p">,</span> <span class="s1">&#39;topic2&#39;</span><span class="p">],</span>
+                            <span class="n">transport</span><span class="o">=</span><span class="s1">&#39;filesystem&#39;</span><span class="p">,</span>
+                            <span class="n">transport_options</span><span class="o">=</span><span class="p">{</span>
+                                <span class="s1">&#39;data_folder_in&#39;</span><span class="p">:</span> <span class="s1">&#39;/tmp/in&#39;</span><span class="p">,</span>
+                                <span class="s1">&#39;data_folder_out&#39;</span><span class="p">:</span> <span class="s1">&#39;/tmp/out&#39;</span><span class="p">,</span>
+                            <span class="p">})</span>
+<span class="n">eng</span><span class="o">.</span><span class="n">run</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>Additional supported keyword arguments:</p>
+<ul class="simple">
+<li><code class="docutils literal"><span class="pre">executor</span></code>: a class that provides a
+<a class="reference internal" href="#taskflow.engines.worker_based.executor.WorkerTaskExecutor" title="taskflow.engines.worker_based.executor.WorkerTaskExecutor"><code class="xref py py-class docutils literal"><span class="pre">WorkerTaskExecutor</span></code></a>
+interface; it will be used for executing, reverting and waiting for remote
+tasks.</li>
+</ul>
+</div>
+</div>
+<div class="section" id="limitations">
+<h1>Limitations<a class="headerlink" href="#limitations" title="Permalink to this headline">¶</a></h1>
+<ul class="simple">
+<li>Atoms inside a flow must receive and accept parameters only from the ways
+defined in <a class="reference internal" href="persistence.html"><em>persistence</em></a>. In other words, the task
+that is created when a workflow is constructed will not be the same task that
+is executed on a remote worker (and any internal state not passed via the
+<a class="reference internal" href="inputs_and_outputs.html"><em>input and output</em></a> mechanism can not be
+transferred). This means resource objects (database handles, file
+descriptors, sockets, ...) can <strong>not</strong> be directly sent across to remote
+workers (instead the configuration that defines how to fetch/create these
+objects must be instead).</li>
+<li>Worker-based engines will in the future be able to run lightweight tasks
+locally to avoid transport overhead for very simple tasks (currently it will
+run even lightweight tasks remotely, which may be non-performant).</li>
+<li>Fault detection, currently when a worker acknowledges a task the engine will
+wait for the task result indefinitely (a task may take an indeterminate
+amount of time to finish). In the future there needs to be a way to limit
+the duration of a remote workers execution (and track their liveness) and
+possibly spawn the task on a secondary worker if a timeout is reached (aka
+the first worker has died or has stopped responding).</li>
+</ul>
+</div>
+<div class="section" id="module-taskflow.engines.worker_based.engine">
+<span id="implementations"></span><h1>Implementations<a class="headerlink" href="#module-taskflow.engines.worker_based.engine" title="Permalink to this headline">¶</a></h1>
+<dl class="class">
+<dt id="taskflow.engines.worker_based.engine.WorkerBasedActionEngine">
+<em class="property">class </em><code class="descclassname">taskflow.engines.worker_based.engine.</code><code class="descname">WorkerBasedActionEngine</code><span class="sig-paren">(</span><em>flow</em>, <em>flow_detail</em>, <em>backend</em>, <em>options</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/engine.html#WorkerBasedActionEngine"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.engine.WorkerBasedActionEngine" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <a class="reference internal" href="engines.html#taskflow.engines.action_engine.engine.ActionEngine" title="taskflow.engines.action_engine.engine.ActionEngine"><code class="xref py py-class docutils literal"><span class="pre">taskflow.engines.action_engine.engine.ActionEngine</span></code></a></p>
+<p>Worker based action engine.</p>
+<p>Specific backend options (extracted from provided engine options):</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><ul class="first last simple">
+<li><strong>exchange</strong> &#8211; broker exchange exchange name in which executor / worker
+communication is performed</li>
+<li><strong>url</strong> &#8211; broker connection url (see format in kombu documentation)</li>
+<li><strong>topics</strong> &#8211; list of workers topics to communicate with (this will also
+be learned by listening to the notifications that workers
+emit).</li>
+<li><strong>transport</strong> &#8211; transport to be used (e.g. amqp, memory, etc.)</li>
+<li><strong>transition_timeout</strong> &#8211; numeric value (or None for infinite) to wait
+for submitted remote requests to transition out
+of the (PENDING, WAITING) request states. When
+expired the associated task the request was made
+for will have its result become a
+<a class="reference internal" href="exceptions.html#taskflow.exceptions.RequestTimeout" title="taskflow.exceptions.RequestTimeout"><code class="xref py py-class docutils literal"><span class="pre">RequestTimeout</span></code></a>
+exception instead of its normally returned
+value (or raised exception).</li>
+<li><strong>transport_options</strong> &#8211; transport specific options (see:
+<a class="reference external" href="http://kombu.readthedocs.org/">http://kombu.readthedocs.org/</a> for what these
+options imply and are expected to be)</li>
+<li><strong>retry_options</strong> &#8211; retry specific options
+(see: <a class="reference internal" href="#taskflow.engines.worker_based.proxy.Proxy.DEFAULT_RETRY_OPTIONS" title="taskflow.engines.worker_based.proxy.Proxy.DEFAULT_RETRY_OPTIONS"><code class="xref py py-attr docutils literal"><span class="pre">DEFAULT_RETRY_OPTIONS</span></code></a>)</li>
+<li><strong>worker_expiry</strong> &#8211; numeric value (or negative/zero/None for
+infinite) that defines the number of seconds to
+continue to send messages to workers that
+have <strong>not</strong> responded back to a prior
+notification/ping request (this defaults
+to 60 seconds).</li>
+</ul>
+</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<div class="section" id="components">
+<h2>Components<a class="headerlink" href="#components" title="Permalink to this headline">¶</a></h2>
+<div class="admonition warning">
+<p class="first admonition-title">Warning</p>
+<p class="last">External usage of internal engine functions, components and modules should
+be kept to a <strong>minimum</strong> as they may be altered, refactored or moved to
+other locations <strong>without</strong> notice (and without the typical deprecation
+cycle).</p>
+</div>
+<span class="target" id="module-taskflow.engines.worker_based.dispatcher"></span><dl class="class">
+<dt id="taskflow.engines.worker_based.dispatcher.Handler">
+<em class="property">class </em><code class="descclassname">taskflow.engines.worker_based.dispatcher.</code><code class="descname">Handler</code><span class="sig-paren">(</span><em>process_message</em>, <em>validator=None</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/dispatcher.html#Handler"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.dispatcher.Handler" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>Component(s) that will be called on reception of messages.</p>
+<dl class="attribute">
+<dt id="taskflow.engines.worker_based.dispatcher.Handler.process_message">
+<code class="descname">process_message</code><a class="headerlink" href="#taskflow.engines.worker_based.dispatcher.Handler.process_message" title="Permalink to this definition">¶</a></dt>
+<dd><p>Main callback that is called to process a received message.</p>
+<p>This is only called after the format has been validated (using
+the <code class="docutils literal"><span class="pre">validator</span></code> callback if applicable) and only after the message
+has been acknowledged.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.engines.worker_based.dispatcher.Handler.validator">
+<code class="descname">validator</code><a class="headerlink" href="#taskflow.engines.worker_based.dispatcher.Handler.validator" title="Permalink to this definition">¶</a></dt>
+<dd><p>Optional callback that will be activated before processing.</p>
+<p>This callback if present is expected to validate the message and
+raise <a class="reference internal" href="exceptions.html#taskflow.exceptions.InvalidFormat" title="taskflow.exceptions.InvalidFormat"><code class="xref py py-class docutils literal"><span class="pre">InvalidFormat</span></code></a> if the message
+is not valid.</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.engines.worker_based.dispatcher.TypeDispatcher">
+<em class="property">class </em><code class="descclassname">taskflow.engines.worker_based.dispatcher.</code><code class="descname">TypeDispatcher</code><span class="sig-paren">(</span><em>type_handlers=None</em>, <em>requeue_filters=None</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/dispatcher.html#TypeDispatcher"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.dispatcher.TypeDispatcher" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>Receives messages and dispatches to type specific handlers.</p>
+<dl class="attribute">
+<dt id="taskflow.engines.worker_based.dispatcher.TypeDispatcher.type_handlers">
+<code class="descname">type_handlers</code><a class="headerlink" href="#taskflow.engines.worker_based.dispatcher.TypeDispatcher.type_handlers" title="Permalink to this definition">¶</a></dt>
+<dd><p>Dictionary of message type -&gt; callback to handle that message.</p>
+<p>The callback(s) will be activated by looking for a message
+property &#8216;type&#8217; and locating a callback in this dictionary that maps
+to that type; if one is found it is expected to be a callback that
+accepts two positional parameters; the first being the message data
+and the second being the message object. If a callback is not found
+then the message is rejected and it will be up to the underlying
+message transport to determine what this means/implies...</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.engines.worker_based.dispatcher.TypeDispatcher.requeue_filters">
+<code class="descname">requeue_filters</code><a class="headerlink" href="#taskflow.engines.worker_based.dispatcher.TypeDispatcher.requeue_filters" title="Permalink to this definition">¶</a></dt>
+<dd><p>List of filters (callbacks) to request a message to be requeued.</p>
+<p>The callback(s) will be activated before the message has been acked and
+it can be used to instruct the dispatcher to requeue the message
+instead of processing it. The callback, when called, will be provided
+two positional parameters; the first being the message data and the
+second being the message object. Using these provided parameters the
+filter should return a truthy object if the message should be requeued
+and a falsey object if it should not.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.worker_based.dispatcher.TypeDispatcher.on_message">
+<code class="descname">on_message</code><span class="sig-paren">(</span><em>data</em>, <em>message</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/dispatcher.html#TypeDispatcher.on_message"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.dispatcher.TypeDispatcher.on_message" title="Permalink to this definition">¶</a></dt>
+<dd><p>This method is called on incoming messages.</p>
+</dd></dl>
+
+</dd></dl>
+
+<span class="target" id="module-taskflow.engines.worker_based.endpoint"></span><dl class="class">
+<dt id="taskflow.engines.worker_based.endpoint.Endpoint">
+<em class="property">class </em><code class="descclassname">taskflow.engines.worker_based.endpoint.</code><code class="descname">Endpoint</code><span class="sig-paren">(</span><em>task_cls</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/endpoint.html#Endpoint"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.endpoint.Endpoint" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>Represents a single task with execute/revert methods.</p>
+</dd></dl>
+
+<span class="target" id="module-taskflow.engines.worker_based.executor"></span><dl class="class">
+<dt id="taskflow.engines.worker_based.executor.WorkerTaskExecutor">
+<em class="property">class </em><code class="descclassname">taskflow.engines.worker_based.executor.</code><code class="descname">WorkerTaskExecutor</code><span class="sig-paren">(</span><em>uuid</em>, <em>exchange</em>, <em>topics</em>, <em>transition_timeout=60</em>, <em>url=None</em>, <em>transport=None</em>, <em>transport_options=None</em>, <em>retry_options=None</em>, <em>worker_expiry=60</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/executor.html#WorkerTaskExecutor"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.executor.WorkerTaskExecutor" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <a class="reference internal" href="engines.html#taskflow.engines.action_engine.executor.TaskExecutor" title="taskflow.engines.action_engine.executor.TaskExecutor"><code class="xref py py-class docutils literal"><span class="pre">taskflow.engines.action_engine.executor.TaskExecutor</span></code></a></p>
+<p>Executes tasks on remote workers.</p>
+<dl class="method">
+<dt id="taskflow.engines.worker_based.executor.WorkerTaskExecutor.wait_for_workers">
+<code class="descname">wait_for_workers</code><span class="sig-paren">(</span><em>workers=1</em>, <em>timeout=None</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/executor.html#WorkerTaskExecutor.wait_for_workers"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.executor.WorkerTaskExecutor.wait_for_workers" title="Permalink to this definition">¶</a></dt>
+<dd><p>Waits for geq workers to notify they are ready to do work.</p>
+<p>NOTE(harlowja): if a timeout is provided this function will wait
+until that timeout expires, if the amount of workers does not reach
+the desired amount of workers before the timeout expires then this will
+return how many workers are still needed, otherwise it will
+return zero.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.worker_based.executor.WorkerTaskExecutor.start">
+<code class="descname">start</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/executor.html#WorkerTaskExecutor.start"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.executor.WorkerTaskExecutor.start" title="Permalink to this definition">¶</a></dt>
+<dd><p>Starts message processing thread.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.worker_based.executor.WorkerTaskExecutor.stop">
+<code class="descname">stop</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/executor.html#WorkerTaskExecutor.stop"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.executor.WorkerTaskExecutor.stop" title="Permalink to this definition">¶</a></dt>
+<dd><p>Stops message processing thread.</p>
+</dd></dl>
+
+</dd></dl>
+
+<span class="target" id="module-taskflow.engines.worker_based.proxy"></span><dl class="class">
+<dt id="taskflow.engines.worker_based.proxy.Proxy">
+<em class="property">class </em><code class="descclassname">taskflow.engines.worker_based.proxy.</code><code class="descname">Proxy</code><span class="sig-paren">(</span><em>topic</em>, <em>exchange</em>, <em>type_handlers=None</em>, <em>on_wait=None</em>, <em>url=None</em>, <em>transport=None</em>, <em>transport_options=None</em>, <em>retry_options=None</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/proxy.html#Proxy"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.proxy.Proxy" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>A proxy processes messages from/to the named exchange.</p>
+<p>For <strong>internal</strong> usage only (not for public consumption).</p>
+<dl class="attribute">
+<dt id="taskflow.engines.worker_based.proxy.Proxy.DEFAULT_RETRY_OPTIONS">
+<code class="descname">DEFAULT_RETRY_OPTIONS</code><em class="property"> = {'interval_start': 1, 'max_retries': 3, 'interval_step': 1, 'interval_max': 1}</em><a class="headerlink" href="#taskflow.engines.worker_based.proxy.Proxy.DEFAULT_RETRY_OPTIONS" title="Permalink to this definition">¶</a></dt>
+<dd><p>Settings used (by default) to reconnect under transient failures.</p>
+<p>See: <a class="reference external" href="http://kombu.readthedocs.org/">http://kombu.readthedocs.org/</a> (and connection <code class="docutils literal"><span class="pre">ensure_options</span></code>) for
+what these values imply/mean...</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.engines.worker_based.proxy.Proxy.dispatcher">
+<code class="descname">dispatcher</code><a class="headerlink" href="#taskflow.engines.worker_based.proxy.Proxy.dispatcher" title="Permalink to this definition">¶</a></dt>
+<dd><p>Dispatcher internally used to dispatch message(s) that match.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.engines.worker_based.proxy.Proxy.connection_details">
+<code class="descname">connection_details</code><a class="headerlink" href="#taskflow.engines.worker_based.proxy.Proxy.connection_details" title="Permalink to this definition">¶</a></dt>
+<dd><p>Details about the connection (read-only).</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.engines.worker_based.proxy.Proxy.is_running">
+<code class="descname">is_running</code><a class="headerlink" href="#taskflow.engines.worker_based.proxy.Proxy.is_running" title="Permalink to this definition">¶</a></dt>
+<dd><p>Return whether the proxy is running.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.worker_based.proxy.Proxy.publish">
+<code class="descname">publish</code><span class="sig-paren">(</span><em>msg</em>, <em>routing_key</em>, <em>reply_to=None</em>, <em>correlation_id=None</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/proxy.html#Proxy.publish"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.proxy.Proxy.publish" title="Permalink to this definition">¶</a></dt>
+<dd><p>Publish message to the named exchange with given routing key.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.worker_based.proxy.Proxy.start">
+<code class="descname">start</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/proxy.html#Proxy.start"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.proxy.Proxy.start" title="Permalink to this definition">¶</a></dt>
+<dd><p>Start proxy.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.worker_based.proxy.Proxy.wait">
+<code class="descname">wait</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/proxy.html#Proxy.wait"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.proxy.Proxy.wait" title="Permalink to this definition">¶</a></dt>
+<dd><p>Wait until proxy is started.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.worker_based.proxy.Proxy.stop">
+<code class="descname">stop</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/proxy.html#Proxy.stop"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.proxy.Proxy.stop" title="Permalink to this definition">¶</a></dt>
+<dd><p>Stop proxy.</p>
+</dd></dl>
+
+</dd></dl>
+
+<span class="target" id="module-taskflow.engines.worker_based.worker"></span><dl class="class">
+<dt id="taskflow.engines.worker_based.worker.Worker">
+<em class="property">class </em><code class="descclassname">taskflow.engines.worker_based.worker.</code><code class="descname">Worker</code><span class="sig-paren">(</span><em>exchange</em>, <em>topic</em>, <em>tasks</em>, <em>executor=None</em>, <em>threads_count=None</em>, <em>url=None</em>, <em>transport=None</em>, <em>transport_options=None</em>, <em>retry_options=None</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/worker.html#Worker"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.worker.Worker" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>Worker that can be started on a remote host for handling tasks requests.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><ul class="first last simple">
+<li><strong>url</strong> &#8211; broker url</li>
+<li><strong>exchange</strong> &#8211; broker exchange name</li>
+<li><strong>topic</strong> &#8211; topic name under which worker is stated</li>
+<li><strong>tasks</strong> &#8211; task list that worker is capable of performing, items in
+the list can be one of the following types; 1, a string naming the
+python module name to search for tasks in or the task class name; 2, a
+python module  to search for tasks in; 3, a task class object that
+will be used to create tasks from.</li>
+<li><strong>executor</strong> &#8211; custom executor object that can used for processing
+requests in separate threads (if not provided one will be created)</li>
+<li><strong>threads_count</strong> &#8211; threads count to be passed to the
+default executor (used only if an executor is not
+passed in)</li>
+<li><strong>transport</strong> &#8211; transport to be used (e.g. amqp, memory, etc.)</li>
+<li><strong>transport_options</strong> &#8211; transport specific options (see:
+<a class="reference external" href="http://kombu.readthedocs.org/">http://kombu.readthedocs.org/</a> for what these
+options imply and are expected to be)</li>
+<li><strong>retry_options</strong> &#8211; retry specific options
+(see: <a class="reference internal" href="#taskflow.engines.worker_based.proxy.Proxy.DEFAULT_RETRY_OPTIONS" title="taskflow.engines.worker_based.proxy.Proxy.DEFAULT_RETRY_OPTIONS"><code class="xref py py-attr docutils literal"><span class="pre">DEFAULT_RETRY_OPTIONS</span></code></a>)</li>
+</ul>
+</td>
+</tr>
+</tbody>
+</table>
+<dl class="attribute">
+<dt id="taskflow.engines.worker_based.worker.Worker.banner">
+<code class="descname">banner</code><a class="headerlink" href="#taskflow.engines.worker_based.worker.Worker.banner" title="Permalink to this definition">¶</a></dt>
+<dd><p>A banner that can be useful to display before running.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.worker_based.worker.Worker.run">
+<code class="descname">run</code><span class="sig-paren">(</span><em>display_banner=True</em>, <em>banner_writer=None</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/worker.html#Worker.run"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.worker.Worker.run" title="Permalink to this definition">¶</a></dt>
+<dd><p>Runs the worker.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.worker_based.worker.Worker.wait">
+<code class="descname">wait</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/worker.html#Worker.wait"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.worker.Worker.wait" title="Permalink to this definition">¶</a></dt>
+<dd><p>Wait until worker is started.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.worker_based.worker.Worker.stop">
+<code class="descname">stop</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/worker.html#Worker.stop"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.worker.Worker.stop" title="Permalink to this definition">¶</a></dt>
+<dd><p>Stop worker.</p>
+</dd></dl>
+
+</dd></dl>
+
+<span class="target" id="module-taskflow.engines.worker_based.types"></span><dl class="class">
+<dt id="taskflow.engines.worker_based.types.TopicWorker">
+<em class="property">class </em><code class="descclassname">taskflow.engines.worker_based.types.</code><code class="descname">TopicWorker</code><span class="sig-paren">(</span><em>topic</em>, <em>tasks</em>, <em>identity=&lt;object object&gt;</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/types.html#TopicWorker"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.types.TopicWorker" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>A (read-only) worker and its relevant information + useful methods.</p>
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.engines.worker_based.types.ProxyWorkerFinder">
+<em class="property">class </em><code class="descclassname">taskflow.engines.worker_based.types.</code><code class="descname">ProxyWorkerFinder</code><span class="sig-paren">(</span><em>uuid</em>, <em>proxy</em>, <em>topics</em>, <em>beat_periodicity=5</em>, <em>worker_expiry=60</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/types.html#ProxyWorkerFinder"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.types.ProxyWorkerFinder" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>Requests and receives responses about workers topic+task details.</p>
+<dl class="attribute">
+<dt id="taskflow.engines.worker_based.types.ProxyWorkerFinder.total_workers">
+<code class="descname">total_workers</code><a class="headerlink" href="#taskflow.engines.worker_based.types.ProxyWorkerFinder.total_workers" title="Permalink to this definition">¶</a></dt>
+<dd><p>Number of workers currently known.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.worker_based.types.ProxyWorkerFinder.wait_for_workers">
+<code class="descname">wait_for_workers</code><span class="sig-paren">(</span><em>workers=1</em>, <em>timeout=None</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/types.html#ProxyWorkerFinder.wait_for_workers"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.types.ProxyWorkerFinder.wait_for_workers" title="Permalink to this definition">¶</a></dt>
+<dd><p>Waits for geq workers to notify they are ready to do work.</p>
+<p>NOTE(harlowja): if a timeout is provided this function will wait
+until that timeout expires, if the amount of workers does not reach
+the desired amount of workers before the timeout expires then this will
+return how many workers are still needed, otherwise it will
+return zero.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.engines.worker_based.types.ProxyWorkerFinder.messages_processed">
+<code class="descname">messages_processed</code><a class="headerlink" href="#taskflow.engines.worker_based.types.ProxyWorkerFinder.messages_processed" title="Permalink to this definition">¶</a></dt>
+<dd><p>How many notify response messages have been processed.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.worker_based.types.ProxyWorkerFinder.maybe_publish">
+<code class="descname">maybe_publish</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/types.html#ProxyWorkerFinder.maybe_publish"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.types.ProxyWorkerFinder.maybe_publish" title="Permalink to this definition">¶</a></dt>
+<dd><p>Periodically called to publish notify message to each topic.</p>
+<p>These messages (especially the responses) are how this find learns
+about workers and what tasks they can perform (so that we can then
+match workers to tasks to run).</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.worker_based.types.ProxyWorkerFinder.process_response">
+<code class="descname">process_response</code><span class="sig-paren">(</span><em>data</em>, <em>message</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/types.html#ProxyWorkerFinder.process_response"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.types.ProxyWorkerFinder.process_response" title="Permalink to this definition">¶</a></dt>
+<dd><p>Process notify message sent from remote side.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.worker_based.types.ProxyWorkerFinder.clean">
+<code class="descname">clean</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/types.html#ProxyWorkerFinder.clean"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.types.ProxyWorkerFinder.clean" title="Permalink to this definition">¶</a></dt>
+<dd><p>Cleans out any dead/expired/not responding workers.</p>
+<p>Returns how many workers were removed.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.worker_based.types.ProxyWorkerFinder.reset">
+<code class="descname">reset</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/types.html#ProxyWorkerFinder.reset"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.types.ProxyWorkerFinder.reset" title="Permalink to this definition">¶</a></dt>
+<dd><p>Resets finders internal state.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.worker_based.types.ProxyWorkerFinder.get_worker_for_task">
+<code class="descname">get_worker_for_task</code><span class="sig-paren">(</span><em>task</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/worker_based/types.html#ProxyWorkerFinder.get_worker_for_task"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.worker_based.types.ProxyWorkerFinder.get_worker_for_task" title="Permalink to this definition">¶</a></dt>
+<dd><p>Gets a worker that can perform a given task.</p>
+</dd></dl>
+
+</dd></dl>
+
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Overview</a><ul>
+<li><a class="reference internal" href="#terminology">Terminology</a></li>
+<li><a class="reference internal" href="#requirements">Requirements</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#design">Design</a><ul>
+<li><a class="reference internal" href="#high-level-architecture">High level architecture</a></li>
+<li><a class="reference internal" href="#executor-and-worker-communication">Executor and worker communication</a><ul>
+<li><a class="reference internal" href="#id1">Protocol</a></li>
+<li><a class="reference internal" href="#examples">Examples</a><ul>
+<li><a class="reference internal" href="#request-execute">Request (execute)</a></li>
+<li><a class="reference internal" href="#request-revert">Request (revert)</a></li>
+<li><a class="reference internal" href="#worker-response-s">Worker response(s)</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><a class="reference internal" href="#request-state-transitions">Request state transitions</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#usage">Usage</a><ul>
+<li><a class="reference internal" href="#workers">Workers</a></li>
+<li><a class="reference internal" href="#engines">Engines</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#limitations">Limitations</a></li>
+<li><a class="reference internal" href="#module-taskflow.engines.worker_based.engine">Implementations</a><ul>
+<li><a class="reference internal" href="#components">Components</a></li>
+</ul>
+</li>
+</ul>
+
+  <h3>Navigation</h3>
+  <ul>
+
+    <li><a href="index.html">Table Of Contents</a></li>
+
+
+
+  </ul>
+
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/taskflow
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="_sources/workers.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="index.html">TaskFlow 2.9.1.dev9 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2017, OpenStack Foundation.
+      Last updated on &#39;Fri Feb 10 20:11:17 2017, commit 643495f&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/TaskFlow");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

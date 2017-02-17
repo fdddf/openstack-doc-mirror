@@ -1,0 +1,1134 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>taskflow.jobs.backends.impl_redis &mdash; TaskFlow 2.9.1.dev9 documentation</title>
+    
+    <link rel="stylesheet" href="../../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../../',
+        VERSION:     '2.9.1.dev9',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../../_static/doctools.js"></script>
+    <link rel="top" title="TaskFlow 2.9.1.dev9 documentation" href="../../../../index.html" />
+    <link rel="up" title="taskflow.jobs.backends" href="../backends.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for taskflow.jobs.backends.impl_redis</h1><div class="highlight"><pre>
+<span></span><span class="c1"># -*- coding: utf-8 -*-</span>
+
+<span class="c1">#    Copyright (C) 2015 Yahoo! Inc. All Rights Reserved.</span>
+<span class="c1">#</span>
+<span class="c1">#    Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may</span>
+<span class="c1">#    not use this file except in compliance with the License. You may obtain</span>
+<span class="c1">#    a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#         http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1">#    Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1">#    distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="c1">#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="c1">#    License for the specific language governing permissions and limitations</span>
+<span class="c1">#    under the License.</span>
+
+<span class="kn">import</span> <span class="nn">contextlib</span>
+<span class="kn">import</span> <span class="nn">datetime</span>
+<span class="kn">import</span> <span class="nn">functools</span>
+<span class="kn">import</span> <span class="nn">string</span>
+<span class="kn">import</span> <span class="nn">threading</span>
+<span class="kn">import</span> <span class="nn">time</span>
+
+<span class="kn">import</span> <span class="nn">fasteners</span>
+<span class="kn">import</span> <span class="nn">msgpack</span>
+<span class="kn">from</span> <span class="nn">oslo_serialization</span> <span class="kn">import</span> <span class="n">msgpackutils</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">excutils</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">strutils</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">timeutils</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">uuidutils</span>
+<span class="kn">from</span> <span class="nn">redis</span> <span class="kn">import</span> <span class="n">exceptions</span> <span class="k">as</span> <span class="n">redis_exceptions</span>
+<span class="kn">import</span> <span class="nn">six</span>
+<span class="kn">from</span> <span class="nn">six.moves</span> <span class="kn">import</span> <span class="nb">range</span> <span class="k">as</span> <span class="n">compat_range</span>
+
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">exceptions</span> <span class="k">as</span> <span class="n">exc</span>
+<span class="kn">from</span> <span class="nn">taskflow.jobs</span> <span class="kn">import</span> <span class="n">base</span>
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">logging</span>
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">states</span>
+<span class="kn">from</span> <span class="nn">taskflow.utils</span> <span class="kn">import</span> <span class="n">misc</span>
+<span class="kn">from</span> <span class="nn">taskflow.utils</span> <span class="kn">import</span> <span class="n">redis_utils</span> <span class="k">as</span> <span class="n">ru</span>
+
+
+<span class="n">LOG</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+
+<span class="nd">@contextlib.contextmanager</span>
+<span class="k">def</span> <span class="nf">_translate_failures</span><span class="p">():</span>
+    <span class="sd">&quot;&quot;&quot;Translates common redis exceptions into taskflow exceptions.&quot;&quot;&quot;</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="k">yield</span>
+    <span class="k">except</span> <span class="n">redis_exceptions</span><span class="o">.</span><span class="n">ConnectionError</span><span class="p">:</span>
+        <span class="n">exc</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">exc</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">,</span> <span class="s2">&quot;Failed to connect to redis&quot;</span><span class="p">)</span>
+    <span class="k">except</span> <span class="n">redis_exceptions</span><span class="o">.</span><span class="n">TimeoutError</span><span class="p">:</span>
+        <span class="n">exc</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">exc</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">,</span>
+                             <span class="s2">&quot;Failed to communicate with redis, connection&quot;</span>
+                             <span class="s2">&quot; timed out&quot;</span><span class="p">)</span>
+    <span class="k">except</span> <span class="n">redis_exceptions</span><span class="o">.</span><span class="n">RedisError</span><span class="p">:</span>
+        <span class="n">exc</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">exc</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">,</span>
+                             <span class="s2">&quot;Failed to communicate with redis,&quot;</span>
+                             <span class="s2">&quot; internal error&quot;</span><span class="p">)</span>
+
+
+<span class="nd">@functools.total_ordering</span>
+<div class="viewcode-block" id="RedisJob"><a class="viewcode-back" href="../../../../jobs.html#taskflow.jobs.backends.impl_redis.RedisJob">[docs]</a><span class="k">class</span> <span class="nc">RedisJob</span><span class="p">(</span><span class="n">base</span><span class="o">.</span><span class="n">Job</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A redis job.&quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">board</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">sequence</span><span class="p">,</span> <span class="n">key</span><span class="p">,</span>
+                 <span class="n">uuid</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">details</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+                 <span class="n">created_on</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">backend</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+                 <span class="n">book</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">book_data</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+                 <span class="n">priority</span><span class="o">=</span><span class="n">base</span><span class="o">.</span><span class="n">JobPriority</span><span class="o">.</span><span class="n">NORMAL</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">RedisJob</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">board</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span>
+                                       <span class="n">uuid</span><span class="o">=</span><span class="n">uuid</span><span class="p">,</span> <span class="n">details</span><span class="o">=</span><span class="n">details</span><span class="p">,</span>
+                                       <span class="n">backend</span><span class="o">=</span><span class="n">backend</span><span class="p">,</span>
+                                       <span class="n">book</span><span class="o">=</span><span class="n">book</span><span class="p">,</span> <span class="n">book_data</span><span class="o">=</span><span class="n">book_data</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_created_on</span> <span class="o">=</span> <span class="n">created_on</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_client</span> <span class="o">=</span> <span class="n">board</span><span class="o">.</span><span class="n">_client</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_redis_version</span> <span class="o">=</span> <span class="n">board</span><span class="o">.</span><span class="n">_redis_version</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_sequence</span> <span class="o">=</span> <span class="n">sequence</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_key</span> <span class="o">=</span> <span class="n">key</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_last_modified_key</span> <span class="o">=</span> <span class="n">board</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">key</span> <span class="o">+</span> <span class="n">board</span><span class="o">.</span><span class="n">LAST_MODIFIED_POSTFIX</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_owner_key</span> <span class="o">=</span> <span class="n">board</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">key</span> <span class="o">+</span> <span class="n">board</span><span class="o">.</span><span class="n">OWNED_POSTFIX</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_priority</span> <span class="o">=</span> <span class="n">priority</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">key</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Key (in board listings/trash hash) the job data is stored under.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_key</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">priority</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_priority</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">last_modified_key</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Key the job last modified data is stored under.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_last_modified_key</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">owner_key</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Key the job claim + data of the owner is stored under.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_owner_key</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">sequence</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Sequence number of the current job.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_sequence</span>
+
+<div class="viewcode-block" id="RedisJob.expires_in"><a class="viewcode-back" href="../../../../jobs.html#taskflow.jobs.backends.impl_redis.RedisJob.expires_in">[docs]</a>    <span class="k">def</span> <span class="nf">expires_in</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;How many seconds until the claim expires.</span>
+
+<span class="sd">        Returns the number of seconds until the ownership entry expires or</span>
+<span class="sd">        :attr:`~taskflow.utils.redis_utils.UnknownExpire.DOES_NOT_EXPIRE` or</span>
+<span class="sd">        :attr:`~taskflow.utils.redis_utils.UnknownExpire.KEY_NOT_FOUND` if it</span>
+<span class="sd">        does not expire or if the expiry can not be determined (perhaps the</span>
+<span class="sd">        :attr:`.owner_key` expired at/before time of inquiry?).</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">with</span> <span class="n">_translate_failures</span><span class="p">():</span>
+            <span class="k">return</span> <span class="n">ru</span><span class="o">.</span><span class="n">get_expiry</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_owner_key</span><span class="p">,</span>
+                                 <span class="n">prior_version</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_redis_version</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="RedisJob.extend_expiry"><a class="viewcode-back" href="../../../../jobs.html#taskflow.jobs.backends.impl_redis.RedisJob.extend_expiry">[docs]</a>    <span class="k">def</span> <span class="nf">extend_expiry</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">expiry</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Extends the owner key (aka the claim) expiry for this job.</span>
+
+<span class="sd">        NOTE(harlowja): if the claim for this job did **not** previously</span>
+<span class="sd">        have an expiry associated with it, calling this method will create</span>
+<span class="sd">        one (and after that time elapses the claim on this job will cease</span>
+<span class="sd">        to exist).</span>
+
+<span class="sd">        Returns ``True`` if the expiry request was performed</span>
+<span class="sd">        otherwise ``False``.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">with</span> <span class="n">_translate_failures</span><span class="p">():</span>
+            <span class="k">return</span> <span class="n">ru</span><span class="o">.</span><span class="n">apply_expiry</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_owner_key</span><span class="p">,</span> <span class="n">expiry</span><span class="p">,</span>
+                                   <span class="n">prior_version</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_redis_version</span><span class="p">)</span></div>
+
+    <span class="k">def</span> <span class="fm">__lt__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">other</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">other</span><span class="p">,</span> <span class="n">RedisJob</span><span class="p">):</span>
+            <span class="k">return</span> <span class="bp">NotImplemented</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">board</span><span class="o">.</span><span class="n">listings_key</span> <span class="o">==</span> <span class="n">other</span><span class="o">.</span><span class="n">board</span><span class="o">.</span><span class="n">listings_key</span><span class="p">:</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">priority</span> <span class="o">==</span> <span class="n">other</span><span class="o">.</span><span class="n">priority</span><span class="p">:</span>
+                <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">sequence</span> <span class="o">&lt;</span> <span class="n">other</span><span class="o">.</span><span class="n">sequence</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">ordered</span> <span class="o">=</span> <span class="n">base</span><span class="o">.</span><span class="n">JobPriority</span><span class="o">.</span><span class="n">reorder</span><span class="p">(</span>
+                    <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">priority</span><span class="p">,</span> <span class="bp">self</span><span class="p">),</span> <span class="p">(</span><span class="n">other</span><span class="o">.</span><span class="n">priority</span><span class="p">,</span> <span class="n">other</span><span class="p">))</span>
+                <span class="k">if</span> <span class="n">ordered</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="ow">is</span> <span class="bp">self</span><span class="p">:</span>
+                    <span class="k">return</span> <span class="bp">False</span>
+                <span class="k">return</span> <span class="bp">True</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="c1"># Different jobboards with different listing keys...</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">board</span><span class="o">.</span><span class="n">listings_key</span> <span class="o">&lt;</span> <span class="n">other</span><span class="o">.</span><span class="n">board</span><span class="o">.</span><span class="n">listings_key</span>
+
+    <span class="k">def</span> <span class="fm">__eq__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">other</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">other</span><span class="p">,</span> <span class="n">RedisJob</span><span class="p">):</span>
+            <span class="k">return</span> <span class="bp">NotImplemented</span>
+        <span class="k">return</span> <span class="p">((</span><span class="bp">self</span><span class="o">.</span><span class="n">board</span><span class="o">.</span><span class="n">listings_key</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">priority</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">sequence</span><span class="p">)</span> <span class="o">==</span>
+                <span class="p">(</span><span class="n">other</span><span class="o">.</span><span class="n">board</span><span class="o">.</span><span class="n">listings_key</span><span class="p">,</span> <span class="n">other</span><span class="o">.</span><span class="n">priority</span><span class="p">,</span> <span class="n">other</span><span class="o">.</span><span class="n">sequence</span><span class="p">))</span>
+
+    <span class="k">def</span> <span class="fm">__ne__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">other</span><span class="p">):</span>
+        <span class="k">return</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="fm">__eq__</span><span class="p">(</span><span class="n">other</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="fm">__hash__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="nb">hash</span><span class="p">((</span><span class="bp">self</span><span class="o">.</span><span class="n">board</span><span class="o">.</span><span class="n">listings_key</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">priority</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">sequence</span><span class="p">))</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">created_on</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_created_on</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">last_modified</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">with</span> <span class="n">_translate_failures</span><span class="p">():</span>
+            <span class="n">raw_last_modified</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_last_modified_key</span><span class="p">)</span>
+        <span class="n">last_modified</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="k">if</span> <span class="n">raw_last_modified</span><span class="p">:</span>
+            <span class="n">last_modified</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_board</span><span class="o">.</span><span class="n">_loads</span><span class="p">(</span>
+                <span class="n">raw_last_modified</span><span class="p">,</span> <span class="n">root_types</span><span class="o">=</span><span class="p">(</span><span class="n">datetime</span><span class="o">.</span><span class="n">datetime</span><span class="p">,))</span>
+            <span class="c1"># NOTE(harlowja): just incase this is somehow busted (due to time</span>
+            <span class="c1"># sync issues/other), give back the most recent one (since redis</span>
+            <span class="c1"># does not maintain clock information; we could have this happen</span>
+            <span class="c1"># due to now clients who mutate jobs also send the time in).</span>
+            <span class="n">last_modified</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="n">last_modified</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_created_on</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">last_modified</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">state</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">listings_key</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_board</span><span class="o">.</span><span class="n">listings_key</span>
+        <span class="n">owner_key</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_owner_key</span>
+        <span class="n">listings_sub_key</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_key</span>
+
+        <span class="k">def</span> <span class="nf">_do_fetch</span><span class="p">(</span><span class="n">p</span><span class="p">):</span>
+            <span class="c1"># NOTE(harlowja): state of a job in redis is not set into any</span>
+            <span class="c1"># explicit &#39;state&#39; field, but is maintained by what nodes exist in</span>
+            <span class="c1"># redis instead (ie if a owner key exists, then we know a owner</span>
+            <span class="c1"># is active, if no job data exists and no owner, then we know that</span>
+            <span class="c1"># the job is unclaimed, and so-on)...</span>
+            <span class="n">p</span><span class="o">.</span><span class="n">multi</span><span class="p">()</span>
+            <span class="n">p</span><span class="o">.</span><span class="n">hexists</span><span class="p">(</span><span class="n">listings_key</span><span class="p">,</span> <span class="n">listings_sub_key</span><span class="p">)</span>
+            <span class="n">p</span><span class="o">.</span><span class="n">exists</span><span class="p">(</span><span class="n">owner_key</span><span class="p">)</span>
+            <span class="n">job_exists</span><span class="p">,</span> <span class="n">owner_exists</span> <span class="o">=</span> <span class="n">p</span><span class="o">.</span><span class="n">execute</span><span class="p">()</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">job_exists</span><span class="p">:</span>
+                <span class="k">if</span> <span class="n">owner_exists</span><span class="p">:</span>
+                    <span class="c1"># This should **not** be possible due to lua code ordering</span>
+                    <span class="c1"># but let&#39;s log an INFO statement if it does happen (so</span>
+                    <span class="c1"># that it can be investigated)...</span>
+                    <span class="n">LOG</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="s2">&quot;Unexpected owner key found at &#39;</span><span class="si">%s</span><span class="s2">&#39; when job&quot;</span>
+                             <span class="s2">&quot; key &#39;</span><span class="si">%s</span><span class="s2">[</span><span class="si">%s</span><span class="s2">]&#39; was not found&quot;</span><span class="p">,</span> <span class="n">owner_key</span><span class="p">,</span>
+                             <span class="n">listings_key</span><span class="p">,</span> <span class="n">listings_sub_key</span><span class="p">)</span>
+                <span class="k">return</span> <span class="n">states</span><span class="o">.</span><span class="n">COMPLETE</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">if</span> <span class="n">owner_exists</span><span class="p">:</span>
+                    <span class="k">return</span> <span class="n">states</span><span class="o">.</span><span class="n">CLAIMED</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="k">return</span> <span class="n">states</span><span class="o">.</span><span class="n">UNCLAIMED</span>
+
+        <span class="k">with</span> <span class="n">_translate_failures</span><span class="p">():</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">transaction</span><span class="p">(</span><span class="n">_do_fetch</span><span class="p">,</span>
+                                            <span class="n">listings_key</span><span class="p">,</span> <span class="n">owner_key</span><span class="p">,</span>
+                                            <span class="n">value_from_callable</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="RedisJobBoard"><a class="viewcode-back" href="../../../../jobs.html#taskflow.jobs.backends.impl_redis.RedisJobBoard">[docs]</a><span class="k">class</span> <span class="nc">RedisJobBoard</span><span class="p">(</span><span class="n">base</span><span class="o">.</span><span class="n">JobBoard</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A jobboard backed by `redis`_.</span>
+
+<span class="sd">    Powered by the `redis-py &lt;http://redis-py.readthedocs.org/&gt;`_ library.</span>
+
+<span class="sd">    This jobboard creates job entries by listing jobs in a redis `hash`_. This</span>
+<span class="sd">    hash contains jobs that can be actively worked on by (and examined/claimed</span>
+<span class="sd">    by) some set of eligible consumers. Job posting is typically performed</span>
+<span class="sd">    using the :meth:`.post` method (this creates a hash entry with job</span>
+<span class="sd">    contents/details encoded in `msgpack`_). The users of these</span>
+<span class="sd">    jobboard(s) (potentially on disjoint sets of machines) can then</span>
+<span class="sd">    iterate over the available jobs and decide if they want to attempt to</span>
+<span class="sd">    claim one of the jobs they have iterated over. If so they will then</span>
+<span class="sd">    attempt to contact redis and they will attempt to create a key in</span>
+<span class="sd">    redis (using a embedded lua script to perform this atomically) to claim a</span>
+<span class="sd">    desired job. If the entity trying to use the jobboard to :meth:`.claim`</span>
+<span class="sd">    the job is able to create that lock/owner key then it will be</span>
+<span class="sd">    allowed (and expected) to perform whatever *work* the contents of that</span>
+<span class="sd">    job described. Once the claiming entity is finished the lock/owner key</span>
+<span class="sd">    and the `hash`_ entry will be deleted (if successfully completed) in a</span>
+<span class="sd">    single request (also using a embedded lua script to perform this</span>
+<span class="sd">    atomically). If the claiming entity is not successful (or the entity</span>
+<span class="sd">    that claimed the job dies) the lock/owner key can be released</span>
+<span class="sd">    automatically (by **optional** usage of a claim expiry) or by</span>
+<span class="sd">    using :meth:`.abandon` to manually abandon the job so that it can be</span>
+<span class="sd">    consumed/worked on by others.</span>
+
+<span class="sd">    NOTE(harlowja): by default the :meth:`.claim` has no expiry (which</span>
+<span class="sd">    means claims will be persistent, even under claiming entity failure). To</span>
+<span class="sd">    ensure a expiry occurs pass a numeric value for the ``expiry`` keyword</span>
+<span class="sd">    argument to the :meth:`.claim` method that defines how many seconds the</span>
+<span class="sd">    claim should be retained for. When an expiry is used ensure that that</span>
+<span class="sd">    claim is kept alive while it is being worked on by using</span>
+<span class="sd">    the :py:meth:`~.RedisJob.extend_expiry` method periodically.</span>
+
+<span class="sd">    .. _msgpack: http://msgpack.org/</span>
+<span class="sd">    .. _redis: http://redis.io/</span>
+<span class="sd">    .. _hash: http://redis.io/topics/data-types#hashes</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">CLIENT_CONF_TRANSFERS</span> <span class="o">=</span> <span class="nb">tuple</span><span class="p">([</span>
+        <span class="c1"># Host config...</span>
+        <span class="p">(</span><span class="s1">&#39;host&#39;</span><span class="p">,</span> <span class="nb">str</span><span class="p">),</span>
+        <span class="p">(</span><span class="s1">&#39;port&#39;</span><span class="p">,</span> <span class="nb">int</span><span class="p">),</span>
+
+        <span class="c1"># See: http://redis.io/commands/auth</span>
+        <span class="p">(</span><span class="s1">&#39;password&#39;</span><span class="p">,</span> <span class="nb">str</span><span class="p">),</span>
+
+        <span class="c1"># Data encoding/decoding + error handling</span>
+        <span class="p">(</span><span class="s1">&#39;encoding&#39;</span><span class="p">,</span> <span class="nb">str</span><span class="p">),</span>
+        <span class="p">(</span><span class="s1">&#39;encoding_errors&#39;</span><span class="p">,</span> <span class="nb">str</span><span class="p">),</span>
+
+        <span class="c1"># Connection settings.</span>
+        <span class="p">(</span><span class="s1">&#39;socket_timeout&#39;</span><span class="p">,</span> <span class="nb">float</span><span class="p">),</span>
+        <span class="p">(</span><span class="s1">&#39;socket_connect_timeout&#39;</span><span class="p">,</span> <span class="nb">float</span><span class="p">),</span>
+
+        <span class="c1"># This one negates the usage of host, port, socket connection</span>
+        <span class="c1"># settings as it doesn&#39;t use the same kind of underlying socket...</span>
+        <span class="p">(</span><span class="s1">&#39;unix_socket_path&#39;</span><span class="p">,</span> <span class="nb">str</span><span class="p">),</span>
+
+        <span class="c1"># Do u want ssl???</span>
+        <span class="p">(</span><span class="s1">&#39;ssl&#39;</span><span class="p">,</span> <span class="n">strutils</span><span class="o">.</span><span class="n">bool_from_string</span><span class="p">),</span>
+        <span class="p">(</span><span class="s1">&#39;ssl_keyfile&#39;</span><span class="p">,</span> <span class="nb">str</span><span class="p">),</span>
+        <span class="p">(</span><span class="s1">&#39;ssl_certfile&#39;</span><span class="p">,</span> <span class="nb">str</span><span class="p">),</span>
+        <span class="p">(</span><span class="s1">&#39;ssl_cert_reqs&#39;</span><span class="p">,</span> <span class="nb">str</span><span class="p">),</span>
+        <span class="p">(</span><span class="s1">&#39;ssl_ca_certs&#39;</span><span class="p">,</span> <span class="nb">str</span><span class="p">),</span>
+
+        <span class="c1"># See: http://www.rediscookbook.org/multiple_databases.html</span>
+        <span class="p">(</span><span class="s1">&#39;db&#39;</span><span class="p">,</span> <span class="nb">int</span><span class="p">),</span>
+    <span class="p">])</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Keys (and value type converters) that we allow to proxy from the jobboard</span>
+<span class="sd">    configuration into the redis client (used to configure the redis client</span>
+<span class="sd">    internals if no explicit client is provided via the ``client`` keyword</span>
+<span class="sd">    argument).</span>
+
+<span class="sd">    See: http://redis-py.readthedocs.org/en/latest/#redis.Redis</span>
+
+<span class="sd">    See: https://github.com/andymccurdy/redis-py/blob/2.10.3/redis/client.py</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="c1">#: Postfix (combined with job key) used to make a jobs owner key.</span>
+    <span class="n">OWNED_POSTFIX</span> <span class="o">=</span> <span class="sa">b</span><span class="s2">&quot;.owned&quot;</span>
+
+    <span class="c1">#: Postfix (combined with job key) used to make a jobs last modified key.</span>
+    <span class="n">LAST_MODIFIED_POSTFIX</span> <span class="o">=</span> <span class="sa">b</span><span class="s2">&quot;.last_modified&quot;</span>
+
+    <span class="c1">#: Default namespace for keys when none is provided.</span>
+    <span class="n">DEFAULT_NAMESPACE</span> <span class="o">=</span> <span class="sa">b</span><span class="s1">&#39;taskflow&#39;</span>
+
+    <span class="n">MIN_REDIS_VERSION</span> <span class="o">=</span> <span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="mi">6</span><span class="p">)</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Minimum redis version this backend requires.</span>
+
+<span class="sd">    This version is required since we need the built-in server-side lua</span>
+<span class="sd">    scripting support that is included in 2.6 and newer.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">NAMESPACE_SEP</span> <span class="o">=</span> <span class="sa">b</span><span class="s1">&#39;:&#39;</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Separator that is used to combine a key with the namespace (to get</span>
+<span class="sd">    the **actual** key that will be used).</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">KEY_PIECE_SEP</span> <span class="o">=</span> <span class="sa">b</span><span class="s1">&#39;.&#39;</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Separator that is used to combine a bunch of key pieces together (to get</span>
+<span class="sd">    the **actual** key that will be used).</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="c1">#: Expected lua response status field when call is ok.</span>
+    <span class="n">SCRIPT_STATUS_OK</span> <span class="o">=</span> <span class="s2">&quot;ok&quot;</span>
+
+    <span class="c1">#: Expected lua response status field when call is **not** ok.</span>
+    <span class="n">SCRIPT_STATUS_ERROR</span> <span class="o">=</span> <span class="s2">&quot;error&quot;</span>
+
+    <span class="c1">#: Expected lua script error response when the owner is not as expected.</span>
+    <span class="n">SCRIPT_NOT_EXPECTED_OWNER</span> <span class="o">=</span> <span class="s2">&quot;Not expected owner!&quot;</span>
+
+    <span class="c1">#: Expected lua script error response when the owner is not findable.</span>
+    <span class="n">SCRIPT_UNKNOWN_OWNER</span> <span class="o">=</span> <span class="s2">&quot;Unknown owner!&quot;</span>
+
+    <span class="c1">#: Expected lua script error response when the job is not findable.</span>
+    <span class="n">SCRIPT_UNKNOWN_JOB</span> <span class="o">=</span> <span class="s2">&quot;Unknown job!&quot;</span>
+
+    <span class="c1">#: Expected lua script error response when the job is already claimed.</span>
+    <span class="n">SCRIPT_ALREADY_CLAIMED</span> <span class="o">=</span> <span class="s2">&quot;Job already claimed!&quot;</span>
+
+    <span class="n">SCRIPT_TEMPLATES</span> <span class="o">=</span> <span class="p">{</span>
+        <span class="s1">&#39;consume&#39;</span><span class="p">:</span> <span class="s2">&quot;&quot;&quot;</span>
+<span class="s2">-- Extract *all* the variables (so we can easily know what they are)...</span>
+<span class="s2">local owner_key = KEYS[1]</span>
+<span class="s2">local listings_key = KEYS[2]</span>
+<span class="s2">local last_modified_key = KEYS[3]</span>
+
+<span class="s2">local expected_owner = ARGV[1]</span>
+<span class="s2">local job_key = ARGV[2]</span>
+<span class="s2">local result = {}</span>
+<span class="s2">if redis.call(&quot;hexists&quot;, listings_key, job_key) == 1 then</span>
+<span class="s2">    if redis.call(&quot;exists&quot;, owner_key) == 1 then</span>
+<span class="s2">        local owner = redis.call(&quot;get&quot;, owner_key)</span>
+<span class="s2">        if owner ~= expected_owner then</span>
+<span class="s2">            result[&quot;status&quot;] = &quot;${error}&quot;</span>
+<span class="s2">            result[&quot;reason&quot;] = &quot;${not_expected_owner}&quot;</span>
+<span class="s2">            result[&quot;owner&quot;] = owner</span>
+<span class="s2">        else</span>
+<span class="s2">            -- The order is important here, delete the owner first (and if</span>
+<span class="s2">            -- that blows up, the job data will still exist so it can be</span>
+<span class="s2">            -- worked on again, instead of the reverse)...</span>
+<span class="s2">            redis.call(&quot;del&quot;, owner_key, last_modified_key)</span>
+<span class="s2">            redis.call(&quot;hdel&quot;, listings_key, job_key)</span>
+<span class="s2">            result[&quot;status&quot;] = &quot;${ok}&quot;</span>
+<span class="s2">        end</span>
+<span class="s2">    else</span>
+<span class="s2">        result[&quot;status&quot;] = &quot;${error}&quot;</span>
+<span class="s2">        result[&quot;reason&quot;] = &quot;${unknown_owner}&quot;</span>
+<span class="s2">    end</span>
+<span class="s2">else</span>
+<span class="s2">    result[&quot;status&quot;] = &quot;${error}&quot;</span>
+<span class="s2">    result[&quot;reason&quot;] = &quot;${unknown_job}&quot;</span>
+<span class="s2">end</span>
+<span class="s2">return cmsgpack.pack(result)</span>
+<span class="s2">&quot;&quot;&quot;</span><span class="p">,</span>
+        <span class="s1">&#39;claim&#39;</span><span class="p">:</span> <span class="s2">&quot;&quot;&quot;</span>
+<span class="s2">local function apply_ttl(key, ms_expiry)</span>
+<span class="s2">    if ms_expiry ~= nil then</span>
+<span class="s2">        redis.call(&quot;pexpire&quot;, key, ms_expiry)</span>
+<span class="s2">    end</span>
+<span class="s2">end</span>
+
+<span class="s2">-- Extract *all* the variables (so we can easily know what they are)...</span>
+<span class="s2">local owner_key = KEYS[1]</span>
+<span class="s2">local listings_key = KEYS[2]</span>
+<span class="s2">local last_modified_key = KEYS[3]</span>
+
+<span class="s2">local expected_owner = ARGV[1]</span>
+<span class="s2">local job_key = ARGV[2]</span>
+<span class="s2">local last_modified_blob = ARGV[3]</span>
+
+<span class="s2">-- If this is non-numeric (which it may be) this becomes nil</span>
+<span class="s2">local ms_expiry = nil</span>
+<span class="s2">if ARGV[4] ~= &quot;none&quot; then</span>
+<span class="s2">    ms_expiry = tonumber(ARGV[4])</span>
+<span class="s2">end</span>
+<span class="s2">local result = {}</span>
+<span class="s2">if redis.call(&quot;hexists&quot;, listings_key, job_key) == 1 then</span>
+<span class="s2">    if redis.call(&quot;exists&quot;, owner_key) == 1 then</span>
+<span class="s2">        local owner = redis.call(&quot;get&quot;, owner_key)</span>
+<span class="s2">        if owner == expected_owner then</span>
+<span class="s2">            -- Owner is the same, leave it alone...</span>
+<span class="s2">            redis.call(&quot;set&quot;, last_modified_key, last_modified_blob)</span>
+<span class="s2">            apply_ttl(owner_key, ms_expiry)</span>
+<span class="s2">            result[&quot;status&quot;] = &quot;${ok}&quot;</span>
+<span class="s2">        else</span>
+<span class="s2">            result[&quot;status&quot;] = &quot;${error}&quot;</span>
+<span class="s2">            result[&quot;reason&quot;] = &quot;${already_claimed}&quot;</span>
+<span class="s2">            result[&quot;owner&quot;] = owner</span>
+<span class="s2">        end</span>
+<span class="s2">    else</span>
+<span class="s2">        redis.call(&quot;set&quot;, owner_key, expected_owner)</span>
+<span class="s2">        redis.call(&quot;set&quot;, last_modified_key, last_modified_blob)</span>
+<span class="s2">        apply_ttl(owner_key, ms_expiry)</span>
+<span class="s2">        result[&quot;status&quot;] = &quot;${ok}&quot;</span>
+<span class="s2">    end</span>
+<span class="s2">else</span>
+<span class="s2">    result[&quot;status&quot;] = &quot;${error}&quot;</span>
+<span class="s2">    result[&quot;reason&quot;] = &quot;${unknown_job}&quot;</span>
+<span class="s2">end</span>
+<span class="s2">return cmsgpack.pack(result)</span>
+<span class="s2">&quot;&quot;&quot;</span><span class="p">,</span>
+        <span class="s1">&#39;abandon&#39;</span><span class="p">:</span> <span class="s2">&quot;&quot;&quot;</span>
+<span class="s2">-- Extract *all* the variables (so we can easily know what they are)...</span>
+<span class="s2">local owner_key = KEYS[1]</span>
+<span class="s2">local listings_key = KEYS[2]</span>
+<span class="s2">local last_modified_key = KEYS[3]</span>
+
+<span class="s2">local expected_owner = ARGV[1]</span>
+<span class="s2">local job_key = ARGV[2]</span>
+<span class="s2">local last_modified_blob = ARGV[3]</span>
+<span class="s2">local result = {}</span>
+<span class="s2">if redis.call(&quot;hexists&quot;, listings_key, job_key) == 1 then</span>
+<span class="s2">    if redis.call(&quot;exists&quot;, owner_key) == 1 then</span>
+<span class="s2">        local owner = redis.call(&quot;get&quot;, owner_key)</span>
+<span class="s2">        if owner ~= expected_owner then</span>
+<span class="s2">            result[&quot;status&quot;] = &quot;${error}&quot;</span>
+<span class="s2">            result[&quot;reason&quot;] = &quot;${not_expected_owner}&quot;</span>
+<span class="s2">            result[&quot;owner&quot;] = owner</span>
+<span class="s2">        else</span>
+<span class="s2">            redis.call(&quot;del&quot;, owner_key)</span>
+<span class="s2">            redis.call(&quot;set&quot;, last_modified_key, last_modified_blob)</span>
+<span class="s2">            result[&quot;status&quot;] = &quot;${ok}&quot;</span>
+<span class="s2">        end</span>
+<span class="s2">    else</span>
+<span class="s2">        result[&quot;status&quot;] = &quot;${error}&quot;</span>
+<span class="s2">        result[&quot;reason&quot;] = &quot;${unknown_owner}&quot;</span>
+<span class="s2">    end</span>
+<span class="s2">else</span>
+<span class="s2">    result[&quot;status&quot;] = &quot;${error}&quot;</span>
+<span class="s2">    result[&quot;reason&quot;] = &quot;${unknown_job}&quot;</span>
+<span class="s2">end</span>
+<span class="s2">return cmsgpack.pack(result)</span>
+<span class="s2">&quot;&quot;&quot;</span><span class="p">,</span>
+        <span class="s1">&#39;trash&#39;</span><span class="p">:</span> <span class="s2">&quot;&quot;&quot;</span>
+<span class="s2">-- Extract *all* the variables (so we can easily know what they are)...</span>
+<span class="s2">local owner_key = KEYS[1]</span>
+<span class="s2">local listings_key = KEYS[2]</span>
+<span class="s2">local last_modified_key = KEYS[3]</span>
+<span class="s2">local trash_listings_key = KEYS[4]</span>
+
+<span class="s2">local expected_owner = ARGV[1]</span>
+<span class="s2">local job_key = ARGV[2]</span>
+<span class="s2">local last_modified_blob = ARGV[3]</span>
+<span class="s2">local result = {}</span>
+<span class="s2">if redis.call(&quot;hexists&quot;, listings_key, job_key) == 1 then</span>
+<span class="s2">    local raw_posting = redis.call(&quot;hget&quot;, listings_key, job_key)</span>
+<span class="s2">    if redis.call(&quot;exists&quot;, owner_key) == 1 then</span>
+<span class="s2">        local owner = redis.call(&quot;get&quot;, owner_key)</span>
+<span class="s2">        if owner ~= expected_owner then</span>
+<span class="s2">            result[&quot;status&quot;] = &quot;${error}&quot;</span>
+<span class="s2">            result[&quot;reason&quot;] = &quot;${not_expected_owner}&quot;</span>
+<span class="s2">            result[&quot;owner&quot;] = owner</span>
+<span class="s2">        else</span>
+<span class="s2">            -- This ordering is important (try to first move the value</span>
+<span class="s2">            -- and only if that works do we try to do any deletions)...</span>
+<span class="s2">            redis.call(&quot;hset&quot;, trash_listings_key, job_key, raw_posting)</span>
+<span class="s2">            redis.call(&quot;set&quot;, last_modified_key, last_modified_blob)</span>
+<span class="s2">            redis.call(&quot;del&quot;, owner_key)</span>
+<span class="s2">            redis.call(&quot;hdel&quot;, listings_key, job_key)</span>
+<span class="s2">            result[&quot;status&quot;] = &quot;${ok}&quot;</span>
+<span class="s2">        end</span>
+<span class="s2">    else</span>
+<span class="s2">        result[&quot;status&quot;] = &quot;${error}&quot;</span>
+<span class="s2">        result[&quot;reason&quot;] = &quot;${unknown_owner}&quot;</span>
+<span class="s2">    end</span>
+<span class="s2">else</span>
+<span class="s2">    result[&quot;status&quot;] = &quot;${error}&quot;</span>
+<span class="s2">    result[&quot;reason&quot;] = &quot;${unknown_job}&quot;</span>
+<span class="s2">end</span>
+<span class="s2">return cmsgpack.pack(result)</span>
+<span class="s2">&quot;&quot;&quot;</span><span class="p">,</span>
+    <span class="p">}</span>
+    <span class="sd">&quot;&quot;&quot;`Lua`_ **template** scripts that will be used by various methods (they</span>
+<span class="sd">    are turned into real scripts and loaded on call into the :func:`.connect`</span>
+<span class="sd">    method).</span>
+
+<span class="sd">    Some things to note:</span>
+
+<span class="sd">    - The lua script is ran serially, so when this runs no other command will</span>
+<span class="sd">      be mutating the backend (and redis also ensures that no other script</span>
+<span class="sd">      will be running) so atomicity of these scripts are  guaranteed by redis.</span>
+
+<span class="sd">    - Transactions were considered (and even mostly implemented) but</span>
+<span class="sd">      ultimately rejected since redis does not support rollbacks and</span>
+<span class="sd">      transactions can **not** be interdependent (later operations can **not**</span>
+<span class="sd">      depend on the results of earlier operations). Both of these issues limit</span>
+<span class="sd">      our ability to correctly report errors (with useful messages) and to</span>
+<span class="sd">      maintain consistency under failure/contention (due to the inability to</span>
+<span class="sd">      rollback). A third and final blow to using transactions was to</span>
+<span class="sd">      correctly use them we would have to set a watch on a *very* contentious</span>
+<span class="sd">      key (the listings key) which would under load cause clients to retry more</span>
+<span class="sd">      often then would be desired (this also increases network load, CPU</span>
+<span class="sd">      cycles used, transactions failures triggered and so on).</span>
+
+<span class="sd">    - Partial transaction execution is possible due to pre/post ``EXEC``</span>
+<span class="sd">      failures (and the lack of rollback makes this worse).</span>
+
+<span class="sd">    So overall after thinking, it seemed like having little lua scripts</span>
+<span class="sd">    was not that bad (even if it is somewhat convoluted) due to the above and</span>
+<span class="sd">    public mentioned issues with transactions. In general using lua scripts</span>
+<span class="sd">    for this purpose seems to be somewhat common practice and it solves the</span>
+<span class="sd">    issues that came up when transactions were considered &amp; implemented.</span>
+
+<span class="sd">    Some links about redis (and redis + lua) that may be useful to look over:</span>
+
+<span class="sd">    - `Atomicity of scripts`_</span>
+<span class="sd">    - `Scripting and transactions`_</span>
+<span class="sd">    - `Why redis does not support rollbacks`_</span>
+<span class="sd">    - `Intro to lua for redis programmers`_</span>
+<span class="sd">    - `Five key takeaways for developing with redis`_</span>
+<span class="sd">    - `Everything you always wanted to know about redis`_ (slides)</span>
+
+<span class="sd">    .. _Lua: http://www.lua.org/</span>
+<span class="sd">    .. _Atomicity of scripts: http://redis.io/commands/eval#atomicity-of-\</span>
+<span class="sd">                              scripts</span>
+<span class="sd">    .. _Scripting and transactions: http://redis.io/topics/transactions#redis-\</span>
+<span class="sd">                                    scripting-and-transactions</span>
+<span class="sd">    .. _Why redis does not support rollbacks: http://redis.io/topics/transa\</span>
+<span class="sd">                                              ctions#why-redis-does-not-suppo\</span>
+<span class="sd">                                              rt-roll-backs</span>
+<span class="sd">    .. _Intro to lua for redis programmers: http://www.redisgreen.net/blog/int\</span>
+<span class="sd">                                            ro-to-lua-for-redis-programmers</span>
+<span class="sd">    .. _Five key takeaways for developing with redis: https://redislabs.com/bl\</span>
+<span class="sd">                                                      og/5-key-takeaways-fo\</span>
+<span class="sd">                                                      r-developing-with-redis</span>
+<span class="sd">    .. _Everything you always wanted to know about redis: http://www.slidesh</span>
+<span class="sd">                                                          are.net/carlosabal\</span>
+<span class="sd">                                                          de/everything-you-a\</span>
+<span class="sd">                                                          lways-wanted-to-\</span>
+<span class="sd">                                                          know-about-redis-b\</span>
+<span class="sd">                                                          ut-were-afraid-to-ask</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span> <span class="nf">_make_client</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">conf</span><span class="p">):</span>
+        <span class="n">client_conf</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="k">for</span> <span class="n">key</span><span class="p">,</span> <span class="n">value_type_converter</span> <span class="ow">in</span> <span class="bp">cls</span><span class="o">.</span><span class="n">CLIENT_CONF_TRANSFERS</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">key</span> <span class="ow">in</span> <span class="n">conf</span><span class="p">:</span>
+                <span class="k">if</span> <span class="n">value_type_converter</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+                    <span class="n">client_conf</span><span class="p">[</span><span class="n">key</span><span class="p">]</span> <span class="o">=</span> <span class="n">value_type_converter</span><span class="p">(</span><span class="n">conf</span><span class="p">[</span><span class="n">key</span><span class="p">])</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="n">client_conf</span><span class="p">[</span><span class="n">key</span><span class="p">]</span> <span class="o">=</span> <span class="n">conf</span><span class="p">[</span><span class="n">key</span><span class="p">]</span>
+        <span class="k">return</span> <span class="n">ru</span><span class="o">.</span><span class="n">RedisClient</span><span class="p">(</span><span class="o">**</span><span class="n">client_conf</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">conf</span><span class="p">,</span>
+                 <span class="n">client</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">persistence</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">RedisJobBoard</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">conf</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_closed</span> <span class="o">=</span> <span class="bp">True</span>
+        <span class="k">if</span> <span class="n">client</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_client</span> <span class="o">=</span> <span class="n">client</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_owns_client</span> <span class="o">=</span> <span class="bp">False</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_client</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_make_client</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_conf</span><span class="p">)</span>
+            <span class="c1"># NOTE(harlowja): This client should not work until connected...</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_owns_client</span> <span class="o">=</span> <span class="bp">True</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_namespace</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_conf</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;namespace&#39;</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">DEFAULT_NAMESPACE</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_open_close_lock</span> <span class="o">=</span> <span class="n">threading</span><span class="o">.</span><span class="n">RLock</span><span class="p">()</span>
+        <span class="c1"># Redis server version connected to + scripts (populated on connect).</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_redis_version</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_scripts</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="c1"># The backend to load the full logbooks from, since what is sent over</span>
+        <span class="c1"># the data connection is only the logbook uuid and name, and not the</span>
+        <span class="c1"># full logbook.</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_persistence</span> <span class="o">=</span> <span class="n">persistence</span>
+
+<div class="viewcode-block" id="RedisJobBoard.join"><a class="viewcode-back" href="../../../../jobs.html#taskflow.jobs.backends.impl_redis.RedisJobBoard.join">[docs]</a>    <span class="k">def</span> <span class="nf">join</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">key_piece</span><span class="p">,</span> <span class="o">*</span><span class="n">more_key_pieces</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Create and return a namespaced key from many segments.</span>
+
+<span class="sd">        NOTE(harlowja): all pieces that are text/unicode are converted into</span>
+<span class="sd">        their binary equivalent (if they are already binary no conversion</span>
+<span class="sd">        takes place) before being joined (as redis expects binary keys and not</span>
+<span class="sd">        unicode/text ones).</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">namespace_pieces</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_namespace</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">namespace_pieces</span> <span class="o">=</span> <span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">_namespace</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">NAMESPACE_SEP</span><span class="p">]</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">namespace_pieces</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="n">key_pieces</span> <span class="o">=</span> <span class="p">[</span><span class="n">key_piece</span><span class="p">]</span>
+        <span class="k">if</span> <span class="n">more_key_pieces</span><span class="p">:</span>
+            <span class="n">key_pieces</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span><span class="n">more_key_pieces</span><span class="p">)</span>
+        <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="n">compat_range</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">namespace_pieces</span><span class="p">)):</span>
+            <span class="n">namespace_pieces</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">=</span> <span class="n">misc</span><span class="o">.</span><span class="n">binary_encode</span><span class="p">(</span><span class="n">namespace_pieces</span><span class="p">[</span><span class="n">i</span><span class="p">])</span>
+        <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="n">compat_range</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">key_pieces</span><span class="p">)):</span>
+            <span class="n">key_pieces</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">=</span> <span class="n">misc</span><span class="o">.</span><span class="n">binary_encode</span><span class="p">(</span><span class="n">key_pieces</span><span class="p">[</span><span class="n">i</span><span class="p">])</span>
+        <span class="n">namespace</span> <span class="o">=</span> <span class="sa">b</span><span class="s2">&quot;&quot;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">namespace_pieces</span><span class="p">)</span>
+        <span class="n">key</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">KEY_PIECE_SEP</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">key_pieces</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">namespace</span> <span class="o">+</span> <span class="n">key</span></div>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">namespace</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;The namespace all keys will be prefixed with (or none).&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_namespace</span>
+
+    <span class="nd">@misc.cachedproperty</span>
+    <span class="k">def</span> <span class="nf">trash_key</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Key where a hash will be stored with trashed jobs in it.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="sa">b</span><span class="s2">&quot;trash&quot;</span><span class="p">)</span>
+
+    <span class="nd">@misc.cachedproperty</span>
+    <span class="k">def</span> <span class="nf">sequence_key</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Key where a integer will be stored (used to sequence jobs).&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="sa">b</span><span class="s2">&quot;sequence&quot;</span><span class="p">)</span>
+
+    <span class="nd">@misc.cachedproperty</span>
+    <span class="k">def</span> <span class="nf">listings_key</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Key where a hash will be stored with active jobs in it.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="sa">b</span><span class="s2">&quot;listings&quot;</span><span class="p">)</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">job_count</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">with</span> <span class="n">_translate_failures</span><span class="p">():</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">hlen</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">listings_key</span><span class="p">)</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">connected</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_closed</span>
+
+    <span class="nd">@fasteners.locked</span><span class="p">(</span><span class="n">lock</span><span class="o">=</span><span class="s1">&#39;_open_close_lock&#39;</span><span class="p">)</span>
+    <span class="k">def</span> <span class="nf">connect</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_owns_client</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_client</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_make_client</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_conf</span><span class="p">)</span>
+        <span class="k">with</span> <span class="n">_translate_failures</span><span class="p">():</span>
+            <span class="c1"># The client maintains a connection pool, so do a ping and</span>
+            <span class="c1"># if that works then assume the connection works, which may or</span>
+            <span class="c1"># may not be continuously maintained (if the server dies</span>
+            <span class="c1"># at a later time, we will become aware of that when the next</span>
+            <span class="c1"># op occurs).</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">ping</span><span class="p">()</span>
+            <span class="n">is_new_enough</span><span class="p">,</span> <span class="n">redis_version</span> <span class="o">=</span> <span class="n">ru</span><span class="o">.</span><span class="n">is_server_new_enough</span><span class="p">(</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">MIN_REDIS_VERSION</span><span class="p">)</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">is_new_enough</span><span class="p">:</span>
+                <span class="n">wanted_version</span> <span class="o">=</span> <span class="s2">&quot;.&quot;</span><span class="o">.</span><span class="n">join</span><span class="p">([</span><span class="nb">str</span><span class="p">(</span><span class="n">p</span><span class="p">)</span>
+                                           <span class="k">for</span> <span class="n">p</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">MIN_REDIS_VERSION</span><span class="p">])</span>
+                <span class="k">if</span> <span class="n">redis_version</span><span class="p">:</span>
+                    <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">(</span><span class="s2">&quot;Redis version </span><span class="si">%s</span><span class="s2"> or greater is&quot;</span>
+                                         <span class="s2">&quot; required (version </span><span class="si">%s</span><span class="s2"> is to&quot;</span>
+                                         <span class="s2">&quot; old)&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">wanted_version</span><span class="p">,</span>
+                                                    <span class="n">redis_version</span><span class="p">))</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">(</span><span class="s2">&quot;Redis version </span><span class="si">%s</span><span class="s2"> or greater is&quot;</span>
+                                         <span class="s2">&quot; required&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">wanted_version</span><span class="p">))</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_redis_version</span> <span class="o">=</span> <span class="n">redis_version</span>
+                <span class="n">script_params</span> <span class="o">=</span> <span class="p">{</span>
+                    <span class="c1"># Status field values.</span>
+                    <span class="s1">&#39;ok&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">SCRIPT_STATUS_OK</span><span class="p">,</span>
+                    <span class="s1">&#39;error&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">SCRIPT_STATUS_ERROR</span><span class="p">,</span>
+
+                    <span class="c1"># Known error reasons (when status field is error).</span>
+                    <span class="s1">&#39;not_expected_owner&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">SCRIPT_NOT_EXPECTED_OWNER</span><span class="p">,</span>
+                    <span class="s1">&#39;unknown_owner&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">SCRIPT_UNKNOWN_OWNER</span><span class="p">,</span>
+                    <span class="s1">&#39;unknown_job&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">SCRIPT_UNKNOWN_JOB</span><span class="p">,</span>
+                    <span class="s1">&#39;already_claimed&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">SCRIPT_ALREADY_CLAIMED</span><span class="p">,</span>
+                <span class="p">}</span>
+                <span class="n">prepared_scripts</span> <span class="o">=</span> <span class="p">{}</span>
+                <span class="k">for</span> <span class="n">n</span><span class="p">,</span> <span class="n">raw_script_tpl</span> <span class="ow">in</span> <span class="n">six</span><span class="o">.</span><span class="n">iteritems</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">SCRIPT_TEMPLATES</span><span class="p">):</span>
+                    <span class="n">script_tpl</span> <span class="o">=</span> <span class="n">string</span><span class="o">.</span><span class="n">Template</span><span class="p">(</span><span class="n">raw_script_tpl</span><span class="p">)</span>
+                    <span class="n">script_blob</span> <span class="o">=</span> <span class="n">script_tpl</span><span class="o">.</span><span class="n">substitute</span><span class="p">(</span><span class="o">**</span><span class="n">script_params</span><span class="p">)</span>
+                    <span class="n">script</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">register_script</span><span class="p">(</span><span class="n">script_blob</span><span class="p">)</span>
+                    <span class="n">prepared_scripts</span><span class="p">[</span><span class="n">n</span><span class="p">]</span> <span class="o">=</span> <span class="n">script</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_scripts</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">prepared_scripts</span><span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_closed</span> <span class="o">=</span> <span class="bp">False</span>
+
+    <span class="nd">@fasteners.locked</span><span class="p">(</span><span class="n">lock</span><span class="o">=</span><span class="s1">&#39;_open_close_lock&#39;</span><span class="p">)</span>
+    <span class="k">def</span> <span class="nf">close</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_owns_client</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_scripts</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_redis_version</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_closed</span> <span class="o">=</span> <span class="bp">True</span>
+
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span> <span class="nf">_dumps</span><span class="p">(</span><span class="n">obj</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">msgpackutils</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span><span class="n">obj</span><span class="p">)</span>
+        <span class="k">except</span> <span class="p">(</span><span class="n">msgpack</span><span class="o">.</span><span class="n">PackException</span><span class="p">,</span> <span class="ne">ValueError</span><span class="p">):</span>
+            <span class="c1"># TODO(harlowja): remove direct msgpack exception access when</span>
+            <span class="c1"># oslo.utils provides easy access to the underlying msgpack</span>
+            <span class="c1"># pack/unpack exceptions..</span>
+            <span class="n">exc</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">exc</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">,</span>
+                                 <span class="s2">&quot;Failed to serialize object to&quot;</span>
+                                 <span class="s2">&quot; msgpack blob&quot;</span><span class="p">)</span>
+
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span> <span class="nf">_loads</span><span class="p">(</span><span class="n">blob</span><span class="p">,</span> <span class="n">root_types</span><span class="o">=</span><span class="p">(</span><span class="nb">dict</span><span class="p">,)):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">misc</span><span class="o">.</span><span class="n">decode_msgpack</span><span class="p">(</span><span class="n">blob</span><span class="p">,</span> <span class="n">root_types</span><span class="o">=</span><span class="n">root_types</span><span class="p">)</span>
+        <span class="k">except</span> <span class="p">(</span><span class="n">msgpack</span><span class="o">.</span><span class="n">UnpackException</span><span class="p">,</span> <span class="ne">ValueError</span><span class="p">):</span>
+            <span class="c1"># TODO(harlowja): remove direct msgpack exception access when</span>
+            <span class="c1"># oslo.utils provides easy access to the underlying msgpack</span>
+            <span class="c1"># pack/unpack exceptions..</span>
+            <span class="n">exc</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">exc</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">,</span>
+                                 <span class="s2">&quot;Failed to deserialize object from&quot;</span>
+                                 <span class="s2">&quot; msgpack blob (of length </span><span class="si">%s</span><span class="s2">)&quot;</span> <span class="o">%</span> <span class="nb">len</span><span class="p">(</span><span class="n">blob</span><span class="p">))</span>
+
+    <span class="n">_decode_owner</span> <span class="o">=</span> <span class="nb">staticmethod</span><span class="p">(</span><span class="n">misc</span><span class="o">.</span><span class="n">binary_decode</span><span class="p">)</span>
+
+    <span class="n">_encode_owner</span> <span class="o">=</span> <span class="nb">staticmethod</span><span class="p">(</span><span class="n">misc</span><span class="o">.</span><span class="n">binary_encode</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">find_owner</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">job</span><span class="p">):</span>
+        <span class="n">owner_key</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">key</span> <span class="o">+</span> <span class="bp">self</span><span class="o">.</span><span class="n">OWNED_POSTFIX</span><span class="p">)</span>
+        <span class="k">with</span> <span class="n">_translate_failures</span><span class="p">():</span>
+            <span class="n">raw_owner</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">owner_key</span><span class="p">)</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_decode_owner</span><span class="p">(</span><span class="n">raw_owner</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">post</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">book</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">details</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+             <span class="n">priority</span><span class="o">=</span><span class="n">base</span><span class="o">.</span><span class="n">JobPriority</span><span class="o">.</span><span class="n">NORMAL</span><span class="p">):</span>
+        <span class="n">job_uuid</span> <span class="o">=</span> <span class="n">uuidutils</span><span class="o">.</span><span class="n">generate_uuid</span><span class="p">()</span>
+        <span class="n">job_priority</span> <span class="o">=</span> <span class="n">base</span><span class="o">.</span><span class="n">JobPriority</span><span class="o">.</span><span class="n">convert</span><span class="p">(</span><span class="n">priority</span><span class="p">)</span>
+        <span class="n">posting</span> <span class="o">=</span> <span class="n">base</span><span class="o">.</span><span class="n">format_posting</span><span class="p">(</span><span class="n">job_uuid</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span>
+                                      <span class="n">created_on</span><span class="o">=</span><span class="n">timeutils</span><span class="o">.</span><span class="n">utcnow</span><span class="p">(),</span>
+                                      <span class="n">book</span><span class="o">=</span><span class="n">book</span><span class="p">,</span> <span class="n">details</span><span class="o">=</span><span class="n">details</span><span class="p">,</span>
+                                      <span class="n">priority</span><span class="o">=</span><span class="n">job_priority</span><span class="p">)</span>
+        <span class="k">with</span> <span class="n">_translate_failures</span><span class="p">():</span>
+            <span class="n">sequence</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">incr</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">sequence_key</span><span class="p">)</span>
+            <span class="n">posting</span><span class="o">.</span><span class="n">update</span><span class="p">({</span>
+                <span class="s1">&#39;sequence&#39;</span><span class="p">:</span> <span class="n">sequence</span><span class="p">,</span>
+            <span class="p">})</span>
+        <span class="k">with</span> <span class="n">_translate_failures</span><span class="p">():</span>
+            <span class="n">raw_posting</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_dumps</span><span class="p">(</span><span class="n">posting</span><span class="p">)</span>
+            <span class="n">raw_job_uuid</span> <span class="o">=</span> <span class="n">six</span><span class="o">.</span><span class="n">b</span><span class="p">(</span><span class="n">job_uuid</span><span class="p">)</span>
+            <span class="n">was_posted</span> <span class="o">=</span> <span class="nb">bool</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">hsetnx</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">listings_key</span><span class="p">,</span>
+                                                  <span class="n">raw_job_uuid</span><span class="p">,</span> <span class="n">raw_posting</span><span class="p">))</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">was_posted</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">(</span><span class="s2">&quot;New job located at &#39;</span><span class="si">%s</span><span class="s2">[</span><span class="si">%s</span><span class="s2">]&#39; could not&quot;</span>
+                                     <span class="s2">&quot; be posted&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">listings_key</span><span class="p">,</span>
+                                                     <span class="n">raw_job_uuid</span><span class="p">))</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">return</span> <span class="n">RedisJob</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">sequence</span><span class="p">,</span> <span class="n">raw_job_uuid</span><span class="p">,</span>
+                                <span class="n">uuid</span><span class="o">=</span><span class="n">job_uuid</span><span class="p">,</span> <span class="n">details</span><span class="o">=</span><span class="n">details</span><span class="p">,</span>
+                                <span class="n">created_on</span><span class="o">=</span><span class="n">posting</span><span class="p">[</span><span class="s1">&#39;created_on&#39;</span><span class="p">],</span>
+                                <span class="n">book</span><span class="o">=</span><span class="n">book</span><span class="p">,</span> <span class="n">book_data</span><span class="o">=</span><span class="n">posting</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;book&#39;</span><span class="p">),</span>
+                                <span class="n">backend</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_persistence</span><span class="p">,</span>
+                                <span class="n">priority</span><span class="o">=</span><span class="n">job_priority</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">wait</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">initial_delay</span><span class="o">=</span><span class="mf">0.005</span><span class="p">,</span>
+             <span class="n">max_delay</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">sleep_func</span><span class="o">=</span><span class="n">time</span><span class="o">.</span><span class="n">sleep</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">initial_delay</span> <span class="o">&gt;</span> <span class="n">max_delay</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;Initial delay </span><span class="si">%s</span><span class="s2"> must be less than or equal&quot;</span>
+                             <span class="s2">&quot; to the provided max delay </span><span class="si">%s</span><span class="s2">&quot;</span>
+                             <span class="o">%</span> <span class="p">(</span><span class="n">initial_delay</span><span class="p">,</span> <span class="n">max_delay</span><span class="p">))</span>
+        <span class="c1"># This does a spin-loop that backs off by doubling the delay</span>
+        <span class="c1"># up to the provided max-delay. In the future we could try having</span>
+        <span class="c1"># a secondary client connected into redis pubsub and use that</span>
+        <span class="c1"># instead, but for now this is simpler.</span>
+        <span class="n">w</span> <span class="o">=</span> <span class="n">timeutils</span><span class="o">.</span><span class="n">StopWatch</span><span class="p">(</span><span class="n">duration</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span>
+        <span class="n">w</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+        <span class="n">delay</span> <span class="o">=</span> <span class="n">initial_delay</span>
+        <span class="k">while</span> <span class="bp">True</span><span class="p">:</span>
+            <span class="n">jc</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">job_count</span>
+            <span class="k">if</span> <span class="n">jc</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+                <span class="n">curr_jobs</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_fetch_jobs</span><span class="p">()</span>
+                <span class="k">if</span> <span class="n">curr_jobs</span><span class="p">:</span>
+                    <span class="k">return</span> <span class="n">base</span><span class="o">.</span><span class="n">JobBoardIterator</span><span class="p">(</span>
+                        <span class="bp">self</span><span class="p">,</span> <span class="n">LOG</span><span class="p">,</span>
+                        <span class="n">board_fetch_func</span><span class="o">=</span><span class="k">lambda</span> <span class="n">ensure_fresh</span><span class="p">:</span> <span class="n">curr_jobs</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">w</span><span class="o">.</span><span class="n">expired</span><span class="p">():</span>
+                <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">NotFound</span><span class="p">(</span><span class="s2">&quot;Expired waiting for jobs to&quot;</span>
+                                   <span class="s2">&quot; arrive; waited </span><span class="si">%s</span><span class="s2"> seconds&quot;</span>
+                                   <span class="o">%</span> <span class="n">w</span><span class="o">.</span><span class="n">elapsed</span><span class="p">())</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">remaining</span> <span class="o">=</span> <span class="n">w</span><span class="o">.</span><span class="n">leftover</span><span class="p">(</span><span class="n">return_none</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+                <span class="k">if</span> <span class="n">remaining</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+                    <span class="n">delay</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="n">delay</span> <span class="o">*</span> <span class="mi">2</span><span class="p">,</span> <span class="n">remaining</span><span class="p">,</span> <span class="n">max_delay</span><span class="p">)</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="n">delay</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="n">delay</span> <span class="o">*</span> <span class="mi">2</span><span class="p">,</span> <span class="n">max_delay</span><span class="p">)</span>
+                <span class="n">sleep_func</span><span class="p">(</span><span class="n">delay</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_fetch_jobs</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">with</span> <span class="n">_translate_failures</span><span class="p">():</span>
+            <span class="n">raw_postings</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">hgetall</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">listings_key</span><span class="p">)</span>
+        <span class="n">postings</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">for</span> <span class="n">raw_job_key</span><span class="p">,</span> <span class="n">raw_posting</span> <span class="ow">in</span> <span class="n">six</span><span class="o">.</span><span class="n">iteritems</span><span class="p">(</span><span class="n">raw_postings</span><span class="p">):</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">job_data</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_loads</span><span class="p">(</span><span class="n">raw_posting</span><span class="p">)</span>
+                <span class="k">try</span><span class="p">:</span>
+                    <span class="n">job_priority</span> <span class="o">=</span> <span class="n">job_data</span><span class="p">[</span><span class="s1">&#39;priority&#39;</span><span class="p">]</span>
+                    <span class="n">job_priority</span> <span class="o">=</span> <span class="n">base</span><span class="o">.</span><span class="n">JobPriority</span><span class="o">.</span><span class="n">convert</span><span class="p">(</span><span class="n">job_priority</span><span class="p">)</span>
+                <span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+                    <span class="n">job_priority</span> <span class="o">=</span> <span class="n">base</span><span class="o">.</span><span class="n">JobPriority</span><span class="o">.</span><span class="n">NORMAL</span>
+                <span class="n">job_created_on</span> <span class="o">=</span> <span class="n">job_data</span><span class="p">[</span><span class="s1">&#39;created_on&#39;</span><span class="p">]</span>
+                <span class="n">job_uuid</span> <span class="o">=</span> <span class="n">job_data</span><span class="p">[</span><span class="s1">&#39;uuid&#39;</span><span class="p">]</span>
+                <span class="n">job_name</span> <span class="o">=</span> <span class="n">job_data</span><span class="p">[</span><span class="s1">&#39;name&#39;</span><span class="p">]</span>
+                <span class="n">job_sequence_id</span> <span class="o">=</span> <span class="n">job_data</span><span class="p">[</span><span class="s1">&#39;sequence&#39;</span><span class="p">]</span>
+                <span class="n">job_details</span> <span class="o">=</span> <span class="n">job_data</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;details&#39;</span><span class="p">,</span> <span class="p">{})</span>
+            <span class="k">except</span> <span class="p">(</span><span class="ne">ValueError</span><span class="p">,</span> <span class="ne">TypeError</span><span class="p">,</span> <span class="ne">KeyError</span><span class="p">):</span>
+                <span class="k">with</span> <span class="n">excutils</span><span class="o">.</span><span class="n">save_and_reraise_exception</span><span class="p">():</span>
+                    <span class="n">LOG</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span><span class="s2">&quot;Incorrectly formatted job data found at&quot;</span>
+                             <span class="s2">&quot; key: </span><span class="si">%s</span><span class="s2">[</span><span class="si">%s</span><span class="s2">]&quot;</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">listings_key</span><span class="p">,</span>
+                             <span class="n">raw_job_key</span><span class="p">,</span> <span class="n">exc_info</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">postings</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">RedisJob</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">job_name</span><span class="p">,</span> <span class="n">job_sequence_id</span><span class="p">,</span>
+                                         <span class="n">raw_job_key</span><span class="p">,</span> <span class="n">uuid</span><span class="o">=</span><span class="n">job_uuid</span><span class="p">,</span>
+                                         <span class="n">details</span><span class="o">=</span><span class="n">job_details</span><span class="p">,</span>
+                                         <span class="n">created_on</span><span class="o">=</span><span class="n">job_created_on</span><span class="p">,</span>
+                                         <span class="n">book_data</span><span class="o">=</span><span class="n">job_data</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;book&#39;</span><span class="p">),</span>
+                                         <span class="n">backend</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_persistence</span><span class="p">,</span>
+                                         <span class="n">priority</span><span class="o">=</span><span class="n">job_priority</span><span class="p">))</span>
+        <span class="k">return</span> <span class="nb">sorted</span><span class="p">(</span><span class="n">postings</span><span class="p">,</span> <span class="n">reverse</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">iterjobs</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">only_unclaimed</span><span class="o">=</span><span class="bp">False</span><span class="p">,</span> <span class="n">ensure_fresh</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">base</span><span class="o">.</span><span class="n">JobBoardIterator</span><span class="p">(</span>
+            <span class="bp">self</span><span class="p">,</span> <span class="n">LOG</span><span class="p">,</span> <span class="n">only_unclaimed</span><span class="o">=</span><span class="n">only_unclaimed</span><span class="p">,</span>
+            <span class="n">ensure_fresh</span><span class="o">=</span><span class="n">ensure_fresh</span><span class="p">,</span>
+            <span class="n">board_fetch_func</span><span class="o">=</span><span class="k">lambda</span> <span class="n">ensure_fresh</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_fetch_jobs</span><span class="p">())</span>
+
+    <span class="k">def</span> <span class="nf">register_entity</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">entity</span><span class="p">):</span>
+        <span class="c1"># Will implement a redis jobboard conductor register later</span>
+        <span class="k">pass</span>
+
+    <span class="nd">@base.check_who</span>
+    <span class="k">def</span> <span class="nf">consume</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">job</span><span class="p">,</span> <span class="n">who</span><span class="p">):</span>
+        <span class="n">script</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_script</span><span class="p">(</span><span class="s1">&#39;consume&#39;</span><span class="p">)</span>
+        <span class="k">with</span> <span class="n">_translate_failures</span><span class="p">():</span>
+            <span class="n">raw_who</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_encode_owner</span><span class="p">(</span><span class="n">who</span><span class="p">)</span>
+            <span class="n">raw_result</span> <span class="o">=</span> <span class="n">script</span><span class="p">(</span><span class="n">keys</span><span class="o">=</span><span class="p">[</span><span class="n">job</span><span class="o">.</span><span class="n">owner_key</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">listings_key</span><span class="p">,</span>
+                                      <span class="n">job</span><span class="o">.</span><span class="n">last_modified_key</span><span class="p">],</span>
+                                <span class="n">args</span><span class="o">=</span><span class="p">[</span><span class="n">raw_who</span><span class="p">,</span> <span class="n">job</span><span class="o">.</span><span class="n">key</span><span class="p">])</span>
+            <span class="n">result</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_loads</span><span class="p">(</span><span class="n">raw_result</span><span class="p">)</span>
+        <span class="n">status</span> <span class="o">=</span> <span class="n">result</span><span class="p">[</span><span class="s1">&#39;status&#39;</span><span class="p">]</span>
+        <span class="k">if</span> <span class="n">status</span> <span class="o">!=</span> <span class="bp">self</span><span class="o">.</span><span class="n">SCRIPT_STATUS_OK</span><span class="p">:</span>
+            <span class="n">reason</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;reason&#39;</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">reason</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">SCRIPT_UNKNOWN_JOB</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">NotFound</span><span class="p">(</span><span class="s2">&quot;Job </span><span class="si">%s</span><span class="s2"> not found to be&quot;</span>
+                                   <span class="s2">&quot; consumed&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">uuid</span><span class="p">))</span>
+            <span class="k">elif</span> <span class="n">reason</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">SCRIPT_UNKNOWN_OWNER</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">NotFound</span><span class="p">(</span><span class="s2">&quot;Can not consume job </span><span class="si">%s</span><span class="s2">&quot;</span>
+                                   <span class="s2">&quot; which we can not determine&quot;</span>
+                                   <span class="s2">&quot; the owner of&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">uuid</span><span class="p">))</span>
+            <span class="k">elif</span> <span class="n">reason</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">SCRIPT_NOT_EXPECTED_OWNER</span><span class="p">:</span>
+                <span class="n">raw_owner</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;owner&#39;</span><span class="p">)</span>
+                <span class="k">if</span> <span class="n">raw_owner</span><span class="p">:</span>
+                    <span class="n">owner</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_decode_owner</span><span class="p">(</span><span class="n">raw_owner</span><span class="p">)</span>
+                    <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">(</span><span class="s2">&quot;Can not consume job </span><span class="si">%s</span><span class="s2">&quot;</span>
+                                         <span class="s2">&quot; which is not owned by </span><span class="si">%s</span><span class="s2"> (it is&quot;</span>
+                                         <span class="s2">&quot; actively owned by </span><span class="si">%s</span><span class="s2">)&quot;</span>
+                                         <span class="o">%</span> <span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="n">who</span><span class="p">,</span> <span class="n">owner</span><span class="p">))</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">(</span><span class="s2">&quot;Can not consume job </span><span class="si">%s</span><span class="s2">&quot;</span>
+                                         <span class="s2">&quot; which is not owned by </span><span class="si">%s</span><span class="s2">&quot;</span>
+                                         <span class="o">%</span> <span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="n">who</span><span class="p">))</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">(</span><span class="s2">&quot;Failure to consume job </span><span class="si">%s</span><span class="s2">,&quot;</span>
+                                     <span class="s2">&quot; unknown internal error (reason=</span><span class="si">%s</span><span class="s2">)&quot;</span>
+                                     <span class="o">%</span> <span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="n">reason</span><span class="p">))</span>
+
+    <span class="nd">@base.check_who</span>
+    <span class="k">def</span> <span class="nf">claim</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">job</span><span class="p">,</span> <span class="n">who</span><span class="p">,</span> <span class="n">expiry</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">expiry</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="c1"># On the lua side none doesn&#39;t translate to nil so we have</span>
+            <span class="c1"># do to this string conversion to make sure that we can tell</span>
+            <span class="c1"># the difference.</span>
+            <span class="n">ms_expiry</span> <span class="o">=</span> <span class="s2">&quot;none&quot;</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">ms_expiry</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">expiry</span> <span class="o">*</span> <span class="mf">1000.0</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">ms_expiry</span> <span class="o">&lt;=</span> <span class="mi">0</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;Provided expiry (when converted to&quot;</span>
+                                 <span class="s2">&quot; milliseconds) must be greater&quot;</span>
+                                 <span class="s2">&quot; than zero instead of </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">expiry</span><span class="p">))</span>
+        <span class="n">script</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_script</span><span class="p">(</span><span class="s1">&#39;claim&#39;</span><span class="p">)</span>
+        <span class="k">with</span> <span class="n">_translate_failures</span><span class="p">():</span>
+            <span class="n">raw_who</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_encode_owner</span><span class="p">(</span><span class="n">who</span><span class="p">)</span>
+            <span class="n">raw_result</span> <span class="o">=</span> <span class="n">script</span><span class="p">(</span><span class="n">keys</span><span class="o">=</span><span class="p">[</span><span class="n">job</span><span class="o">.</span><span class="n">owner_key</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">listings_key</span><span class="p">,</span>
+                                      <span class="n">job</span><span class="o">.</span><span class="n">last_modified_key</span><span class="p">],</span>
+                                <span class="n">args</span><span class="o">=</span><span class="p">[</span><span class="n">raw_who</span><span class="p">,</span> <span class="n">job</span><span class="o">.</span><span class="n">key</span><span class="p">,</span>
+                                      <span class="c1"># NOTE(harlowja): we need to send this</span>
+                                      <span class="c1"># in as a blob (even if it&#39;s not</span>
+                                      <span class="c1"># set/used), since the format can not</span>
+                                      <span class="c1"># currently be created in lua...</span>
+                                      <span class="bp">self</span><span class="o">.</span><span class="n">_dumps</span><span class="p">(</span><span class="n">timeutils</span><span class="o">.</span><span class="n">utcnow</span><span class="p">()),</span>
+                                      <span class="n">ms_expiry</span><span class="p">])</span>
+            <span class="n">result</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_loads</span><span class="p">(</span><span class="n">raw_result</span><span class="p">)</span>
+        <span class="n">status</span> <span class="o">=</span> <span class="n">result</span><span class="p">[</span><span class="s1">&#39;status&#39;</span><span class="p">]</span>
+        <span class="k">if</span> <span class="n">status</span> <span class="o">!=</span> <span class="bp">self</span><span class="o">.</span><span class="n">SCRIPT_STATUS_OK</span><span class="p">:</span>
+            <span class="n">reason</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;reason&#39;</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">reason</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">SCRIPT_UNKNOWN_JOB</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">NotFound</span><span class="p">(</span><span class="s2">&quot;Job </span><span class="si">%s</span><span class="s2"> not found to be&quot;</span>
+                                   <span class="s2">&quot; claimed&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">uuid</span><span class="p">))</span>
+            <span class="k">elif</span> <span class="n">reason</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">SCRIPT_ALREADY_CLAIMED</span><span class="p">:</span>
+                <span class="n">raw_owner</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;owner&#39;</span><span class="p">)</span>
+                <span class="k">if</span> <span class="n">raw_owner</span><span class="p">:</span>
+                    <span class="n">owner</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_decode_owner</span><span class="p">(</span><span class="n">raw_owner</span><span class="p">)</span>
+                    <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">UnclaimableJob</span><span class="p">(</span><span class="s2">&quot;Job </span><span class="si">%s</span><span class="s2"> already&quot;</span>
+                                             <span class="s2">&quot; claimed by </span><span class="si">%s</span><span class="s2">&quot;</span>
+                                             <span class="o">%</span> <span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="n">owner</span><span class="p">))</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">UnclaimableJob</span><span class="p">(</span><span class="s2">&quot;Job </span><span class="si">%s</span><span class="s2"> already&quot;</span>
+                                             <span class="s2">&quot; claimed&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">uuid</span><span class="p">))</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">(</span><span class="s2">&quot;Failure to claim job </span><span class="si">%s</span><span class="s2">,&quot;</span>
+                                     <span class="s2">&quot; unknown internal error (reason=</span><span class="si">%s</span><span class="s2">)&quot;</span>
+                                     <span class="o">%</span> <span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="n">reason</span><span class="p">))</span>
+
+    <span class="nd">@base.check_who</span>
+    <span class="k">def</span> <span class="nf">abandon</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">job</span><span class="p">,</span> <span class="n">who</span><span class="p">):</span>
+        <span class="n">script</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_script</span><span class="p">(</span><span class="s1">&#39;abandon&#39;</span><span class="p">)</span>
+        <span class="k">with</span> <span class="n">_translate_failures</span><span class="p">():</span>
+            <span class="n">raw_who</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_encode_owner</span><span class="p">(</span><span class="n">who</span><span class="p">)</span>
+            <span class="n">raw_result</span> <span class="o">=</span> <span class="n">script</span><span class="p">(</span><span class="n">keys</span><span class="o">=</span><span class="p">[</span><span class="n">job</span><span class="o">.</span><span class="n">owner_key</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">listings_key</span><span class="p">,</span>
+                                      <span class="n">job</span><span class="o">.</span><span class="n">last_modified_key</span><span class="p">],</span>
+                                <span class="n">args</span><span class="o">=</span><span class="p">[</span><span class="n">raw_who</span><span class="p">,</span> <span class="n">job</span><span class="o">.</span><span class="n">key</span><span class="p">,</span>
+                                      <span class="bp">self</span><span class="o">.</span><span class="n">_dumps</span><span class="p">(</span><span class="n">timeutils</span><span class="o">.</span><span class="n">utcnow</span><span class="p">())])</span>
+            <span class="n">result</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_loads</span><span class="p">(</span><span class="n">raw_result</span><span class="p">)</span>
+        <span class="n">status</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;status&#39;</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">status</span> <span class="o">!=</span> <span class="bp">self</span><span class="o">.</span><span class="n">SCRIPT_STATUS_OK</span><span class="p">:</span>
+            <span class="n">reason</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;reason&#39;</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">reason</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">SCRIPT_UNKNOWN_JOB</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">NotFound</span><span class="p">(</span><span class="s2">&quot;Job </span><span class="si">%s</span><span class="s2"> not found to be&quot;</span>
+                                   <span class="s2">&quot; abandoned&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">uuid</span><span class="p">))</span>
+            <span class="k">elif</span> <span class="n">reason</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">SCRIPT_UNKNOWN_OWNER</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">NotFound</span><span class="p">(</span><span class="s2">&quot;Can not abandon job </span><span class="si">%s</span><span class="s2">&quot;</span>
+                                   <span class="s2">&quot; which we can not determine&quot;</span>
+                                   <span class="s2">&quot; the owner of&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">uuid</span><span class="p">))</span>
+            <span class="k">elif</span> <span class="n">reason</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">SCRIPT_NOT_EXPECTED_OWNER</span><span class="p">:</span>
+                <span class="n">raw_owner</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;owner&#39;</span><span class="p">)</span>
+                <span class="k">if</span> <span class="n">raw_owner</span><span class="p">:</span>
+                    <span class="n">owner</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_decode_owner</span><span class="p">(</span><span class="n">raw_owner</span><span class="p">)</span>
+                    <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">(</span><span class="s2">&quot;Can not abandon job </span><span class="si">%s</span><span class="s2">&quot;</span>
+                                         <span class="s2">&quot; which is not owned by </span><span class="si">%s</span><span class="s2"> (it is&quot;</span>
+                                         <span class="s2">&quot; actively owned by </span><span class="si">%s</span><span class="s2">)&quot;</span>
+                                         <span class="o">%</span> <span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="n">who</span><span class="p">,</span> <span class="n">owner</span><span class="p">))</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">(</span><span class="s2">&quot;Can not abandon job </span><span class="si">%s</span><span class="s2">&quot;</span>
+                                         <span class="s2">&quot; which is not owned by </span><span class="si">%s</span><span class="s2">&quot;</span>
+                                         <span class="o">%</span> <span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="n">who</span><span class="p">))</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">(</span><span class="s2">&quot;Failure to abandon job </span><span class="si">%s</span><span class="s2">,&quot;</span>
+                                     <span class="s2">&quot; unknown internal&quot;</span>
+                                     <span class="s2">&quot; error (status=</span><span class="si">%s</span><span class="s2">, reason=</span><span class="si">%s</span><span class="s2">)&quot;</span>
+                                     <span class="o">%</span> <span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="n">status</span><span class="p">,</span> <span class="n">reason</span><span class="p">))</span>
+
+    <span class="k">def</span> <span class="nf">_get_script</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">name</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_scripts</span><span class="p">[</span><span class="n">name</span><span class="p">]</span>
+        <span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+            <span class="n">exc</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">exc</span><span class="o">.</span><span class="n">NotFound</span><span class="p">,</span>
+                                 <span class="s2">&quot;Can not access </span><span class="si">%s</span><span class="s2"> script (has this&quot;</span>
+                                 <span class="s2">&quot; board been connected?)&quot;</span> <span class="o">%</span> <span class="n">name</span><span class="p">)</span>
+
+    <span class="nd">@base.check_who</span>
+    <span class="k">def</span> <span class="nf">trash</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">job</span><span class="p">,</span> <span class="n">who</span><span class="p">):</span>
+        <span class="n">script</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_script</span><span class="p">(</span><span class="s1">&#39;trash&#39;</span><span class="p">)</span>
+        <span class="k">with</span> <span class="n">_translate_failures</span><span class="p">():</span>
+            <span class="n">raw_who</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_encode_owner</span><span class="p">(</span><span class="n">who</span><span class="p">)</span>
+            <span class="n">raw_result</span> <span class="o">=</span> <span class="n">script</span><span class="p">(</span><span class="n">keys</span><span class="o">=</span><span class="p">[</span><span class="n">job</span><span class="o">.</span><span class="n">owner_key</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">listings_key</span><span class="p">,</span>
+                                      <span class="n">job</span><span class="o">.</span><span class="n">last_modified_key</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">trash_key</span><span class="p">],</span>
+                                <span class="n">args</span><span class="o">=</span><span class="p">[</span><span class="n">raw_who</span><span class="p">,</span> <span class="n">job</span><span class="o">.</span><span class="n">key</span><span class="p">,</span>
+                                      <span class="bp">self</span><span class="o">.</span><span class="n">_dumps</span><span class="p">(</span><span class="n">timeutils</span><span class="o">.</span><span class="n">utcnow</span><span class="p">())])</span>
+            <span class="n">result</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_loads</span><span class="p">(</span><span class="n">raw_result</span><span class="p">)</span>
+        <span class="n">status</span> <span class="o">=</span> <span class="n">result</span><span class="p">[</span><span class="s1">&#39;status&#39;</span><span class="p">]</span>
+        <span class="k">if</span> <span class="n">status</span> <span class="o">!=</span> <span class="bp">self</span><span class="o">.</span><span class="n">SCRIPT_STATUS_OK</span><span class="p">:</span>
+            <span class="n">reason</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;reason&#39;</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">reason</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">SCRIPT_UNKNOWN_JOB</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">NotFound</span><span class="p">(</span><span class="s2">&quot;Job </span><span class="si">%s</span><span class="s2"> not found to be&quot;</span>
+                                   <span class="s2">&quot; trashed&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">uuid</span><span class="p">))</span>
+            <span class="k">elif</span> <span class="n">reason</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">SCRIPT_UNKNOWN_OWNER</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">NotFound</span><span class="p">(</span><span class="s2">&quot;Can not trash job </span><span class="si">%s</span><span class="s2">&quot;</span>
+                                   <span class="s2">&quot; which we can not determine&quot;</span>
+                                   <span class="s2">&quot; the owner of&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">uuid</span><span class="p">))</span>
+            <span class="k">elif</span> <span class="n">reason</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">SCRIPT_NOT_EXPECTED_OWNER</span><span class="p">:</span>
+                <span class="n">raw_owner</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;owner&#39;</span><span class="p">)</span>
+                <span class="k">if</span> <span class="n">raw_owner</span><span class="p">:</span>
+                    <span class="n">owner</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_decode_owner</span><span class="p">(</span><span class="n">raw_owner</span><span class="p">)</span>
+                    <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">(</span><span class="s2">&quot;Can not trash job </span><span class="si">%s</span><span class="s2">&quot;</span>
+                                         <span class="s2">&quot; which is not owned by </span><span class="si">%s</span><span class="s2"> (it is&quot;</span>
+                                         <span class="s2">&quot; actively owned by </span><span class="si">%s</span><span class="s2">)&quot;</span>
+                                         <span class="o">%</span> <span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="n">who</span><span class="p">,</span> <span class="n">owner</span><span class="p">))</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">(</span><span class="s2">&quot;Can not trash job </span><span class="si">%s</span><span class="s2">&quot;</span>
+                                         <span class="s2">&quot; which is not owned by </span><span class="si">%s</span><span class="s2">&quot;</span>
+                                         <span class="o">%</span> <span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="n">who</span><span class="p">))</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">JobFailure</span><span class="p">(</span><span class="s2">&quot;Failure to trash job </span><span class="si">%s</span><span class="s2">,&quot;</span>
+                                     <span class="s2">&quot; unknown internal error (reason=</span><span class="si">%s</span><span class="s2">)&quot;</span>
+                                     <span class="o">%</span> <span class="p">(</span><span class="n">job</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="n">reason</span><span class="p">))</span></div>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+  <h3>Navigation</h3>
+  <ul>
+
+    <li><a href="../../../../index.html">Table Of Contents</a></li>
+
+
+
+  </ul>
+
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/taskflow
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../../../index.html">TaskFlow 2.9.1.dev9 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../../../index.html" >Module code</a> &raquo;</li>
+          <li class="nav-item nav-item-2"><a href="../backends.html" accesskey="U">taskflow.jobs.backends</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2017, OpenStack Foundation.
+      Last updated on &#39;Fri Feb 10 20:11:17 2017, commit 643495f&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/TaskFlow");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

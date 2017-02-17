@@ -1,0 +1,680 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>ironic.common.driver_factory &mdash; Ironic 7.0.1.dev7 documentation</title>
+    
+    <link rel="stylesheet" href="../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../_static/toggle.css" type="text/css" />
+    <link rel="stylesheet" href="../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../',
+        VERSION:     '7.0.1.dev7',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../_static/doctools.js"></script>
+    <script type="text/javascript" src="../../../_static/toggle.js"></script>
+    <link rel="top" title="Ironic 7.0.1.dev7 documentation" href="../../../index.html" />
+    <link rel="up" title="Module code" href="../../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for ironic.common.driver_factory</h1><div class="highlight"><pre>
+<span></span><span class="c1"># Copyright 2013 Red Hat, Inc.</span>
+<span class="c1"># All Rights Reserved.</span>
+<span class="c1">#</span>
+<span class="c1">#    Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may</span>
+<span class="c1">#    not use this file except in compliance with the License. You may obtain</span>
+<span class="c1">#    a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#         http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1">#    Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1">#    distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="c1">#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="c1">#    License for the specific language governing permissions and limitations</span>
+<span class="c1">#    under the License.</span>
+
+<span class="kn">import</span> <span class="nn">collections</span>
+
+<span class="kn">from</span> <span class="nn">oslo_concurrency</span> <span class="kn">import</span> <span class="n">lockutils</span>
+<span class="kn">from</span> <span class="nn">oslo_log</span> <span class="kn">import</span> <span class="n">log</span>
+<span class="kn">from</span> <span class="nn">stevedore</span> <span class="kn">import</span> <span class="n">dispatch</span>
+
+<span class="kn">from</span> <span class="nn">ironic.common</span> <span class="kn">import</span> <span class="n">exception</span>
+<span class="kn">from</span> <span class="nn">ironic.common.i18n</span> <span class="kn">import</span> <span class="n">_LI</span><span class="p">,</span> <span class="n">_LW</span>
+<span class="kn">from</span> <span class="nn">ironic.conf</span> <span class="kn">import</span> <span class="n">CONF</span>
+<span class="kn">from</span> <span class="nn">ironic.drivers</span> <span class="kn">import</span> <span class="n">base</span> <span class="k">as</span> <span class="n">driver_base</span>
+<span class="kn">from</span> <span class="nn">ironic.drivers</span> <span class="kn">import</span> <span class="n">fake_hardware</span>
+<span class="kn">from</span> <span class="nn">ironic.drivers</span> <span class="kn">import</span> <span class="n">hardware_type</span>
+
+
+<span class="n">LOG</span> <span class="o">=</span> <span class="n">log</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+<span class="n">EM_SEMAPHORE</span> <span class="o">=</span> <span class="s1">&#39;extension_manager&#39;</span>
+
+
+<span class="k">def</span> <span class="nf">build_driver_for_task</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">driver_name</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Builds a composable driver for a given task.</span>
+
+<span class="sd">    Starts with a `BareDriver` object, and attaches implementations of the</span>
+<span class="sd">    various driver interfaces to it. For classic drivers these all come from</span>
+<span class="sd">    the monolithic driver singleton, for hardware types - from separate</span>
+<span class="sd">    driver factories and are configurable via the database.</span>
+
+<span class="sd">    :param task: The task containing the node to build a driver for.</span>
+<span class="sd">    :param driver_name: The name of the classic driver or hardware type to use</span>
+<span class="sd">                        as a base, if different than task.node.driver.</span>
+<span class="sd">    :returns: A driver object for the task.</span>
+<span class="sd">    :raises: DriverNotFound if node.driver could not be found in either</span>
+<span class="sd">             &quot;ironic.drivers&quot; or &quot;ironic.hardware.types&quot; namespaces.</span>
+<span class="sd">    :raises: InterfaceNotFoundInEntrypoint if some node interfaces are set</span>
+<span class="sd">             to invalid or unsupported values.</span>
+<span class="sd">    :raises: IncompatibleInterface if driver is a hardware type and</span>
+<span class="sd">             the requested implementation is not compatible with it.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">node</span> <span class="o">=</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span>
+    <span class="n">driver_name</span> <span class="o">=</span> <span class="n">driver_name</span> <span class="ow">or</span> <span class="n">node</span><span class="o">.</span><span class="n">driver</span>
+
+    <span class="n">driver_or_hw_type</span> <span class="o">=</span> <span class="n">get_driver_or_hardware_type</span><span class="p">(</span><span class="n">driver_name</span><span class="p">)</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">check_and_update_node_interfaces</span><span class="p">(</span>
+            <span class="n">node</span><span class="p">,</span> <span class="n">driver_or_hw_type</span><span class="o">=</span><span class="n">driver_or_hw_type</span><span class="p">)</span>
+    <span class="k">except</span> <span class="n">exception</span><span class="o">.</span><span class="n">MustBeNone</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+        <span class="c1"># NOTE(rloo). This was raised because nodes with classic drivers</span>
+        <span class="c1">#             cannot have any interfaces (except for network and</span>
+        <span class="c1">#             storage) set. However, there was a small window</span>
+        <span class="c1">#             where this was possible so instead of breaking those</span>
+        <span class="c1">#             users totally, we&#39;ll spam them with warnings instead.</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s1">&#39;</span><span class="si">%s</span><span class="s1"> They will be ignored. To avoid this warning, &#39;</span>
+                        <span class="s1">&#39;please set them to None.&#39;</span><span class="p">),</span> <span class="n">e</span><span class="p">)</span>
+
+    <span class="n">bare_driver</span> <span class="o">=</span> <span class="n">driver_base</span><span class="o">.</span><span class="n">BareDriver</span><span class="p">()</span>
+    <span class="n">_attach_interfaces_to_driver</span><span class="p">(</span><span class="n">bare_driver</span><span class="p">,</span> <span class="n">node</span><span class="p">,</span> <span class="n">driver_or_hw_type</span><span class="p">)</span>
+
+    <span class="k">return</span> <span class="n">bare_driver</span>
+
+
+<span class="k">def</span> <span class="nf">_attach_interfaces_to_driver</span><span class="p">(</span><span class="n">bare_driver</span><span class="p">,</span> <span class="n">node</span><span class="p">,</span> <span class="n">driver_or_hw_type</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Attach interface implementations to a bare driver object.</span>
+
+<span class="sd">    For classic drivers, copies implementations from the singleton driver</span>
+<span class="sd">    object, then attaches the dynamic interfaces (network and storage</span>
+<span class="sd">    interfaces for classic drivers, all interfaces for dynamic drivers</span>
+<span class="sd">    made of hardware types).</span>
+
+<span class="sd">    For hardware types, load all interface implementations dynamically.</span>
+
+<span class="sd">    :param bare_driver: BareDriver instance to attach interfaces to</span>
+<span class="sd">    :param node: Node object</span>
+<span class="sd">    :param driver_or_hw_type: classic driver or hardware type instance</span>
+<span class="sd">    :raises: InterfaceNotFoundInEntrypoint if the entry point was not found.</span>
+<span class="sd">    :raises: IncompatibleInterface if driver is a hardware type and</span>
+<span class="sd">             the requested implementation is not compatible with it.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">driver_or_hw_type</span><span class="p">,</span> <span class="n">hardware_type</span><span class="o">.</span><span class="n">AbstractHardwareType</span><span class="p">):</span>
+        <span class="c1"># For hardware types all interfaces are dynamic</span>
+        <span class="n">dynamic_interfaces</span> <span class="o">=</span> <span class="n">_INTERFACE_LOADERS</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="c1"># Copy implementations from the classic driver singleton</span>
+        <span class="k">for</span> <span class="n">iface</span> <span class="ow">in</span> <span class="n">driver_or_hw_type</span><span class="o">.</span><span class="n">all_interfaces</span><span class="p">:</span>
+            <span class="n">impl</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">driver_or_hw_type</span><span class="p">,</span> <span class="n">iface</span><span class="p">,</span> <span class="bp">None</span><span class="p">)</span>
+            <span class="nb">setattr</span><span class="p">(</span><span class="n">bare_driver</span><span class="p">,</span> <span class="n">iface</span><span class="p">,</span> <span class="n">impl</span><span class="p">)</span>
+
+        <span class="c1"># NOTE(TheJulia): This list of interfaces to be applied</span>
+        <span class="c1"># to classic drivers, thus requiring separate treatment.</span>
+        <span class="n">dynamic_interfaces</span> <span class="o">=</span> <span class="p">[</span><span class="s1">&#39;network&#39;</span><span class="p">,</span> <span class="s1">&#39;storage&#39;</span><span class="p">]</span>
+
+    <span class="k">for</span> <span class="n">iface</span> <span class="ow">in</span> <span class="n">dynamic_interfaces</span><span class="p">:</span>
+        <span class="n">impl_name</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="s1">&#39;</span><span class="si">%s</span><span class="s1">_interface&#39;</span> <span class="o">%</span> <span class="n">iface</span><span class="p">)</span>
+        <span class="n">impl</span> <span class="o">=</span> <span class="n">get_interface</span><span class="p">(</span><span class="n">driver_or_hw_type</span><span class="p">,</span> <span class="n">iface</span><span class="p">,</span> <span class="n">impl_name</span><span class="p">)</span>
+        <span class="nb">setattr</span><span class="p">(</span><span class="n">bare_driver</span><span class="p">,</span> <span class="n">iface</span><span class="p">,</span> <span class="n">impl</span><span class="p">)</span>
+
+
+<span class="k">def</span> <span class="nf">get_interface</span><span class="p">(</span><span class="n">driver_or_hw_type</span><span class="p">,</span> <span class="n">interface_type</span><span class="p">,</span> <span class="n">interface_name</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Get interface implementation instance.</span>
+
+<span class="sd">    For hardware types also validates compatibility.</span>
+
+<span class="sd">    :param driver_or_hw_type: a hardware type or classic driver instance.</span>
+<span class="sd">    :param interface_type: name of the interface type (e.g. &#39;boot&#39;).</span>
+<span class="sd">    :param interface_name: name of the interface implementation from an</span>
+<span class="sd">                           appropriate entry point</span>
+<span class="sd">                           (ironic.hardware.interfaces.&lt;interface type&gt;).</span>
+<span class="sd">    :returns: instance of the requested interface implementation.</span>
+<span class="sd">    :raises: InterfaceNotFoundInEntrypoint if the entry point was not found.</span>
+<span class="sd">    :raises: IncompatibleInterface if driver_or_hw_type is a hardware type and</span>
+<span class="sd">             the requested implementation is not compatible with it.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">factory</span> <span class="o">=</span> <span class="n">_INTERFACE_LOADERS</span><span class="p">[</span><span class="n">interface_type</span><span class="p">]()</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">impl_instance</span> <span class="o">=</span> <span class="n">factory</span><span class="o">.</span><span class="n">get_driver</span><span class="p">(</span><span class="n">interface_name</span><span class="p">)</span>
+    <span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">InterfaceNotFoundInEntrypoint</span><span class="p">(</span>
+            <span class="n">iface</span><span class="o">=</span><span class="n">interface_name</span><span class="p">,</span>
+            <span class="n">entrypoint</span><span class="o">=</span><span class="n">factory</span><span class="o">.</span><span class="n">_entrypoint_name</span><span class="p">,</span>
+            <span class="n">valid</span><span class="o">=</span><span class="n">factory</span><span class="o">.</span><span class="n">names</span><span class="p">)</span>
+
+    <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">driver_or_hw_type</span><span class="p">,</span> <span class="n">hardware_type</span><span class="o">.</span><span class="n">AbstractHardwareType</span><span class="p">):</span>
+        <span class="c1"># NOTE(dtantsur): classic drivers do not have notion of compatibility</span>
+        <span class="k">return</span> <span class="n">impl_instance</span>
+
+    <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">driver_or_hw_type</span><span class="p">,</span> <span class="n">fake_hardware</span><span class="o">.</span><span class="n">FakeHardware</span><span class="p">):</span>
+        <span class="c1"># NOTE(dtantsur): special-case fake hardware type to allow testing with</span>
+        <span class="c1"># any combinations of interface implementations.</span>
+        <span class="k">return</span> <span class="n">impl_instance</span>
+
+    <span class="n">supported_impls</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">driver_or_hw_type</span><span class="p">,</span>
+                              <span class="s1">&#39;supported_</span><span class="si">%s</span><span class="s1">_interfaces&#39;</span> <span class="o">%</span> <span class="n">interface_type</span><span class="p">)</span>
+    <span class="k">if</span> <span class="nb">type</span><span class="p">(</span><span class="n">impl_instance</span><span class="p">)</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">supported_impls</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">IncompatibleInterface</span><span class="p">(</span>
+            <span class="n">interface_type</span><span class="o">=</span><span class="n">interface_type</span><span class="p">,</span> <span class="n">interface_impl</span><span class="o">=</span><span class="n">impl_instance</span><span class="p">,</span>
+            <span class="n">hardware_type</span><span class="o">=</span><span class="n">driver_or_hw_type</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="vm">__name__</span><span class="p">)</span>
+
+    <span class="k">return</span> <span class="n">impl_instance</span>
+
+
+<span class="k">def</span> <span class="nf">default_interface</span><span class="p">(</span><span class="n">driver_or_hw_type</span><span class="p">,</span> <span class="n">interface_type</span><span class="p">,</span>
+                      <span class="n">driver_name</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">node</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Calculate and return the default interface implementation.</span>
+
+<span class="sd">    Finds the first implementation that is supported by the hardware type</span>
+<span class="sd">    and is enabled in the configuration.</span>
+
+<span class="sd">    :param driver_or_hw_type: classic driver or hardware type instance object.</span>
+<span class="sd">    :param interface_type: type of the interface (e.g. &#39;boot&#39;).</span>
+<span class="sd">    :param driver_name: entrypoint name of the driver_or_hw_type object. Is</span>
+<span class="sd">                        used for exception message.</span>
+<span class="sd">    :param node: the identifier of a node. If specified, is used for exception</span>
+<span class="sd">                 message.</span>
+<span class="sd">    :returns: an entrypoint name of the calculated default implementation.</span>
+<span class="sd">    :raises: InterfaceNotFoundInEntrypoint if the entry point was not found.</span>
+<span class="sd">    :raises: NoValidDefaultForInterface if no default interface can be found.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">factory</span> <span class="o">=</span> <span class="n">_INTERFACE_LOADERS</span><span class="p">[</span><span class="n">interface_type</span><span class="p">]</span>
+    <span class="n">is_hardware_type</span> <span class="o">=</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">driver_or_hw_type</span><span class="p">,</span>
+                                  <span class="n">hardware_type</span><span class="o">.</span><span class="n">AbstractHardwareType</span><span class="p">)</span>
+    <span class="c1"># Explicit interface defaults</span>
+    <span class="n">additional_defaults</span> <span class="o">=</span> <span class="p">{</span>
+        <span class="s1">&#39;network&#39;</span><span class="p">:</span> <span class="s1">&#39;flat&#39;</span> <span class="k">if</span> <span class="n">CONF</span><span class="o">.</span><span class="n">dhcp</span><span class="o">.</span><span class="n">dhcp_provider</span> <span class="o">==</span> <span class="s1">&#39;neutron&#39;</span> <span class="k">else</span> <span class="s1">&#39;noop&#39;</span><span class="p">,</span>
+        <span class="s1">&#39;storage&#39;</span><span class="p">:</span> <span class="s1">&#39;noop&#39;</span>
+    <span class="p">}</span>
+
+    <span class="c1"># The fallback default from the configuration</span>
+    <span class="n">impl_name</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">CONF</span><span class="p">,</span> <span class="s1">&#39;default_</span><span class="si">%s</span><span class="s1">_interface&#39;</span> <span class="o">%</span> <span class="n">interface_type</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">impl_name</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+        <span class="n">impl_name</span> <span class="o">=</span> <span class="n">additional_defaults</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">interface_type</span><span class="p">)</span>
+
+    <span class="k">if</span> <span class="n">impl_name</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+        <span class="c1"># Check that the default is correct for this type</span>
+        <span class="n">get_interface</span><span class="p">(</span><span class="n">driver_or_hw_type</span><span class="p">,</span> <span class="n">interface_type</span><span class="p">,</span> <span class="n">impl_name</span><span class="p">)</span>
+    <span class="k">elif</span> <span class="n">is_hardware_type</span><span class="p">:</span>
+        <span class="n">supported</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">driver_or_hw_type</span><span class="p">,</span>
+                            <span class="s1">&#39;supported_</span><span class="si">%s</span><span class="s1">_interfaces&#39;</span> <span class="o">%</span> <span class="n">interface_type</span><span class="p">)</span>
+        <span class="c1"># Mapping of classes to entry points</span>
+        <span class="n">enabled</span> <span class="o">=</span> <span class="p">{</span><span class="n">obj</span><span class="o">.</span><span class="vm">__class__</span><span class="p">:</span> <span class="n">name</span> <span class="k">for</span> <span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">obj</span><span class="p">)</span> <span class="ow">in</span> <span class="n">factory</span><span class="p">()</span><span class="o">.</span><span class="n">items</span><span class="p">()}</span>
+
+        <span class="c1"># Order of the supported list matters</span>
+        <span class="k">for</span> <span class="n">impl_class</span> <span class="ow">in</span> <span class="n">supported</span><span class="p">:</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">impl_name</span> <span class="o">=</span> <span class="n">enabled</span><span class="p">[</span><span class="n">impl_class</span><span class="p">]</span>
+                <span class="k">break</span>
+            <span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+                <span class="k">continue</span>
+
+    <span class="k">if</span> <span class="n">impl_name</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+        <span class="c1"># NOTE(rloo). No i18n on driver_type_str because translating substrings</span>
+        <span class="c1">#             on their own may cause the final string to look odd.</span>
+        <span class="k">if</span> <span class="n">is_hardware_type</span><span class="p">:</span>
+            <span class="n">driver_type_str</span> <span class="o">=</span> <span class="s1">&#39;hardware type&#39;</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">driver_type_str</span> <span class="o">=</span> <span class="s1">&#39;driver&#39;</span>
+        <span class="n">driver_name</span> <span class="o">=</span> <span class="n">driver_name</span> <span class="ow">or</span> <span class="n">driver_or_hw_type</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="vm">__name__</span>
+        <span class="n">node_info</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span>
+        <span class="k">if</span> <span class="n">node</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">node_info</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39; node </span><span class="si">%s</span><span class="s1"> with&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="n">node</span>
+        <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">NoValidDefaultForInterface</span><span class="p">(</span>
+            <span class="n">interface_type</span><span class="o">=</span><span class="n">interface_type</span><span class="p">,</span> <span class="n">driver_type</span><span class="o">=</span><span class="n">driver_type_str</span><span class="p">,</span>
+            <span class="n">driver</span><span class="o">=</span><span class="n">driver_name</span><span class="p">,</span> <span class="n">node_info</span><span class="o">=</span><span class="n">node_info</span><span class="p">)</span>
+
+    <span class="k">return</span> <span class="n">impl_name</span>
+
+
+<span class="k">def</span> <span class="nf">check_and_update_node_interfaces</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">driver_or_hw_type</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Ensure that node interfaces (e.g. for creation or updating) are valid.</span>
+
+<span class="sd">    Updates (but doesn&#39;t save to the database) hardware interfaces with</span>
+<span class="sd">    calculated defaults, if they are not provided.</span>
+
+<span class="sd">    This function is run on node updating and creation, as well as each time</span>
+<span class="sd">    a driver instance is built for a node.</span>
+
+<span class="sd">    :param node: node object to check and potentially update</span>
+<span class="sd">    :param driver_or_hw_type: classic driver or hardware type instance object;</span>
+<span class="sd">                              will be detected from node.driver if missing</span>
+<span class="sd">    :returns: True if any changes were made to the node, otherwise False</span>
+<span class="sd">    :raises: InterfaceNotFoundInEntrypoint on validation failure</span>
+<span class="sd">    :raises: NoValidDefaultForInterface if the default value cannot be</span>
+<span class="sd">             calculated and is not provided in the configuration</span>
+<span class="sd">    :raises: DriverNotFound if the node&#39;s driver or hardware type is not found</span>
+<span class="sd">    :raises: MustBeNone if one or more of the node&#39;s interface</span>
+<span class="sd">             fields were specified when they should not be.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">if</span> <span class="n">driver_or_hw_type</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+        <span class="n">driver_or_hw_type</span> <span class="o">=</span> <span class="n">get_driver_or_hardware_type</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">driver</span><span class="p">)</span>
+    <span class="n">is_hardware_type</span> <span class="o">=</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">driver_or_hw_type</span><span class="p">,</span>
+                                  <span class="n">hardware_type</span><span class="o">.</span><span class="n">AbstractHardwareType</span><span class="p">)</span>
+
+    <span class="k">if</span> <span class="n">is_hardware_type</span><span class="p">:</span>
+        <span class="n">factories</span> <span class="o">=</span> <span class="n">_INTERFACE_LOADERS</span><span class="o">.</span><span class="n">keys</span><span class="p">()</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="c1"># Only network and storage interfaces are dynamic for classic drivers</span>
+        <span class="n">factories</span> <span class="o">=</span> <span class="p">[</span><span class="s1">&#39;network&#39;</span><span class="p">,</span> <span class="s1">&#39;storage&#39;</span><span class="p">]</span>
+
+    <span class="c1"># These are interfaces that cannot be specified via the node. E.g.,</span>
+    <span class="c1"># for classic drivers, none are allowed except for network &amp; storage.</span>
+    <span class="n">not_allowed_ifaces</span> <span class="o">=</span> <span class="n">driver_base</span><span class="o">.</span><span class="n">ALL_INTERFACES</span> <span class="o">-</span> <span class="nb">set</span><span class="p">(</span><span class="n">factories</span><span class="p">)</span>
+
+    <span class="n">bad_interface_fields</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="k">for</span> <span class="n">iface</span> <span class="ow">in</span> <span class="n">not_allowed_ifaces</span><span class="p">:</span>
+        <span class="n">field_name</span> <span class="o">=</span> <span class="s1">&#39;</span><span class="si">%s</span><span class="s1">_interface&#39;</span> <span class="o">%</span> <span class="n">iface</span>
+        <span class="c1"># NOTE(dtantsur): objects raise NotImplementedError on accessing fields</span>
+        <span class="c1"># that are known, but missing from an object. Thus, we cannot just use</span>
+        <span class="c1"># getattr(node, field_name, None) here.</span>
+        <span class="k">if</span> <span class="n">field_name</span> <span class="ow">in</span> <span class="n">node</span><span class="p">:</span>
+            <span class="n">impl_name</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">field_name</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">impl_name</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="n">bad_interface_fields</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">field_name</span><span class="p">)</span>
+
+    <span class="k">if</span> <span class="n">bad_interface_fields</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">MustBeNone</span><span class="p">(</span><span class="n">node</span><span class="o">=</span><span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="n">driver</span><span class="o">=</span><span class="n">node</span><span class="o">.</span><span class="n">driver</span><span class="p">,</span>
+                                   <span class="n">node_fields</span><span class="o">=</span><span class="s1">&#39;,&#39;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">bad_interface_fields</span><span class="p">))</span>
+
+    <span class="c1"># Result - whether the node object was modified</span>
+    <span class="n">result</span> <span class="o">=</span> <span class="bp">False</span>
+
+    <span class="c1"># Walk through all dynamic interfaces and check/update them</span>
+    <span class="k">for</span> <span class="n">iface</span> <span class="ow">in</span> <span class="n">factories</span><span class="p">:</span>
+        <span class="n">field_name</span> <span class="o">=</span> <span class="s1">&#39;</span><span class="si">%s</span><span class="s1">_interface&#39;</span> <span class="o">%</span> <span class="n">iface</span>
+        <span class="c1"># NOTE(dtantsur): objects raise NotImplementedError on accessing fields</span>
+        <span class="c1"># that are known, but missing from an object. Thus, we cannot just use</span>
+        <span class="c1"># getattr(node, field_name, None) here.</span>
+        <span class="k">if</span> <span class="n">field_name</span> <span class="ow">in</span> <span class="n">node</span><span class="p">:</span>
+            <span class="n">impl_name</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">field_name</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">impl_name</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="c1"># Check that the provided value is correct for this type</span>
+                <span class="n">get_interface</span><span class="p">(</span><span class="n">driver_or_hw_type</span><span class="p">,</span> <span class="n">iface</span><span class="p">,</span> <span class="n">impl_name</span><span class="p">)</span>
+                <span class="c1"># Not changing the result, proceeding with the next interface</span>
+                <span class="k">continue</span>
+
+        <span class="n">impl_name</span> <span class="o">=</span> <span class="n">default_interface</span><span class="p">(</span><span class="n">driver_or_hw_type</span><span class="p">,</span> <span class="n">iface</span><span class="p">,</span>
+                                      <span class="n">driver_name</span><span class="o">=</span><span class="n">node</span><span class="o">.</span><span class="n">driver</span><span class="p">,</span> <span class="n">node</span><span class="o">=</span><span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+
+        <span class="c1"># Set the calculated default and set result to True</span>
+        <span class="nb">setattr</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">field_name</span><span class="p">,</span> <span class="n">impl_name</span><span class="p">)</span>
+        <span class="n">result</span> <span class="o">=</span> <span class="bp">True</span>
+
+    <span class="k">return</span> <span class="n">result</span>
+
+
+<span class="k">def</span> <span class="nf">get_driver_or_hardware_type</span><span class="p">(</span><span class="n">name</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Get driver or hardware type by its entry point name.</span>
+
+<span class="sd">    First, checks the hardware types namespace, then checks the classic</span>
+<span class="sd">    drivers namespace. The first object found is returned.</span>
+
+<span class="sd">    :param name: entry point name.</span>
+<span class="sd">    :returns: An instance of a hardware type or a classic driver.</span>
+<span class="sd">    :raises: DriverNotFound if neither hardware type nor classic driver found.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">get_hardware_type</span><span class="p">(</span><span class="n">name</span><span class="p">)</span>
+    <span class="k">except</span> <span class="n">exception</span><span class="o">.</span><span class="n">DriverNotFound</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">get_driver</span><span class="p">(</span><span class="n">name</span><span class="p">)</span>
+
+
+<span class="k">def</span> <span class="nf">get_hardware_type</span><span class="p">(</span><span class="n">hardware_type</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Get a hardware type instance by name.</span>
+
+<span class="sd">    :param hardware_type: the name of the hardware type to find</span>
+<span class="sd">    :returns: An instance of ironic.drivers.hardware_type.AbstractHardwareType</span>
+<span class="sd">    :raises: DriverNotFound if requested hardware type cannot be found</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">HardwareTypesFactory</span><span class="p">()</span><span class="o">.</span><span class="n">get_driver</span><span class="p">(</span><span class="n">hardware_type</span><span class="p">)</span>
+    <span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">DriverNotFound</span><span class="p">(</span><span class="n">driver_name</span><span class="o">=</span><span class="n">hardware_type</span><span class="p">)</span>
+
+
+<span class="c1"># TODO(dtantsur): rename to get_classic_driver</span>
+<span class="k">def</span> <span class="nf">get_driver</span><span class="p">(</span><span class="n">driver_name</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Simple method to get a ref to an instance of a driver.</span>
+
+<span class="sd">    Driver loading is handled by the DriverFactory class. This method</span>
+<span class="sd">    conveniently wraps that class and returns the actual driver object.</span>
+
+<span class="sd">    :param driver_name: the name of the driver class to load</span>
+<span class="sd">    :returns: An instance of a class which implements</span>
+<span class="sd">              ironic.drivers.base.BaseDriver</span>
+<span class="sd">    :raises: DriverNotFound if the requested driver_name could not be</span>
+<span class="sd">             found in the &quot;ironic.drivers&quot; namespace.</span>
+
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">factory</span> <span class="o">=</span> <span class="n">DriverFactory</span><span class="p">()</span>
+        <span class="k">return</span> <span class="n">factory</span><span class="o">.</span><span class="n">get_driver</span><span class="p">(</span><span class="n">driver_name</span><span class="p">)</span>
+    <span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">DriverNotFound</span><span class="p">(</span><span class="n">driver_name</span><span class="o">=</span><span class="n">driver_name</span><span class="p">)</span>
+
+
+<span class="k">def</span> <span class="nf">_get_all_drivers</span><span class="p">(</span><span class="n">factory</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Get all drivers for `factory` as a dict name -&gt; driver object.&quot;&quot;&quot;</span>
+    <span class="c1"># NOTE(jroll) I don&#39;t think this needs to be ordered, but</span>
+    <span class="c1"># ConductorManager.init_host seems to depend on this behavior (or at</span>
+    <span class="c1"># least the unit tests for it do), and it can&#39;t hurt much to keep it</span>
+    <span class="c1"># that way.</span>
+    <span class="k">return</span> <span class="n">collections</span><span class="o">.</span><span class="n">OrderedDict</span><span class="p">((</span><span class="n">name</span><span class="p">,</span> <span class="n">factory</span><span class="p">[</span><span class="n">name</span><span class="p">]</span><span class="o">.</span><span class="n">obj</span><span class="p">)</span>
+                                   <span class="k">for</span> <span class="n">name</span> <span class="ow">in</span> <span class="n">factory</span><span class="o">.</span><span class="n">names</span><span class="p">)</span>
+
+
+<span class="k">def</span> <span class="nf">drivers</span><span class="p">():</span>
+    <span class="sd">&quot;&quot;&quot;Get all drivers.</span>
+
+<span class="sd">    :returns: Dictionary mapping driver name to driver object.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">return</span> <span class="n">_get_all_drivers</span><span class="p">(</span><span class="n">DriverFactory</span><span class="p">())</span>
+
+
+<span class="k">def</span> <span class="nf">hardware_types</span><span class="p">():</span>
+    <span class="sd">&quot;&quot;&quot;Get all hardware types.</span>
+
+<span class="sd">    :returns: Dictionary mapping hardware type name to hardware type object.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">return</span> <span class="n">_get_all_drivers</span><span class="p">(</span><span class="n">HardwareTypesFactory</span><span class="p">())</span>
+
+
+<span class="k">def</span> <span class="nf">interfaces</span><span class="p">(</span><span class="n">interface_type</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Get all interfaces for a given interface type.</span>
+
+<span class="sd">    :param interface_type: String, type of interface to fetch for.</span>
+<span class="sd">    :returns: Dictionary mapping interface name to interface object.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">return</span> <span class="n">_get_all_drivers</span><span class="p">(</span><span class="n">_INTERFACE_LOADERS</span><span class="p">[</span><span class="n">interface_type</span><span class="p">]())</span>
+
+
+<span class="k">def</span> <span class="nf">enabled_supported_interfaces</span><span class="p">(</span><span class="n">hardware_type</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Get usable interfaces for a given hardware type.</span>
+
+<span class="sd">    For a given hardware type, find the intersection of enabled and supported</span>
+<span class="sd">    interfaces for each interface type. This is the set of interfaces that are</span>
+<span class="sd">    usable for this hardware type.</span>
+
+<span class="sd">    :param hardware_type: The hardware type object to search.</span>
+<span class="sd">    :returns: a dict mapping interface types to a list of enabled and supported</span>
+<span class="sd">              interface names.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">mapping</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">()</span>
+    <span class="k">for</span> <span class="n">interface_type</span> <span class="ow">in</span> <span class="n">driver_base</span><span class="o">.</span><span class="n">ALL_INTERFACES</span><span class="p">:</span>
+        <span class="n">supported</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+        <span class="n">supported_ifaces</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">hardware_type</span><span class="p">,</span>
+                                   <span class="s1">&#39;supported_</span><span class="si">%s</span><span class="s1">_interfaces&#39;</span> <span class="o">%</span> <span class="n">interface_type</span><span class="p">)</span>
+        <span class="k">for</span> <span class="n">name</span><span class="p">,</span> <span class="n">iface</span> <span class="ow">in</span> <span class="n">interfaces</span><span class="p">(</span><span class="n">interface_type</span><span class="p">)</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+            <span class="k">if</span> <span class="n">iface</span><span class="o">.</span><span class="vm">__class__</span> <span class="ow">in</span> <span class="n">supported_ifaces</span><span class="p">:</span>
+                <span class="n">supported</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">name</span><span class="p">)</span>
+        <span class="n">mapping</span><span class="p">[</span><span class="n">interface_type</span><span class="p">]</span> <span class="o">=</span> <span class="n">supported</span>
+    <span class="k">return</span> <span class="n">mapping</span>
+
+
+<div class="viewcode-block" id="BaseDriverFactory"><a class="viewcode-back" href="../../../api/ironic.common.driver_factory.html#ironic.common.driver_factory.BaseDriverFactory">[docs]</a><span class="k">class</span> <span class="nc">BaseDriverFactory</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Discover, load and manage the drivers available.</span>
+
+<span class="sd">    This is subclassed to load both main drivers and extra interfaces.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="c1"># NOTE(deva): loading the _extension_manager as a class member will break</span>
+    <span class="c1">#             stevedore when it loads a driver, because the driver will</span>
+    <span class="c1">#             import this file (and thus instantiate another factory).</span>
+    <span class="c1">#             Instead, we instantiate a NameDispatchExtensionManager only</span>
+    <span class="c1">#             once, the first time DriverFactory.__init__ is called.</span>
+    <span class="n">_extension_manager</span> <span class="o">=</span> <span class="bp">None</span>
+
+    <span class="c1"># Entrypoint name containing the list of all available drivers/interfaces</span>
+    <span class="n">_entrypoint_name</span> <span class="o">=</span> <span class="bp">None</span>
+    <span class="c1"># Name of the [DEFAULT] section config option containing a list of enabled</span>
+    <span class="c1"># drivers/interfaces</span>
+    <span class="n">_enabled_driver_list_config_option</span> <span class="o">=</span> <span class="s1">&#39;&#39;</span>
+    <span class="c1"># This field will contain the list of the enabled drivers/interfaces names</span>
+    <span class="c1"># without duplicates</span>
+    <span class="n">_enabled_driver_list</span> <span class="o">=</span> <span class="bp">None</span>
+    <span class="c1"># Template for logging loaded drivers</span>
+    <span class="n">_logging_template</span> <span class="o">=</span> <span class="n">_LI</span><span class="p">(</span><span class="s2">&quot;Loaded the following drivers: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="n">_extension_manager</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="n">_init_extension_manager</span><span class="p">()</span>
+
+    <span class="k">def</span> <span class="fm">__getitem__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">name</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_extension_manager</span><span class="p">[</span><span class="n">name</span><span class="p">]</span>
+
+<div class="viewcode-block" id="BaseDriverFactory.get_driver"><a class="viewcode-back" href="../../../api/ironic.common.driver_factory.html#ironic.common.driver_factory.BaseDriverFactory.get_driver">[docs]</a>    <span class="k">def</span> <span class="nf">get_driver</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">name</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="p">[</span><span class="n">name</span><span class="p">]</span><span class="o">.</span><span class="n">obj</span></div>
+
+    <span class="c1"># NOTE(deva): Use lockutils to avoid a potential race in eventlet</span>
+    <span class="c1">#             that might try to create two driver factories.</span>
+    <span class="nd">@classmethod</span>
+    <span class="nd">@lockutils.synchronized</span><span class="p">(</span><span class="n">EM_SEMAPHORE</span><span class="p">)</span>
+    <span class="k">def</span> <span class="nf">_init_extension_manager</span><span class="p">(</span><span class="bp">cls</span><span class="p">):</span>
+        <span class="c1"># NOTE(deva): In case multiple greenthreads queue up on this lock</span>
+        <span class="c1">#             before _extension_manager is initialized, prevent</span>
+        <span class="c1">#             creation of multiple NameDispatchExtensionManagers.</span>
+        <span class="k">if</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_extension_manager</span><span class="p">:</span>
+            <span class="k">return</span>
+        <span class="n">enabled_drivers</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">CONF</span><span class="p">,</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_enabled_driver_list_config_option</span><span class="p">,</span>
+                                  <span class="p">[])</span>
+
+        <span class="c1"># Check for duplicated driver entries and warn the operator</span>
+        <span class="c1"># about them</span>
+        <span class="n">counter</span> <span class="o">=</span> <span class="n">collections</span><span class="o">.</span><span class="n">Counter</span><span class="p">(</span><span class="n">enabled_drivers</span><span class="p">)</span><span class="o">.</span><span class="n">items</span><span class="p">()</span>
+        <span class="n">duplicated_drivers</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="bp">cls</span><span class="o">.</span><span class="n">_enabled_driver_list</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">for</span> <span class="n">item</span><span class="p">,</span> <span class="n">cnt</span> <span class="ow">in</span> <span class="n">counter</span><span class="p">:</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">item</span><span class="p">:</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
+                    <span class="n">_LW</span><span class="p">(</span><span class="s1">&#39;An empty driver was specified in the &quot;</span><span class="si">%s</span><span class="s1">&quot; &#39;</span>
+                        <span class="s1">&#39;configuration option and will be ignored. Please &#39;</span>
+                        <span class="s1">&#39;fix your ironic.conf file to avoid this warning &#39;</span>
+                        <span class="s1">&#39;message.&#39;</span><span class="p">),</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_enabled_driver_list_config_option</span><span class="p">)</span>
+                <span class="k">continue</span>
+            <span class="k">if</span> <span class="n">cnt</span> <span class="o">&gt;</span> <span class="mi">1</span><span class="p">:</span>
+                <span class="n">duplicated_drivers</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">item</span><span class="p">)</span>
+            <span class="bp">cls</span><span class="o">.</span><span class="n">_enabled_driver_list</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">item</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">duplicated_drivers</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s1">&#39;The driver(s) &quot;</span><span class="si">%s</span><span class="s1">&quot; is/are duplicated in the &#39;</span>
+                            <span class="s1">&#39;list of enabled_drivers. Please check your &#39;</span>
+                            <span class="s1">&#39;configuration file.&#39;</span><span class="p">),</span>
+                        <span class="s1">&#39;, &#39;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">duplicated_drivers</span><span class="p">))</span>
+
+        <span class="c1"># NOTE(deva): Drivers raise &quot;DriverLoadError&quot; if they are unable to be</span>
+        <span class="c1">#             loaded, eg. due to missing external dependencies.</span>
+        <span class="c1">#             We capture that exception, and, only if it is for an</span>
+        <span class="c1">#             enabled driver, raise it from here. If enabled driver</span>
+        <span class="c1">#             raises other exception type, it is wrapped in</span>
+        <span class="c1">#             &quot;DriverLoadError&quot;, providing the name of the driver that</span>
+        <span class="c1">#             caused it, and raised. If the exception is for a</span>
+        <span class="c1">#             non-enabled driver, we suppress it.</span>
+        <span class="k">def</span> <span class="nf">_catch_driver_not_found</span><span class="p">(</span><span class="n">mgr</span><span class="p">,</span> <span class="n">ep</span><span class="p">,</span> <span class="n">exc</span><span class="p">):</span>
+            <span class="c1"># NOTE(deva): stevedore loads plugins *before* evaluating</span>
+            <span class="c1">#             _check_func, so we need to check here, too.</span>
+            <span class="k">if</span> <span class="n">ep</span><span class="o">.</span><span class="n">name</span> <span class="ow">in</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_enabled_driver_list</span><span class="p">:</span>
+                <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">exc</span><span class="p">,</span> <span class="n">exception</span><span class="o">.</span><span class="n">DriverLoadError</span><span class="p">):</span>
+                    <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">DriverLoadError</span><span class="p">(</span><span class="n">driver</span><span class="o">=</span><span class="n">ep</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="n">reason</span><span class="o">=</span><span class="n">exc</span><span class="p">)</span>
+                <span class="k">raise</span> <span class="n">exc</span>
+
+        <span class="k">def</span> <span class="nf">_check_func</span><span class="p">(</span><span class="n">ext</span><span class="p">):</span>
+            <span class="k">return</span> <span class="n">ext</span><span class="o">.</span><span class="n">name</span> <span class="ow">in</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_enabled_driver_list</span>
+
+        <span class="bp">cls</span><span class="o">.</span><span class="n">_extension_manager</span> <span class="o">=</span> <span class="p">(</span>
+            <span class="n">dispatch</span><span class="o">.</span><span class="n">NameDispatchExtensionManager</span><span class="p">(</span>
+                <span class="bp">cls</span><span class="o">.</span><span class="n">_entrypoint_name</span><span class="p">,</span>
+                <span class="n">_check_func</span><span class="p">,</span>
+                <span class="n">invoke_on_load</span><span class="o">=</span><span class="bp">True</span><span class="p">,</span>
+                <span class="n">on_load_failure_callback</span><span class="o">=</span><span class="n">_catch_driver_not_found</span><span class="p">,</span>
+                <span class="n">propagate_map_exceptions</span><span class="o">=</span><span class="bp">True</span><span class="p">))</span>
+
+        <span class="c1"># NOTE(deva): if we were unable to load any configured driver, perhaps</span>
+        <span class="c1">#             because it is not present on the system, raise an error.</span>
+        <span class="k">if</span> <span class="p">(</span><span class="nb">sorted</span><span class="p">(</span><span class="bp">cls</span><span class="o">.</span><span class="n">_enabled_driver_list</span><span class="p">)</span> <span class="o">!=</span>
+                <span class="nb">sorted</span><span class="p">(</span><span class="bp">cls</span><span class="o">.</span><span class="n">_extension_manager</span><span class="o">.</span><span class="n">names</span><span class="p">())):</span>
+            <span class="n">found</span> <span class="o">=</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_extension_manager</span><span class="o">.</span><span class="n">names</span><span class="p">()</span>
+            <span class="n">names</span> <span class="o">=</span> <span class="p">[</span><span class="n">n</span> <span class="k">for</span> <span class="n">n</span> <span class="ow">in</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_enabled_driver_list</span> <span class="k">if</span> <span class="n">n</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">found</span><span class="p">]</span>
+            <span class="c1"># just in case more than one could not be found ...</span>
+            <span class="n">names</span> <span class="o">=</span> <span class="s1">&#39;, &#39;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">names</span><span class="p">)</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">DriverNotFoundInEntrypoint</span><span class="p">(</span>
+                <span class="n">names</span><span class="o">=</span><span class="n">names</span><span class="p">,</span> <span class="n">entrypoint</span><span class="o">=</span><span class="bp">cls</span><span class="o">.</span><span class="n">_entrypoint_name</span><span class="p">)</span>
+
+        <span class="c1"># warn for any untested/unsupported/deprecated drivers or interfaces</span>
+        <span class="bp">cls</span><span class="o">.</span><span class="n">_extension_manager</span><span class="o">.</span><span class="n">map</span><span class="p">(</span><span class="bp">cls</span><span class="o">.</span><span class="n">_extension_manager</span><span class="o">.</span><span class="n">names</span><span class="p">(),</span>
+                                   <span class="n">_warn_if_unsupported</span><span class="p">)</span>
+
+        <span class="n">LOG</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="bp">cls</span><span class="o">.</span><span class="n">_logging_template</span><span class="p">,</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_extension_manager</span><span class="o">.</span><span class="n">names</span><span class="p">())</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">names</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;The list of driver names available.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_extension_manager</span><span class="o">.</span><span class="n">names</span><span class="p">()</span>
+
+<div class="viewcode-block" id="BaseDriverFactory.items"><a class="viewcode-back" href="../../../api/ironic.common.driver_factory.html#ironic.common.driver_factory.BaseDriverFactory.items">[docs]</a>    <span class="k">def</span> <span class="nf">items</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Iterator over pairs (name, instance).&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="p">((</span><span class="n">ext</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="n">ext</span><span class="o">.</span><span class="n">obj</span><span class="p">)</span> <span class="k">for</span> <span class="n">ext</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_extension_manager</span><span class="p">)</span></div></div>
+
+
+<span class="k">def</span> <span class="nf">_warn_if_unsupported</span><span class="p">(</span><span class="n">ext</span><span class="p">):</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">ext</span><span class="o">.</span><span class="n">obj</span><span class="o">.</span><span class="n">supported</span><span class="p">:</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s1">&#39;Driver &quot;</span><span class="si">%s</span><span class="s1">&quot; is UNSUPPORTED. It has been deprecated &#39;</span>
+                        <span class="s1">&#39;and may be removed in a future release.&#39;</span><span class="p">),</span> <span class="n">ext</span><span class="o">.</span><span class="n">name</span><span class="p">)</span>
+
+
+<div class="viewcode-block" id="DriverFactory"><a class="viewcode-back" href="../../../api/ironic.common.driver_factory.html#ironic.common.driver_factory.DriverFactory">[docs]</a><span class="k">class</span> <span class="nc">DriverFactory</span><span class="p">(</span><span class="n">BaseDriverFactory</span><span class="p">):</span>
+    <span class="n">_entrypoint_name</span> <span class="o">=</span> <span class="s1">&#39;ironic.drivers&#39;</span>
+    <span class="n">_enabled_driver_list_config_option</span> <span class="o">=</span> <span class="s1">&#39;enabled_drivers&#39;</span></div>
+
+
+<div class="viewcode-block" id="HardwareTypesFactory"><a class="viewcode-back" href="../../../api/ironic.common.driver_factory.html#ironic.common.driver_factory.HardwareTypesFactory">[docs]</a><span class="k">class</span> <span class="nc">HardwareTypesFactory</span><span class="p">(</span><span class="n">BaseDriverFactory</span><span class="p">):</span>
+    <span class="n">_entrypoint_name</span> <span class="o">=</span> <span class="s1">&#39;ironic.hardware.types&#39;</span>
+    <span class="n">_enabled_driver_list_config_option</span> <span class="o">=</span> <span class="s1">&#39;enabled_hardware_types&#39;</span>
+    <span class="n">_logging_template</span> <span class="o">=</span> <span class="n">_LI</span><span class="p">(</span><span class="s2">&quot;Loaded the following hardware types: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">)</span></div>
+
+
+<span class="n">_INTERFACE_LOADERS</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="n">name</span><span class="p">:</span> <span class="nb">type</span><span class="p">(</span><span class="s1">&#39;</span><span class="si">%s</span><span class="s1">InterfaceFactory&#39;</span> <span class="o">%</span> <span class="n">name</span><span class="o">.</span><span class="n">capitalize</span><span class="p">(),</span>
+               <span class="p">(</span><span class="n">BaseDriverFactory</span><span class="p">,),</span>
+               <span class="p">{</span><span class="s1">&#39;_entrypoint_name&#39;</span><span class="p">:</span> <span class="s1">&#39;ironic.hardware.interfaces.</span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="n">name</span><span class="p">,</span>
+                <span class="s1">&#39;_enabled_driver_list_config_option&#39;</span><span class="p">:</span>
+                <span class="s1">&#39;enabled_</span><span class="si">%s</span><span class="s1">_interfaces&#39;</span> <span class="o">%</span> <span class="n">name</span><span class="p">,</span>
+                <span class="s1">&#39;_logging_template&#39;</span><span class="p">:</span>
+                <span class="n">_LI</span><span class="p">(</span><span class="s2">&quot;Loaded the following </span><span class="si">%s</span><span class="s2"> interfaces: </span><span class="si">%%</span><span class="s2">s&quot;</span><span class="p">)</span> <span class="o">%</span> <span class="n">name</span><span class="p">})</span>
+    <span class="k">for</span> <span class="n">name</span> <span class="ow">in</span> <span class="n">driver_base</span><span class="o">.</span><span class="n">ALL_INTERFACES</span>
+<span class="p">}</span>
+
+
+<span class="c1"># TODO(dtantsur): This factory is still used explicitly in many places,</span>
+<span class="c1"># refactor them later to use _INTERFACE_LOADERS.</span>
+<span class="n">NetworkInterfaceFactory</span> <span class="o">=</span> <span class="n">_INTERFACE_LOADERS</span><span class="p">[</span><span class="s1">&#39;network&#39;</span><span class="p">]</span>
+<span class="n">StorageInterfaceFactory</span> <span class="o">=</span> <span class="n">_INTERFACE_LOADERS</span><span class="p">[</span><span class="s1">&#39;storage&#39;</span><span class="p">]</span>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/ironic
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../../index.html">Ironic 7.0.1.dev7 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../../index.html" accesskey="U">Module code</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright OpenStack Foundation.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/Ironic");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

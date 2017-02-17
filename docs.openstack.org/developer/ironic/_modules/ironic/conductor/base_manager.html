@@ -1,0 +1,637 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>ironic.conductor.base_manager &mdash; Ironic 7.0.1.dev7 documentation</title>
+    
+    <link rel="stylesheet" href="../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../_static/toggle.css" type="text/css" />
+    <link rel="stylesheet" href="../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../',
+        VERSION:     '7.0.1.dev7',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../_static/doctools.js"></script>
+    <script type="text/javascript" src="../../../_static/toggle.js"></script>
+    <link rel="top" title="Ironic 7.0.1.dev7 documentation" href="../../../index.html" />
+    <link rel="up" title="Module code" href="../../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for ironic.conductor.base_manager</h1><div class="highlight"><pre>
+<span></span><span class="c1">#    Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may</span>
+<span class="c1">#    not use this file except in compliance with the License. You may obtain</span>
+<span class="c1">#    a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#         http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1">#    Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1">#    distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="c1">#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="c1">#    License for the specific language governing permissions and limitations</span>
+<span class="c1">#    under the License.</span>
+
+<span class="sd">&quot;&quot;&quot;Base conductor manager functionality.&quot;&quot;&quot;</span>
+
+<span class="kn">import</span> <span class="nn">inspect</span>
+<span class="kn">import</span> <span class="nn">threading</span>
+
+<span class="kn">import</span> <span class="nn">eventlet</span>
+<span class="kn">import</span> <span class="nn">futurist</span>
+<span class="kn">from</span> <span class="nn">futurist</span> <span class="kn">import</span> <span class="n">periodics</span>
+<span class="kn">from</span> <span class="nn">futurist</span> <span class="kn">import</span> <span class="n">rejection</span>
+<span class="kn">from</span> <span class="nn">oslo_db</span> <span class="kn">import</span> <span class="n">exception</span> <span class="k">as</span> <span class="n">db_exception</span>
+<span class="kn">from</span> <span class="nn">oslo_log</span> <span class="kn">import</span> <span class="n">log</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">excutils</span>
+
+<span class="kn">from</span> <span class="nn">ironic.common</span> <span class="kn">import</span> <span class="n">context</span> <span class="k">as</span> <span class="n">ironic_context</span>
+<span class="kn">from</span> <span class="nn">ironic.common</span> <span class="kn">import</span> <span class="n">driver_factory</span>
+<span class="kn">from</span> <span class="nn">ironic.common</span> <span class="kn">import</span> <span class="n">exception</span>
+<span class="kn">from</span> <span class="nn">ironic.common</span> <span class="kn">import</span> <span class="n">hash_ring</span>
+<span class="kn">from</span> <span class="nn">ironic.common.i18n</span> <span class="kn">import</span> <span class="n">_</span><span class="p">,</span> <span class="n">_LC</span><span class="p">,</span> <span class="n">_LE</span><span class="p">,</span> <span class="n">_LI</span><span class="p">,</span> <span class="n">_LW</span>
+<span class="kn">from</span> <span class="nn">ironic.common</span> <span class="kn">import</span> <span class="n">rpc</span>
+<span class="kn">from</span> <span class="nn">ironic.common</span> <span class="kn">import</span> <span class="n">states</span>
+<span class="kn">from</span> <span class="nn">ironic.conductor</span> <span class="kn">import</span> <span class="n">notification_utils</span> <span class="k">as</span> <span class="n">notify_utils</span>
+<span class="kn">from</span> <span class="nn">ironic.conductor</span> <span class="kn">import</span> <span class="n">task_manager</span>
+<span class="kn">from</span> <span class="nn">ironic.conf</span> <span class="kn">import</span> <span class="n">CONF</span>
+<span class="kn">from</span> <span class="nn">ironic.db</span> <span class="kn">import</span> <span class="n">api</span> <span class="k">as</span> <span class="n">dbapi</span>
+<span class="kn">from</span> <span class="nn">ironic.drivers</span> <span class="kn">import</span> <span class="n">base</span> <span class="k">as</span> <span class="n">driver_base</span>
+<span class="kn">from</span> <span class="nn">ironic</span> <span class="kn">import</span> <span class="n">objects</span>
+<span class="kn">from</span> <span class="nn">ironic.objects</span> <span class="kn">import</span> <span class="n">fields</span> <span class="k">as</span> <span class="n">obj_fields</span>
+
+
+<span class="n">LOG</span> <span class="o">=</span> <span class="n">log</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+
+<span class="k">def</span> <span class="nf">_check_enabled_interfaces</span><span class="p">():</span>
+    <span class="sd">&quot;&quot;&quot;Sanity-check enabled_*_interfaces configs.</span>
+
+<span class="sd">    We do this before we even bother to try to load up drivers. If we have any</span>
+<span class="sd">    dynamic drivers enabled, then we need interfaces enabled as well.</span>
+
+<span class="sd">    :raises: ConfigInvalid if an enabled interfaces config option is empty.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">if</span> <span class="n">CONF</span><span class="o">.</span><span class="n">enabled_hardware_types</span><span class="p">:</span>
+        <span class="n">empty_confs</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="n">iface_types</span> <span class="o">=</span> <span class="p">[</span><span class="s1">&#39;enabled_</span><span class="si">%s</span><span class="s1">_interfaces&#39;</span> <span class="o">%</span> <span class="n">i</span>
+                       <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="n">driver_base</span><span class="o">.</span><span class="n">ALL_INTERFACES</span><span class="p">]</span>
+        <span class="k">for</span> <span class="n">iface_type</span> <span class="ow">in</span> <span class="n">iface_types</span><span class="p">:</span>
+            <span class="n">conf_value</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">CONF</span><span class="p">,</span> <span class="n">iface_type</span><span class="p">)</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">conf_value</span><span class="p">:</span>
+                <span class="n">empty_confs</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">iface_type</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">empty_confs</span><span class="p">:</span>
+            <span class="n">msg</span> <span class="o">=</span> <span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Configuration options </span><span class="si">%s</span><span class="s1"> cannot be an empty list.&#39;</span><span class="p">)</span> <span class="o">%</span>
+                   <span class="s1">&#39;, &#39;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">empty_confs</span><span class="p">))</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">ConfigInvalid</span><span class="p">(</span><span class="n">error_msg</span><span class="o">=</span><span class="n">msg</span><span class="p">)</span>
+
+
+<div class="viewcode-block" id="BaseConductorManager"><a class="viewcode-back" href="../../../api/ironic.conductor.base_manager.html#ironic.conductor.base_manager.BaseConductorManager">[docs]</a><span class="k">class</span> <span class="nc">BaseConductorManager</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">host</span><span class="p">,</span> <span class="n">topic</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">BaseConductorManager</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">()</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">host</span><span class="p">:</span>
+            <span class="n">host</span> <span class="o">=</span> <span class="n">CONF</span><span class="o">.</span><span class="n">host</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">host</span> <span class="o">=</span> <span class="n">host</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">topic</span> <span class="o">=</span> <span class="n">topic</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">sensors_notifier</span> <span class="o">=</span> <span class="n">rpc</span><span class="o">.</span><span class="n">get_sensors_notifier</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_started</span> <span class="o">=</span> <span class="bp">False</span>
+
+<div class="viewcode-block" id="BaseConductorManager.init_host"><a class="viewcode-back" href="../../../api/ironic.conductor.base_manager.html#ironic.conductor.base_manager.BaseConductorManager.init_host">[docs]</a>    <span class="k">def</span> <span class="nf">init_host</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">admin_context</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Initialize the conductor host.</span>
+
+<span class="sd">        :param admin_context: the admin context to pass to periodic tasks.</span>
+<span class="sd">        :raises: RuntimeError when conductor is already running.</span>
+<span class="sd">        :raises: NoDriversLoaded when no drivers are enabled on the conductor.</span>
+<span class="sd">        :raises: DriverNotFound if a driver is enabled that does not exist.</span>
+<span class="sd">        :raises: DriverLoadError if an enabled driver cannot be loaded.</span>
+<span class="sd">        :raises: DriverNameConflict if a classic driver and a dynamic driver</span>
+<span class="sd">                 are both enabled and have the same name.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_started</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Attempt to start an already running &#39;</span>
+                                 <span class="s1">&#39;conductor manager&#39;</span><span class="p">))</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">dbapi</span> <span class="o">=</span> <span class="n">dbapi</span><span class="o">.</span><span class="n">get_instance</span><span class="p">()</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">_keepalive_evt</span> <span class="o">=</span> <span class="n">threading</span><span class="o">.</span><span class="n">Event</span><span class="p">()</span>
+        <span class="sd">&quot;&quot;&quot;Event for the keepalive thread.&quot;&quot;&quot;</span>
+
+        <span class="c1"># TODO(dtantsur): make the threshold configurable?</span>
+        <span class="n">rejection_func</span> <span class="o">=</span> <span class="n">rejection</span><span class="o">.</span><span class="n">reject_when_reached</span><span class="p">(</span>
+            <span class="n">CONF</span><span class="o">.</span><span class="n">conductor</span><span class="o">.</span><span class="n">workers_pool_size</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_executor</span> <span class="o">=</span> <span class="n">futurist</span><span class="o">.</span><span class="n">GreenThreadPoolExecutor</span><span class="p">(</span>
+            <span class="n">max_workers</span><span class="o">=</span><span class="n">CONF</span><span class="o">.</span><span class="n">conductor</span><span class="o">.</span><span class="n">workers_pool_size</span><span class="p">,</span>
+            <span class="n">check_and_reject</span><span class="o">=</span><span class="n">rejection_func</span><span class="p">)</span>
+        <span class="sd">&quot;&quot;&quot;Executor for performing tasks async.&quot;&quot;&quot;</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">ring_manager</span> <span class="o">=</span> <span class="n">hash_ring</span><span class="o">.</span><span class="n">HashRingManager</span><span class="p">()</span>
+        <span class="sd">&quot;&quot;&quot;Consistent hash ring which maps drivers to conductors.&quot;&quot;&quot;</span>
+
+        <span class="n">_check_enabled_interfaces</span><span class="p">()</span>
+
+        <span class="c1"># NOTE(deva): these calls may raise DriverLoadError or DriverNotFound</span>
+        <span class="c1"># NOTE(vdrok): Instantiate network and storage interface factory on</span>
+        <span class="c1"># startup so that all the interfaces are loaded at the very</span>
+        <span class="c1"># beginning, and failures prevent the conductor from starting.</span>
+        <span class="n">drivers</span> <span class="o">=</span> <span class="n">driver_factory</span><span class="o">.</span><span class="n">drivers</span><span class="p">()</span>
+        <span class="n">hardware_types</span> <span class="o">=</span> <span class="n">driver_factory</span><span class="o">.</span><span class="n">hardware_types</span><span class="p">()</span>
+        <span class="n">driver_factory</span><span class="o">.</span><span class="n">NetworkInterfaceFactory</span><span class="p">()</span>
+        <span class="n">driver_factory</span><span class="o">.</span><span class="n">StorageInterfaceFactory</span><span class="p">()</span>
+
+        <span class="c1"># NOTE(jroll) this is passed to the dbapi, which requires a list, not</span>
+        <span class="c1"># a generator (which keys() returns in py3)</span>
+        <span class="n">driver_names</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="n">drivers</span><span class="p">)</span>
+        <span class="n">hardware_type_names</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="n">hardware_types</span><span class="p">)</span>
+
+        <span class="c1"># check that at least one driver is loaded, whether classic or dynamic</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">driver_names</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">hardware_type_names</span><span class="p">:</span>
+            <span class="n">msg</span> <span class="o">=</span> <span class="n">_LE</span><span class="p">(</span><span class="s2">&quot;Conductor </span><span class="si">%s</span><span class="s2"> cannot be started because no drivers &quot;</span>
+                      <span class="s2">&quot;were loaded. This could be because no classic drivers &quot;</span>
+                      <span class="s2">&quot;were specified in the &#39;enabled_drivers&#39; config option &quot;</span>
+                      <span class="s2">&quot;and no dynamic drivers were specified in the &quot;</span>
+                      <span class="s2">&quot;&#39;enabled_hardware_types&#39; config option.&quot;</span><span class="p">)</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">msg</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">host</span><span class="p">)</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">NoDriversLoaded</span><span class="p">(</span><span class="n">conductor</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">host</span><span class="p">)</span>
+
+        <span class="c1"># check for name clashes between classic and dynamic drivers</span>
+        <span class="n">name_clashes</span> <span class="o">=</span> <span class="nb">set</span><span class="p">(</span><span class="n">driver_names</span><span class="p">)</span><span class="o">.</span><span class="n">intersection</span><span class="p">(</span><span class="n">hardware_type_names</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">name_clashes</span><span class="p">:</span>
+            <span class="n">name_clashes</span> <span class="o">=</span> <span class="s1">&#39;, &#39;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">name_clashes</span><span class="p">)</span>
+            <span class="n">msg</span> <span class="o">=</span> <span class="n">_LE</span><span class="p">(</span><span class="s2">&quot;Conductor </span><span class="si">%(host)s</span><span class="s2"> cannot be started because there is &quot;</span>
+                      <span class="s2">&quot;one or more name conflicts between classic drivers and &quot;</span>
+                      <span class="s2">&quot;dynamic drivers (</span><span class="si">%(names)s</span><span class="s2">). Check any external driver &quot;</span>
+                      <span class="s2">&quot;plugins and the &#39;enabled_drivers&#39; and &quot;</span>
+                      <span class="s2">&quot;&#39;enabled_hardware_types&#39; config options.&quot;</span><span class="p">)</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">msg</span><span class="p">,</span> <span class="p">{</span><span class="s1">&#39;host&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">host</span><span class="p">,</span> <span class="s1">&#39;names&#39;</span><span class="p">:</span> <span class="n">name_clashes</span><span class="p">})</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">DriverNameConflict</span><span class="p">(</span><span class="n">names</span><span class="o">=</span><span class="n">name_clashes</span><span class="p">)</span>
+
+        <span class="c1"># Collect driver-specific periodic tasks.</span>
+        <span class="c1"># Conductor periodic tasks accept context argument, driver periodic</span>
+        <span class="c1"># tasks accept this manager and context. We have to ensure that the</span>
+        <span class="c1"># same driver interface class is not traversed twice, otherwise</span>
+        <span class="c1"># we&#39;ll have several instances of the same task.</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;Collecting periodic tasks&#39;</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_periodic_task_callables</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="n">periodic_task_classes</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_collect_periodic_tasks</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="p">(</span><span class="n">admin_context</span><span class="p">,))</span>
+        <span class="k">for</span> <span class="n">driver_obj</span> <span class="ow">in</span> <span class="n">drivers</span><span class="o">.</span><span class="n">values</span><span class="p">():</span>
+            <span class="k">for</span> <span class="n">iface_name</span> <span class="ow">in</span> <span class="n">driver_obj</span><span class="o">.</span><span class="n">all_interfaces</span><span class="p">:</span>
+                <span class="n">iface</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">driver_obj</span><span class="p">,</span> <span class="n">iface_name</span><span class="p">,</span> <span class="bp">None</span><span class="p">)</span>
+                <span class="k">if</span> <span class="n">iface</span> <span class="ow">and</span> <span class="n">iface</span><span class="o">.</span><span class="vm">__class__</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">periodic_task_classes</span><span class="p">:</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_collect_periodic_tasks</span><span class="p">(</span><span class="n">iface</span><span class="p">,</span> <span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">admin_context</span><span class="p">))</span>
+                    <span class="n">periodic_task_classes</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">iface</span><span class="o">.</span><span class="vm">__class__</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_periodic_task_callables</span><span class="p">)</span> <span class="o">&gt;</span>
+                <span class="n">CONF</span><span class="o">.</span><span class="n">conductor</span><span class="o">.</span><span class="n">workers_pool_size</span><span class="p">):</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s1">&#39;This conductor has </span><span class="si">%(tasks)d</span><span class="s1"> periodic tasks &#39;</span>
+                            <span class="s1">&#39;enabled, but only </span><span class="si">%(workers)d</span><span class="s1"> task workers &#39;</span>
+                            <span class="s1">&#39;allowed by [conductor]workers_pool_size option&#39;</span><span class="p">),</span>
+                        <span class="p">{</span><span class="s1">&#39;tasks&#39;</span><span class="p">:</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_periodic_task_callables</span><span class="p">),</span>
+                         <span class="s1">&#39;workers&#39;</span><span class="p">:</span> <span class="n">CONF</span><span class="o">.</span><span class="n">conductor</span><span class="o">.</span><span class="n">workers_pool_size</span><span class="p">})</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">_periodic_tasks</span> <span class="o">=</span> <span class="n">periodics</span><span class="o">.</span><span class="n">PeriodicWorker</span><span class="p">(</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_periodic_task_callables</span><span class="p">,</span>
+            <span class="n">executor_factory</span><span class="o">=</span><span class="n">periodics</span><span class="o">.</span><span class="n">ExistingExecutor</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_executor</span><span class="p">))</span>
+
+        <span class="c1"># clear all target_power_state with locks by this conductor</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">dbapi</span><span class="o">.</span><span class="n">clear_node_target_power_state</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">host</span><span class="p">)</span>
+        <span class="c1"># clear all locks held by this conductor before registering</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">dbapi</span><span class="o">.</span><span class="n">clear_node_reservations_for_conductor</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">host</span><span class="p">)</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="c1"># Register this conductor with the cluster</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">conductor</span> <span class="o">=</span> <span class="n">objects</span><span class="o">.</span><span class="n">Conductor</span><span class="o">.</span><span class="n">register</span><span class="p">(</span>
+                <span class="n">admin_context</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">host</span><span class="p">,</span> <span class="n">driver_names</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">exception</span><span class="o">.</span><span class="n">ConductorAlreadyRegistered</span><span class="p">:</span>
+            <span class="c1"># This conductor was already registered and did not shut down</span>
+            <span class="c1"># properly, so log a warning and update the record.</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span>
+                <span class="n">_LW</span><span class="p">(</span><span class="s2">&quot;A conductor with hostname </span><span class="si">%(hostname)s</span><span class="s2"> &quot;</span>
+                    <span class="s2">&quot;was previously registered. Updating registration&quot;</span><span class="p">),</span>
+                <span class="p">{</span><span class="s1">&#39;hostname&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">host</span><span class="p">})</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">conductor</span> <span class="o">=</span> <span class="n">objects</span><span class="o">.</span><span class="n">Conductor</span><span class="o">.</span><span class="n">register</span><span class="p">(</span>
+                <span class="n">admin_context</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">host</span><span class="p">,</span> <span class="n">driver_names</span><span class="p">,</span> <span class="n">update_existing</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+
+        <span class="c1"># register hardware types and interfaces supported by this conductor</span>
+        <span class="c1"># and validate them against other conductors</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_register_and_validate_hardware_interfaces</span><span class="p">(</span><span class="n">hardware_types</span><span class="p">)</span>
+        <span class="k">except</span> <span class="p">(</span><span class="n">exception</span><span class="o">.</span><span class="n">DriverLoadError</span><span class="p">,</span> <span class="n">exception</span><span class="o">.</span><span class="n">DriverNotFound</span><span class="p">,</span>
+                <span class="n">exception</span><span class="o">.</span><span class="n">ConductorHardwareInterfacesAlreadyRegistered</span><span class="p">,</span>
+                <span class="n">exception</span><span class="o">.</span><span class="n">InterfaceNotFoundInEntrypoint</span><span class="p">,</span>
+                <span class="n">exception</span><span class="o">.</span><span class="n">NoValidDefaultForInterface</span><span class="p">)</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+            <span class="k">with</span> <span class="n">excutils</span><span class="o">.</span><span class="n">save_and_reraise_exception</span><span class="p">():</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">_LE</span><span class="p">(</span><span class="s1">&#39;Failed to register hardware types. </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">),</span> <span class="n">e</span><span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">del_host</span><span class="p">()</span>
+
+        <span class="c1"># Start periodic tasks</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_periodic_tasks_worker</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_executor</span><span class="o">.</span><span class="n">submit</span><span class="p">(</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_periodic_tasks</span><span class="o">.</span><span class="n">start</span><span class="p">,</span> <span class="n">allow_empty</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_periodic_tasks_worker</span><span class="o">.</span><span class="n">add_done_callback</span><span class="p">(</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_on_periodic_tasks_stop</span><span class="p">)</span>
+
+        <span class="c1"># NOTE(lucasagomes): If the conductor server dies abruptly</span>
+        <span class="c1"># mid deployment (OMM Killer, power outage, etc...) we</span>
+        <span class="c1"># can not resume the deployment even if the conductor</span>
+        <span class="c1"># comes back online. Cleaning the reservation of the nodes</span>
+        <span class="c1"># (dbapi.clear_node_reservations_for_conductor) is not enough to</span>
+        <span class="c1"># unstick it, so let&#39;s gracefully fail the deployment so the node</span>
+        <span class="c1"># can go through the steps (deleting &amp; cleaning) to make itself</span>
+        <span class="c1"># available again.</span>
+        <span class="n">filters</span> <span class="o">=</span> <span class="p">{</span><span class="s1">&#39;reserved&#39;</span><span class="p">:</span> <span class="bp">False</span><span class="p">,</span>
+                   <span class="s1">&#39;provision_state&#39;</span><span class="p">:</span> <span class="n">states</span><span class="o">.</span><span class="n">DEPLOYING</span><span class="p">}</span>
+        <span class="n">last_error</span> <span class="o">=</span> <span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s2">&quot;The deployment can&#39;t be resumed by conductor &quot;</span>
+                        <span class="s2">&quot;</span><span class="si">%s</span><span class="s2">. Moving to fail state.&quot;</span><span class="p">)</span> <span class="o">%</span> <span class="bp">self</span><span class="o">.</span><span class="n">host</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_fail_if_in_state</span><span class="p">(</span><span class="n">ironic_context</span><span class="o">.</span><span class="n">get_admin_context</span><span class="p">(),</span> <span class="n">filters</span><span class="p">,</span>
+                               <span class="n">states</span><span class="o">.</span><span class="n">DEPLOYING</span><span class="p">,</span> <span class="s1">&#39;provision_updated_at&#39;</span><span class="p">,</span>
+                               <span class="n">last_error</span><span class="o">=</span><span class="n">last_error</span><span class="p">)</span>
+
+        <span class="c1"># Start consoles if it set enabled in a greenthread.</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_spawn_worker</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_start_consoles</span><span class="p">,</span>
+                               <span class="n">ironic_context</span><span class="o">.</span><span class="n">get_admin_context</span><span class="p">())</span>
+        <span class="k">except</span> <span class="n">exception</span><span class="o">.</span><span class="n">NoFreeConductorWorker</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s1">&#39;Failed to start worker for restarting consoles.&#39;</span><span class="p">))</span>
+
+        <span class="c1"># Spawn a dedicated greenthread for the keepalive</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_spawn_worker</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_conductor_service_record_keepalive</span><span class="p">)</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">_LI</span><span class="p">(</span><span class="s1">&#39;Successfully started conductor with hostname &#39;</span>
+                         <span class="s1">&#39;</span><span class="si">%(hostname)s</span><span class="s1">.&#39;</span><span class="p">),</span>
+                     <span class="p">{</span><span class="s1">&#39;hostname&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">host</span><span class="p">})</span>
+        <span class="k">except</span> <span class="n">exception</span><span class="o">.</span><span class="n">NoFreeConductorWorker</span><span class="p">:</span>
+            <span class="k">with</span> <span class="n">excutils</span><span class="o">.</span><span class="n">save_and_reraise_exception</span><span class="p">():</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">critical</span><span class="p">(</span><span class="n">_LC</span><span class="p">(</span><span class="s1">&#39;Failed to start keepalive&#39;</span><span class="p">))</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">del_host</span><span class="p">()</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">_started</span> <span class="o">=</span> <span class="bp">True</span></div>
+
+<div class="viewcode-block" id="BaseConductorManager.del_host"><a class="viewcode-back" href="../../../api/ironic.conductor.base_manager.html#ironic.conductor.base_manager.BaseConductorManager.del_host">[docs]</a>    <span class="k">def</span> <span class="nf">del_host</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">deregister</span><span class="o">=</span><span class="bp">True</span><span class="p">):</span>
+        <span class="c1"># Conductor deregistration fails if called on non-initialized</span>
+        <span class="c1"># conductor (e.g. when rpc server is unreachable).</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">hasattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="s1">&#39;conductor&#39;</span><span class="p">):</span>
+            <span class="k">return</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_keepalive_evt</span><span class="o">.</span><span class="n">set</span><span class="p">()</span>
+        <span class="k">if</span> <span class="n">deregister</span><span class="p">:</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="c1"># Inform the cluster that this conductor is shutting down.</span>
+                <span class="c1"># Note that rebalancing will not occur immediately, but when</span>
+                <span class="c1"># the periodic sync takes place.</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">conductor</span><span class="o">.</span><span class="n">unregister</span><span class="p">()</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">_LI</span><span class="p">(</span><span class="s1">&#39;Successfully stopped conductor with hostname &#39;</span>
+                             <span class="s1">&#39;</span><span class="si">%(hostname)s</span><span class="s1">.&#39;</span><span class="p">),</span>
+                         <span class="p">{</span><span class="s1">&#39;hostname&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">host</span><span class="p">})</span>
+            <span class="k">except</span> <span class="n">exception</span><span class="o">.</span><span class="n">ConductorNotFound</span><span class="p">:</span>
+                <span class="k">pass</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">_LI</span><span class="p">(</span><span class="s1">&#39;Not deregistering conductor with hostname &#39;</span>
+                         <span class="s1">&#39;</span><span class="si">%(hostname)s</span><span class="s1">.&#39;</span><span class="p">),</span>
+                     <span class="p">{</span><span class="s1">&#39;hostname&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">host</span><span class="p">})</span>
+        <span class="c1"># Waiting here to give workers the chance to finish. This has the</span>
+        <span class="c1"># benefit of releasing locks workers placed on nodes, as well as</span>
+        <span class="c1"># having work complete normally.</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_periodic_tasks</span><span class="o">.</span><span class="n">stop</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_periodic_tasks</span><span class="o">.</span><span class="n">wait</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_executor</span><span class="o">.</span><span class="n">shutdown</span><span class="p">(</span><span class="n">wait</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_started</span> <span class="o">=</span> <span class="bp">False</span></div>
+
+    <span class="k">def</span> <span class="nf">_register_and_validate_hardware_interfaces</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">hardware_types</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Register and validate hardware interfaces for this conductor.</span>
+
+<span class="sd">        Registers a row in the database for each combination of</span>
+<span class="sd">        (hardware type, interface type, interface) that is supported and</span>
+<span class="sd">        enabled.</span>
+
+<span class="sd">        TODO: Validates against other conductors to check if the</span>
+<span class="sd">        set of registered hardware interfaces for a given hardware type is the</span>
+<span class="sd">        same, and warns if not (we can&#39;t error out, otherwise all conductors</span>
+<span class="sd">        must be restarted at once to change configuration).</span>
+
+<span class="sd">        :param hardware_types: Dictionary mapping hardware type name to</span>
+<span class="sd">                               hardware type object.</span>
+<span class="sd">        :raises: ConductorHardwareInterfacesAlreadyRegistered</span>
+<span class="sd">        :raises: InterfaceNotFoundInEntrypoint</span>
+<span class="sd">        :raises: NoValidDefaultForInterface if the default value cannot be</span>
+<span class="sd">                 calculated and is not provided in the configuration</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="c1"># first unregister, in case we have cruft laying around</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">conductor</span><span class="o">.</span><span class="n">unregister_all_hardware_interfaces</span><span class="p">()</span>
+
+        <span class="k">for</span> <span class="n">ht_name</span><span class="p">,</span> <span class="n">ht</span> <span class="ow">in</span> <span class="n">hardware_types</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+            <span class="n">interface_map</span> <span class="o">=</span> <span class="n">driver_factory</span><span class="o">.</span><span class="n">enabled_supported_interfaces</span><span class="p">(</span><span class="n">ht</span><span class="p">)</span>
+            <span class="k">for</span> <span class="n">interface_type</span><span class="p">,</span> <span class="n">interface_names</span> <span class="ow">in</span> <span class="n">interface_map</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+                <span class="n">default_interface</span> <span class="o">=</span> <span class="n">driver_factory</span><span class="o">.</span><span class="n">default_interface</span><span class="p">(</span>
+                    <span class="n">ht</span><span class="p">,</span> <span class="n">interface_type</span><span class="p">,</span> <span class="n">driver_name</span><span class="o">=</span><span class="n">ht_name</span><span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">conductor</span><span class="o">.</span><span class="n">register_hardware_interfaces</span><span class="p">(</span><span class="n">ht_name</span><span class="p">,</span>
+                                                            <span class="n">interface_type</span><span class="p">,</span>
+                                                            <span class="n">interface_names</span><span class="p">,</span>
+                                                            <span class="n">default_interface</span><span class="p">)</span>
+
+        <span class="c1"># TODO(jroll) validate against other conductor, warn if different</span>
+        <span class="c1"># how do we do this performantly? :|</span>
+
+    <span class="k">def</span> <span class="nf">_collect_periodic_tasks</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">obj</span><span class="p">,</span> <span class="n">args</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Collect periodic tasks from a given object.</span>
+
+<span class="sd">        Populates self._periodic_task_callables with tuples</span>
+<span class="sd">        (callable, args, kwargs).</span>
+
+<span class="sd">        :param obj: object containing periodic tasks as methods</span>
+<span class="sd">        :param args: tuple with arguments to pass to every task</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">for</span> <span class="n">name</span><span class="p">,</span> <span class="n">member</span> <span class="ow">in</span> <span class="n">inspect</span><span class="o">.</span><span class="n">getmembers</span><span class="p">(</span><span class="n">obj</span><span class="p">):</span>
+            <span class="k">if</span> <span class="n">periodics</span><span class="o">.</span><span class="n">is_periodic</span><span class="p">(</span><span class="n">member</span><span class="p">):</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;Found periodic task </span><span class="si">%(owner)s</span><span class="s1">.</span><span class="si">%(member)s</span><span class="s1">&#39;</span><span class="p">,</span>
+                          <span class="p">{</span><span class="s1">&#39;owner&#39;</span><span class="p">:</span> <span class="n">obj</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="vm">__name__</span><span class="p">,</span>
+                           <span class="s1">&#39;member&#39;</span><span class="p">:</span> <span class="n">name</span><span class="p">})</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_periodic_task_callables</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">member</span><span class="p">,</span> <span class="n">args</span><span class="p">,</span> <span class="p">{}))</span>
+
+    <span class="k">def</span> <span class="nf">_on_periodic_tasks_stop</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">fut</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">fut</span><span class="o">.</span><span class="n">result</span><span class="p">()</span>
+        <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">critical</span><span class="p">(</span><span class="n">_LC</span><span class="p">(</span><span class="s1">&#39;Periodic tasks worker has failed: </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">),</span> <span class="n">exc</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">_LI</span><span class="p">(</span><span class="s1">&#39;Successfully shut down periodic tasks&#39;</span><span class="p">))</span>
+
+<div class="viewcode-block" id="BaseConductorManager.iter_nodes"><a class="viewcode-back" href="../../../api/ironic.conductor.base_manager.html#ironic.conductor.base_manager.BaseConductorManager.iter_nodes">[docs]</a>    <span class="k">def</span> <span class="nf">iter_nodes</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">fields</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Iterate over nodes mapped to this conductor.</span>
+
+<span class="sd">        Requests node set from and filters out nodes that are not</span>
+<span class="sd">        mapped to this conductor.</span>
+
+<span class="sd">        Yields tuples (node_uuid, driver, ...) where ... is derived from</span>
+<span class="sd">        fields argument, e.g.: fields=None means yielding (&#39;uuid&#39;, &#39;driver&#39;),</span>
+<span class="sd">        fields=[&#39;foo&#39;] means yielding (&#39;uuid&#39;, &#39;driver&#39;, &#39;foo&#39;).</span>
+
+<span class="sd">        :param fields: list of fields to fetch in addition to uuid and driver</span>
+<span class="sd">        :param kwargs: additional arguments to pass to dbapi when looking for</span>
+<span class="sd">                       nodes</span>
+<span class="sd">        :return: generator yielding tuples of requested fields</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">columns</span> <span class="o">=</span> <span class="p">[</span><span class="s1">&#39;uuid&#39;</span><span class="p">,</span> <span class="s1">&#39;driver&#39;</span><span class="p">]</span> <span class="o">+</span> <span class="nb">list</span><span class="p">(</span><span class="n">fields</span> <span class="ow">or</span> <span class="p">())</span>
+        <span class="n">node_list</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">dbapi</span><span class="o">.</span><span class="n">get_nodeinfo_list</span><span class="p">(</span><span class="n">columns</span><span class="o">=</span><span class="n">columns</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+        <span class="k">for</span> <span class="n">result</span> <span class="ow">in</span> <span class="n">node_list</span><span class="p">:</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_mapped_to_this_conductor</span><span class="p">(</span><span class="o">*</span><span class="n">result</span><span class="p">[:</span><span class="mi">2</span><span class="p">]):</span>
+                <span class="k">yield</span> <span class="n">result</span></div>
+
+    <span class="k">def</span> <span class="nf">_spawn_worker</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">func</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+
+        <span class="sd">&quot;&quot;&quot;Create a greenthread to run func(*args, **kwargs).</span>
+
+<span class="sd">        Spawns a greenthread if there are free slots in pool, otherwise raises</span>
+<span class="sd">        exception. Execution control returns immediately to the caller.</span>
+
+<span class="sd">        :returns: Future object.</span>
+<span class="sd">        :raises: NoFreeConductorWorker if worker pool is currently full.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_executor</span><span class="o">.</span><span class="n">submit</span><span class="p">(</span><span class="n">func</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">futurist</span><span class="o">.</span><span class="n">RejectedSubmission</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">NoFreeConductorWorker</span><span class="p">()</span>
+
+    <span class="k">def</span> <span class="nf">_conductor_service_record_keepalive</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">while</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_keepalive_evt</span><span class="o">.</span><span class="n">is_set</span><span class="p">():</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">conductor</span><span class="o">.</span><span class="n">touch</span><span class="p">()</span>
+            <span class="k">except</span> <span class="n">db_exception</span><span class="o">.</span><span class="n">DBConnectionError</span><span class="p">:</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s1">&#39;Conductor could not connect to database &#39;</span>
+                                <span class="s1">&#39;while heartbeating.&#39;</span><span class="p">))</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_keepalive_evt</span><span class="o">.</span><span class="n">wait</span><span class="p">(</span><span class="n">CONF</span><span class="o">.</span><span class="n">conductor</span><span class="o">.</span><span class="n">heartbeat_interval</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_mapped_to_this_conductor</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">node_uuid</span><span class="p">,</span> <span class="n">driver</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Check that node is mapped to this conductor.</span>
+
+<span class="sd">        Note that because mappings are eventually consistent, it is possible</span>
+<span class="sd">        for two conductors to simultaneously believe that a node is mapped to</span>
+<span class="sd">        them. Any operation that depends on exclusive control of a node should</span>
+<span class="sd">        take out a lock.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">ring</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">ring_manager</span><span class="p">[</span><span class="n">driver</span><span class="p">]</span>
+        <span class="k">except</span> <span class="n">exception</span><span class="o">.</span><span class="n">DriverNotFound</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">False</span>
+
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">host</span> <span class="ow">in</span> <span class="n">ring</span><span class="o">.</span><span class="n">get_nodes</span><span class="p">(</span>
+            <span class="n">node_uuid</span><span class="o">.</span><span class="n">encode</span><span class="p">(</span><span class="s1">&#39;utf-8&#39;</span><span class="p">),</span>
+            <span class="n">replicas</span><span class="o">=</span><span class="n">CONF</span><span class="o">.</span><span class="n">hash_distribution_replicas</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_fail_if_in_state</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">filters</span><span class="p">,</span> <span class="n">provision_state</span><span class="p">,</span>
+                          <span class="n">sort_key</span><span class="p">,</span> <span class="n">callback_method</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+                          <span class="n">err_handler</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">last_error</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+                          <span class="n">keep_target_state</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Fail nodes that are in specified state.</span>
+
+<span class="sd">        Retrieves nodes that satisfy the criteria in &#39;filters&#39;.</span>
+<span class="sd">        If any of these nodes is in &#39;provision_state&#39;, it has failed</span>
+<span class="sd">        in whatever provisioning activity it was currently doing.</span>
+<span class="sd">        That failure is processed here.</span>
+
+<span class="sd">        :param: context: request context</span>
+<span class="sd">        :param: filters: criteria (as a dictionary) to get the desired</span>
+<span class="sd">                         list of nodes that satisfy the filter constraints.</span>
+<span class="sd">                         For example, if filters[&#39;provisioned_before&#39;] = 60,</span>
+<span class="sd">                         this would process nodes whose provision_updated_at</span>
+<span class="sd">                         field value was 60 or more seconds before &#39;now&#39;.</span>
+<span class="sd">        :param: provision_state: provision_state that the node is in,</span>
+<span class="sd">                                 for the provisioning activity to have failed.</span>
+<span class="sd">        :param: sort_key: the nodes are sorted based on this key.</span>
+<span class="sd">        :param: callback_method: the callback method to be invoked in a</span>
+<span class="sd">                                 spawned thread, for a failed node. This</span>
+<span class="sd">                                 method must take a :class:`TaskManager` as</span>
+<span class="sd">                                 the first (and only required) parameter.</span>
+<span class="sd">        :param: err_handler: for a failed node, the error handler to invoke</span>
+<span class="sd">                             if an error occurs trying to spawn an thread</span>
+<span class="sd">                             to do the callback_method.</span>
+<span class="sd">        :param: last_error: the error message to be updated in node.last_error</span>
+<span class="sd">        :param: keep_target_state: if True, a failed node will keep the same</span>
+<span class="sd">                                   target provision state it had before the</span>
+<span class="sd">                                   failure. Otherwise, the node&#39;s target</span>
+<span class="sd">                                   provision state will be determined by the</span>
+<span class="sd">                                   fsm.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">node_iter</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">iter_nodes</span><span class="p">(</span><span class="n">filters</span><span class="o">=</span><span class="n">filters</span><span class="p">,</span>
+                                    <span class="n">sort_key</span><span class="o">=</span><span class="n">sort_key</span><span class="p">,</span>
+                                    <span class="n">sort_dir</span><span class="o">=</span><span class="s1">&#39;asc&#39;</span><span class="p">)</span>
+
+        <span class="n">workers_count</span> <span class="o">=</span> <span class="mi">0</span>
+        <span class="k">for</span> <span class="n">node_uuid</span><span class="p">,</span> <span class="n">driver</span> <span class="ow">in</span> <span class="n">node_iter</span><span class="p">:</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="k">with</span> <span class="n">task_manager</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="n">node_uuid</span><span class="p">,</span>
+                                          <span class="n">purpose</span><span class="o">=</span><span class="s1">&#39;node state check&#39;</span><span class="p">)</span> <span class="k">as</span> <span class="n">task</span><span class="p">:</span>
+                    <span class="k">if</span> <span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">maintenance</span> <span class="ow">or</span>
+                            <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">provision_state</span> <span class="o">!=</span> <span class="n">provision_state</span><span class="p">):</span>
+                        <span class="k">continue</span>
+
+                    <span class="n">target_state</span> <span class="o">=</span> <span class="p">(</span><span class="bp">None</span> <span class="k">if</span> <span class="ow">not</span> <span class="n">keep_target_state</span> <span class="k">else</span>
+                                    <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">target_provision_state</span><span class="p">)</span>
+
+                    <span class="c1"># timeout has been reached - process the event &#39;fail&#39;</span>
+                    <span class="k">if</span> <span class="n">callback_method</span><span class="p">:</span>
+                        <span class="n">task</span><span class="o">.</span><span class="n">process_event</span><span class="p">(</span><span class="s1">&#39;fail&#39;</span><span class="p">,</span>
+                                           <span class="n">callback</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_spawn_worker</span><span class="p">,</span>
+                                           <span class="n">call_args</span><span class="o">=</span><span class="p">(</span><span class="n">callback_method</span><span class="p">,</span> <span class="n">task</span><span class="p">),</span>
+                                           <span class="n">err_handler</span><span class="o">=</span><span class="n">err_handler</span><span class="p">,</span>
+                                           <span class="n">target_state</span><span class="o">=</span><span class="n">target_state</span><span class="p">)</span>
+                    <span class="k">else</span><span class="p">:</span>
+                        <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">last_error</span> <span class="o">=</span> <span class="n">last_error</span>
+                        <span class="n">task</span><span class="o">.</span><span class="n">process_event</span><span class="p">(</span><span class="s1">&#39;fail&#39;</span><span class="p">,</span> <span class="n">target_state</span><span class="o">=</span><span class="n">target_state</span><span class="p">)</span>
+            <span class="k">except</span> <span class="n">exception</span><span class="o">.</span><span class="n">NoFreeConductorWorker</span><span class="p">:</span>
+                <span class="k">break</span>
+            <span class="k">except</span> <span class="p">(</span><span class="n">exception</span><span class="o">.</span><span class="n">NodeLocked</span><span class="p">,</span> <span class="n">exception</span><span class="o">.</span><span class="n">NodeNotFound</span><span class="p">):</span>
+                <span class="k">continue</span>
+            <span class="n">workers_count</span> <span class="o">+=</span> <span class="mi">1</span>
+            <span class="k">if</span> <span class="n">workers_count</span> <span class="o">&gt;=</span> <span class="n">CONF</span><span class="o">.</span><span class="n">conductor</span><span class="o">.</span><span class="n">periodic_max_workers</span><span class="p">:</span>
+                <span class="k">break</span>
+
+    <span class="k">def</span> <span class="nf">_start_consoles</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Start consoles if set enabled.</span>
+
+<span class="sd">        :param: context: request context</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">filters</span> <span class="o">=</span> <span class="p">{</span><span class="s1">&#39;console_enabled&#39;</span><span class="p">:</span> <span class="bp">True</span><span class="p">}</span>
+
+        <span class="n">node_iter</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">iter_nodes</span><span class="p">(</span><span class="n">filters</span><span class="o">=</span><span class="n">filters</span><span class="p">)</span>
+
+        <span class="k">for</span> <span class="n">node_uuid</span><span class="p">,</span> <span class="n">driver</span> <span class="ow">in</span> <span class="n">node_iter</span><span class="p">:</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="k">with</span> <span class="n">task_manager</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="n">node_uuid</span><span class="p">,</span> <span class="n">shared</span><span class="o">=</span><span class="bp">False</span><span class="p">,</span>
+                                          <span class="n">purpose</span><span class="o">=</span><span class="s1">&#39;start console&#39;</span><span class="p">)</span> <span class="k">as</span> <span class="n">task</span><span class="p">:</span>
+                    <span class="n">notify_utils</span><span class="o">.</span><span class="n">emit_console_notification</span><span class="p">(</span>
+                        <span class="n">task</span><span class="p">,</span> <span class="s1">&#39;console_restore&#39;</span><span class="p">,</span>
+                        <span class="n">obj_fields</span><span class="o">.</span><span class="n">NotificationStatus</span><span class="o">.</span><span class="n">START</span><span class="p">)</span>
+                    <span class="k">try</span><span class="p">:</span>
+                        <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;Trying to start console of node </span><span class="si">%(node)s</span><span class="s1">&#39;</span><span class="p">,</span>
+                                  <span class="p">{</span><span class="s1">&#39;node&#39;</span><span class="p">:</span> <span class="n">node_uuid</span><span class="p">})</span>
+                        <span class="n">task</span><span class="o">.</span><span class="n">driver</span><span class="o">.</span><span class="n">console</span><span class="o">.</span><span class="n">start_console</span><span class="p">(</span><span class="n">task</span><span class="p">)</span>
+                        <span class="n">LOG</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">_LI</span><span class="p">(</span><span class="s1">&#39;Successfully started console of node &#39;</span>
+                                     <span class="s1">&#39;</span><span class="si">%(node)s</span><span class="s1">&#39;</span><span class="p">),</span> <span class="p">{</span><span class="s1">&#39;node&#39;</span><span class="p">:</span> <span class="n">node_uuid</span><span class="p">})</span>
+                        <span class="n">notify_utils</span><span class="o">.</span><span class="n">emit_console_notification</span><span class="p">(</span>
+                            <span class="n">task</span><span class="p">,</span> <span class="s1">&#39;console_restore&#39;</span><span class="p">,</span>
+                            <span class="n">obj_fields</span><span class="o">.</span><span class="n">NotificationStatus</span><span class="o">.</span><span class="n">END</span><span class="p">)</span>
+                    <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">err</span><span class="p">:</span>
+                        <span class="n">msg</span> <span class="o">=</span> <span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Failed to start console of node </span><span class="si">%(node)s</span><span class="s1"> &#39;</span>
+                                 <span class="s1">&#39;while starting the conductor, so changing &#39;</span>
+                                 <span class="s1">&#39;the console_enabled status to False, error: &#39;</span>
+                                 <span class="s1">&#39;</span><span class="si">%(err)s</span><span class="s1">&#39;</span><span class="p">)</span>
+                               <span class="o">%</span> <span class="p">{</span><span class="s1">&#39;node&#39;</span><span class="p">:</span> <span class="n">node_uuid</span><span class="p">,</span> <span class="s1">&#39;err&#39;</span><span class="p">:</span> <span class="n">err</span><span class="p">})</span>
+                        <span class="n">LOG</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">msg</span><span class="p">)</span>
+                        <span class="c1"># If starting console failed, set node console_enabled</span>
+                        <span class="c1"># back to False and set node&#39;s last error.</span>
+                        <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">last_error</span> <span class="o">=</span> <span class="n">msg</span>
+                        <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">console_enabled</span> <span class="o">=</span> <span class="bp">False</span>
+                        <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">save</span><span class="p">()</span>
+                        <span class="n">notify_utils</span><span class="o">.</span><span class="n">emit_console_notification</span><span class="p">(</span>
+                            <span class="n">task</span><span class="p">,</span> <span class="s1">&#39;console_restore&#39;</span><span class="p">,</span>
+                            <span class="n">obj_fields</span><span class="o">.</span><span class="n">NotificationStatus</span><span class="o">.</span><span class="n">ERROR</span><span class="p">)</span>
+            <span class="k">except</span> <span class="n">exception</span><span class="o">.</span><span class="n">NodeLocked</span><span class="p">:</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s1">&#39;Node </span><span class="si">%(node)s</span><span class="s1"> is locked while trying to &#39;</span>
+                                <span class="s1">&#39;start console on conductor startup&#39;</span><span class="p">),</span>
+                            <span class="p">{</span><span class="s1">&#39;node&#39;</span><span class="p">:</span> <span class="n">node_uuid</span><span class="p">})</span>
+                <span class="k">continue</span>
+            <span class="k">except</span> <span class="n">exception</span><span class="o">.</span><span class="n">NodeNotFound</span><span class="p">:</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s2">&quot;During starting console on conductor &quot;</span>
+                                <span class="s2">&quot;startup, node </span><span class="si">%(node)s</span><span class="s2"> was not found&quot;</span><span class="p">),</span>
+                            <span class="p">{</span><span class="s1">&#39;node&#39;</span><span class="p">:</span> <span class="n">node_uuid</span><span class="p">})</span>
+                <span class="k">continue</span>
+            <span class="k">finally</span><span class="p">:</span>
+                <span class="c1"># Yield on every iteration</span>
+                <span class="n">eventlet</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span></div>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/ironic
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../../index.html">Ironic 7.0.1.dev7 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../../index.html" accesskey="U">Module code</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright OpenStack Foundation.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/Ironic");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

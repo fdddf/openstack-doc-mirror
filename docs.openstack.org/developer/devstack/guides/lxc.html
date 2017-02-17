@@ -1,0 +1,290 @@
+
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>All-In-One Single LXC Container &mdash; DevStack 0.0.1.dev8194 documentation</title>
+    
+    <link rel="stylesheet" href="../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../',
+        VERSION:     '0.0.1.dev8194',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../_static/jquery.js"></script>
+    <script type="text/javascript" src="../_static/underscore.js"></script>
+    <script type="text/javascript" src="../_static/doctools.js"></script>
+    <link rel="top" title="DevStack 0.0.1.dev8194 documentation" href="../index.html" /> 
+  </head>
+  <body>
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body">
+            
+  <div class="section" id="all-in-one-single-lxc-container">
+<h1>All-In-One Single LXC Container<a class="headerlink" href="#all-in-one-single-lxc-container" title="Permalink to this headline">¶</a></h1>
+<p>This guide walks you through the process of deploying OpenStack using devstack
+in an LXC container instead of a VM.</p>
+<p>The primary benefits to running devstack inside a container instead of a VM is
+faster performance and lower memory overhead while still providing a suitable
+level of isolation. This can be particularly useful when you want to simulate
+running OpenStack on multiple nodes.</p>
+<div class="admonition warning">
+<p class="first admonition-title">Warning</p>
+<p class="last">Containers do not provide the same level of isolation as a virtual
+machine.</p>
+</div>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">Not all OpenStack features support running inside of a container. See
+<a class="reference internal" href="#limitations">Limitations</a> section below for details. <a class="reference internal" href="single-vm.html"><em>OpenStack in a VM</em></a>
+is recommended for beginners.</p>
+</div>
+<div class="section" id="prerequisites">
+<h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Permalink to this headline">¶</a></h2>
+<p>This guide is written for Ubuntu 14.04 but should be adaptable for any modern
+Linux distribution.</p>
+<p>Install the LXC package:</p>
+<div class="highlight-python"><pre>sudo apt-get install lxc</pre>
+</div>
+<p>You can verify support for containerization features in your currently running
+kernel using the <tt class="docutils literal"><span class="pre">lxc-checkconfig</span></tt> command.</p>
+</div>
+<div class="section" id="container-setup">
+<h2>Container Setup<a class="headerlink" href="#container-setup" title="Permalink to this headline">¶</a></h2>
+<div class="section" id="configuration">
+<h3>Configuration<a class="headerlink" href="#configuration" title="Permalink to this headline">¶</a></h3>
+<p>For a successful run of <tt class="docutils literal"><span class="pre">stack.sh</span></tt> and to permit use of KVM to run the VMs you
+launch inside your container, we need to use the following additional
+configuration options. Place the following in a file called
+<tt class="docutils literal"><span class="pre">devstack-lxc.conf</span></tt>:</p>
+<div class="highlight-python"><pre># Permit access to /dev/loop*
+lxc.cgroup.devices.allow = b 7:* rwm
+
+# Setup access to /dev/net/tun and /dev/kvm
+lxc.mount.entry = /dev/net/tun dev/net/tun none bind,create=file 0 0
+lxc.mount.entry = /dev/kvm dev/kvm none bind,create=file 0 0
+
+# Networking
+lxc.network.type = veth
+lxc.network.flags = up
+lxc.network.link = lxcbr0</pre>
+</div>
+</div>
+<div class="section" id="create-container">
+<h3>Create Container<a class="headerlink" href="#create-container" title="Permalink to this headline">¶</a></h3>
+<p>The configuration and rootfs for LXC containers are created using the
+<tt class="docutils literal"><span class="pre">lxc-create</span></tt> command.</p>
+<p>We will name our container <tt class="docutils literal"><span class="pre">devstack</span></tt> and use the <tt class="docutils literal"><span class="pre">ubuntu</span></tt> template which
+will use <tt class="docutils literal"><span class="pre">debootstrap</span></tt> to build a Ubuntu rootfs. It will default to the same
+release and architecture as the host system. We also install the additional
+packages <tt class="docutils literal"><span class="pre">bsdmainutils</span></tt> and <tt class="docutils literal"><span class="pre">git</span></tt> as we&#8217;ll need them to run devstack:</p>
+<div class="highlight-python"><pre>sudo lxc-create -n devstack -t ubuntu -f devstack-lxc.conf -- --packages=bsdmainutils,git</pre>
+</div>
+<p>The first time it builds the rootfs will take a few minutes to download, unpack,
+and configure all the necessary packages for a minimal installation of Ubuntu.
+LXC will cache this and subsequent containers will only take seconds to create.</p>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">To speed up the initial rootfs creation, you can specify a mirror to
+download the Ubuntu packages from by appending <tt class="docutils literal"><span class="pre">--mirror=</span></tt> and then the URL
+of a Ubuntu mirror. To see other other template options, you can run
+<tt class="docutils literal"><span class="pre">lxc-create</span> <span class="pre">-t</span> <span class="pre">ubuntu</span> <span class="pre">-h</span></tt>.</p>
+</div>
+</div>
+<div class="section" id="start-container">
+<h3>Start Container<a class="headerlink" href="#start-container" title="Permalink to this headline">¶</a></h3>
+<p>To start the container, run:</p>
+<div class="highlight-python"><pre>sudo lxc-start -n devstack</pre>
+</div>
+<p>A moment later you should be presented with the login prompt for your container.
+You can login using the username <tt class="docutils literal"><span class="pre">ubuntu</span></tt> and password <tt class="docutils literal"><span class="pre">ubuntu</span></tt>.</p>
+<p>You can also ssh into your container. On your host, run
+<tt class="docutils literal"><span class="pre">sudo</span> <span class="pre">lxc-info</span> <span class="pre">-n</span> <span class="pre">devstack</span></tt> to get the IP address (e.g.
+<tt class="docutils literal"><span class="pre">ssh</span> <span class="pre">ubuntu&#64;$(sudo</span> <span class="pre">lxc-info</span> <span class="pre">-n</span> <span class="pre">devstack</span> <span class="pre">|</span> <span class="pre">awk</span> <span class="pre">'/IP/</span> <span class="pre">{</span> <span class="pre">print</span> <span class="pre">$2</span> <span class="pre">}')</span></tt>).</p>
+</div>
+<div class="section" id="run-devstack">
+<h3>Run Devstack<a class="headerlink" href="#run-devstack" title="Permalink to this headline">¶</a></h3>
+<p>You should now be logged into your container and almost ready to run devstack.
+The commands in this section should all be run inside your container.</p>
+<div class="admonition tip">
+<p class="first admonition-title">Tip</p>
+<p class="last">You can greatly reduce the runtime of your initial devstack setup by
+ensuring you have your apt sources.list configured to use a fast mirror.
+Check and update <tt class="docutils literal"><span class="pre">/etc/apt/sources.list</span></tt> if necessary and then run
+<tt class="docutils literal"><span class="pre">apt-get</span> <span class="pre">update</span></tt>.</p>
+</div>
+<ol class="arabic">
+<li><p class="first">Download DevStack</p>
+<div class="highlight-python"><pre>git clone https://git.openstack.org/openstack-dev/devstack</pre>
+</div>
+</li>
+<li><p class="first">Configure</p>
+<p>Refer to <a class="reference internal" href="../configuration.html#minimal-configuration"><em>Minimal Configuration</em></a> if you wish to configure the behaviour
+of devstack.</p>
+</li>
+<li><p class="first">Start the install</p>
+<div class="highlight-python"><pre>cd devstack
+./stack.sh</pre>
+</div>
+</li>
+</ol>
+</div>
+<div class="section" id="cleanup">
+<h3>Cleanup<a class="headerlink" href="#cleanup" title="Permalink to this headline">¶</a></h3>
+<p>To stop the container:</p>
+<div class="highlight-python"><pre>lxc-stop -n devstack</pre>
+</div>
+<p>To delete the container:</p>
+<div class="highlight-python"><pre>lxc-destroy -n devstack</pre>
+</div>
+</div>
+</div>
+<div class="section" id="limitations">
+<h2>Limitations<a class="headerlink" href="#limitations" title="Permalink to this headline">¶</a></h2>
+<p>Not all OpenStack features may function correctly or at all when ran from within
+a container.</p>
+<div class="section" id="cinder">
+<h3>Cinder<a class="headerlink" href="#cinder" title="Permalink to this headline">¶</a></h3>
+<div class="section" id="unable-to-create-lvm-backed-volume">
+<h4>Unable to create LVM backed volume<a class="headerlink" href="#unable-to-create-lvm-backed-volume" title="Permalink to this headline">¶</a></h4>
+<blockquote>
+<div><p>In our configuration, we have not whitelisted access to device-mapper or LVM
+devices. Doing so will permit your container to have access and control of LVM
+on the host system. To enable, add the following to your
+<tt class="docutils literal"><span class="pre">devstack-lxc.conf</span></tt> before running <tt class="docutils literal"><span class="pre">lxc-create</span></tt>:</p>
+<div class="highlight-python"><pre>lxc.cgroup.devices.allow = c 10:236 rwm
+lxc.cgroup.devices.allow = b 252:* rwm</pre>
+</div>
+<p>Additionally you&#8217;ll need to set <tt class="docutils literal"><span class="pre">udev_rules</span> <span class="pre">=</span> <span class="pre">0</span></tt> in the <tt class="docutils literal"><span class="pre">activation</span></tt>
+section of <tt class="docutils literal"><span class="pre">/etc/lvm/lvm.conf</span></tt> unless you mount devtmpfs in your container.</p>
+</div></blockquote>
+</div>
+<div class="section" id="unable-to-attach-volume-to-instance">
+<h4>Unable to attach volume to instance<a class="headerlink" href="#unable-to-attach-volume-to-instance" title="Permalink to this headline">¶</a></h4>
+<blockquote>
+<div>It is not possible to attach cinder volumes to nova instances due to parts of
+the Linux iSCSI implementation not being network namespace aware. This can be
+worked around by using network pass-through instead of a separate network
+namespace but such a setup significantly reduces the isolation of the
+container (e.g. a <tt class="docutils literal"><span class="pre">halt</span></tt> command issued in the container will cause the host
+system to shutdown).</div></blockquote>
+</div>
+</div>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="../index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">All-In-One Single LXC Container</a><ul>
+<li><a class="reference internal" href="#prerequisites">Prerequisites</a></li>
+<li><a class="reference internal" href="#container-setup">Container Setup</a><ul>
+<li><a class="reference internal" href="#configuration">Configuration</a></li>
+<li><a class="reference internal" href="#create-container">Create Container</a></li>
+<li><a class="reference internal" href="#start-container">Start Container</a></li>
+<li><a class="reference internal" href="#run-devstack">Run Devstack</a></li>
+<li><a class="reference internal" href="#cleanup">Cleanup</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#limitations">Limitations</a><ul>
+<li><a class="reference internal" href="#cinder">Cinder</a><ul>
+<li><a class="reference internal" href="#unable-to-create-lvm-backed-volume">Unable to create LVM backed volume</a></li>
+<li><a class="reference internal" href="#unable-to-attach-volume-to-instance">Unable to attach volume to instance</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack-dev/devstack
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="../_sources/guides/lxc.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related">
+      <h3>Navigation</h3>
+      <ul>
+        <li><a href="../index.html">DevStack 0.0.1.dev8194 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer">
+        &copy; Copyright 2014, OpenStack Foundation.
+      Last updated on Mon Feb 13 19:57:46 2017, commit 6bd3561.
+      Created using <a href="http://sphinx.pocoo.org/">Sphinx</a> 1.1.3.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/DevStack");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

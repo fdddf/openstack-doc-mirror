@@ -1,0 +1,511 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>taskflow.atom &mdash; TaskFlow 2.9.1.dev9 documentation</title>
+    
+    <link rel="stylesheet" href="../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../',
+        VERSION:     '2.9.1.dev9',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../_static/doctools.js"></script>
+    <link rel="top" title="TaskFlow 2.9.1.dev9 documentation" href="../../index.html" />
+    <link rel="up" title="Module code" href="../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for taskflow.atom</h1><div class="highlight"><pre>
+<span></span><span class="c1"># -*- coding: utf-8 -*-</span>
+
+<span class="c1">#    Copyright (C) 2013 Rackspace Hosting Inc. All Rights Reserved.</span>
+<span class="c1">#    Copyright (C) 2013 Yahoo! Inc. All Rights Reserved.</span>
+<span class="c1">#</span>
+<span class="c1">#    Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may</span>
+<span class="c1">#    not use this file except in compliance with the License. You may obtain</span>
+<span class="c1">#    a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#         http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1">#    Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1">#    distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="c1">#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="c1">#    License for the specific language governing permissions and limitations</span>
+<span class="c1">#    under the License.</span>
+
+<span class="kn">import</span> <span class="nn">abc</span>
+<span class="kn">import</span> <span class="nn">collections</span>
+<span class="kn">import</span> <span class="nn">itertools</span>
+
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">reflection</span>
+<span class="kn">import</span> <span class="nn">six</span>
+<span class="kn">from</span> <span class="nn">six.moves</span> <span class="kn">import</span> <span class="nb">zip</span> <span class="k">as</span> <span class="n">compat_zip</span>
+
+<span class="kn">from</span> <span class="nn">taskflow.types</span> <span class="kn">import</span> <span class="n">sets</span>
+<span class="kn">from</span> <span class="nn">taskflow.utils</span> <span class="kn">import</span> <span class="n">misc</span>
+
+
+<span class="c1"># Helper types tuples...</span>
+<span class="n">_sequence_types</span> <span class="o">=</span> <span class="p">(</span><span class="nb">list</span><span class="p">,</span> <span class="nb">tuple</span><span class="p">,</span> <span class="n">collections</span><span class="o">.</span><span class="n">Sequence</span><span class="p">)</span>
+<span class="n">_set_types</span> <span class="o">=</span> <span class="p">(</span><span class="nb">set</span><span class="p">,</span> <span class="n">collections</span><span class="o">.</span><span class="n">Set</span><span class="p">)</span>
+
+<span class="c1"># the default list of revert arguments to ignore when deriving</span>
+<span class="c1"># revert argument mapping from the revert method signature</span>
+<span class="n">_default_revert_args</span> <span class="o">=</span> <span class="p">(</span><span class="s1">&#39;result&#39;</span><span class="p">,</span> <span class="s1">&#39;flow_failures&#39;</span><span class="p">)</span>
+
+
+<span class="k">def</span> <span class="nf">_save_as_to_mapping</span><span class="p">(</span><span class="n">save_as</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Convert save_as to mapping name =&gt; index.</span>
+
+<span class="sd">    Result should follow storage convention for mappings.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="c1"># TODO(harlowja): we should probably document this behavior &amp; convention</span>
+    <span class="c1"># outside of code so that it&#39;s more easily understandable, since what an</span>
+    <span class="c1"># atom returns is pretty crucial for other later operations.</span>
+    <span class="k">if</span> <span class="n">save_as</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">collections</span><span class="o">.</span><span class="n">OrderedDict</span><span class="p">()</span>
+    <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">save_as</span><span class="p">,</span> <span class="n">six</span><span class="o">.</span><span class="n">string_types</span><span class="p">):</span>
+        <span class="c1"># NOTE(harlowja): this means that your atom will only return one item</span>
+        <span class="c1"># instead of a dictionary-like object or a indexable object (like a</span>
+        <span class="c1"># list or tuple).</span>
+        <span class="k">return</span> <span class="n">collections</span><span class="o">.</span><span class="n">OrderedDict</span><span class="p">([(</span><span class="n">save_as</span><span class="p">,</span> <span class="bp">None</span><span class="p">)])</span>
+    <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">save_as</span><span class="p">,</span> <span class="n">_sequence_types</span><span class="p">):</span>
+        <span class="c1"># NOTE(harlowja): this means that your atom will return a indexable</span>
+        <span class="c1"># object, like a list or tuple and the results can be mapped by index</span>
+        <span class="c1"># to that tuple/list that is returned for others to use.</span>
+        <span class="k">return</span> <span class="n">collections</span><span class="o">.</span><span class="n">OrderedDict</span><span class="p">((</span><span class="n">key</span><span class="p">,</span> <span class="n">num</span><span class="p">)</span>
+                                       <span class="k">for</span> <span class="n">num</span><span class="p">,</span> <span class="n">key</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">save_as</span><span class="p">))</span>
+    <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">save_as</span><span class="p">,</span> <span class="n">_set_types</span><span class="p">):</span>
+        <span class="c1"># NOTE(harlowja): in the case where a set is given we will not be</span>
+        <span class="c1"># able to determine the numeric ordering in a reliable way (since it</span>
+        <span class="c1"># may be an unordered set) so the only way for us to easily map the</span>
+        <span class="c1"># result of the atom will be via the key itself.</span>
+        <span class="k">return</span> <span class="n">collections</span><span class="o">.</span><span class="n">OrderedDict</span><span class="p">((</span><span class="n">key</span><span class="p">,</span> <span class="n">key</span><span class="p">)</span> <span class="k">for</span> <span class="n">key</span> <span class="ow">in</span> <span class="n">save_as</span><span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="s1">&#39;Atom provides parameter &#39;</span>
+                        <span class="s1">&#39;should be str, set or tuple/list, not </span><span class="si">%r</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="n">save_as</span><span class="p">)</span>
+
+
+<span class="k">def</span> <span class="nf">_build_rebind_dict</span><span class="p">(</span><span class="n">req_args</span><span class="p">,</span> <span class="n">rebind_args</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Build a argument remapping/rebinding dictionary.</span>
+
+<span class="sd">    This dictionary allows an atom to declare that it will take a needed</span>
+<span class="sd">    requirement bound to a given name with another name instead (mapping the</span>
+<span class="sd">    new name onto the required name).</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">if</span> <span class="n">rebind_args</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">collections</span><span class="o">.</span><span class="n">OrderedDict</span><span class="p">()</span>
+    <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">rebind_args</span><span class="p">,</span> <span class="p">(</span><span class="nb">list</span><span class="p">,</span> <span class="nb">tuple</span><span class="p">)):</span>
+        <span class="c1"># Attempt to map the rebound argument names position by position to</span>
+        <span class="c1"># the required argument names (if they are the same length then</span>
+        <span class="c1"># this determines how to remap the required argument names to the</span>
+        <span class="c1"># rebound ones).</span>
+        <span class="n">rebind</span> <span class="o">=</span> <span class="n">collections</span><span class="o">.</span><span class="n">OrderedDict</span><span class="p">(</span><span class="n">compat_zip</span><span class="p">(</span><span class="n">req_args</span><span class="p">,</span> <span class="n">rebind_args</span><span class="p">))</span>
+        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">req_args</span><span class="p">)</span> <span class="o">&lt;</span> <span class="nb">len</span><span class="p">(</span><span class="n">rebind_args</span><span class="p">):</span>
+            <span class="c1"># Extra things were rebound, that may be because of *args</span>
+            <span class="c1"># or **kwargs (or some other reason); so just keep all of them</span>
+            <span class="c1"># using 1:1 rebinding...</span>
+            <span class="n">rebind</span><span class="o">.</span><span class="n">update</span><span class="p">((</span><span class="n">a</span><span class="p">,</span> <span class="n">a</span><span class="p">)</span> <span class="k">for</span> <span class="n">a</span> <span class="ow">in</span> <span class="n">rebind_args</span><span class="p">[</span><span class="nb">len</span><span class="p">(</span><span class="n">req_args</span><span class="p">):])</span>
+        <span class="k">return</span> <span class="n">rebind</span>
+    <span class="k">elif</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">rebind_args</span><span class="p">,</span> <span class="nb">dict</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">rebind_args</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="s2">&quot;Invalid rebind value &#39;</span><span class="si">%s</span><span class="s2">&#39; (</span><span class="si">%s</span><span class="s2">)&quot;</span>
+                        <span class="o">%</span> <span class="p">(</span><span class="n">rebind_args</span><span class="p">,</span> <span class="nb">type</span><span class="p">(</span><span class="n">rebind_args</span><span class="p">)))</span>
+
+
+<span class="k">def</span> <span class="nf">_build_arg_mapping</span><span class="p">(</span><span class="n">atom_name</span><span class="p">,</span> <span class="n">reqs</span><span class="p">,</span> <span class="n">rebind_args</span><span class="p">,</span> <span class="n">function</span><span class="p">,</span> <span class="n">do_infer</span><span class="p">,</span>
+                       <span class="n">ignore_list</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Builds an input argument mapping for a given function.</span>
+
+<span class="sd">    Given a function, its requirements and a rebind mapping this helper</span>
+<span class="sd">    function will build the correct argument mapping for the given function as</span>
+<span class="sd">    well as verify that the final argument mapping does not have missing or</span>
+<span class="sd">    extra arguments (where applicable).</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="c1"># Build a list of required arguments based on function signature.</span>
+    <span class="n">req_args</span> <span class="o">=</span> <span class="n">reflection</span><span class="o">.</span><span class="n">get_callable_args</span><span class="p">(</span><span class="n">function</span><span class="p">,</span> <span class="n">required_only</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+    <span class="n">all_args</span> <span class="o">=</span> <span class="n">reflection</span><span class="o">.</span><span class="n">get_callable_args</span><span class="p">(</span><span class="n">function</span><span class="p">,</span> <span class="n">required_only</span><span class="o">=</span><span class="bp">False</span><span class="p">)</span>
+
+    <span class="c1"># Remove arguments that are part of ignore list.</span>
+    <span class="k">if</span> <span class="n">ignore_list</span><span class="p">:</span>
+        <span class="k">for</span> <span class="n">arg</span> <span class="ow">in</span> <span class="n">ignore_list</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">arg</span> <span class="ow">in</span> <span class="n">req_args</span><span class="p">:</span>
+                <span class="n">req_args</span><span class="o">.</span><span class="n">remove</span><span class="p">(</span><span class="n">arg</span><span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">ignore_list</span> <span class="o">=</span> <span class="p">[]</span>
+
+    <span class="c1"># Build the required names.</span>
+    <span class="n">required</span> <span class="o">=</span> <span class="n">collections</span><span class="o">.</span><span class="n">OrderedDict</span><span class="p">()</span>
+
+    <span class="c1"># Add required arguments to required mappings if inference is enabled.</span>
+    <span class="k">if</span> <span class="n">do_infer</span><span class="p">:</span>
+        <span class="n">required</span><span class="o">.</span><span class="n">update</span><span class="p">((</span><span class="n">a</span><span class="p">,</span> <span class="n">a</span><span class="p">)</span> <span class="k">for</span> <span class="n">a</span> <span class="ow">in</span> <span class="n">req_args</span><span class="p">)</span>
+
+    <span class="c1"># Add additional manually provided requirements to required mappings.</span>
+    <span class="k">if</span> <span class="n">reqs</span><span class="p">:</span>
+        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">reqs</span><span class="p">,</span> <span class="n">six</span><span class="o">.</span><span class="n">string_types</span><span class="p">):</span>
+            <span class="n">required</span><span class="o">.</span><span class="n">update</span><span class="p">({</span><span class="n">reqs</span><span class="p">:</span> <span class="n">reqs</span><span class="p">})</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">required</span><span class="o">.</span><span class="n">update</span><span class="p">((</span><span class="n">a</span><span class="p">,</span> <span class="n">a</span><span class="p">)</span> <span class="k">for</span> <span class="n">a</span> <span class="ow">in</span> <span class="n">reqs</span><span class="p">)</span>
+
+    <span class="c1"># Update required mappings values based on rebinding of arguments names.</span>
+    <span class="n">required</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">_build_rebind_dict</span><span class="p">(</span><span class="n">req_args</span><span class="p">,</span> <span class="n">rebind_args</span><span class="p">))</span>
+
+    <span class="c1"># Determine if there are optional arguments that we may or may not take.</span>
+    <span class="k">if</span> <span class="n">do_infer</span><span class="p">:</span>
+        <span class="n">opt_args</span> <span class="o">=</span> <span class="n">sets</span><span class="o">.</span><span class="n">OrderedSet</span><span class="p">(</span><span class="n">all_args</span><span class="p">)</span>
+        <span class="n">opt_args</span> <span class="o">=</span> <span class="n">opt_args</span> <span class="o">-</span> <span class="nb">set</span><span class="p">(</span><span class="n">itertools</span><span class="o">.</span><span class="n">chain</span><span class="p">(</span><span class="n">six</span><span class="o">.</span><span class="n">iterkeys</span><span class="p">(</span><span class="n">required</span><span class="p">),</span>
+                                                  <span class="nb">iter</span><span class="p">(</span><span class="n">ignore_list</span><span class="p">)))</span>
+        <span class="n">optional</span> <span class="o">=</span> <span class="n">collections</span><span class="o">.</span><span class="n">OrderedDict</span><span class="p">((</span><span class="n">a</span><span class="p">,</span> <span class="n">a</span><span class="p">)</span> <span class="k">for</span> <span class="n">a</span> <span class="ow">in</span> <span class="n">opt_args</span><span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">optional</span> <span class="o">=</span> <span class="n">collections</span><span class="o">.</span><span class="n">OrderedDict</span><span class="p">()</span>
+
+    <span class="c1"># Check if we are given some extra arguments that we aren&#39;t able to accept.</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">reflection</span><span class="o">.</span><span class="n">accepts_kwargs</span><span class="p">(</span><span class="n">function</span><span class="p">):</span>
+        <span class="n">extra_args</span> <span class="o">=</span> <span class="n">sets</span><span class="o">.</span><span class="n">OrderedSet</span><span class="p">(</span><span class="n">six</span><span class="o">.</span><span class="n">iterkeys</span><span class="p">(</span><span class="n">required</span><span class="p">))</span>
+        <span class="n">extra_args</span> <span class="o">-=</span> <span class="n">all_args</span>
+        <span class="k">if</span> <span class="n">extra_args</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s1">&#39;Extra arguments given to atom </span><span class="si">%s</span><span class="s1">: </span><span class="si">%s</span><span class="s1">&#39;</span>
+                             <span class="o">%</span> <span class="p">(</span><span class="n">atom_name</span><span class="p">,</span> <span class="nb">list</span><span class="p">(</span><span class="n">extra_args</span><span class="p">)))</span>
+
+    <span class="c1"># NOTE(imelnikov): don&#39;t use set to preserve order in error message</span>
+    <span class="n">missing_args</span> <span class="o">=</span> <span class="p">[</span><span class="n">arg</span> <span class="k">for</span> <span class="n">arg</span> <span class="ow">in</span> <span class="n">req_args</span> <span class="k">if</span> <span class="n">arg</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">required</span><span class="p">]</span>
+    <span class="k">if</span> <span class="n">missing_args</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s1">&#39;Missing arguments for atom </span><span class="si">%s</span><span class="s1">: </span><span class="si">%s</span><span class="s1">&#39;</span>
+                         <span class="o">%</span> <span class="p">(</span><span class="n">atom_name</span><span class="p">,</span> <span class="n">missing_args</span><span class="p">))</span>
+    <span class="k">return</span> <span class="n">required</span><span class="p">,</span> <span class="n">optional</span>
+
+
+<span class="nd">@six.add_metaclass</span><span class="p">(</span><span class="n">abc</span><span class="o">.</span><span class="n">ABCMeta</span><span class="p">)</span>
+<div class="viewcode-block" id="Atom"><a class="viewcode-back" href="../../atoms.html#taskflow.atom.Atom">[docs]</a><span class="k">class</span> <span class="nc">Atom</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;An unit of work that causes a flow to progress (in some manner).</span>
+
+<span class="sd">    An atom is a named object that operates with input data to perform</span>
+<span class="sd">    some action that furthers the overall flows progress. It usually also</span>
+<span class="sd">    produces some of its own named output as a result of this process.</span>
+
+<span class="sd">    :param name: Meaningful name for this atom, should be something that is</span>
+<span class="sd">                 distinguishable and understandable for notification,</span>
+<span class="sd">                 debugging, storing and any other similar purposes.</span>
+<span class="sd">    :param provides: A set, string or list of items that</span>
+<span class="sd">                     this will be providing (or could provide) to others, used</span>
+<span class="sd">                     to correlate and associate the thing/s this atom</span>
+<span class="sd">                     produces, if it produces anything at all.</span>
+<span class="sd">    :param inject: An *immutable* input_name =&gt; value dictionary which</span>
+<span class="sd">                   specifies  any initial inputs that should be automatically</span>
+<span class="sd">                   injected into the atoms scope before the atom execution</span>
+<span class="sd">                   commences (this allows for providing atom *local* values</span>
+<span class="sd">                   that do not need to be provided by other atoms/dependents).</span>
+<span class="sd">    :param rebind: A dict of key/value pairs used to define argument</span>
+<span class="sd">                   name conversions for inputs to this atom&#39;s ``execute``</span>
+<span class="sd">                   method.</span>
+<span class="sd">    :param revert_rebind: The same as ``rebind`` but for the ``revert``</span>
+<span class="sd">                          method. If unpassed, ``rebind`` will be used</span>
+<span class="sd">                          instead.</span>
+<span class="sd">    :param requires: A set or list of required inputs for this atom&#39;s</span>
+<span class="sd">                     ``execute`` method.</span>
+<span class="sd">    :param revert_requires: A set or list of required inputs for this atom&#39;s</span>
+<span class="sd">                            ``revert`` method. If unpassed, ```requires`` will</span>
+<span class="sd">                            be used.</span>
+<span class="sd">    :ivar version: An *immutable* version that associates version information</span>
+<span class="sd">                   with this atom. It can be useful in resuming older versions</span>
+<span class="sd">                   of atoms. Standard major, minor versioning concepts</span>
+<span class="sd">                   should apply.</span>
+<span class="sd">    :ivar save_as: An *immutable* output ``resource`` name</span>
+<span class="sd">                   :py:class:`.OrderedDict` this atom produces that other</span>
+<span class="sd">                   atoms may depend on this atom providing. The format is</span>
+<span class="sd">                   output index (or key when a dictionary is returned from</span>
+<span class="sd">                   the execute method) to stored argument name.</span>
+<span class="sd">    :ivar rebind: An *immutable* input ``resource`` :py:class:`.OrderedDict`</span>
+<span class="sd">                  that can be used to alter the inputs given to this atom. It</span>
+<span class="sd">                  is typically used for mapping a prior atoms output into</span>
+<span class="sd">                  the names that this atom expects (in a way this is like</span>
+<span class="sd">                  remapping a namespace of another atom into the namespace</span>
+<span class="sd">                  of this atom).</span>
+<span class="sd">    :ivar revert_rebind: The same as ``rebind`` but for the revert method. This</span>
+<span class="sd">                         should only differ from ``rebind`` if the ``revert``</span>
+<span class="sd">                         method has a different signature from ``execute`` or</span>
+<span class="sd">                         a different ``revert_rebind`` value was received.</span>
+<span class="sd">    :ivar inject: See parameter ``inject``.</span>
+<span class="sd">    :ivar name: See parameter ``name``.</span>
+<span class="sd">    :ivar requires: A :py:class:`~taskflow.types.sets.OrderedSet` of inputs</span>
+<span class="sd">                    this atom requires to function.</span>
+<span class="sd">    :ivar optional: A :py:class:`~taskflow.types.sets.OrderedSet` of inputs</span>
+<span class="sd">                    that are optional for this atom to ``execute``.</span>
+<span class="sd">    :ivar revert_optional: The ``revert`` version of ``optional``.</span>
+<span class="sd">    :ivar provides: A :py:class:`~taskflow.types.sets.OrderedSet` of outputs</span>
+<span class="sd">                    this atom produces.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">priority</span> <span class="o">=</span> <span class="mi">0</span>
+    <span class="sd">&quot;&quot;&quot;A numeric priority that instances of this class will have when running,</span>
+<span class="sd">    used when there are multiple *parallel* candidates to execute and/or</span>
+<span class="sd">    revert. During this situation the candidate list will be stably sorted</span>
+<span class="sd">    based on this priority attribute which will result in atoms with higher</span>
+<span class="sd">    priorities executing (or reverting) before atoms with lower</span>
+<span class="sd">    priorities (higher being defined as a number bigger, or greater tha</span>
+<span class="sd">    an atom with a lower priority number). By default all atoms have the same</span>
+<span class="sd">    priority (zero).</span>
+
+<span class="sd">    For example when the following is combined into a</span>
+<span class="sd">    graph (where each node in the denoted graph is some task)::</span>
+
+<span class="sd">        a -&gt; b</span>
+<span class="sd">        b -&gt; c</span>
+<span class="sd">        b -&gt; e</span>
+<span class="sd">        b -&gt; f</span>
+
+<span class="sd">    When ``b`` finishes there will then be three candidates that can run</span>
+<span class="sd">    ``(c, e, f)`` and they may run in any order. What this priority does is</span>
+<span class="sd">    sort those three by their priority before submitting them to be</span>
+<span class="sd">    worked on (so that instead of say a random run order they will now be</span>
+<span class="sd">    ran by there sorted order). This is also true when reverting (in that the</span>
+<span class="sd">    sort order of the potential nodes will be used to determine the</span>
+<span class="sd">    submission order).</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">default_provides</span> <span class="o">=</span> <span class="bp">None</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">provides</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">requires</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+                 <span class="n">auto_extract</span><span class="o">=</span><span class="bp">True</span><span class="p">,</span> <span class="n">rebind</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">inject</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+                 <span class="n">ignore_list</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">revert_rebind</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">revert_requires</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+
+        <span class="k">if</span> <span class="n">provides</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">provides</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">default_provides</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">name</span> <span class="o">=</span> <span class="n">name</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">version</span> <span class="o">=</span> <span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">inject</span> <span class="o">=</span> <span class="n">inject</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">save_as</span> <span class="o">=</span> <span class="n">_save_as_to_mapping</span><span class="p">(</span><span class="n">provides</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">provides</span> <span class="o">=</span> <span class="n">sets</span><span class="o">.</span><span class="n">OrderedSet</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">save_as</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">ignore_list</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">ignore_list</span> <span class="o">=</span> <span class="p">[]</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">rebind</span><span class="p">,</span> <span class="n">exec_requires</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">optional</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_build_arg_mapping</span><span class="p">(</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">execute</span><span class="p">,</span>
+            <span class="n">requires</span><span class="o">=</span><span class="n">requires</span><span class="p">,</span>
+            <span class="n">rebind</span><span class="o">=</span><span class="n">rebind</span><span class="p">,</span> <span class="n">auto_extract</span><span class="o">=</span><span class="n">auto_extract</span><span class="p">,</span>
+            <span class="n">ignore_list</span><span class="o">=</span><span class="n">ignore_list</span>
+        <span class="p">)</span>
+
+        <span class="n">revert_ignore</span> <span class="o">=</span> <span class="n">ignore_list</span> <span class="o">+</span> <span class="nb">list</span><span class="p">(</span><span class="n">_default_revert_args</span><span class="p">)</span>
+        <span class="n">revert_mapping</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_build_arg_mapping</span><span class="p">(</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">revert</span><span class="p">,</span>
+            <span class="n">requires</span><span class="o">=</span><span class="n">revert_requires</span> <span class="ow">or</span> <span class="n">requires</span><span class="p">,</span>
+            <span class="n">rebind</span><span class="o">=</span><span class="n">revert_rebind</span> <span class="ow">or</span> <span class="n">rebind</span><span class="p">,</span>
+            <span class="n">auto_extract</span><span class="o">=</span><span class="n">auto_extract</span><span class="p">,</span>
+            <span class="n">ignore_list</span><span class="o">=</span><span class="n">revert_ignore</span>
+        <span class="p">)</span>
+        <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">revert_rebind</span><span class="p">,</span> <span class="n">addl_requires</span><span class="p">,</span>
+         <span class="bp">self</span><span class="o">.</span><span class="n">revert_optional</span><span class="p">)</span> <span class="o">=</span> <span class="n">revert_mapping</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">requires</span> <span class="o">=</span> <span class="n">exec_requires</span><span class="o">.</span><span class="n">union</span><span class="p">(</span><span class="n">addl_requires</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_build_arg_mapping</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">executor</span><span class="p">,</span> <span class="n">requires</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">rebind</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+                           <span class="n">auto_extract</span><span class="o">=</span><span class="bp">True</span><span class="p">,</span> <span class="n">ignore_list</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+
+        <span class="n">required</span><span class="p">,</span> <span class="n">optional</span> <span class="o">=</span> <span class="n">_build_arg_mapping</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="n">requires</span><span class="p">,</span> <span class="n">rebind</span><span class="p">,</span>
+                                                <span class="n">executor</span><span class="p">,</span> <span class="n">auto_extract</span><span class="p">,</span>
+                                                <span class="n">ignore_list</span><span class="o">=</span><span class="n">ignore_list</span><span class="p">)</span>
+        <span class="c1"># Form the real rebind mapping, if a key name is the same as the</span>
+        <span class="c1"># key value, then well there is no rebinding happening, otherwise</span>
+        <span class="c1"># there will be.</span>
+        <span class="n">rebind</span> <span class="o">=</span> <span class="n">collections</span><span class="o">.</span><span class="n">OrderedDict</span><span class="p">()</span>
+        <span class="k">for</span> <span class="p">(</span><span class="n">arg_name</span><span class="p">,</span> <span class="n">bound_name</span><span class="p">)</span> <span class="ow">in</span> <span class="n">itertools</span><span class="o">.</span><span class="n">chain</span><span class="p">(</span><span class="n">six</span><span class="o">.</span><span class="n">iteritems</span><span class="p">(</span><span class="n">required</span><span class="p">),</span>
+                                                      <span class="n">six</span><span class="o">.</span><span class="n">iteritems</span><span class="p">(</span><span class="n">optional</span><span class="p">)):</span>
+            <span class="n">rebind</span><span class="o">.</span><span class="n">setdefault</span><span class="p">(</span><span class="n">arg_name</span><span class="p">,</span> <span class="n">bound_name</span><span class="p">)</span>
+        <span class="n">requires</span> <span class="o">=</span> <span class="n">sets</span><span class="o">.</span><span class="n">OrderedSet</span><span class="p">(</span><span class="n">six</span><span class="o">.</span><span class="n">itervalues</span><span class="p">(</span><span class="n">required</span><span class="p">))</span>
+        <span class="n">optional</span> <span class="o">=</span> <span class="n">sets</span><span class="o">.</span><span class="n">OrderedSet</span><span class="p">(</span><span class="n">six</span><span class="o">.</span><span class="n">itervalues</span><span class="p">(</span><span class="n">optional</span><span class="p">))</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">inject</span><span class="p">:</span>
+            <span class="n">inject_keys</span> <span class="o">=</span> <span class="nb">frozenset</span><span class="p">(</span><span class="n">six</span><span class="o">.</span><span class="n">iterkeys</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">inject</span><span class="p">))</span>
+            <span class="n">requires</span> <span class="o">-=</span> <span class="n">inject_keys</span>
+            <span class="n">optional</span> <span class="o">-=</span> <span class="n">inject_keys</span>
+        <span class="k">return</span> <span class="n">rebind</span><span class="p">,</span> <span class="n">requires</span><span class="p">,</span> <span class="n">optional</span>
+
+<div class="viewcode-block" id="Atom.pre_execute"><a class="viewcode-back" href="../../atoms.html#taskflow.atom.Atom.pre_execute">[docs]</a>    <span class="k">def</span> <span class="nf">pre_execute</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Code to be run prior to executing the atom.</span>
+
+<span class="sd">        A common pattern for initializing the state of the system prior to</span>
+<span class="sd">        running atoms is to define some code in a base class that all your</span>
+<span class="sd">        atoms inherit from.  In that class, you can define a ``pre_execute``</span>
+<span class="sd">        method and it will always be invoked just prior to your atoms running.</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="Atom.execute"><a class="viewcode-back" href="../../atoms.html#taskflow.atom.Atom.execute">[docs]</a>    <span class="k">def</span> <span class="nf">execute</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Activate a given atom which will perform some operation and return.</span>
+
+<span class="sd">        This method can be used to perform an action on a given set of input</span>
+<span class="sd">        requirements (passed in via ``*args`` and ``**kwargs``) to accomplish</span>
+<span class="sd">        some type of operation. This operation may provide some named</span>
+<span class="sd">        outputs/results as a result of it executing for later reverting (or for</span>
+<span class="sd">        other atoms to depend on).</span>
+
+<span class="sd">        NOTE(harlowja): the result (if any) that is returned should be</span>
+<span class="sd">        persistable so that it can be passed back into this atom if</span>
+<span class="sd">        reverting is triggered (especially in the case where reverting</span>
+<span class="sd">        happens in a different python process or on a remote machine) and so</span>
+<span class="sd">        that the result can be transmitted to other atoms (which may be local</span>
+<span class="sd">        or remote).</span>
+
+<span class="sd">        :param args: positional arguments that atom requires to execute.</span>
+<span class="sd">        :param kwargs: any keyword arguments that atom requires to execute.</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+<div class="viewcode-block" id="Atom.post_execute"><a class="viewcode-back" href="../../atoms.html#taskflow.atom.Atom.post_execute">[docs]</a>    <span class="k">def</span> <span class="nf">post_execute</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Code to be run after executing the atom.</span>
+
+<span class="sd">        A common pattern for cleaning up global state of the system after the</span>
+<span class="sd">        execution of atoms is to define some code in a base class that all your</span>
+<span class="sd">        atoms inherit from.  In that class, you can define a ``post_execute``</span>
+<span class="sd">        method and it will always be invoked just after your atoms execute,</span>
+<span class="sd">        regardless of whether they succeeded or not.</span>
+
+<span class="sd">        This pattern is useful if you have global shared database sessions</span>
+<span class="sd">        that need to be cleaned up, for example.</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+<div class="viewcode-block" id="Atom.pre_revert"><a class="viewcode-back" href="../../atoms.html#taskflow.atom.Atom.pre_revert">[docs]</a>    <span class="k">def</span> <span class="nf">pre_revert</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Code to be run prior to reverting the atom.</span>
+
+<span class="sd">        This works the same as :meth:`.pre_execute`, but for the revert phase.</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+<div class="viewcode-block" id="Atom.revert"><a class="viewcode-back" href="../../atoms.html#taskflow.atom.Atom.revert">[docs]</a>    <span class="k">def</span> <span class="nf">revert</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Revert this atom.</span>
+
+<span class="sd">        This method should undo any side-effects caused by previous execution</span>
+<span class="sd">        of the atom using the result of the :py:meth:`execute` method and</span>
+<span class="sd">        information on the failure which triggered reversion of the flow the</span>
+<span class="sd">        atom is contained in (if applicable).</span>
+
+<span class="sd">        :param args: positional arguments that the atom required to execute.</span>
+<span class="sd">        :param kwargs: any keyword arguments that the atom required to</span>
+<span class="sd">                       execute; the special key ``&#39;result&#39;`` will contain</span>
+<span class="sd">                       the :py:meth:`execute` result (if any) and</span>
+<span class="sd">                       the ``**kwargs`` key ``&#39;flow_failures&#39;`` will contain</span>
+<span class="sd">                       any failure information.</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+<div class="viewcode-block" id="Atom.post_revert"><a class="viewcode-back" href="../../atoms.html#taskflow.atom.Atom.post_revert">[docs]</a>    <span class="k">def</span> <span class="nf">post_revert</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Code to be run after reverting the atom.</span>
+
+<span class="sd">        This works the same as :meth:`.post_execute`, but for the revert phase.</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+    <span class="k">def</span> <span class="fm">__str__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="s2">&quot;</span><span class="si">%s</span><span class="s2">==</span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="n">misc</span><span class="o">.</span><span class="n">get_version_string</span><span class="p">(</span><span class="bp">self</span><span class="p">))</span>
+
+    <span class="k">def</span> <span class="fm">__repr__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="s1">&#39;&lt;</span><span class="si">%s</span><span class="s1"> </span><span class="si">%s</span><span class="s1">&gt;&#39;</span> <span class="o">%</span> <span class="p">(</span><span class="n">reflection</span><span class="o">.</span><span class="n">get_class_name</span><span class="p">(</span><span class="bp">self</span><span class="p">),</span> <span class="bp">self</span><span class="p">)</span></div>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+  <h3>Navigation</h3>
+  <ul>
+
+    <li><a href="../../index.html">Table Of Contents</a></li>
+
+
+
+  </ul>
+
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/taskflow
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../index.html">TaskFlow 2.9.1.dev9 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../index.html" accesskey="U">Module code</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2017, OpenStack Foundation.
+      Last updated on &#39;Fri Feb 10 20:11:17 2017, commit 643495f&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/TaskFlow");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

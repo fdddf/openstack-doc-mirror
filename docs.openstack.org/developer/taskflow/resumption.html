@@ -1,0 +1,297 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Resumption &mdash; TaskFlow 2.9.1.dev5 documentation</title>
+    
+    <link rel="stylesheet" href="_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '2.9.1.dev5',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <link rel="top" title="TaskFlow 2.9.1.dev5 documentation" href="index.html" />
+    <link rel="next" title="Jobs" href="jobs.html" />
+    <link rel="prev" title="Persistence" href="persistence.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="resumption">
+<h1>Resumption<a class="headerlink" href="#resumption" title="Permalink to this headline">¶</a></h1>
+<div class="section" id="overview">
+<h2>Overview<a class="headerlink" href="#overview" title="Permalink to this headline">¶</a></h2>
+<p><strong>Question</strong>: <em>How can we persist the flow so that it can be resumed, restarted
+or rolled-back on engine failure?</em></p>
+<p><strong>Answer:</strong> Since a flow is a set of <a class="reference internal" href="atoms.html"><em>atoms</em></a> and relations between
+atoms we need to create a model and corresponding information that allows us to
+persist the <em>right</em> amount of information to preserve, resume, and rollback a
+flow on software or hardware failure.</p>
+<p>To allow for resumption TaskFlow must be able to re-create the flow and
+re-connect the links between atom (and between atoms-&gt;atom details and so on)
+in order to revert those atoms or resume those atoms in the correct ordering.
+TaskFlow provides a pattern that can help in automating this process (it does
+<strong>not</strong> prohibit the user from creating their own strategies for doing this).</p>
+</div>
+<div class="section" id="factories">
+<span id="resumption-factories"></span><h2>Factories<a class="headerlink" href="#factories" title="Permalink to this headline">¶</a></h2>
+<p>The default provided way is to provide a <a class="reference external" href="https://en.wikipedia.org/wiki/Factory_%28object-oriented_programming%29">factory</a> function which will create
+(or recreate your workflow). This function can be provided when loading a flow
+and corresponding engine via the provided <a class="reference internal" href="engines.html#taskflow.engines.helpers.load_from_factory" title="taskflow.engines.helpers.load_from_factory"><code class="xref py py-meth docutils literal"><span class="pre">load_from_factory()</span></code></a> method. This <a class="reference external" href="https://en.wikipedia.org/wiki/Factory_%28object-oriented_programming%29">factory</a> function
+is expected to be a function (or <code class="docutils literal"><span class="pre">staticmethod</span></code>) which is reimportable (aka
+has a well defined name that can be located by the <code class="docutils literal"><span class="pre">__import__</span></code> function in
+python, this excludes <code class="docutils literal"><span class="pre">lambda</span></code> style functions and <code class="docutils literal"><span class="pre">instance</span></code> methods). The
+<a class="reference external" href="https://en.wikipedia.org/wiki/Factory_%28object-oriented_programming%29">factory</a> function name will be saved into the logbook and it will be imported
+and called to create the workflow objects (or recreate it if resumption
+happens). This allows for the flow to be recreated if and when that is needed
+(even on remote machines, as long as the reimportable name can be located).</p>
+</div>
+<div class="section" id="names">
+<h2>Names<a class="headerlink" href="#names" title="Permalink to this headline">¶</a></h2>
+<p>When a flow is created it is expected that each atom has a unique name, this
+name serves a special purpose in the resumption process (as well as serving a
+useful purpose when running, allowing for atom identification in the
+<a class="reference internal" href="notifications.html"><em>notification</em></a> process). The reason for having names is
+that an atom in a flow needs to be somehow  matched with (a potentially)
+existing <a class="reference internal" href="persistence.html#taskflow.persistence.models.AtomDetail" title="taskflow.persistence.models.AtomDetail"><code class="xref py py-class docutils literal"><span class="pre">AtomDetail</span></code></a> during engine
+resumption &amp; subsequent running.</p>
+<p>The match should be:</p>
+<ul class="simple">
+<li>stable if atoms are added or removed</li>
+<li>should not change when service is restarted, upgraded...</li>
+<li>should be the same across all server instances in HA setups</li>
+</ul>
+<p>Names provide this although they do have weaknesses:</p>
+<ul class="simple">
+<li>the names of atoms must be unique in flow</li>
+<li>it becomes hard to change the name of atom since a name change causes other
+side-effects</li>
+</ul>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">Even though these weaknesses names were selected as a <em>good enough</em>
+solution for the above matching requirements (until something better is
+invented/created that can satisfy those same requirements).</p>
+</div>
+</div>
+<div class="section" id="scenarios">
+<h2>Scenarios<a class="headerlink" href="#scenarios" title="Permalink to this headline">¶</a></h2>
+<p>When new flow is loaded into engine, there is no persisted data for it yet, so
+a corresponding <a class="reference internal" href="persistence.html#taskflow.persistence.models.FlowDetail" title="taskflow.persistence.models.FlowDetail"><code class="xref py py-class docutils literal"><span class="pre">FlowDetail</span></code></a> object
+will be created, as well as a
+<a class="reference internal" href="persistence.html#taskflow.persistence.models.AtomDetail" title="taskflow.persistence.models.AtomDetail"><code class="xref py py-class docutils literal"><span class="pre">AtomDetail</span></code></a> object for each atom that
+is contained in it. These will be immediately saved into the persistence
+backend that is configured. If no persistence backend is configured, then as
+expected nothing will be saved and the atoms and flow will be ran in a
+non-persistent manner.</p>
+<p><strong>Subsequent run:</strong> When we resume the flow from a persistent backend (for
+example, if the flow was interrupted and engine destroyed to save resources or
+if the service was restarted), we need to re-create the flow. For that, we will
+call the function that was saved on first-time loading that builds the flow for
+us (aka; the flow factory function described above) and the engine will run.
+The following scenarios explain some expected structural changes and how they
+can be accommodated (and what the effect will be when resuming &amp; running).</p>
+<div class="section" id="same-atoms">
+<h3>Same atoms<a class="headerlink" href="#same-atoms" title="Permalink to this headline">¶</a></h3>
+<p>When the factory function mentioned above returns the exact same the flow and
+atoms (no changes are performed).</p>
+<p><strong>Runtime change:</strong> Nothing should be done &#8211; the engine will re-associate
+atoms with <a class="reference internal" href="persistence.html#taskflow.persistence.models.AtomDetail" title="taskflow.persistence.models.AtomDetail"><code class="xref py py-class docutils literal"><span class="pre">AtomDetail</span></code></a> objects by name
+and then the engine resumes.</p>
+</div>
+<div class="section" id="atom-was-added">
+<h3>Atom was added<a class="headerlink" href="#atom-was-added" title="Permalink to this headline">¶</a></h3>
+<p>When the factory function mentioned above alters the flow by adding a new atom
+in (for example for changing the runtime structure of what was previously ran
+in the first run).</p>
+<p><strong>Runtime change:</strong> By default when the engine resumes it will notice that a
+corresponding <a class="reference internal" href="persistence.html#taskflow.persistence.models.AtomDetail" title="taskflow.persistence.models.AtomDetail"><code class="xref py py-class docutils literal"><span class="pre">AtomDetail</span></code></a> does not
+exist and one will be created and associated.</p>
+</div>
+<div class="section" id="atom-was-removed">
+<h3>Atom was removed<a class="headerlink" href="#atom-was-removed" title="Permalink to this headline">¶</a></h3>
+<p>When the factory function mentioned above alters the flow by removing a new
+atom in (for example for changing the runtime structure of what was previously
+ran in the first run).</p>
+<p><strong>Runtime change:</strong> Nothing should be done &#8211; flow structure is reloaded from
+factory function, and removed atom is not in it &#8211; so, flow will be ran as if
+it was not there, and any results it returned if it was completed before will
+be ignored.</p>
+</div>
+<div class="section" id="atom-code-was-changed">
+<h3>Atom code was changed<a class="headerlink" href="#atom-code-was-changed" title="Permalink to this headline">¶</a></h3>
+<p>When the factory function mentioned above alters the flow by deciding that a
+newer version of a previously existing atom should be ran (possibly to perform
+some kind of upgrade or to fix a bug in a prior atoms code).</p>
+<p><strong>Factory change:</strong> The atom name &amp; version will have to be altered. The
+factory should replace this name where it was being used previously.</p>
+<p><strong>Runtime change:</strong> This will fall under the same runtime adjustments that
+exist when a new atom is added. In the future TaskFlow could make this easier
+by providing a <code class="docutils literal"><span class="pre">upgrade()</span></code> function that can be used to give users the
+ability to upgrade atoms before running (manual introspection &amp; modification of
+a <a class="reference internal" href="persistence.html#taskflow.persistence.models.LogBook" title="taskflow.persistence.models.LogBook"><code class="xref py py-class docutils literal"><span class="pre">LogBook</span></code></a> can be done before engine
+loading and running to accomplish this in the meantime).</p>
+</div>
+<div class="section" id="atom-was-split-in-two-atoms-or-merged">
+<h3>Atom was split in two atoms or merged<a class="headerlink" href="#atom-was-split-in-two-atoms-or-merged" title="Permalink to this headline">¶</a></h3>
+<p>When the factory function mentioned above alters the flow by deciding that a
+previously existing atom should be split into N atoms or the factory function
+decides that N atoms should be merged in &lt;N atoms (typically occurring during
+refactoring).</p>
+<p><strong>Runtime change:</strong> This will fall under the same runtime adjustments that
+exist when a new atom is added or removed. In the future TaskFlow could make
+this easier by providing a <code class="docutils literal"><span class="pre">migrate()</span></code> function that can be used to give
+users the ability to migrate atoms previous data before running (manual
+introspection &amp; modification of a
+<a class="reference internal" href="persistence.html#taskflow.persistence.models.LogBook" title="taskflow.persistence.models.LogBook"><code class="xref py py-class docutils literal"><span class="pre">LogBook</span></code></a> can be done before engine
+loading and running to accomplish this in the meantime).</p>
+</div>
+<div class="section" id="flow-structure-was-changed">
+<h3>Flow structure was changed<a class="headerlink" href="#flow-structure-was-changed" title="Permalink to this headline">¶</a></h3>
+<p>If manual links were added or removed from graph, or task requirements were
+changed, or flow was refactored (atom moved into or out of subflows, linear
+flow was replaced with graph flow, tasks were reordered in linear flow, etc).</p>
+<p><strong>Runtime change:</strong> Nothing should be done.</p>
+</div>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Resumption</a><ul>
+<li><a class="reference internal" href="#overview">Overview</a></li>
+<li><a class="reference internal" href="#factories">Factories</a></li>
+<li><a class="reference internal" href="#names">Names</a></li>
+<li><a class="reference internal" href="#scenarios">Scenarios</a><ul>
+<li><a class="reference internal" href="#same-atoms">Same atoms</a></li>
+<li><a class="reference internal" href="#atom-was-added">Atom was added</a></li>
+<li><a class="reference internal" href="#atom-was-removed">Atom was removed</a></li>
+<li><a class="reference internal" href="#atom-code-was-changed">Atom code was changed</a></li>
+<li><a class="reference internal" href="#atom-was-split-in-two-atoms-or-merged">Atom was split in two atoms or merged</a></li>
+<li><a class="reference internal" href="#flow-structure-was-changed">Flow structure was changed</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+  <h3>Navigation</h3>
+  <ul>
+
+    <li><a href="index.html">Table Of Contents</a></li>
+
+
+    <li><a href="jobs.html" title="next chapter">Next topic: Jobs</a></li>
+
+
+    <li><a href="persistence.html" title="previous chapter">Previous topic: Persistence</a></li>
+
+  </ul>
+
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/taskflow
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="_sources/resumption.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="right" >
+          <a href="jobs.html" title="Jobs"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="persistence.html" title="Persistence"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="index.html">TaskFlow 2.9.1.dev5 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2017, OpenStack Foundation.
+      Last updated on &#39;Fri Feb 10 20:11:01 2017, commit b7e2fcd&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/TaskFlow");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

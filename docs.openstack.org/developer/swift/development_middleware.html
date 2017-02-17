@@ -1,0 +1,421 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Middleware and Metadata &mdash; swift 2.12.1.dev102 documentation</title>
+    
+    <link rel="stylesheet" href="_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '2.12.1.dev102',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <link rel="top" title="swift 2.12.1.dev102 documentation" href="index.html" />
+    <link rel="next" title="Pluggable On-Disk Back-end APIs" href="development_ondisk_backends.html" />
+    <link rel="prev" title="Auth Server and Middleware" href="development_auth.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="middleware-and-metadata">
+<h1>Middleware and Metadata<a class="headerlink" href="#middleware-and-metadata" title="Permalink to this headline">¶</a></h1>
+<div class="section" id="using-middleware">
+<h2>Using Middleware<a class="headerlink" href="#using-middleware" title="Permalink to this headline">¶</a></h2>
+<p><a class="reference external" href="http://www.python.org/dev/peps/pep-0333/#middleware-components-that-play-both-sides">Python WSGI Middleware</a> (or just &#8220;middleware&#8221;) can be used to &#8220;wrap&#8221;
+the request and response of a Python WSGI application (i.e. a webapp,
+or REST/HTTP API), like Swift&#8217;s WSGI servers (proxy-server,
+account-server, container-server, object-server).  Swift uses middleware
+to add (sometimes optional) behaviors to the Swift WSGI servers.</p>
+<p>Middleware can be added to the Swift WSGI servers by modifying their
+<a class="reference external" href="http://pythonpaste.org/">paste</a> configuration file.  The majority of Swift middleware is applied
+to the <a class="reference internal" href="proxy.html#proxy-server"><span>Proxy Server</span></a>.</p>
+<p>Given the following basic configuration:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>[DEFAULT]
+log_level = DEBUG
+user = &lt;your-user-name&gt;
+
+[pipeline:main]
+pipeline = proxy-server
+
+[app:proxy-server]
+use = egg:swift#proxy
+</pre></div>
+</div>
+<p>You could add the <a class="reference internal" href="middleware.html#healthcheck"><span>Healthcheck</span></a> middleware by adding a section for
+that filter and adding it to the pipeline:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>[DEFAULT]
+log_level = DEBUG
+user = &lt;your-user-name&gt;
+
+[pipeline:main]
+pipeline = healthcheck proxy-server
+
+[filter:healthcheck]
+use = egg:swift#healthcheck
+
+[app:proxy-server]
+use = egg:swift#proxy
+</pre></div>
+</div>
+<p>Some middleware is required and will be inserted into your pipeline
+automatically by core swift code (e.g. the proxy-server will insert
+<a class="reference internal" href="middleware.html#catch-errors"><span>CatchErrors</span></a> and <a class="reference internal" href="middleware.html#gatekeeper"><span>GateKeeper</span></a> at the start of the pipeline if they
+are not already present).  You can see which features are available on a given
+Swift endpoint (including middleware) using the <a class="reference internal" href="middleware.html#discoverability"><span>Discoverability</span></a>
+interface.</p>
+</div>
+<div class="section" id="creating-your-own-middleware">
+<h2>Creating Your Own Middleware<a class="headerlink" href="#creating-your-own-middleware" title="Permalink to this headline">¶</a></h2>
+<p>The best way to see how to write middleware is to look at examples.</p>
+<p>Many optional features in Swift are implemented as
+<a class="reference internal" href="middleware.html#common-middleware"><span>Middleware</span></a> and provided in <code class="docutils literal"><span class="pre">swift.common.middleware</span></code>, but
+Swift middleware may be packaged and distributed as a separate project.
+Some examples are listed on the <a class="reference internal" href="associated_projects.html#associated-projects"><span>Associated Projects</span></a> page.</p>
+<p>A contrived middleware example that modifies request behavior by
+inspecting custom HTTP headers (e.g. X-Webhook) and uses <a class="reference internal" href="#sysmeta"><span>System Metadata</span></a>
+to persist data to backend storage as well as common patterns like a
+<a class="reference internal" href="proxy.html#swift.proxy.controllers.base.get_container_info" title="swift.proxy.controllers.base.get_container_info"><code class="xref py py-func docutils literal"><span class="pre">get_container_info()</span></code></a> cache/query and <a class="reference internal" href="misc.html#swift.common.swob.wsgify" title="swift.common.swob.wsgify"><code class="xref py py-func docutils literal"><span class="pre">wsgify()</span></code></a> decorator is
+presented below:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="kn">from</span> <span class="nn">swift.common.http</span> <span class="kn">import</span> <span class="n">is_success</span>
+<span class="kn">from</span> <span class="nn">swift.common.swob</span> <span class="kn">import</span> <span class="n">wsgify</span>
+<span class="kn">from</span> <span class="nn">swift.common.utils</span> <span class="kn">import</span> <span class="n">split_path</span><span class="p">,</span> <span class="n">get_logger</span>
+<span class="kn">from</span> <span class="nn">swift.common.request_helper</span> <span class="kn">import</span> <span class="n">get_sys_meta_prefix</span>
+<span class="kn">from</span> <span class="nn">swift.proxy.controllers.base</span> <span class="kn">import</span> <span class="n">get_container_info</span>
+
+<span class="kn">from</span> <span class="nn">eventlet</span> <span class="kn">import</span> <span class="n">Timeout</span>
+<span class="kn">import</span> <span class="nn">six</span>
+<span class="k">if</span> <span class="n">six</span><span class="o">.</span><span class="n">PY3</span><span class="p">:</span>
+    <span class="kn">from</span> <span class="nn">eventlet.green.urllib</span> <span class="kn">import</span> <span class="n">request</span> <span class="k">as</span> <span class="n">urllib2</span>
+<span class="k">else</span><span class="p">:</span>
+    <span class="kn">from</span> <span class="nn">eventlet.green</span> <span class="kn">import</span> <span class="n">urllib2</span>
+
+<span class="c1"># x-container-sysmeta-webhook</span>
+<span class="n">SYSMETA_WEBHOOK</span> <span class="o">=</span> <span class="n">get_sys_meta_prefix</span><span class="p">(</span><span class="s1">&#39;container&#39;</span><span class="p">)</span> <span class="o">+</span> <span class="s1">&#39;webhook&#39;</span>
+
+
+<span class="k">class</span> <span class="nc">WebhookMiddleware</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">app</span><span class="p">,</span> <span class="n">conf</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">app</span> <span class="o">=</span> <span class="n">app</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">logger</span> <span class="o">=</span> <span class="n">get_logger</span><span class="p">(</span><span class="n">conf</span><span class="p">,</span> <span class="n">log_route</span><span class="o">=</span><span class="s1">&#39;webhook&#39;</span><span class="p">)</span>
+
+    <span class="nd">@wsgify</span>
+    <span class="k">def</span> <span class="fm">__call__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">req</span><span class="p">):</span>
+        <span class="n">obj</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="p">(</span><span class="n">version</span><span class="p">,</span> <span class="n">account</span><span class="p">,</span> <span class="n">container</span><span class="p">,</span> <span class="n">obj</span><span class="p">)</span> <span class="o">=</span> \
+                <span class="n">split_path</span><span class="p">(</span><span class="n">req</span><span class="o">.</span><span class="n">path_info</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="bp">True</span><span class="p">)</span>
+        <span class="k">except</span> <span class="ne">ValueError</span><span class="p">:</span>
+            <span class="c1"># not an object request</span>
+            <span class="k">pass</span>
+        <span class="k">if</span> <span class="s1">&#39;x-webhook&#39;</span> <span class="ow">in</span> <span class="n">req</span><span class="o">.</span><span class="n">headers</span><span class="p">:</span>
+            <span class="c1"># translate user&#39;s request header to sysmeta</span>
+            <span class="n">req</span><span class="o">.</span><span class="n">headers</span><span class="p">[</span><span class="n">SYSMETA_WEBHOOK</span><span class="p">]</span> <span class="o">=</span> \
+                <span class="n">req</span><span class="o">.</span><span class="n">headers</span><span class="p">[</span><span class="s1">&#39;x-webhook&#39;</span><span class="p">]</span>
+        <span class="k">if</span> <span class="s1">&#39;x-remove-webhook&#39;</span> <span class="ow">in</span> <span class="n">req</span><span class="o">.</span><span class="n">headers</span><span class="p">:</span>
+            <span class="c1"># empty value will tombstone sysmeta</span>
+            <span class="n">req</span><span class="o">.</span><span class="n">headers</span><span class="p">[</span><span class="n">SYSMETA_WEBHOOK</span><span class="p">]</span> <span class="o">=</span> <span class="s1">&#39;&#39;</span>
+        <span class="c1"># account and object storage will ignore x-container-sysmeta-*</span>
+        <span class="n">resp</span> <span class="o">=</span> <span class="n">req</span><span class="o">.</span><span class="n">get_response</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">app</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">obj</span> <span class="ow">and</span> <span class="n">is_success</span><span class="p">(</span><span class="n">resp</span><span class="o">.</span><span class="n">status_int</span><span class="p">)</span> <span class="ow">and</span> <span class="n">req</span><span class="o">.</span><span class="n">method</span> <span class="o">==</span> <span class="s1">&#39;PUT&#39;</span><span class="p">:</span>
+            <span class="n">container_info</span> <span class="o">=</span> <span class="n">get_container_info</span><span class="p">(</span><span class="n">req</span><span class="o">.</span><span class="n">environ</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">app</span><span class="p">)</span>
+            <span class="c1"># container_info may have our new sysmeta key</span>
+            <span class="n">webhook</span> <span class="o">=</span> <span class="n">container_info</span><span class="p">[</span><span class="s1">&#39;sysmeta&#39;</span><span class="p">]</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;webhook&#39;</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">webhook</span><span class="p">:</span>
+                <span class="c1"># create a POST request with obj name as body</span>
+                <span class="n">webhook_req</span> <span class="o">=</span> <span class="n">urllib2</span><span class="o">.</span><span class="n">Request</span><span class="p">(</span><span class="n">webhook</span><span class="p">,</span> <span class="n">data</span><span class="o">=</span><span class="n">obj</span><span class="p">)</span>
+                <span class="k">with</span> <span class="n">Timeout</span><span class="p">(</span><span class="mi">20</span><span class="p">):</span>
+                    <span class="k">try</span><span class="p">:</span>
+                        <span class="n">urllib2</span><span class="o">.</span><span class="n">urlopen</span><span class="p">(</span><span class="n">webhook_req</span><span class="p">)</span><span class="o">.</span><span class="n">read</span><span class="p">()</span>
+                    <span class="k">except</span> <span class="p">(</span><span class="ne">Exception</span><span class="p">,</span> <span class="n">Timeout</span><span class="p">):</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">exception</span><span class="p">(</span>
+                            <span class="s1">&#39;failed POST to webhook </span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="n">webhook</span><span class="p">)</span>
+                    <span class="k">else</span><span class="p">:</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">logger</span><span class="o">.</span><span class="n">info</span><span class="p">(</span>
+                            <span class="s1">&#39;successfully called webhook </span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="n">webhook</span><span class="p">)</span>
+        <span class="k">if</span> <span class="s1">&#39;x-container-sysmeta-webhook&#39;</span> <span class="ow">in</span> <span class="n">resp</span><span class="o">.</span><span class="n">headers</span><span class="p">:</span>
+            <span class="c1"># translate sysmeta from the backend resp to</span>
+            <span class="c1"># user-visible client resp header</span>
+            <span class="n">resp</span><span class="o">.</span><span class="n">headers</span><span class="p">[</span><span class="s1">&#39;x-webhook&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">resp</span><span class="o">.</span><span class="n">headers</span><span class="p">[</span><span class="n">SYSMETA_WEBHOOK</span><span class="p">]</span>
+        <span class="k">return</span> <span class="n">resp</span>
+
+
+<span class="k">def</span> <span class="nf">webhook_factory</span><span class="p">(</span><span class="n">global_conf</span><span class="p">,</span> <span class="o">**</span><span class="n">local_conf</span><span class="p">):</span>
+    <span class="n">conf</span> <span class="o">=</span> <span class="n">global_conf</span><span class="o">.</span><span class="n">copy</span><span class="p">()</span>
+    <span class="n">conf</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">local_conf</span><span class="p">)</span>
+    <span class="k">def</span> <span class="nf">webhook_filter</span><span class="p">(</span><span class="n">app</span><span class="p">,</span> <span class="n">conf</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">WebhookMiddleware</span><span class="p">(</span><span class="n">app</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">webhook_filter</span>
+</pre></div>
+</div>
+<p>In practice this middleware will call the URL stored on the container as
+X-Webhook on all successful object uploads.</p>
+<p>If this example was at <code class="docutils literal"><span class="pre">&lt;swift-repo&gt;/swift/common/middleware/webhook.py</span></code> -
+you could add it to your proxy by creating a new filter section and
+adding it to the pipeline:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>[DEFAULT]
+log_level = DEBUG
+user = &lt;your-user-name&gt;
+
+[pipeline:main]
+pipeline = healthcheck webhook proxy-server
+
+[filter:webhook]
+paste.filter_factory = swift.common.middleware.webhook:webhook_factory
+
+[filter:healthcheck]
+use = egg:swift#healthcheck
+
+[app:proxy-server]
+use = egg:swift#proxy
+</pre></div>
+</div>
+<p>Most python packages expose middleware as entrypoints.  See <a class="reference external" href="http://pythonpaste.org/deploy/#egg-uris">PasteDeploy</a>
+documentation for more information about the syntax of the <code class="docutils literal"><span class="pre">use</span></code> option.
+All middleware included with Swift is installed to support the <code class="docutils literal"><span class="pre">egg:swift</span></code>
+syntax.</p>
+<p>Middleware may advertize its availability and capabilities via Swift&#8217;s
+<a class="reference internal" href="middleware.html#discoverability"><span>Discoverability</span></a> support by using
+<a class="reference internal" href="misc.html#swift.common.utils.register_swift_info" title="swift.common.utils.register_swift_info"><code class="xref py py-func docutils literal"><span class="pre">register_swift_info()</span></code></a>:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="kn">from</span> <span class="nn">swift.common.utils</span> <span class="kn">import</span> <span class="n">register_swift_info</span>
+<span class="k">def</span> <span class="nf">webhook_factory</span><span class="p">(</span><span class="n">global_conf</span><span class="p">,</span> <span class="o">**</span><span class="n">local_conf</span><span class="p">):</span>
+    <span class="n">register_swift_info</span><span class="p">(</span><span class="s1">&#39;webhook&#39;</span><span class="p">)</span>
+    <span class="k">def</span> <span class="nf">webhook_filter</span><span class="p">(</span><span class="n">app</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">WebhookMiddleware</span><span class="p">(</span><span class="n">app</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">webhook_filter</span>
+</pre></div>
+</div>
+</div>
+<div class="section" id="swift-metadata">
+<h2>Swift Metadata<a class="headerlink" href="#swift-metadata" title="Permalink to this headline">¶</a></h2>
+<p>Generally speaking metadata is information about a resource that is
+associated with the resource but is not the data contained in the
+resource itself - which is set and retrieved via HTTP headers. (e.g. the
+&#8220;Content-Type&#8221; of a Swift object that is returned in HTTP response
+headers)</p>
+<p>All user resources in Swift (i.e. account, container, objects) can have
+user metadata associated with them.  Middleware may also persist custom
+metadata to accounts and containers safely using System Metadata.  Some
+core Swift features which predate sysmeta have added exceptions for
+custom non-user metadata headers (e.g.  <a class="reference internal" href="misc.html#acls"><span>ACLs</span></a>,
+<a class="reference internal" href="overview_large_objects.html#large-objects"><span>Large Object Support</span></a>)</p>
+<div class="section" id="user-metadata">
+<span id="usermeta"></span><h3>User Metadata<a class="headerlink" href="#user-metadata" title="Permalink to this headline">¶</a></h3>
+<p>User metadata takes the form of <code class="docutils literal"><span class="pre">X-&lt;type&gt;-Meta-&lt;key&gt;:</span> <span class="pre">&lt;value&gt;</span></code>, where
+<code class="docutils literal"><span class="pre">&lt;type&gt;</span></code> depends on the resources type (i.e. Account, Container, Object)
+and <code class="docutils literal"><span class="pre">&lt;key&gt;</span></code> and <code class="docutils literal"><span class="pre">&lt;value&gt;</span></code> are set by the client.</p>
+<p>User metadata should generally be reserved for use by the client or
+client applications.  A perfect example use-case for user metadata is
+<a class="reference external" href="https://github.com/openstack/python-swiftclient">python-swiftclient</a>&#8216;s <code class="docutils literal"><span class="pre">X-Object-Meta-Mtime</span></code> which it stores on
+object it uploads to implement its <code class="docutils literal"><span class="pre">--changed</span></code> option which will only
+upload files that have changed since the last upload.</p>
+<p>New middleware should avoid storing metadata within the User Metadata
+namespace to avoid potential conflict with existing user metadata when
+introducing new metadata keys.  An example of legacy middleware that
+borrows the user metadata namespace is <a class="reference internal" href="middleware.html#tempurl"><span>TempURL</span></a>.  An example of
+middleware which uses custom non-user metadata to avoid the user
+metadata namespace is <a class="reference internal" href="overview_large_objects.html#slo-doc"><span>Static Large Objects</span></a>.</p>
+<p>User metadata that is stored by a PUT or POST request to a container or account
+resource persists until it is explicitly removed by a subsequent PUT or POST
+request that includes a header <code class="docutils literal"><span class="pre">X-&lt;type&gt;-Meta-&lt;key&gt;</span></code> with no value or a
+header <code class="docutils literal"><span class="pre">X-Remove-&lt;type&gt;-Meta-&lt;key&gt;:</span> <span class="pre">&lt;ignored-value&gt;</span></code>. In the latter case the
+<code class="docutils literal"><span class="pre">&lt;ignored-value&gt;</span></code> is not stored. All user metadata stored with an account or
+container resource is deleted when the account or container is deleted.</p>
+<p>User metadata that is stored with an object resource has a different semantic;
+object user metadata persists until any subsequent PUT or POST request is made
+to the same object, at which point all user metadata stored with that object is
+deleted en-masse and replaced with any user metadata included with the PUT or
+POST request. As a result, it is not possible to update a subset of the user
+metadata items stored with an object while leaving some items unchanged.</p>
+</div>
+<div class="section" id="system-metadata">
+<span id="sysmeta"></span><h3>System Metadata<a class="headerlink" href="#system-metadata" title="Permalink to this headline">¶</a></h3>
+<p>System metadata takes the form of <code class="docutils literal"><span class="pre">X-&lt;type&gt;-Sysmeta-&lt;key&gt;:</span> <span class="pre">&lt;value&gt;</span></code>,
+where <code class="docutils literal"><span class="pre">&lt;type&gt;</span></code> depends on the resources type (i.e. Account, Container,
+Object) and <code class="docutils literal"><span class="pre">&lt;key&gt;</span></code> and <code class="docutils literal"><span class="pre">&lt;value&gt;</span></code> are set by trusted code running in a
+Swift WSGI Server.</p>
+<p>All headers on client requests in the form of <code class="docutils literal"><span class="pre">X-&lt;type&gt;-Sysmeta-&lt;key&gt;</span></code>
+will be dropped from the request before being processed by any
+middleware.  All headers on responses from back-end systems in the form
+of <code class="docutils literal"><span class="pre">X-&lt;type&gt;-Sysmeta-&lt;key&gt;</span></code> will be removed after all middlewares have
+processed the response but before the response is sent to the client.
+See <a class="reference internal" href="middleware.html#gatekeeper"><span>GateKeeper</span></a> middleware for more information.</p>
+<p>System metadata provides a means to store potentially private custom
+metadata with associated Swift resources in a safe and secure fashion
+without actually having to plumb custom metadata through the core swift
+servers.  The incoming filtering ensures that the namespace can not be
+modified directly by client requests, and the outgoing filter ensures
+that removing middleware that uses a specific system metadata key
+renders it benign.  New middleware should take advantage of system
+metadata.</p>
+<p>System metadata may be set on accounts and containers by including headers with
+a PUT or POST request. Where a header name matches the name of an existing item
+of system metadata, the value of the existing item will be updated. Otherwise
+existing items are preserved. A system metadata header with an empty value will
+cause any existing item with the same name to be deleted.</p>
+<p>System metadata may be set on objects using only PUT requests. All items of
+existing system metadata will be deleted and replaced en-masse by any system
+metadata headers included with the PUT request. System metadata is neither
+updated nor deleted by a POST request: updating individual items of system
+metadata with a POST request is not yet supported in the same way that updating
+individual items of user metadata is not supported. In cases where middleware
+needs to store its own metadata with a POST request, it may use Object Transient
+Sysmeta.</p>
+</div>
+<div class="section" id="object-transient-sysmeta">
+<span id="transient-sysmeta"></span><h3>Object Transient-Sysmeta<a class="headerlink" href="#object-transient-sysmeta" title="Permalink to this headline">¶</a></h3>
+<p>If middleware needs to store object metadata with a POST request it may do so
+using headers of the form <code class="docutils literal"><span class="pre">X-Object-Transient-Sysmeta-&lt;key&gt;:</span> <span class="pre">&lt;value&gt;</span></code>.</p>
+<p>All headers on client requests in the form of
+<code class="docutils literal"><span class="pre">X-Object-Transient-Sysmeta-&lt;key&gt;</span></code> will be dropped from the request before
+being processed by any middleware.  All headers on responses from back-end
+systems in the form of <code class="docutils literal"><span class="pre">X-Object-Transient-Sysmeta-&lt;key&gt;</span></code> will be removed
+after all middlewares have processed the response but before the response is
+sent to the client. See <a class="reference internal" href="middleware.html#gatekeeper"><span>GateKeeper</span></a> middleware for more information.</p>
+<p>Transient-sysmeta updates on an object have the same semantic as user
+metadata updates on an object (see <a class="reference internal" href="#usermeta"><span>User Metadata</span></a>) i.e. whenever any PUT or
+POST request is made to an object, all existing items of transient-sysmeta are
+deleted en-masse and replaced with any transient-sysmeta included with the PUT
+or POST request. Transient-sysmeta set by a middleware is therefore prone to
+deletion by a subsequent client-generated POST request unless the middleware is
+careful to include its transient-sysmeta with every POST. Likewise, user
+metadata set by a client is prone to deletion by a subsequent
+middleware-generated POST request, and for that reason middleware should avoid
+generating POST requests that are independent of any client request.</p>
+<p>Transient-sysmeta deliberately uses a different header prefix to user metadata
+so that middlewares can avoid potential conflict with user metadata keys.</p>
+<p>Transient-sysmeta deliberately uses a different header prefix to system
+metadata to emphasize the fact that the data is only persisted until a
+subsequent POST.</p>
+</div>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Middleware and Metadata</a><ul>
+<li><a class="reference internal" href="#using-middleware">Using Middleware</a></li>
+<li><a class="reference internal" href="#creating-your-own-middleware">Creating Your Own Middleware</a></li>
+<li><a class="reference internal" href="#swift-metadata">Swift Metadata</a><ul>
+<li><a class="reference internal" href="#user-metadata">User Metadata</a></li>
+<li><a class="reference internal" href="#system-metadata">System Metadata</a></li>
+<li><a class="reference internal" href="#object-transient-sysmeta">Object Transient-Sysmeta</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="development_auth.html"
+                                  title="previous chapter">Auth Server and Middleware</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="development_ondisk_backends.html"
+                                  title="next chapter">Pluggable On-Disk Back-end APIs</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/swift
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="_sources/development_middleware.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="right" >
+          <a href="development_ondisk_backends.html" title="Pluggable On-Disk Back-end APIs"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="development_auth.html" title="Auth Server and Middleware"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="index.html">swift 2.12.1.dev102 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2017, OpenStack Foundation.
+      Last updated on &#39;Tue Feb 14 07:57:22 2017, commit 7cb6882&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/swift");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

@@ -1,0 +1,630 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Container to Container Synchronization &mdash; swift 2.12.1.dev102 documentation</title>
+    
+    <link rel="stylesheet" href="_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '2.12.1.dev102',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <link rel="top" title="swift 2.12.1.dev102 documentation" href="index.html" />
+    <link rel="next" title="Expiring Object Support" href="overview_expiring_objects.html" />
+    <link rel="prev" title="Global Clusters" href="overview_global_cluster.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="container-to-container-synchronization">
+<h1>Container to Container Synchronization<a class="headerlink" href="#container-to-container-synchronization" title="Permalink to this headline">¶</a></h1>
+<div class="section" id="overview">
+<h2>Overview<a class="headerlink" href="#overview" title="Permalink to this headline">¶</a></h2>
+<p>Swift has a feature where all the contents of a container can be mirrored to
+another container through background synchronization. Swift cluster operators
+configure their cluster to allow/accept sync requests to/from other clusters,
+and the user specifies where to sync their container to along with a secret
+synchronization key.</p>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p>If you are using the <a class="reference internal" href="overview_large_objects.html#large-objects"><span>Large Objects</span></a> feature and
+syncing to another cluster then you will need to ensure that manifest files
+and segment files are synced. If segment files are in a different container
+than their manifest then both the manifest&#8217;s container and the segments&#8217;
+container must be synced. The target container for synced segment files
+must always have the same name as their source container in order for them
+to be resolved by synced manifests.</p>
+<p>Be aware that manifest files may be synced before segment files even if
+they are in the same container and were created after the segment files.</p>
+<p>In the case of <a class="reference internal" href="overview_large_objects.html#static-large-objects"><span>Static Large Objects</span></a>, a GET
+request for a manifest whose segments have yet to be completely synced will
+fail with none or only part of the large object content being returned.</p>
+<p class="last">In the case of <a class="reference internal" href="overview_large_objects.html#dynamic-large-objects"><span>Dynamic Large Objects</span></a>, a GET
+request for a manifest whose segments have yet to be completely synced will
+either fail or return unexpected (and most likely incorrect) content.</p>
+</div>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">If you are using encryption middleware in the cluster from which objects
+are being synced, then you should follow the instructions to configure
+<a class="reference internal" href="overview_encryption.html#container-sync-client-config"><span>Container sync configuration</span></a> to be compatible with encryption.</p>
+</div>
+</div>
+<div class="section" id="configuring-container-sync">
+<h2>Configuring Container Sync<a class="headerlink" href="#configuring-container-sync" title="Permalink to this headline">¶</a></h2>
+<p>Create a <code class="docutils literal"><span class="pre">container-sync-realms.conf</span></code> file specifying the allowable clusters
+and their information:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>[realm1]
+key = realm1key
+key2 = realm1key2
+cluster_clustername1 = https://host1/v1/
+cluster_clustername2 = https://host2/v1/
+
+[realm2]
+key = realm2key
+key2 = realm2key2
+cluster_clustername3 = https://host3/v1/
+cluster_clustername4 = https://host4/v1/
+</pre></div>
+</div>
+<p>Each section name is the name of a sync realm. A sync realm is a set of
+clusters that have agreed to allow container syncing with each other. Realm
+names will be considered case insensitive.</p>
+<p>The key is the overall cluster-to-cluster key used in combination with the
+external users&#8217; key that they set on their containers&#8217;
+<code class="docutils literal"><span class="pre">X-Container-Sync-Key</span></code> metadata header values. These keys will be used to
+sign each request the container sync daemon makes and used to validate each
+incoming container sync request.</p>
+<p>The key2 is optional and is an additional key incoming requests will be checked
+against. This is so you can rotate keys if you wish; you move the existing key
+to key2 and make a new key value.</p>
+<p>Any values in the realm section whose names begin with <code class="docutils literal"><span class="pre">cluster_</span></code> will
+indicate the name and endpoint of a cluster and will be used by external users in
+their containers&#8217; <code class="docutils literal"><span class="pre">X-Container-Sync-To</span></code> metadata header values with the format
+&#8220;//realm_name/cluster_name/account_name/container_name&#8221;. Realm and cluster
+names are considered case insensitive.</p>
+<p>The endpoint is what the container sync daemon will use when sending out
+requests to that cluster. Keep in mind this endpoint must be reachable by all
+container servers, since that is where the container sync daemon runs. Note
+that the endpoint ends with /v1/ and that the container sync daemon will then
+add the account/container/obj name after that.</p>
+<p>Distribute this <code class="docutils literal"><span class="pre">container-sync-realms.conf</span></code> file to all your proxy servers
+and container servers.</p>
+<p>You also need to add the container_sync middleware to your proxy pipeline. It
+needs to be after any memcache middleware and before any auth middleware. The
+container_sync section only needs the &#8220;use&#8221; item. For example:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>[pipeline:main]
+pipeline = healthcheck proxy-logging cache container_sync tempauth proxy-logging proxy-server
+
+[filter:container_sync]
+use = egg:swift#container_sync
+</pre></div>
+</div>
+</div>
+<div class="section" id="old-style-configuring-a-cluster-s-allowable-sync-hosts">
+<h2>Old-Style: Configuring a Cluster&#8217;s Allowable Sync Hosts<a class="headerlink" href="#old-style-configuring-a-cluster-s-allowable-sync-hosts" title="Permalink to this headline">¶</a></h2>
+<p>This section is for the old-style of using container sync. See the previous
+section, Configuring Container Sync, for the new-style.</p>
+<p>With the old-style, the Swift cluster operator must allow synchronization with
+a set of hosts before the user can enable container synchronization. First, the
+backend container server needs to be given this list of hosts in the
+<code class="docutils literal"><span class="pre">container-server.conf</span></code> file:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>[DEFAULT]
+# This is a comma separated list of hosts allowed in the
+# X-Container-Sync-To field for containers.
+# allowed_sync_hosts = 127.0.0.1
+allowed_sync_hosts = host1,host2,etc.
+...
+
+[container-sync]
+# You can override the default log routing for this app here (don&#39;t
+# use set!):
+# log_name = container-sync
+# log_facility = LOG_LOCAL0
+# log_level = INFO
+# Will sync, at most, each container once per interval
+# interval = 300
+# Maximum amount of time to spend syncing each container
+# container_time = 60
+</pre></div>
+</div>
+</div>
+<div class="section" id="logging-container-sync">
+<h2>Logging Container Sync<a class="headerlink" href="#logging-container-sync" title="Permalink to this headline">¶</a></h2>
+<p>Tracking sync progress, problems, and just general activity can only be
+achieved with log processing currently for container synchronization. In that
+light, you may wish to set the above <cite>log_</cite> options to direct the
+container-sync logs to a different file for easier monitoring. Additionally, it
+should be noted there is no way for an end user to detect sync progress or
+problems other than HEADing both containers and comparing the overall
+information.</p>
+</div>
+<div class="section" id="container-sync-statistics">
+<h2>Container Sync Statistics<a class="headerlink" href="#container-sync-statistics" title="Permalink to this headline">¶</a></h2>
+<p>Container Sync INFO level logs contains activity metrics and accounting
+information foe insightful tracking.
+Currently two different statistics are collected:</p>
+<p>About once an hour or so, accumulated statistics of all operations performed
+by Container Sync are reported to the log file with the following format:
+&#8220;Since (time): (sync) synced [(delete) deletes, (put) puts], (skip) skipped,
+(fail) failed&#8221;
+time: last report time
+sync: number of containers with sync turned on that were successfully synced
+delete: number of successful DELETE object requests to the target cluster
+put: number of successful PUT object request to the target cluster
+skip: number of containers whose sync has been turned off, but are not
+yet cleared from the sync store
+fail: number of containers with failure (due to exception, timeout or other
+reason)</p>
+<p>For each container synced, per container statistics are reported with the
+following format:
+Container sync report: (container), time window start: (start), time window
+end: %(end), puts: (puts), posts: (posts), deletes: (deletes), bytes: (bytes),
+sync_point1: (point1), sync_point2: (point2), total_rows: (total)
+container: account/container statistics are for
+start: report start time
+end: report end time
+puts: number of successful PUT object requests to the target container
+posts: N/A (0)
+deletes: number of successful DELETE object requests to the target container
+bytes: number of bytes sent over the network to the target container
+point1: progress indication - the container&#8217;s x_container_sync_point1
+point2: progress indication - the container&#8217;s x_container_sync_point2
+total: number of objects processed at the container</p>
+<p>it is possible that more than one server syncs a container, therefore logfiles
+from all servers need to be evaluated</p>
+</div>
+<div class="section" id="using-the-swift-tool-to-set-up-synchronized-containers">
+<h2>Using the <code class="docutils literal"><span class="pre">swift</span></code> tool to set up synchronized containers<a class="headerlink" href="#using-the-swift-tool-to-set-up-synchronized-containers" title="Permalink to this headline">¶</a></h2>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">The <code class="docutils literal"><span class="pre">swift</span></code> tool is available from the <a class="reference external" href="http://github.com/openstack/python-swiftclient">python-swiftclient</a> library.</p>
+</div>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">You must be the account admin on the account to set synchronization targets
+and keys.</p>
+</div>
+<p>You simply tell each container where to sync to and give it a secret
+synchronization key. First, let&#8217;s get the account details for our two cluster
+accounts:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>$ swift -A http://cluster1/auth/v1.0 -U test:tester -K testing stat -v
+StorageURL: http://cluster1/v1/AUTH_208d1854-e475-4500-b315-81de645d060e
+Auth Token: AUTH_tkd5359e46ff9e419fa193dbd367f3cd19
+   Account: AUTH_208d1854-e475-4500-b315-81de645d060e
+Containers: 0
+   Objects: 0
+     Bytes: 0
+
+$ swift -A http://cluster2/auth/v1.0 -U test2:tester2 -K testing2 stat -v
+StorageURL: http://cluster2/v1/AUTH_33cdcad8-09fb-4940-90da-0f00cbf21c7c
+Auth Token: AUTH_tk816a1aaf403c49adb92ecfca2f88e430
+   Account: AUTH_33cdcad8-09fb-4940-90da-0f00cbf21c7c
+Containers: 0
+   Objects: 0
+     Bytes: 0
+</pre></div>
+</div>
+<p>Now, let&#8217;s make our first container and tell it to synchronize to a second
+we&#8217;ll make next:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>$ swift -A http://cluster1/auth/v1.0 -U test:tester -K testing post \
+  -t &#39;//realm_name/clustername2/AUTH_33cdcad8-09fb-4940-90da-0f00cbf21c7c/container2&#39; \
+  -k &#39;secret&#39; container1
+</pre></div>
+</div>
+<p>The <code class="docutils literal"><span class="pre">-t</span></code> indicates the cluster to sync to, which is the realm name of the
+section from container-sync-realms.conf, followed by the cluster name from
+that section (without the cluster_ prefix), followed by the account and container
+names we want to sync to. The <code class="docutils literal"><span class="pre">-k</span></code> specifies the secret key the two containers will share for
+synchronization; this is the user key, the cluster key in
+container-sync-realms.conf will also be used behind the scenes.</p>
+<p>Now, we&#8217;ll do something similar for the second cluster&#8217;s container:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>$ swift -A http://cluster2/auth/v1.0 -U test2:tester2 -K testing2 post \
+  -t &#39;//realm_name/clustername1/AUTH_208d1854-e475-4500-b315-81de645d060e/container1&#39; \
+  -k &#39;secret&#39; container2
+</pre></div>
+</div>
+<p>That&#8217;s it. Now we can upload a bunch of stuff to the first container and watch
+as it gets synchronized over to the second:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>$ swift -A http://cluster1/auth/v1.0 -U test:tester -K testing \
+  upload container1 .
+photo002.png
+photo004.png
+photo001.png
+photo003.png
+
+$ swift -A http://cluster2/auth/v1.0 -U test2:tester2 -K testing2 \
+  list container2
+
+[Nothing there yet, so we wait a bit...]
+</pre></div>
+</div>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p>If you&#8217;re an operator running SAIO and just testing, each time you
+configure a container for synchronization and place objects in the
+source container you will need to ensure that container-sync runs
+before attempting to retrieve objects from the target container.
+That is, you need to run:</p>
+<div class="last highlight-python"><div class="highlight"><pre><span></span>swift-init container-sync once
+</pre></div>
+</div>
+</div>
+<p>Now expect to see objects copied from the first container to the second:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>$ swift -A http://cluster2/auth/v1.0 -U test2:tester2 -K testing2 \
+  list container2
+photo001.png
+photo002.png
+photo003.png
+photo004.png
+</pre></div>
+</div>
+<p>You can also set up a chain of synced containers if you want more than two.
+You&#8217;d point 1 -&gt; 2, then 2 -&gt; 3, and finally 3 -&gt; 1 for three containers.
+They&#8217;d all need to share the same secret synchronization key.</p>
+</div>
+<div class="section" id="using-curl-or-other-tools-instead">
+<h2>Using curl (or other tools) instead<a class="headerlink" href="#using-curl-or-other-tools-instead" title="Permalink to this headline">¶</a></h2>
+<p>So what&#8217;s <code class="docutils literal"><span class="pre">swift</span></code> doing behind the scenes? Nothing overly complicated. It
+translates the <code class="docutils literal"><span class="pre">-t</span> <span class="pre">&lt;value&gt;</span></code> option into an <code class="docutils literal"><span class="pre">X-Container-Sync-To:</span> <span class="pre">&lt;value&gt;</span></code>
+header and the <code class="docutils literal"><span class="pre">-k</span> <span class="pre">&lt;value&gt;</span></code> option into an <code class="docutils literal"><span class="pre">X-Container-Sync-Key:</span> <span class="pre">&lt;value&gt;</span></code>
+header.</p>
+<p>For instance, when we created the first container above and told it to
+synchronize to the second, we could have used this curl command:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>$ curl -i -X POST -H &#39;X-Auth-Token: AUTH_tkd5359e46ff9e419fa193dbd367f3cd19&#39; \
+  -H &#39;X-Container-Sync-To: //realm_name/clustername2/AUTH_33cdcad8-09fb-4940-90da-0f00cbf21c7c/container2&#39; \
+  -H &#39;X-Container-Sync-Key: secret&#39; \
+  &#39;http://cluster1/v1/AUTH_208d1854-e475-4500-b315-81de645d060e/container1&#39;
+HTTP/1.1 204 No Content
+Content-Length: 0
+Content-Type: text/plain; charset=UTF-8
+Date: Thu, 24 Feb 2011 22:39:14 GMT
+</pre></div>
+</div>
+</div>
+<div class="section" id="old-style-using-the-swift-tool-to-set-up-synchronized-containers">
+<h2>Old-Style: Using the <code class="docutils literal"><span class="pre">swift</span></code> tool to set up synchronized containers<a class="headerlink" href="#old-style-using-the-swift-tool-to-set-up-synchronized-containers" title="Permalink to this headline">¶</a></h2>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">The <code class="docutils literal"><span class="pre">swift</span></code> tool is available from the <a class="reference external" href="http://github.com/openstack/python-swiftclient">python-swiftclient</a> library.</p>
+</div>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">You must be the account admin on the account to set synchronization targets
+and keys.</p>
+</div>
+<p>This is for the old-style of container syncing using allowed_sync_hosts.</p>
+<p>You simply tell each container where to sync to and give it a secret
+synchronization key. First, let&#8217;s get the account details for our two cluster
+accounts:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>$ swift -A http://cluster1/auth/v1.0 -U test:tester -K testing stat -v
+StorageURL: http://cluster1/v1/AUTH_208d1854-e475-4500-b315-81de645d060e
+Auth Token: AUTH_tkd5359e46ff9e419fa193dbd367f3cd19
+   Account: AUTH_208d1854-e475-4500-b315-81de645d060e
+Containers: 0
+   Objects: 0
+     Bytes: 0
+
+$ swift -A http://cluster2/auth/v1.0 -U test2:tester2 -K testing2 stat -v
+StorageURL: http://cluster2/v1/AUTH_33cdcad8-09fb-4940-90da-0f00cbf21c7c
+Auth Token: AUTH_tk816a1aaf403c49adb92ecfca2f88e430
+   Account: AUTH_33cdcad8-09fb-4940-90da-0f00cbf21c7c
+Containers: 0
+   Objects: 0
+     Bytes: 0
+</pre></div>
+</div>
+<p>Now, let&#8217;s make our first container and tell it to synchronize to a second
+we&#8217;ll make next:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>$ swift -A http://cluster1/auth/v1.0 -U test:tester -K testing post \
+  -t &#39;http://cluster2/v1/AUTH_33cdcad8-09fb-4940-90da-0f00cbf21c7c/container2&#39; \
+  -k &#39;secret&#39; container1
+</pre></div>
+</div>
+<p>The <code class="docutils literal"><span class="pre">-t</span></code> indicates the URL to sync to, which is the <code class="docutils literal"><span class="pre">StorageURL</span></code> from
+cluster2 we retrieved above plus the container name. The <code class="docutils literal"><span class="pre">-k</span></code> specifies the
+secret key the two containers will share for synchronization. Now, we&#8217;ll do
+something similar for the second cluster&#8217;s container:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>$ swift -A http://cluster2/auth/v1.0 -U test2:tester2 -K testing2 post \
+  -t &#39;http://cluster1/v1/AUTH_208d1854-e475-4500-b315-81de645d060e/container1&#39; \
+  -k &#39;secret&#39; container2
+</pre></div>
+</div>
+<p>That&#8217;s it. Now we can upload a bunch of stuff to the first container and watch
+as it gets synchronized over to the second:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>$ swift -A http://cluster1/auth/v1.0 -U test:tester -K testing \
+  upload container1 .
+photo002.png
+photo004.png
+photo001.png
+photo003.png
+
+$ swift -A http://cluster2/auth/v1.0 -U test2:tester2 -K testing2 \
+  list container2
+
+[Nothing there yet, so we wait a bit...]
+[If you&#39;re an operator running SAIO and just testing, you may need to
+ run &#39;swift-init container-sync once&#39; to perform a sync scan.]
+
+$ swift -A http://cluster2/auth/v1.0 -U test2:tester2 -K testing2 \
+  list container2
+photo001.png
+photo002.png
+photo003.png
+photo004.png
+</pre></div>
+</div>
+<p>You can also set up a chain of synced containers if you want more than two.
+You&#8217;d point 1 -&gt; 2, then 2 -&gt; 3, and finally 3 -&gt; 1 for three containers.
+They&#8217;d all need to share the same secret synchronization key.</p>
+</div>
+<div class="section" id="old-style-using-curl-or-other-tools-instead">
+<h2>Old-Style: Using curl (or other tools) instead<a class="headerlink" href="#old-style-using-curl-or-other-tools-instead" title="Permalink to this headline">¶</a></h2>
+<p>This is for the old-style of container syncing using allowed_sync_hosts.</p>
+<p>So what&#8217;s <code class="docutils literal"><span class="pre">swift</span></code> doing behind the scenes? Nothing overly complicated. It
+translates the <code class="docutils literal"><span class="pre">-t</span> <span class="pre">&lt;value&gt;</span></code> option into an <code class="docutils literal"><span class="pre">X-Container-Sync-To:</span> <span class="pre">&lt;value&gt;</span></code>
+header and the <code class="docutils literal"><span class="pre">-k</span> <span class="pre">&lt;value&gt;</span></code> option into an <code class="docutils literal"><span class="pre">X-Container-Sync-Key:</span> <span class="pre">&lt;value&gt;</span></code>
+header.</p>
+<p>For instance, when we created the first container above and told it to
+synchronize to the second, we could have used this curl command:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>$ curl -i -X POST -H &#39;X-Auth-Token: AUTH_tkd5359e46ff9e419fa193dbd367f3cd19&#39; \
+  -H &#39;X-Container-Sync-To: http://cluster2/v1/AUTH_33cdcad8-09fb-4940-90da-0f00cbf21c7c/container2&#39; \
+  -H &#39;X-Container-Sync-Key: secret&#39; \
+  &#39;http://cluster1/v1/AUTH_208d1854-e475-4500-b315-81de645d060e/container1&#39;
+HTTP/1.1 204 No Content
+Content-Length: 0
+Content-Type: text/plain; charset=UTF-8
+Date: Thu, 24 Feb 2011 22:39:14 GMT
+</pre></div>
+</div>
+</div>
+<div class="section" id="what-s-going-on-behind-the-scenes-in-the-cluster">
+<h2>What&#8217;s going on behind the scenes, in the cluster?<a class="headerlink" href="#what-s-going-on-behind-the-scenes-in-the-cluster" title="Permalink to this headline">¶</a></h2>
+<p>Container ring devices have a directory called <code class="docutils literal"><span class="pre">containers</span></code>, where container
+databases reside. In addition to <code class="docutils literal"><span class="pre">containers</span></code>, each container ring device
+also has a directory called <code class="docutils literal"><span class="pre">sync-containers</span></code>. <code class="docutils literal"><span class="pre">sync-containers</span></code> holds
+symlinks to container databases that were configured for container sync using
+<code class="docutils literal"><span class="pre">x-container-sync-to</span></code> and <code class="docutils literal"><span class="pre">x-container-sync-key</span></code> metadata keys.</p>
+<p>The swift-container-sync process does the job of sending updates to the remote
+container. This is done by scanning <code class="docutils literal"><span class="pre">sync-containers</span></code> for container
+databases. For each container db found, newer rows since the last sync will
+trigger PUTs or DELETEs to the other container.</p>
+<p><code class="docutils literal"><span class="pre">sync-containers</span></code> is maintained as follows:
+Whenever the container-server processes a PUT or a POST request that carries
+<code class="docutils literal"><span class="pre">x-container-sync-to</span></code> and <code class="docutils literal"><span class="pre">x-container-sync-key</span></code> metadata keys the server
+creates a symlink to the container database in <code class="docutils literal"><span class="pre">sync-containers</span></code>. Whenever
+the container server deletes a synced container, the appropriate symlink
+is deleted from <code class="docutils literal"><span class="pre">sync-containers</span></code>.</p>
+<p>In addition to the container-server, the container-replicator process does the
+job of identifying containers that should be synchronized. This is done by
+scanning the local devices for container databases and checking for
+x-container-sync-to and x-container-sync-key metadata values. If they exist
+then a symlink to the container database is created in a sync-containers
+sub-directory on the same device.</p>
+<p>Similarly, when the container sync metadata keys are deleted, the container
+server and container-replicator would take care of deleting the symlinks
+from <code class="docutils literal"><span class="pre">sync-containers</span></code>.</p>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">The swift-container-sync process runs on each container server in the
+cluster and talks to the proxy servers (or load balancers) in the remote
+cluster. Therefore, the container servers must be permitted to initiate
+outbound connections to the remote proxy servers (or load balancers).</p>
+</div>
+<p>The actual syncing is slightly more complicated to make use of the three
+(or number-of-replicas) main nodes for a container without each trying to
+do the exact same work but also without missing work if one node happens to
+be down.</p>
+<p>Two sync points are kept in each container database. When syncing a
+container, the container-sync process figures out which replica of the
+container it has. In a standard 3-replica scenario, the process will
+have either replica number 0, 1, or 2. This is used to figure out
+which rows are belong to this sync process and which ones don&#8217;t.</p>
+<p>An example may help. Assume a replica count of 3 and database row IDs
+are 1..6. Also, assume that container-sync is running on this
+container for the first time, hence SP1 = SP2 = -1.</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>SP1
+SP2
+ |
+ v
+-1 0 1 2 3 4 5 6
+</pre></div>
+</div>
+<p>First, the container-sync process looks for rows with id between SP1
+and SP2. Since this is the first run, SP1 = SP2 = -1, and there aren&#8217;t
+any such rows.</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>SP1
+SP2
+ |
+ v
+-1 0 1 2 3 4 5 6
+</pre></div>
+</div>
+<p>Second, the container-sync process looks for rows with id greater than
+SP1, and syncs those rows which it owns. Ownership is based on the
+hash of the object name, so it&#8217;s not always guaranteed to be exactly
+one out of every three rows, but it usually gets close. For the sake
+of example, let&#8217;s say that this process ends up owning rows 2 and 5.</p>
+<p>Once it&#8217;s finished trying to sync those rows, it updates SP1 to be the
+biggest row-id that it&#8217;s seen, which is 6 in this example.</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>SP2           SP1
+ |             |
+ v             v
+-1 0 1 2 3 4 5 6
+</pre></div>
+</div>
+<p>While all that was going on, clients uploaded new objects into the
+container, creating new rows in the database.</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>SP2           SP1
+ |             |
+ v             v
+-1 0 1 2 3 4 5 6 7 8 9 10 11 12
+</pre></div>
+</div>
+<p>On the next run, the container-sync starts off looking at rows with
+ids between SP1 and SP2. This time, there are a bunch of them. The
+sync process try to sync all of them. If it succeeds, it will set
+SP2 to equal SP1. If it fails, it will set SP2 to the failed object
+and will continue to try all other objects till SP1, setting SP2 to
+the first object that failed.</p>
+<p>Under normal circumstances, the container-sync processes
+will have already taken care of synchronizing all rows, between SP1
+and SP2, resulting in a set of quick checks.
+However, if one of the sync
+processes failed for some reason, then this is a vital fallback to
+make sure all the objects in the container get synchronized. Without
+this seemingly-redundant work, any container-sync failure results in
+unsynchronized objects. Note that the container sync will persistently
+retry to sync any faulty object until success, while logging each failure.</p>
+<p>Once it&#8217;s done with the fallback rows, and assuming no faults occurred,
+SP2 is advanced to SP1.</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>              SP2
+              SP1
+               |
+               v
+-1 0 1 2 3 4 5 6 7 8 9 10 11 12
+</pre></div>
+</div>
+<p>Then, rows with row ID greater than SP1 are synchronized (provided
+this container-sync process is responsible for them), and SP1 is moved
+up to the greatest row ID seen.</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>              SP2            SP1
+               |              |
+               v              v
+-1 0 1 2 3 4 5 6 7 8 9 10 11 12
+</pre></div>
+</div>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Container to Container Synchronization</a><ul>
+<li><a class="reference internal" href="#overview">Overview</a></li>
+<li><a class="reference internal" href="#configuring-container-sync">Configuring Container Sync</a></li>
+<li><a class="reference internal" href="#old-style-configuring-a-cluster-s-allowable-sync-hosts">Old-Style: Configuring a Cluster&#8217;s Allowable Sync Hosts</a></li>
+<li><a class="reference internal" href="#logging-container-sync">Logging Container Sync</a></li>
+<li><a class="reference internal" href="#container-sync-statistics">Container Sync Statistics</a></li>
+<li><a class="reference internal" href="#using-the-swift-tool-to-set-up-synchronized-containers">Using the <code class="docutils literal"><span class="pre">swift</span></code> tool to set up synchronized containers</a></li>
+<li><a class="reference internal" href="#using-curl-or-other-tools-instead">Using curl (or other tools) instead</a></li>
+<li><a class="reference internal" href="#old-style-using-the-swift-tool-to-set-up-synchronized-containers">Old-Style: Using the <code class="docutils literal"><span class="pre">swift</span></code> tool to set up synchronized containers</a></li>
+<li><a class="reference internal" href="#old-style-using-curl-or-other-tools-instead">Old-Style: Using curl (or other tools) instead</a></li>
+<li><a class="reference internal" href="#what-s-going-on-behind-the-scenes-in-the-cluster">What&#8217;s going on behind the scenes, in the cluster?</a></li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="overview_global_cluster.html"
+                                  title="previous chapter">Global Clusters</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="overview_expiring_objects.html"
+                                  title="next chapter">Expiring Object Support</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/swift
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="_sources/overview_container_sync.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="right" >
+          <a href="overview_expiring_objects.html" title="Expiring Object Support"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="overview_global_cluster.html" title="Global Clusters"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="index.html">swift 2.12.1.dev102 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2017, OpenStack Foundation.
+      Last updated on &#39;Tue Feb 14 07:57:22 2017, commit 7cb6882&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/swift");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

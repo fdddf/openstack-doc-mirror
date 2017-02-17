@@ -1,0 +1,327 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Object Versioning &mdash; swift 2.12.1.dev102 documentation</title>
+    
+    <link rel="stylesheet" href="_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '2.12.1.dev102',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <link rel="top" title="swift 2.12.1.dev102 documentation" href="index.html" />
+    <link rel="next" title="Global Clusters" href="overview_global_cluster.html" />
+    <link rel="prev" title="Large Object Support" href="overview_large_objects.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="module-swift.common.middleware.versioned_writes">
+<span id="object-versioning"></span><h1>Object Versioning<a class="headerlink" href="#module-swift.common.middleware.versioned_writes" title="Permalink to this headline">¶</a></h1>
+<p>Object versioning in swift is implemented by setting a flag on the container
+to tell swift to version all objects in the container. The value of the flag is
+the container where the versions are stored (commonly referred to as the
+&#8220;archive container&#8221;). The flag itself is one of two headers, which determines
+how object <code class="docutils literal"><span class="pre">DELETE</span></code> requests are handled:</p>
+<blockquote>
+<div><ul>
+<li><p class="first"><code class="docutils literal"><span class="pre">X-History-Location</span></code></p>
+<p>On <code class="docutils literal"><span class="pre">DELETE</span></code>, copy the current version of the object to the archive
+container, write a zero-byte &#8220;delete marker&#8221; object that notes when the
+delete took place, and delete the object from the versioned container. The
+object will no longer appear in container listings for the versioned
+container and future requests there will return <code class="docutils literal"><span class="pre">404</span> <span class="pre">Not</span> <span class="pre">Found</span></code>. However,
+the content will still be recoverable from the archive container.</p>
+</li>
+<li><p class="first"><code class="docutils literal"><span class="pre">X-Versions-Location</span></code></p>
+<p>On <code class="docutils literal"><span class="pre">DELETE</span></code>, only remove the current version of the object. If any
+previous versions exist in the archive container, the most recent one is
+copied over the current version, and the copy in the archive container is
+deleted. As a result, if you have 5 total versions of the object, you must
+delete the object 5 times for that object name to start responding with
+<code class="docutils literal"><span class="pre">404</span> <span class="pre">Not</span> <span class="pre">Found</span></code>.</p>
+</li>
+</ul>
+</div></blockquote>
+<p>Either header may be used for the various containers within an account, but
+only one may be set for any given container. Attempting to set both
+simulataneously will result in a <code class="docutils literal"><span class="pre">400</span> <span class="pre">Bad</span> <span class="pre">Request</span></code> response.</p>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">It is recommended to use a different archive container for
+each container that is being versioned.</p>
+</div>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">Enabling versioning on an archive container is not recommended.</p>
+</div>
+<p>When data is <code class="docutils literal"><span class="pre">PUT</span></code> into a versioned container (a container with the
+versioning flag turned on), the existing data in the file is redirected to a
+new object in the archive container and the data in the <code class="docutils literal"><span class="pre">PUT</span></code> request is
+saved as the data for the versioned object. The new object name (for the
+previous version) is <code class="docutils literal"><span class="pre">&lt;archive_container&gt;/&lt;length&gt;&lt;object_name&gt;/&lt;timestamp&gt;</span></code>,
+where <code class="docutils literal"><span class="pre">length</span></code> is the 3-character zero-padded hexadecimal length of the
+<code class="docutils literal"><span class="pre">&lt;object_name&gt;</span></code> and <code class="docutils literal"><span class="pre">&lt;timestamp&gt;</span></code> is the timestamp of when the previous
+version was created.</p>
+<p>A <code class="docutils literal"><span class="pre">GET</span></code> to a versioned object will return the current version of the object
+without having to do any request redirects or metadata lookups.</p>
+<p>A <code class="docutils literal"><span class="pre">POST</span></code> to a versioned object will update the object metadata as normal,
+but will not create a new version of the object. In other words, new versions
+are only created when the content of the object changes.</p>
+<p>A <code class="docutils literal"><span class="pre">DELETE</span></code> to a versioned object will be handled in one of two ways,
+as described above.</p>
+<p>To restore a previous version of an object, find the desired version in the
+archive container then issue a <code class="docutils literal"><span class="pre">COPY</span></code> with a <code class="docutils literal"><span class="pre">Destination</span></code> header
+indicating the original location. This will archive the current version similar
+to a <code class="docutils literal"><span class="pre">PUT</span></code> over the versioned object. If the client additionally wishes to
+permanently delete what was the current version, it must find the newly-created
+archive in the archive container and issue a separate <code class="docutils literal"><span class="pre">DELETE</span></code> to it.</p>
+<div class="section" id="how-to-enable-object-versioning-in-a-swift-cluster">
+<h2>How to Enable Object Versioning in a Swift Cluster<a class="headerlink" href="#how-to-enable-object-versioning-in-a-swift-cluster" title="Permalink to this headline">¶</a></h2>
+<p>This middleware was written as an effort to refactor parts of the proxy server,
+so this functionality was already available in previous releases and every
+attempt was made to maintain backwards compatibility. To allow operators to
+perform a seamless upgrade, it is not required to add the middleware to the
+proxy pipeline and the flag <code class="docutils literal"><span class="pre">allow_versions</span></code> in the container server
+configuration files are still valid, but only when using
+<code class="docutils literal"><span class="pre">X-Versions-Location</span></code>. In future releases, <code class="docutils literal"><span class="pre">allow_versions</span></code> will be
+deprecated in favor of adding this middleware to the pipeline to enable or
+disable the feature.</p>
+<p>In case the middleware is added to the proxy pipeline, you must also
+set <code class="docutils literal"><span class="pre">allow_versioned_writes</span></code> to <code class="docutils literal"><span class="pre">True</span></code> in the middleware options
+to enable the information about this middleware to be returned in a /info
+request.</p>
+<blockquote>
+<div><div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">You need to add the middleware to the proxy pipeline and set
+<code class="docutils literal"><span class="pre">allow_versioned_writes</span> <span class="pre">=</span> <span class="pre">True</span></code> to use <code class="docutils literal"><span class="pre">X-History-Location</span></code>. Setting
+<code class="docutils literal"><span class="pre">allow_versions</span> <span class="pre">=</span> <span class="pre">True</span></code> in the container server is not sufficient to
+enable the use of <code class="docutils literal"><span class="pre">X-History-Location</span></code>.</p>
+</div>
+</div></blockquote>
+<div class="section" id="upgrade-considerations">
+<h3>Upgrade considerations:<a class="headerlink" href="#upgrade-considerations" title="Permalink to this headline">¶</a></h3>
+<p>If <code class="docutils literal"><span class="pre">allow_versioned_writes</span></code> is set in the filter configuration, you can leave
+the <code class="docutils literal"><span class="pre">allow_versions</span></code> flag in the container server configuration files
+untouched. If you decide to disable or remove the <code class="docutils literal"><span class="pre">allow_versions</span></code> flag, you
+must re-set any existing containers that had the <code class="docutils literal"><span class="pre">X-Versions-Location</span></code> flag
+configured so that it can now be tracked by the versioned_writes middleware.</p>
+<p>Clients should not use the <code class="docutils literal"><span class="pre">X-History-Location</span></code> header until all proxies in
+the cluster have been upgraded to a version of Swift that supports it.
+Attempting to use <code class="docutils literal"><span class="pre">X-History-Location</span></code> during a rolling upgrade may result
+in some requests being served by proxies running old code, leading to data
+loss.</p>
+</div>
+</div>
+<div class="section" id="examples-using-curl-with-x-versions-location">
+<h2>Examples Using <code class="docutils literal"><span class="pre">curl</span></code> with <code class="docutils literal"><span class="pre">X-Versions-Location</span></code><a class="headerlink" href="#examples-using-curl-with-x-versions-location" title="Permalink to this headline">¶</a></h2>
+<p>First, create a container with the <code class="docutils literal"><span class="pre">X-Versions-Location</span></code> header or add the
+header to an existing container. Also make sure the container referenced by
+the <code class="docutils literal"><span class="pre">X-Versions-Location</span></code> exists. In this example, the name of that
+container is &#8220;versions&#8221;:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>curl -i -XPUT -H &quot;X-Auth-Token: &lt;token&gt;&quot; -H &quot;X-Versions-Location: versions&quot; http://&lt;storage_url&gt;/container
+curl -i -XPUT -H &quot;X-Auth-Token: &lt;token&gt;&quot; http://&lt;storage_url&gt;/versions
+</pre></div>
+</div>
+<p>Create an object (the first version):</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>curl -i -XPUT --data-binary 1 -H &quot;X-Auth-Token: &lt;token&gt;&quot; http://&lt;storage_url&gt;/container/myobject
+</pre></div>
+</div>
+<p>Now create a new version of that object:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>curl -i -XPUT --data-binary 2 -H &quot;X-Auth-Token: &lt;token&gt;&quot; http://&lt;storage_url&gt;/container/myobject
+</pre></div>
+</div>
+<p>See a listing of the older versions of the object:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>curl -i -H &quot;X-Auth-Token: &lt;token&gt;&quot; http://&lt;storage_url&gt;/versions?prefix=008myobject/
+</pre></div>
+</div>
+<p>Now delete the current version of the object and see that the older version is
+gone from &#8216;versions&#8217; container and back in &#8216;container&#8217; container:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>curl -i -XDELETE -H &quot;X-Auth-Token: &lt;token&gt;&quot; http://&lt;storage_url&gt;/container/myobject
+curl -i -H &quot;X-Auth-Token: &lt;token&gt;&quot; http://&lt;storage_url&gt;/versions?prefix=008myobject/
+curl -i -XGET -H &quot;X-Auth-Token: &lt;token&gt;&quot; http://&lt;storage_url&gt;/container/myobject
+</pre></div>
+</div>
+</div>
+<div class="section" id="examples-using-curl-with-x-history-location">
+<h2>Examples Using <code class="docutils literal"><span class="pre">curl</span></code> with <code class="docutils literal"><span class="pre">X-History-Location</span></code><a class="headerlink" href="#examples-using-curl-with-x-history-location" title="Permalink to this headline">¶</a></h2>
+<p>As above, create a container with the <code class="docutils literal"><span class="pre">X-History-Location</span></code> header and ensure
+that the container referenced by the <code class="docutils literal"><span class="pre">X-History-Location</span></code> exists. In this
+example, the name of that container is &#8220;versions&#8221;:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>curl -i -XPUT -H &quot;X-Auth-Token: &lt;token&gt;&quot; -H &quot;X-History-Location: versions&quot; http://&lt;storage_url&gt;/container
+curl -i -XPUT -H &quot;X-Auth-Token: &lt;token&gt;&quot; http://&lt;storage_url&gt;/versions
+</pre></div>
+</div>
+<p>Create an object (the first version):</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>curl -i -XPUT --data-binary 1 -H &quot;X-Auth-Token: &lt;token&gt;&quot; http://&lt;storage_url&gt;/container/myobject
+</pre></div>
+</div>
+<p>Now create a new version of that object:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>curl -i -XPUT --data-binary 2 -H &quot;X-Auth-Token: &lt;token&gt;&quot; http://&lt;storage_url&gt;/container/myobject
+</pre></div>
+</div>
+<p>Now delete the current version of the object. Subsequent requests will 404:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>curl -i -XDELETE -H &quot;X-Auth-Token: &lt;token&gt;&quot; http://&lt;storage_url&gt;/container/myobject
+curl -i -H &quot;X-Auth-Token: &lt;token&gt;&quot; http://&lt;storage_url&gt;/container/myobject
+</pre></div>
+</div>
+<p>A listing of the older versions of the object will include both the first and
+second versions of the object, as well as a &#8220;delete marker&#8221; object:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>curl -i -H &quot;X-Auth-Token: &lt;token&gt;&quot; http://&lt;storage_url&gt;/versions?prefix=008myobject/
+</pre></div>
+</div>
+<p>To restore a previous version, simply <code class="docutils literal"><span class="pre">COPY</span></code> it from the archive container:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>curl -i -XCOPY -H &quot;X-Auth-Token: &lt;token&gt;&quot; http://&lt;storage_url&gt;/versions/008myobject/&lt;timestamp&gt; -H &quot;Destination: container/myobject&quot;
+</pre></div>
+</div>
+<p>Note that the archive container still has all previous versions of the object,
+including the source for the restore:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>curl -i -H &quot;X-Auth-Token: &lt;token&gt;&quot; http://&lt;storage_url&gt;/versions?prefix=008myobject/
+</pre></div>
+</div>
+<p>To permanently delete a previous version, <code class="docutils literal"><span class="pre">DELETE</span></code> it from the archive
+container:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>curl -i -XDELETE -H &quot;X-Auth-Token: &lt;token&gt;&quot; http://&lt;storage_url&gt;/versions/008myobject/&lt;timestamp&gt;
+</pre></div>
+</div>
+</div>
+<div class="section" id="how-to-disable-object-versioning-in-a-swift-cluster">
+<h2>How to Disable Object Versioning in a Swift Cluster<a class="headerlink" href="#how-to-disable-object-versioning-in-a-swift-cluster" title="Permalink to this headline">¶</a></h2>
+<p>If you want to disable all functionality, set <code class="docutils literal"><span class="pre">allow_versioned_writes</span></code> to
+<code class="docutils literal"><span class="pre">False</span></code> in the middleware options.</p>
+<p>Disable versioning from a container (x is any value except empty):</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>curl -i -XPOST -H &quot;X-Auth-Token: &lt;token&gt;&quot; -H &quot;X-Remove-Versions-Location: x&quot; http://&lt;storage_url&gt;/container
+</pre></div>
+</div>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Object Versioning</a><ul>
+<li><a class="reference internal" href="#how-to-enable-object-versioning-in-a-swift-cluster">How to Enable Object Versioning in a Swift Cluster</a><ul>
+<li><a class="reference internal" href="#upgrade-considerations">Upgrade considerations:</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#examples-using-curl-with-x-versions-location">Examples Using <code class="docutils literal"><span class="pre">curl</span></code> with <code class="docutils literal"><span class="pre">X-Versions-Location</span></code></a></li>
+<li><a class="reference internal" href="#examples-using-curl-with-x-history-location">Examples Using <code class="docutils literal"><span class="pre">curl</span></code> with <code class="docutils literal"><span class="pre">X-History-Location</span></code></a></li>
+<li><a class="reference internal" href="#how-to-disable-object-versioning-in-a-swift-cluster">How to Disable Object Versioning in a Swift Cluster</a></li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="overview_large_objects.html"
+                                  title="previous chapter">Large Object Support</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="overview_global_cluster.html"
+                                  title="next chapter">Global Clusters</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/swift
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="_sources/overview_object_versioning.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="right" >
+          <a href="overview_global_cluster.html" title="Global Clusters"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="overview_large_objects.html" title="Large Object Support"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="index.html">swift 2.12.1.dev102 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2017, OpenStack Foundation.
+      Last updated on &#39;Tue Feb 14 07:57:22 2017, commit 7cb6882&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/swift");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

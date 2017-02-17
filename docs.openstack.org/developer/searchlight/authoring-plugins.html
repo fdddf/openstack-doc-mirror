@@ -1,0 +1,659 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Authoring Searchlight Plugins &mdash; searchlight 2.0.0.0rc2.dev8 documentation</title>
+    
+    <link rel="stylesheet" href="_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '2.0.0.0rc2.dev8',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <link rel="top" title="searchlight 2.0.0.0rc2.dev8 documentation" href="index.html" />
+    <link rel="next" title="Searchlight Architecture" href="architecture.html" />
+    <link rel="prev" title="Feature Requests and Bug Reports" href="feature-requests-bugs.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="authoring-searchlight-plugins">
+<span id="searchlight-plugin-authoring"></span><h1>Authoring Searchlight Plugins<a class="headerlink" href="#authoring-searchlight-plugins" title="Permalink to this headline">¶</a></h1>
+<p>At a bare minimum, a plugin must consist of an elasticsearch mapping, and a
+method by which it can provide data to be indexed. Many plugins also require a
+way to receive updates in order to keep the index up to date. For Openstack
+resources, typically the service API is used for initial indexing and
+notifications are received via oslo.messaging.</p>
+<p>This documentation will use as an example the Neutron network plugin as a
+reasonably complete and complex example.</p>
+<div class="section" id="getting-some-data">
+<h2>Getting some data<a class="headerlink" href="#getting-some-data" title="Permalink to this headline">¶</a></h2>
+<p>The very first thing you should do is figure out exactly what you&#8217;re trying to
+index. When I&#8217;ve developed plugins I&#8217;ve found it helpful to generate test data
+both for initial indexing and for notifications.</p>
+<div class="section" id="initial-indexing">
+<h3>Initial indexing<a class="headerlink" href="#initial-indexing" title="Permalink to this headline">¶</a></h3>
+<p>In the case of neutron networks, the initial data will come from
+<code class="docutils literal"><span class="pre">neutronclient</span></code>. Some browsing of the API documentation reveals that the
+call I want is <code class="docutils literal"><span class="pre">list_networks</span></code>:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="kn">import</span> <span class="nn">json</span>
+<span class="kn">import</span> <span class="nn">os</span>
+
+<span class="kn">from</span> <span class="nn">keystoneclient.auth.identity</span> <span class="kn">import</span> <span class="n">v2</span>
+<span class="kn">from</span> <span class="nn">keystoneclient</span> <span class="kn">import</span> <span class="n">session</span>
+<span class="kn">from</span> <span class="nn">neutronclient.v2_0</span> <span class="kn">import</span> <span class="n">client</span> <span class="k">as</span> <span class="n">nc_20</span>
+
+<span class="k">def</span> <span class="nf">get_session</span><span class="p">():</span>
+    <span class="n">username</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s1">&#39;OS_USERNAME&#39;</span><span class="p">]</span>
+    <span class="n">password</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s1">&#39;OS_PASSWORD&#39;</span><span class="p">]</span>
+    <span class="n">auth_url</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s1">&#39;OS_AUTH_URL&#39;</span><span class="p">]</span>
+    <span class="n">tenant_name</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s1">&#39;OS_TENANT_NAME&#39;</span><span class="p">]</span>
+    <span class="n">auth</span> <span class="o">=</span> <span class="n">v2</span><span class="o">.</span><span class="n">Password</span><span class="p">(</span><span class="o">**</span><span class="nb">locals</span><span class="p">())</span>
+    <span class="k">return</span> <span class="n">session</span><span class="o">.</span><span class="n">Session</span><span class="p">(</span><span class="n">auth</span><span class="o">=</span><span class="n">auth</span><span class="p">)</span>
+
+
+<span class="n">nc</span> <span class="o">=</span> <span class="n">nc_20</span><span class="o">.</span><span class="n">Client</span><span class="p">(</span><span class="n">session</span><span class="o">=</span><span class="n">get_session</span><span class="p">())</span>
+<span class="n">networks</span> <span class="o">=</span> <span class="n">nc</span><span class="o">.</span><span class="n">list_networks</span><span class="p">()</span>
+
+<span class="k">print</span><span class="p">(</span><span class="n">json</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span><span class="n">networks</span><span class="p">,</span> <span class="n">indent</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span> <span class="n">sort_keys</span><span class="o">=</span><span class="bp">True</span><span class="p">))</span>
+</pre></div>
+</div>
+<p>This outputs:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="p">{</span>
+    <span class="s2">&quot;networks&quot;</span><span class="p">:</span> <span class="p">[</span>
+        <span class="p">{</span>
+            <span class="s2">&quot;admin_state_up&quot;</span><span class="p">:</span> <span class="n">true</span><span class="p">,</span>
+            <span class="s2">&quot;availability_zone_hints&quot;</span><span class="p">:</span> <span class="p">[],</span>
+            <span class="s2">&quot;availability_zones&quot;</span><span class="p">:</span> <span class="p">[</span>
+                <span class="s2">&quot;nova&quot;</span>
+            <span class="p">],</span>
+            <span class="s2">&quot;created_at&quot;</span><span class="p">:</span> <span class="s2">&quot;2016-04-08T16:44:17&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;description&quot;</span><span class="p">:</span> <span class="s2">&quot;&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="s2">&quot;4d73d257-35d5-4f4e-bc71-f7f629f21904&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;ipv4_address_scope&quot;</span><span class="p">:</span> <span class="n">null</span><span class="p">,</span>
+            <span class="s2">&quot;ipv6_address_scope&quot;</span><span class="p">:</span> <span class="n">null</span><span class="p">,</span>
+            <span class="s2">&quot;is_default&quot;</span><span class="p">:</span> <span class="n">true</span><span class="p">,</span>
+            <span class="s2">&quot;mtu&quot;</span><span class="p">:</span> <span class="mi">1450</span><span class="p">,</span>
+            <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;public&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;port_security_enabled&quot;</span><span class="p">:</span> <span class="n">true</span><span class="p">,</span>
+            <span class="s2">&quot;provider:network_type&quot;</span><span class="p">:</span> <span class="s2">&quot;vxlan&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;provider:physical_network&quot;</span><span class="p">:</span> <span class="n">null</span><span class="p">,</span>
+            <span class="s2">&quot;provider:segmentation_id&quot;</span><span class="p">:</span> <span class="mi">1053</span><span class="p">,</span>
+            <span class="s2">&quot;router:external&quot;</span><span class="p">:</span> <span class="n">true</span><span class="p">,</span>
+            <span class="s2">&quot;shared&quot;</span><span class="p">:</span> <span class="n">false</span><span class="p">,</span>
+            <span class="s2">&quot;status&quot;</span><span class="p">:</span> <span class="s2">&quot;ACTIVE&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;subnets&quot;</span><span class="p">:</span> <span class="p">[</span>
+                <span class="s2">&quot;abcc5896-4844-4870-a5d8-6ae4b8edd42e&quot;</span><span class="p">,</span>
+                <span class="s2">&quot;ea47304e-bd54-4337-901a-1eb5196ea18e&quot;</span>
+            <span class="p">],</span>
+            <span class="s2">&quot;tags&quot;</span><span class="p">:</span> <span class="p">[],</span>
+            <span class="s2">&quot;tenant_id&quot;</span><span class="p">:</span> <span class="s2">&quot;fa1537e9bda9405891d004ef9c08d0d1&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;updated_at&quot;</span><span class="p">:</span> <span class="s2">&quot;2016-04-08T16:44:17&quot;</span>
+        <span class="p">}</span>
+    <span class="p">]</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>Since that&#8217;s the output from neutron client, that&#8217;s what should go in
+<code class="docutils literal"><span class="pre">searchlight/tests/functional/data/load/networks.json</span></code>, though you might
+also want more examples to test different things.</p>
+</div>
+<div class="section" id="notifications">
+<h3>Notifications<a class="headerlink" href="#notifications" title="Permalink to this headline">¶</a></h3>
+<p>Openstack documents some of the <a class="reference external" href="https://wiki.openstack.org/wiki/SystemUsageData">notifications</a> sent by some services. It&#8217;s
+also possible to eavesdrop on notifications sent by running services. Taking
+neutron as an example (though all services are slightly different), we can
+make it output notifications by editing <code class="docutils literal"><span class="pre">/etc/neutron/neutron.conf</span></code> and
+adding under the <code class="docutils literal"><span class="pre">[oslo_messaging_notifications]</span></code> section:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="n">driver</span> <span class="o">=</span> <span class="n">messagingv2</span>
+</pre></div>
+</div>
+<p>There are then two ways to configure the service to send notifications that
+Searchlight can receive. The recommended method is to use notification pools,
+touched on in the <a class="reference external" href="http://docs.openstack.org/developer/oslo.messaging/notification_listener.html">messaging documentation</a>.</p>
+<div class="section" id="notification-pools">
+<h4>Notification pools<a class="headerlink" href="#notification-pools" title="Permalink to this headline">¶</a></h4>
+<p>A notification messaging pool allows additional listeners to receive
+messages on an existing topic. By default, Openstack services send notification
+messages to an oslo.messaging &#8216;topic&#8217; named <cite>notifications</cite>. To view these
+notifications while still allowing <code class="docutils literal"><span class="pre">searchlight-listener</span></code> or Ceilometer&#8217;s
+agent to continue to receive them, you may use the utility script in
+<code class="docutils literal"><span class="pre">test-scripts/listener.py</span></code>:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>. ~/devstack/openrc admin admin
+# If your rabbitmq user/pass are not the same as for devstack, you
+# can set RABBIT_PASSWORD and/or RABBIT_USER
+./test-scripts/listener.py neutron test-notifications
+</pre></div>
+</div>
+</div>
+<div class="section" id="adding-a-separate-topic">
+<h4>Adding a separate topic<a class="headerlink" href="#adding-a-separate-topic" title="Permalink to this headline">¶</a></h4>
+<p>In the same config file (<code class="docutils literal"><span class="pre">/etc/neutron/neutron.conf</span></code>) the following line
+(again, under the <code class="docutils literal"><span class="pre">[DEFAULT]</span></code> section) will cause neutron to output
+notifications to a topic named <code class="docutils literal"><span class="pre">searchlight_indexer</span></code>:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="n">notification_topics</span> <span class="o">=</span> <span class="n">searchlight_indexer</span>
+</pre></div>
+</div>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p><code class="docutils literal"><span class="pre">searchlight-listener</span></code> also listens on the <code class="docutils literal"><span class="pre">searchlight_indexer</span></code>
+topic, so if you have <code class="docutils literal"><span class="pre">searchlight-listener</span></code> running, it will receive
+and process some or all of the notifications you&#8217;re trying to look at.
+Thus, you should either stop the <code class="docutils literal"><span class="pre">searchlight-listener</span></code> or add another
+topic (comma-separated) for the specific notifications you want to see.
+For example:</p>
+<div class="last highlight-python"><div class="highlight"><pre><span></span><span class="n">notification_topics</span> <span class="o">=</span> <span class="n">searchlight_indexer</span><span class="p">,</span><span class="n">my_test_topic</span>
+</pre></div>
+</div>
+</div>
+<p>After restarting the <code class="docutils literal"><span class="pre">q-svc</span></code> service notifications will be output to the
+message bus (rabbitmq by default). They can be viewed in any RMQ management
+tool; there is also a utility script in <code class="docutils literal"><span class="pre">test-scripts/listener.py</span></code> that
+will listen for notifications:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>. ~/devstack/openrc admin admin
+# If your rabbitmq user/pass are not the same as for devstack, you
+# can set RABBIT_PASSWORD and/or RABBIT_USER
+./test-scripts/listener.py neutron
+</pre></div>
+</div>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p>If you added a custom topic as described above, you&#8217;ll need to edit
+<code class="docutils literal"><span class="pre">listener.py</span></code> to use your custom topic:</p>
+<div class="last highlight-python"><div class="highlight"><pre><span></span><span class="c1"># Change this line</span>
+<span class="n">topic</span> <span class="o">=</span> <span class="s1">&#39;searchlight_indexer&#39;</span>
+<span class="c1"># to</span>
+<span class="n">topic</span> <span class="o">=</span> <span class="s1">&#39;my_test_topic&#39;</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="section" id="using-the-results">
+<h4>Using the results<a class="headerlink" href="#using-the-results" title="Permalink to this headline">¶</a></h4>
+<p>Issuing various commands (<code class="docutils literal"><span class="pre">neutron</span> <span class="pre">net-create</span></code>, <code class="docutils literal"><span class="pre">neutron</span> <span class="pre">net-update</span></code>,
+<code class="docutils literal"><span class="pre">neutron</span> <span class="pre">net-delete</span></code>) will cause <code class="docutils literal"><span class="pre">listener.py</span></code> to receive notifications.
+Usually the notifications with <code class="docutils literal"><span class="pre">event_type</span></code> ending <code class="docutils literal"><span class="pre">.end</span></code> are the ones of
+most interest (many fields omitted for brevity):</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="p">{</span><span class="s2">&quot;event_type&quot;</span><span class="p">:</span> <span class="s2">&quot;network.update.end&quot;</span><span class="p">,</span>
+ <span class="s2">&quot;payload&quot;</span><span class="p">:</span> <span class="p">{</span>
+   <span class="s2">&quot;network&quot;</span><span class="p">:</span> <span class="p">{</span>
+     <span class="s2">&quot;status&quot;</span><span class="p">:</span> <span class="s2">&quot;ACTIVE&quot;</span><span class="p">,</span>
+     <span class="s2">&quot;router:external&quot;</span><span class="p">:</span> <span class="n">false</span><span class="p">,</span>
+     <span class="s2">&quot;subnets&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;9b6094de-18cb-46e1-8d51-e303ff844c86&quot;</span><span class="p">,</span>
+                 <span class="s2">&quot;face0b47-40d3-45c0-9b62-5f05311710f5&quot;</span><span class="p">,</span>
+                 <span class="s2">&quot;7b7bdf5f-8f22-44a3-bec3-1daa78df83c5&quot;</span><span class="p">],</span>
+     <span class="s2">&quot;updated_at&quot;</span><span class="p">:</span> <span class="s2">&quot;2016-05-03T19:05:38&quot;</span><span class="p">,</span>
+     <span class="s2">&quot;tenant_id&quot;</span><span class="p">:</span> <span class="s2">&quot;34518c16d95e40a19b1a95c1916d8335&quot;</span><span class="p">,</span>
+     <span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="s2">&quot;abf3a939-4daf-4d05-8395-3ec735aa89fc&quot;</span><span class="p">,</span> <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;private&quot;</span><span class="p">}</span>
+  <span class="p">},</span>
+  <span class="s2">&quot;publisher_id&quot;</span><span class="p">:</span> <span class="s2">&quot;network.devstack&quot;</span><span class="p">,</span>
+  <span class="s2">&quot;ctxt&quot;</span><span class="p">:</span> <span class="p">{</span>
+    <span class="s2">&quot;read_only&quot;</span><span class="p">:</span> <span class="n">false</span><span class="p">,</span>
+    <span class="s2">&quot;domain&quot;</span><span class="p">:</span> <span class="n">null</span><span class="p">,</span>
+    <span class="s2">&quot;project_name&quot;</span><span class="p">:</span> <span class="s2">&quot;demo&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;user_id&quot;</span><span class="p">:</span> <span class="s2">&quot;c714917a458e428fa5dc9b1b8aa0d4d6&quot;</span>
+  <span class="p">},</span>
+  <span class="s2">&quot;metadata&quot;</span><span class="p">:</span> <span class="p">{</span>
+    <span class="s2">&quot;timestamp&quot;</span><span class="p">:</span> <span class="s2">&quot;2016-05-03 19:05:38.258273&quot;</span><span class="p">,</span>
+    <span class="s2">&quot;message_id&quot;</span><span class="p">:</span> <span class="s2">&quot;ec9ac6a1-aa17-4ee3-aa6e-ab48c1fb81a8&quot;</span>
+  <span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>The entire message can go into
+<code class="docutils literal"><span class="pre">searchlight/tests/functional/data/events/network.json</span></code>. The <code class="docutils literal"><span class="pre">payload</span></code>
+(in addition to the API response) will inform the mapping that should be
+applied for a given plugin.</p>
+</div>
+</div>
+</div>
+<div class="section" id="file-structure">
+<h2>File structure<a class="headerlink" href="#file-structure" title="Permalink to this headline">¶</a></h2>
+<p>Plugins live in <code class="docutils literal"><span class="pre">searchlight/elasticsearch/plugins</span></code>. We have tended to create
+a subpackage named after the service (<code class="docutils literal"><span class="pre">neutron</span></code>) and within it a module named
+after the resource type (<code class="docutils literal"><span class="pre">networks.py</span></code>). Notification handlers can be in a file
+specific to each resource type but can also be in a single file together
+(existing ones use <code class="docutils literal"><span class="pre">notification_handlers.py</span></code>).</p>
+<p><code class="docutils literal"><span class="pre">networks.py</span></code> contains a class named <code class="docutils literal"><span class="pre">NetworkIndex</span></code> that implements the base
+class <code class="docutils literal"><span class="pre">IndexBase</span></code> found in <code class="docutils literal"><span class="pre">searchlight.elasticsearch.plugins.base</span></code>.</p>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">If there are plugins for multiple resources within the same Openstack
+service (for example, Glance images and meta definitions) those plugins
+can exist in the same subpackage (&#8216;glance&#8217;) in different modules, each
+implementing an IndexBase.</p>
+</div>
+</div>
+<div class="section" id="enabling-plugins">
+<h2>Enabling plugins<a class="headerlink" href="#enabling-plugins" title="Permalink to this headline">¶</a></h2>
+<p>Searchlight plugins are loaded by <a class="reference external" href="http://docs.openstack.org/developer/stevedore/">Stevedore</a>. In order for a plugin to be
+enabled for indexing and searching, it&#8217;s necessary to add an entry to the
+<code class="docutils literal"><span class="pre">entry_points</span></code> list in Searchlight&#8217;s configuration in <code class="docutils literal"><span class="pre">setup.cfg</span></code>. The
+name should be the plugin resource name (typically the name used to represent
+it in <a class="reference external" href="http://docs.openstack.org/developer/heat/template_guide/openstack.html">Heat</a>):</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>[entry_points]
+searchlight.index_backend =
+    os_neutron_net = searchlight.elasticsearch.plugins.neutron.networks:NetworkIndex
+</pre></div>
+</div>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p>After modifying entrypoints, you&#8217;ll need to reinstall the searchlight
+package to register them (you may need to activate your virtual environment;
+see <a class="reference internal" href="dev-environment.html#installation-instructions"><span>Installing Searchlight</span></a>):</p>
+<div class="last highlight-python"><div class="highlight"><pre><span></span>python setup.py develop
+</pre></div>
+</div>
+</div>
+</div>
+<div class="section" id="writing-some-code">
+<h2>Writing some code<a class="headerlink" href="#writing-some-code" title="Permalink to this headline">¶</a></h2>
+<p>At this point you&#8217;re probably about ready to start filling in the code. My
+usual approach is to create the unit test file first, and copy some of the
+more boilerplate functionality from one of the other plugins.</p>
+<p>You can run an individual test file with:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>tox -epy34 searchlight.tests.unit.&lt;your test module&gt;
+</pre></div>
+</div>
+<p>This has the advantage of running just your tests and executing them very
+quickly. It can be easier to start from a full set of failing unit tests
+and build up the actual code from there. Functional tests I&#8217;ve tended to add
+later. Again, you can run an individual functional test file:</p>
+<blockquote>
+<div>tox -epy34 searchlight.tests.functional.&lt;your test module&gt;</div></blockquote>
+</div>
+<div class="section" id="required-plugin-functions">
+<h2>Required plugin functions<a class="headerlink" href="#required-plugin-functions" title="Permalink to this headline">¶</a></h2>
+<p>This section describes some of the functionality from <code class="docutils literal"><span class="pre">IndexBase</span></code> you will
+need to override.</p>
+<div class="section" id="document-type">
+<h3>Document type<a class="headerlink" href="#document-type" title="Permalink to this headline">¶</a></h3>
+<p>As a convention, plugins define their document type (which will map to an
+ElasticSearch document type) as the <a class="reference external" href="http://docs.openstack.org/developer/heat/template_guide/openstack.html">resource name</a> Heat uses to identify it:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="nd">@classmethod</span>
+<span class="k">def</span> <span class="nf">get_document_type</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="k">return</span> <span class="s2">&quot;OS::Neutron::Net&quot;</span>
+</pre></div>
+</div>
+</div>
+<div class="section" id="retrieving-object-for-initial-indexing">
+<h3>Retrieving object for initial indexing<a class="headerlink" href="#retrieving-object-for-initial-indexing" title="Permalink to this headline">¶</a></h3>
+<p>Plugins must implement <code class="docutils literal"><span class="pre">get_objects</span></code> which in many cases will go to the
+API of the service it&#8217;s indexing. It should return an iterable that will be
+passed to a function (also required) named <code class="docutils literal"><span class="pre">serialize</span></code>, which in turn must
+return a dictionary suitable for Elasticsearch to index. In the example for
+Neutron networks, this would be a call to <code class="docutils literal"><span class="pre">list_networks</span></code> on an instance of
+<code class="docutils literal"><span class="pre">neutronclient</span></code>:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="k">def</span> <span class="nf">get_objects</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Generator that lists all networks owned by all tenants.&quot;&quot;&quot;</span>
+    <span class="c1"># Neutronclient handles pagination itself; list_networks is a generator</span>
+    <span class="n">neutron_client</span> <span class="o">=</span> <span class="n">openstack_clients</span><span class="o">.</span><span class="n">get_neutronclient</span><span class="p">()</span>
+    <span class="k">for</span> <span class="n">network</span> <span class="ow">in</span> <span class="n">neutron_client</span><span class="o">.</span><span class="n">list_networks</span><span class="p">()[</span><span class="s1">&#39;networks&#39;</span><span class="p">]:</span>
+        <span class="k">yield</span> <span class="n">network</span>
+</pre></div>
+</div>
+</div>
+<div class="section" id="mapping">
+<h3>Mapping<a class="headerlink" href="#mapping" title="Permalink to this headline">¶</a></h3>
+<p><code class="docutils literal"><span class="pre">get_mapping</span></code> is also required. It must return a dictionary that tells
+Elasticsearch how to map documents for the plugin (see the documentation for
+<a class="reference external" href="https://www.elastic.co/guide/en/elasticsearch/reference/current/mapping.html">mapping</a>).</p>
+<p>At a minimum a plugin should define an <code class="docutils literal"><span class="pre">id</span></code> field and an <code class="docutils literal"><span class="pre">updated_at</span></code> field
+because consumers will generally rely on those being present; a <code class="docutils literal"><span class="pre">name</span></code> field
+is highly advisable. If the resource doesn&#8221;t contain these values your
+<code class="docutils literal"><span class="pre">serialize</span></code> function can map to them. In particular, if your resource does
+not have a native <code class="docutils literal"><span class="pre">id</span></code> value, you must override <code class="docutils literal"><span class="pre">get_document_id_field</span></code>
+so that the indexing code can retrieve the correct value when indexing.</p>
+<p>It is worth understanding how Elasticsearch indexes various field types,
+particularly strings. String fields are typically broken down into tokens to
+allow searching:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>&quot;The quick brown fox&quot; -&gt; [&quot;The&quot;, &quot;quick&quot;, &quot;brown&quot;, &quot;fox&quot;]
+</pre></div>
+</div>
+<p>This works well for full-text type documents but less well, for example,
+for UUIDS:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>&quot;aaab-bbbb-55555555&quot; -&gt; [&quot;aaab&quot;, &quot;bbbb&quot;, &quot;55555555&quot;]
+</pre></div>
+</div>
+<p>In the second example, a search for the full UUID will not match. As a result,
+we tend to mark these kinds of fields as <code class="docutils literal"><span class="pre">not_analyzed</span></code> as with the example
+to follow.</p>
+<p>Where field types are not specified, Elasticsearch will make a best guess from
+the first document that&#8217;s indexed.</p>
+<p>Some notes (expressed below as comments starting with #):</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="p">{</span>
+  <span class="c1"># This allows indexing of fields not specified in the mapping doc</span>
+  <span class="s2">&quot;dynamic&quot;</span><span class="p">:</span> <span class="n">true</span><span class="p">,</span>
+  <span class="s2">&quot;properties&quot;</span><span class="p">:</span> <span class="p">{</span>
+
+    <span class="c1"># not_analyzed is important for id fields; it prevents Elasticsearch</span>
+    <span class="c1"># tokenizing the field, allowing for exact matches</span>
+    <span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;string&quot;</span><span class="p">,</span> <span class="s2">&quot;index&quot;</span><span class="p">:</span> <span class="s2">&quot;not_analyzed&quot;</span><span class="p">},</span>
+
+    <span class="c1"># This allows name to be tokenized for searching, but Searchlight will</span>
+    <span class="c1"># attempt to use the &#39;raw&#39; (untokenized) field for sorting which gives</span>
+    <span class="c1"># more consistent results</span>
+    <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="p">{</span>
+      <span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;string&quot;</span><span class="p">,</span>
+      <span class="s2">&quot;fields&quot;</span><span class="p">:</span> <span class="p">{</span>
+        <span class="s2">&quot;raw&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;string&quot;</span><span class="p">,</span> <span class="s2">&quot;index&quot;</span><span class="p">:</span> <span class="s2">&quot;not_analyzed&quot;</span><span class="p">}</span>
+      <span class="p">}</span>
+    <span class="p">}</span>
+  <span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>If you are mapping a field which is a reference id to other plugin type, you
+should add a _meta mapping for that field. This will enable Searchlight(SL) to
+provide more information to CLI/UI. The reference id and the plugin resource
+type can be used by CLI/UI to issue a <code class="docutils literal"><span class="pre">GET</span></code> request to fetch more information
+from SL. See below for an example on nova server plugin mapping:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>def get_mapping(self):
+  return {
+      &#39;dynamic&#39;: True,
+      &#39;properties&#39;: {
+          &#39;id&#39;: {&#39;type&#39;: &#39;string&#39;, &#39;index&#39;: &#39;not_analyzed&#39;},
+          &#39;name&#39;: {
+              &#39;type&#39;: &#39;string&#39;,
+              &#39;fields&#39;: {
+                  &#39;raw&#39;: {&#39;type&#39;: &#39;string&#39;, &#39;index&#39;: &#39;not_analyzed&#39;}
+              }
+          }
+          &#39;image&#39;: {
+              &#39;type&#39;: &#39;nested&#39;,
+              &#39;properties&#39;: {
+                  &#39;id&#39;: {&#39;type&#39;: &#39;string&#39;, &#39;index&#39;: &#39;not_analyzed&#39;}
+              }
+          }
+      },
+      &quot;_meta&quot;: {
+          &quot;image.id&quot;: {
+              &quot;resource_type&quot;: resource_types.GLANCE_IMAGE
+          }
+      },
+  }
+</pre></div>
+</div>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">Parent plugin id field(when available) is automatically linked to the
+parent resource type.</p>
+</div>
+<p>For many field types Searchlight will alter the mapping to change the format in
+which field data is stored. Prior to Elasticsearch 2.x field values by default
+were stored in &#8216;fielddata&#8217; format, which could result in high memory usage under
+some sort and aggregation operations. An alternative format, called <code class="docutils literal"><span class="pre">doc_values</span></code>
+trades slightly increased disk usage for better memory efficiency. In Elasticsearch
+2.x <code class="docutils literal"><span class="pre">doc_values</span></code> is the default, and Searchlight uses this option as the default
+regardless of Elasticsearch version. For more information see the Elasticsearch
+<a class="reference external" href="https://www.elastic.co/guide/en/elasticsearch/reference/2.1/doc-values.html">documentation</a>.</p>
+<p>Generally this default will be fine. However, there are several ways in which
+the default can be overridden:</p>
+<ul>
+<li><p class="first">Globally in plugin configuration; in <code class="docutils literal"><span class="pre">searchlight.conf</span></code>:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="p">[</span><span class="n">resource_plugin</span><span class="p">]</span>
+<span class="n">mapping_use_doc_values</span> <span class="o">=</span> <span class="n">false</span>
+</pre></div>
+</div>
+</li>
+<li><p class="first">For an individual plugin in <code class="docutils literal"><span class="pre">searchlight.conf</span></code>:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>[resource_plugin:os_neutron_net]
+mapping_use_doc_values = false
+</pre></div>
+</div>
+</li>
+<li><p class="first">For a plugin&#8217;s entire mapping; in code, override the <code class="docutils literal"><span class="pre">mapping_use_doc_values</span></code>
+property (and thus ignoring any configuration property):</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="nd">@property</span>
+<span class="k">def</span> <span class="nf">mapping_use_doc_values</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="k">return</span> <span class="bp">False</span>
+</pre></div>
+</div>
+</li>
+<li><p class="first">For individual fields in a mapping, by setting <code class="docutils literal"><span class="pre">doc_values</span></code> to False:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="p">{</span>
+  <span class="s2">&quot;properties&quot;</span><span class="p">:</span> <span class="p">{</span>
+    <span class="s2">&quot;some_field&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;date&quot;</span><span class="p">,</span> <span class="s2">&quot;doc_values&quot;</span><span class="p">:</span> <span class="bp">False</span><span class="p">}</span>
+  <span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</li>
+</ul>
+</div>
+<div class="section" id="access-control">
+<h3>Access control<a class="headerlink" href="#access-control" title="Permalink to this headline">¶</a></h3>
+<p>Plugins must define how they are access controlled. Typically this is a
+restriction matching the user&#8217;s project/tenant:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="k">def</span> <span class="nf">_get_rbac_field_filters</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">request_context</span><span class="p">):</span>
+    <span class="k">return</span> <span class="p">[</span>
+        <span class="p">{</span><span class="s1">&#39;term&#39;</span><span class="p">:</span> <span class="p">{</span><span class="s1">&#39;tenant_id&#39;</span><span class="p">:</span> <span class="n">request_context</span><span class="o">.</span><span class="n">owner</span><span class="p">}}</span>
+    <span class="p">]</span>
+</pre></div>
+</div>
+<p>Any filters listed will be applied to queries against the plugin&#8217;s document
+type. A document will match the RBAC filters if any of the clauses match.
+Administrative users can specify <code class="docutils literal"><span class="pre">all_projects</span></code> in searches to bypass
+these filters. This default behavior can be overridden for a plugin by setting
+the <code class="docutils literal"><span class="pre">allow_admin_ignore_rbac</span></code> property to <code class="docutils literal"><span class="pre">False</span></code> on the plugin (currently
+only in code). <code class="docutils literal"><span class="pre">all_projects</span></code> will be ignore for that plugin.</p>
+</div>
+<div class="section" id="policy">
+<h3>Policy<a class="headerlink" href="#policy" title="Permalink to this headline">¶</a></h3>
+<p>Related to access control is policy. Most services control API access with
+policy files that define rules enforced with <a class="reference external" href="http://docs.openstack.org/developer/oslo.policy/">oslo.policy</a>. Searchlight has
+its own policy file that configures access to its own API and resources, but
+it also supports reading other services&#8217; policy files. In the future this will
+be expanded to define RBAC rules, but at present external policy files are
+only used to determine whether a resource should be available to a user.</p>
+<p>To support this in your plugin, you must define two properties. The first
+is <code class="docutils literal"><span class="pre">service_type</span></code> which must correspond to the service &#8216;type&#8217; as seen
+in the keystone catalog (e.g. nova&#8217;s service &#8216;type&#8217; is &#8216;compute&#8217;). The
+second property is <code class="docutils literal"><span class="pre">resource_allowed_policy_target</span></code> which identifies the
+rule name in the service&#8217;s policy files. If either of these properties are
+&#8216;None&#8217; no rule will be enforced.</p>
+<p>For example:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="nd">@property</span>
+<span class="k">def</span> <span class="nf">resource_allowed_policy_target</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="k">return</span> <span class="s1">&#39;os_compute_api:servers:index&#39;</span>
+
+<span class="nd">@property</span>
+<span class="k">def</span> <span class="nf">service_type</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="k">return</span> <span class="s1">&#39;compute&#39;</span>
+</pre></div>
+</div>
+<p>See <a class="reference internal" href="authentication.html#service-policy-controls"><span>Service policy controls</span></a> for configuration information.</p>
+</div>
+<div class="section" id="faceting">
+<h3>Faceting<a class="headerlink" href="#faceting" title="Permalink to this headline">¶</a></h3>
+<p>Any fields defined in the mapping document are eligible to be identified as
+facets, which allows a UI to let users search on specific fields. Many plugins
+define <code class="docutils literal"><span class="pre">facets_excluded</span></code> which exclude specified fields. Many also define
+<code class="docutils literal"><span class="pre">facets_with_options</span></code> which should return fields with low cardinality where
+it makes sense to return valid options for those fields.</p>
+</div>
+<div class="section" id="protected-fields">
+<h3>Protected fields<a class="headerlink" href="#protected-fields" title="Permalink to this headline">¶</a></h3>
+<p><code class="docutils literal"><span class="pre">admin_only_fields</span></code> determines fields which only administrators should be
+able to see or search. For instance, this will mark any fields beginning with
+<code class="docutils literal"><span class="pre">provider:</span></code> as well as any defined in the plugin configuration:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="nd">@property</span>
+<span class="k">def</span> <span class="nf">admin_only_fields</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="n">from_conf</span> <span class="o">=</span> <span class="nb">super</span><span class="p">(</span><span class="n">NetworkIndex</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">admin_only_fields</span>
+    <span class="k">return</span> <span class="p">[</span><span class="s1">&#39;provider:*&#39;</span><span class="p">]</span> <span class="o">+</span> <span class="n">from_conf</span>
+</pre></div>
+</div>
+<p>These fields end up getting indexed in separate admin-only documents.</p>
+</div>
+</div>
+<div class="section" id="parent-child-relationships">
+<h2>Parent/child relationships<a class="headerlink" href="#parent-child-relationships" title="Permalink to this headline">¶</a></h2>
+<p>In some cases there is a strong ownership implied between plugins. In these
+cases the child plugin can define <code class="docutils literal"><span class="pre">parent_plugin_type</span></code> and
+<code class="docutils literal"><span class="pre">get_parent_id_field</span></code> (which determines a field on the child that refers
+to its parent). See the Neutron <code class="docutils literal"><span class="pre">Port</span></code> plugin for an example.</p>
+<p>Remember that Elasticsearch is not a relational database and it doesn&#8217;t do
+joins, per se, but this linkage does allow running queries referencing children
+(or parents).</p>
+</div>
+<div class="section" id="pipeline-architecture">
+<h2>Pipeline architecture<a class="headerlink" href="#pipeline-architecture" title="Permalink to this headline">¶</a></h2>
+<p>Notification handlers can emit enriched resource data into pipeline, configured
+publishers could use these data to notify external systems. To use this feature,
+each event handler should return one or a sequence of pipeline items. These items
+will be passed to subscribed publshers:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>def create_or_update(self, event_type, payload, timestamp):
+    network_id = payload[&#39;network&#39;][&#39;id&#39;]
+    LOG.debug(&quot;Updating network information for %s&quot;, network_id)
+
+    network = serialize_network(payload[&#39;network&#39;])
+    version = self.get_version(network, timestamp)
+
+    self.index_helper.save_document(network, version=version)
+    return pipeline.IndexItem(self.index_helper.plugin,
+                              event_type,
+                              payload,
+</pre></div>
+</div>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Authoring Searchlight Plugins</a><ul>
+<li><a class="reference internal" href="#getting-some-data">Getting some data</a><ul>
+<li><a class="reference internal" href="#initial-indexing">Initial indexing</a></li>
+<li><a class="reference internal" href="#notifications">Notifications</a><ul>
+<li><a class="reference internal" href="#notification-pools">Notification pools</a></li>
+<li><a class="reference internal" href="#adding-a-separate-topic">Adding a separate topic</a></li>
+<li><a class="reference internal" href="#using-the-results">Using the results</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><a class="reference internal" href="#file-structure">File structure</a></li>
+<li><a class="reference internal" href="#enabling-plugins">Enabling plugins</a></li>
+<li><a class="reference internal" href="#writing-some-code">Writing some code</a></li>
+<li><a class="reference internal" href="#required-plugin-functions">Required plugin functions</a><ul>
+<li><a class="reference internal" href="#document-type">Document type</a></li>
+<li><a class="reference internal" href="#retrieving-object-for-initial-indexing">Retrieving object for initial indexing</a></li>
+<li><a class="reference internal" href="#mapping">Mapping</a></li>
+<li><a class="reference internal" href="#access-control">Access control</a></li>
+<li><a class="reference internal" href="#policy">Policy</a></li>
+<li><a class="reference internal" href="#faceting">Faceting</a></li>
+<li><a class="reference internal" href="#protected-fields">Protected fields</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#parent-child-relationships">Parent/child relationships</a></li>
+<li><a class="reference internal" href="#pipeline-architecture">Pipeline architecture</a></li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="feature-requests-bugs.html"
+                                  title="previous chapter">Feature Requests and Bug Reports</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="architecture.html"
+                                  title="next chapter">Searchlight Architecture</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/searchlight
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="_sources/authoring-plugins.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="architecture.html" title="Searchlight Architecture"
+             accesskey="N">next</a></li>
+        <li class="right" >
+          <a href="feature-requests-bugs.html" title="Feature Requests and Bug Reports"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="index.html">searchlight 2.0.0.0rc2.dev8 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2010-2015, OpenStack Foundation..
+      Last updated on &#39;Thu Feb 9 15:23:46 2017, commit 40ee622&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/searchlight");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

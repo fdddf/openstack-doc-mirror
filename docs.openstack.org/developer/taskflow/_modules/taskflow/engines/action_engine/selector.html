@@ -1,0 +1,354 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>taskflow.engines.action_engine.selector &mdash; TaskFlow 2.9.1.dev9 documentation</title>
+    
+    <link rel="stylesheet" href="../../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../../',
+        VERSION:     '2.9.1.dev9',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../../_static/doctools.js"></script>
+    <link rel="top" title="TaskFlow 2.9.1.dev9 documentation" href="../../../../index.html" />
+    <link rel="up" title="Module code" href="../../../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for taskflow.engines.action_engine.selector</h1><div class="highlight"><pre>
+<span></span><span class="c1"># -*- coding: utf-8 -*-</span>
+
+<span class="c1">#    Copyright (C) 2013 Yahoo! Inc. All Rights Reserved.</span>
+<span class="c1">#</span>
+<span class="c1">#    Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may</span>
+<span class="c1">#    not use this file except in compliance with the License. You may obtain</span>
+<span class="c1">#    a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#         http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1">#    Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1">#    distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="c1">#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="c1">#    License for the specific language governing permissions and limitations</span>
+<span class="c1">#    under the License.</span>
+
+<span class="kn">import</span> <span class="nn">operator</span>
+<span class="kn">import</span> <span class="nn">weakref</span>
+
+<span class="kn">from</span> <span class="nn">taskflow.engines.action_engine</span> <span class="kn">import</span> <span class="n">compiler</span> <span class="k">as</span> <span class="n">co</span>
+<span class="kn">from</span> <span class="nn">taskflow.engines.action_engine</span> <span class="kn">import</span> <span class="n">deciders</span>
+<span class="kn">from</span> <span class="nn">taskflow.engines.action_engine</span> <span class="kn">import</span> <span class="n">traversal</span>
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">logging</span>
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">states</span> <span class="k">as</span> <span class="n">st</span>
+<span class="kn">from</span> <span class="nn">taskflow.utils</span> <span class="kn">import</span> <span class="n">iter_utils</span>
+
+<span class="n">LOG</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+
+<div class="viewcode-block" id="Selector"><a class="viewcode-back" href="../../../../engines.html#taskflow.engines.action_engine.selector.Selector">[docs]</a><span class="k">class</span> <span class="nc">Selector</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Selector that uses a compilation and aids in execution processes.</span>
+
+<span class="sd">    Its primary purpose is to get the next atoms for execution or reversion</span>
+<span class="sd">    by utilizing the compilations underlying structures (graphs, nodes and</span>
+<span class="sd">    edge relations...) and using this information along with the atom</span>
+<span class="sd">    state/states stored in storage to provide other useful functionality to</span>
+<span class="sd">    the rest of the runtime system.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">runtime</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_runtime</span> <span class="o">=</span> <span class="n">weakref</span><span class="o">.</span><span class="n">proxy</span><span class="p">(</span><span class="n">runtime</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_storage</span> <span class="o">=</span> <span class="n">runtime</span><span class="o">.</span><span class="n">storage</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_execution_graph</span> <span class="o">=</span> <span class="n">runtime</span><span class="o">.</span><span class="n">compilation</span><span class="o">.</span><span class="n">execution_graph</span>
+
+<div class="viewcode-block" id="Selector.iter_next_atoms"><a class="viewcode-back" href="../../../../engines.html#taskflow.engines.action_engine.selector.Selector.iter_next_atoms">[docs]</a>    <span class="k">def</span> <span class="nf">iter_next_atoms</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">atom</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Iterate next atoms to run (originating from atom or all atoms).&quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="n">atom</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">iter_utils</span><span class="o">.</span><span class="n">unique_seen</span><span class="p">((</span><span class="bp">self</span><span class="o">.</span><span class="n">_browse_atoms_for_execute</span><span class="p">(),</span>
+                                           <span class="bp">self</span><span class="o">.</span><span class="n">_browse_atoms_for_revert</span><span class="p">()),</span>
+                                          <span class="n">seen_selector</span><span class="o">=</span><span class="n">operator</span><span class="o">.</span><span class="n">itemgetter</span><span class="p">(</span><span class="mi">0</span><span class="p">))</span>
+        <span class="n">state</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_storage</span><span class="o">.</span><span class="n">get_atom_state</span><span class="p">(</span><span class="n">atom</span><span class="o">.</span><span class="n">name</span><span class="p">)</span>
+        <span class="n">intention</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_storage</span><span class="o">.</span><span class="n">get_atom_intention</span><span class="p">(</span><span class="n">atom</span><span class="o">.</span><span class="n">name</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">state</span> <span class="o">==</span> <span class="n">st</span><span class="o">.</span><span class="n">SUCCESS</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">intention</span> <span class="o">==</span> <span class="n">st</span><span class="o">.</span><span class="n">REVERT</span><span class="p">:</span>
+                <span class="k">return</span> <span class="nb">iter</span><span class="p">([</span>
+                    <span class="p">(</span><span class="n">atom</span><span class="p">,</span> <span class="n">deciders</span><span class="o">.</span><span class="n">NoOpDecider</span><span class="p">()),</span>
+                <span class="p">])</span>
+            <span class="k">elif</span> <span class="n">intention</span> <span class="o">==</span> <span class="n">st</span><span class="o">.</span><span class="n">EXECUTE</span><span class="p">:</span>
+                <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_browse_atoms_for_execute</span><span class="p">(</span><span class="n">atom</span><span class="o">=</span><span class="n">atom</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">return</span> <span class="nb">iter</span><span class="p">([])</span>
+        <span class="k">elif</span> <span class="n">state</span> <span class="o">==</span> <span class="n">st</span><span class="o">.</span><span class="n">REVERTED</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_browse_atoms_for_revert</span><span class="p">(</span><span class="n">atom</span><span class="o">=</span><span class="n">atom</span><span class="p">)</span>
+        <span class="k">elif</span> <span class="n">state</span> <span class="o">==</span> <span class="n">st</span><span class="o">.</span><span class="n">FAILURE</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_browse_atoms_for_revert</span><span class="p">()</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">return</span> <span class="nb">iter</span><span class="p">([])</span></div>
+
+    <span class="k">def</span> <span class="nf">_browse_atoms_for_execute</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">atom</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Browse next atoms to execute.</span>
+
+<span class="sd">        This returns a iterator of atoms that *may* be ready to be</span>
+<span class="sd">        executed, if given a specific atom, it will only examine the successors</span>
+<span class="sd">        of that atom, otherwise it will examine the whole graph.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="n">atom</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">atom_it</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_runtime</span><span class="o">.</span><span class="n">iterate_nodes</span><span class="p">(</span><span class="n">co</span><span class="o">.</span><span class="n">ATOMS</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="c1"># NOTE(harlowja): the reason this uses breadth first is so that</span>
+            <span class="c1"># when deciders are applied that those deciders can be applied</span>
+            <span class="c1"># from top levels to lower levels since lower levels *may* be</span>
+            <span class="c1"># able to run even if top levels have deciders that decide to</span>
+            <span class="c1"># ignore some atoms... (going deeper first would make this</span>
+            <span class="c1"># problematic to determine as top levels can have their deciders</span>
+            <span class="c1"># applied **after** going deeper).</span>
+            <span class="n">atom_it</span> <span class="o">=</span> <span class="n">traversal</span><span class="o">.</span><span class="n">breadth_first_iterate</span><span class="p">(</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_execution_graph</span><span class="p">,</span> <span class="n">atom</span><span class="p">,</span> <span class="n">traversal</span><span class="o">.</span><span class="n">Direction</span><span class="o">.</span><span class="n">FORWARD</span><span class="p">)</span>
+        <span class="k">for</span> <span class="n">atom</span> <span class="ow">in</span> <span class="n">atom_it</span><span class="p">:</span>
+            <span class="n">is_ready</span><span class="p">,</span> <span class="n">late_decider</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_maybe_ready_for_execute</span><span class="p">(</span><span class="n">atom</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">is_ready</span><span class="p">:</span>
+                <span class="k">yield</span> <span class="p">(</span><span class="n">atom</span><span class="p">,</span> <span class="n">late_decider</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_browse_atoms_for_revert</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">atom</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Browse next atoms to revert.</span>
+
+<span class="sd">        This returns a iterator of atoms that *may* be ready to be be</span>
+<span class="sd">        reverted, if given a specific atom it will only examine the</span>
+<span class="sd">        predecessors of that atom, otherwise it will examine the whole</span>
+<span class="sd">        graph.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="n">atom</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">atom_it</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_runtime</span><span class="o">.</span><span class="n">iterate_nodes</span><span class="p">(</span><span class="n">co</span><span class="o">.</span><span class="n">ATOMS</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">atom_it</span> <span class="o">=</span> <span class="n">traversal</span><span class="o">.</span><span class="n">breadth_first_iterate</span><span class="p">(</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_execution_graph</span><span class="p">,</span> <span class="n">atom</span><span class="p">,</span> <span class="n">traversal</span><span class="o">.</span><span class="n">Direction</span><span class="o">.</span><span class="n">BACKWARD</span><span class="p">,</span>
+                <span class="c1"># Stop at the retry boundary (as retries &#39;control&#39; there</span>
+                <span class="c1"># surronding atoms, and we don&#39;t want to back track over</span>
+                <span class="c1"># them so that they can correctly affect there associated</span>
+                <span class="c1"># atoms); we do though need to jump through all tasks since</span>
+                <span class="c1"># if a predecessor Y was ignored and a predecessor Z before Y</span>
+                <span class="c1"># was not it should be eligible to now revert...</span>
+                <span class="n">through_retries</span><span class="o">=</span><span class="bp">False</span><span class="p">)</span>
+        <span class="k">for</span> <span class="n">atom</span> <span class="ow">in</span> <span class="n">atom_it</span><span class="p">:</span>
+            <span class="n">is_ready</span><span class="p">,</span> <span class="n">late_decider</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_maybe_ready_for_revert</span><span class="p">(</span><span class="n">atom</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">is_ready</span><span class="p">:</span>
+                <span class="k">yield</span> <span class="p">(</span><span class="n">atom</span><span class="p">,</span> <span class="n">late_decider</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_get_maybe_ready</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">atom</span><span class="p">,</span> <span class="n">transition_to</span><span class="p">,</span> <span class="n">allowed_intentions</span><span class="p">,</span>
+                         <span class="n">connected_fetcher</span><span class="p">,</span> <span class="n">ready_checker</span><span class="p">,</span>
+                         <span class="n">decider_fetcher</span><span class="p">,</span> <span class="n">for_what</span><span class="o">=</span><span class="s2">&quot;?&quot;</span><span class="p">):</span>
+        <span class="k">def</span> <span class="nf">iter_connected_states</span><span class="p">():</span>
+            <span class="c1"># Lazily iterate over connected states so that ready checkers</span>
+            <span class="c1"># can stop early (vs having to consume and check all the</span>
+            <span class="c1"># things...)</span>
+            <span class="k">for</span> <span class="n">atom</span> <span class="ow">in</span> <span class="n">connected_fetcher</span><span class="p">():</span>
+                <span class="c1"># TODO(harlowja): make this storage api better, its not</span>
+                <span class="c1"># especially clear what the following is doing (mainly</span>
+                <span class="c1"># to avoid two calls into storage).</span>
+                <span class="n">atom_states</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_storage</span><span class="o">.</span><span class="n">get_atoms_states</span><span class="p">([</span><span class="n">atom</span><span class="o">.</span><span class="n">name</span><span class="p">])</span>
+                <span class="k">yield</span> <span class="p">(</span><span class="n">atom</span><span class="p">,</span> <span class="n">atom_states</span><span class="p">[</span><span class="n">atom</span><span class="o">.</span><span class="n">name</span><span class="p">])</span>
+        <span class="c1"># NOTE(harlowja): How this works is the following...</span>
+        <span class="c1">#</span>
+        <span class="c1"># 1. First check if the current atom can even transition to the</span>
+        <span class="c1">#    desired state, if not this atom is definitely not ready to</span>
+        <span class="c1">#    execute or revert.</span>
+        <span class="c1"># 2. Check if the actual atoms intention is in one of the desired/ok</span>
+        <span class="c1">#    intentions, if it is not there we are still not ready to execute</span>
+        <span class="c1">#    or revert.</span>
+        <span class="c1"># 3. Iterate over (atom, atom_state, atom_intention) for all the</span>
+        <span class="c1">#    atoms the &#39;connected_fetcher&#39; callback yields from underlying</span>
+        <span class="c1">#    storage and direct that iterator into the &#39;ready_checker&#39;</span>
+        <span class="c1">#    callback, that callback should then iterate over these entries</span>
+        <span class="c1">#    and determine if it is ok to execute or revert.</span>
+        <span class="c1"># 4. If (and only if) &#39;ready_checker&#39; returns true, then</span>
+        <span class="c1">#    the &#39;decider_fetcher&#39; callback is called to get a late decider</span>
+        <span class="c1">#    which can (if it desires) affect this ready result (but does</span>
+        <span class="c1">#    so right before the atom is about to be scheduled).</span>
+        <span class="n">state</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_storage</span><span class="o">.</span><span class="n">get_atom_state</span><span class="p">(</span><span class="n">atom</span><span class="o">.</span><span class="n">name</span><span class="p">)</span>
+        <span class="n">ok_to_transition</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_runtime</span><span class="o">.</span><span class="n">check_atom_transition</span><span class="p">(</span><span class="n">atom</span><span class="p">,</span> <span class="n">state</span><span class="p">,</span>
+                                                               <span class="n">transition_to</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">ok_to_transition</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">trace</span><span class="p">(</span><span class="s2">&quot;Atom &#39;</span><span class="si">%s</span><span class="s2">&#39; is not ready to </span><span class="si">%s</span><span class="s2"> since it can not&quot;</span>
+                      <span class="s2">&quot; transition to </span><span class="si">%s</span><span class="s2"> from its current state </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span>
+                      <span class="n">atom</span><span class="p">,</span> <span class="n">for_what</span><span class="p">,</span> <span class="n">transition_to</span><span class="p">,</span> <span class="n">state</span><span class="p">)</span>
+            <span class="k">return</span> <span class="p">(</span><span class="bp">False</span><span class="p">,</span> <span class="bp">None</span><span class="p">)</span>
+        <span class="n">intention</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_storage</span><span class="o">.</span><span class="n">get_atom_intention</span><span class="p">(</span><span class="n">atom</span><span class="o">.</span><span class="n">name</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">intention</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">allowed_intentions</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">trace</span><span class="p">(</span><span class="s2">&quot;Atom &#39;</span><span class="si">%s</span><span class="s2">&#39; is not ready to </span><span class="si">%s</span><span class="s2"> since its current&quot;</span>
+                      <span class="s2">&quot; intention </span><span class="si">%s</span><span class="s2"> is not in allowed intentions </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span>
+                      <span class="n">atom</span><span class="p">,</span> <span class="n">for_what</span><span class="p">,</span> <span class="n">intention</span><span class="p">,</span> <span class="n">allowed_intentions</span><span class="p">)</span>
+            <span class="k">return</span> <span class="p">(</span><span class="bp">False</span><span class="p">,</span> <span class="bp">None</span><span class="p">)</span>
+        <span class="n">ok_to_run</span> <span class="o">=</span> <span class="n">ready_checker</span><span class="p">(</span><span class="n">iter_connected_states</span><span class="p">())</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">ok_to_run</span><span class="p">:</span>
+            <span class="k">return</span> <span class="p">(</span><span class="bp">False</span><span class="p">,</span> <span class="bp">None</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">return</span> <span class="p">(</span><span class="bp">True</span><span class="p">,</span> <span class="n">decider_fetcher</span><span class="p">())</span>
+
+    <span class="k">def</span> <span class="nf">_get_maybe_ready_for_execute</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">atom</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Returns if an atom is *likely* ready to be executed.&quot;&quot;&quot;</span>
+        <span class="k">def</span> <span class="nf">ready_checker</span><span class="p">(</span><span class="n">pred_connected_it</span><span class="p">):</span>
+            <span class="k">for</span> <span class="n">pred</span> <span class="ow">in</span> <span class="n">pred_connected_it</span><span class="p">:</span>
+                <span class="n">pred_atom</span><span class="p">,</span> <span class="p">(</span><span class="n">pred_atom_state</span><span class="p">,</span> <span class="n">pred_atom_intention</span><span class="p">)</span> <span class="o">=</span> <span class="n">pred</span>
+                <span class="k">if</span> <span class="p">(</span><span class="n">pred_atom_state</span> <span class="ow">in</span> <span class="p">(</span><span class="n">st</span><span class="o">.</span><span class="n">SUCCESS</span><span class="p">,</span> <span class="n">st</span><span class="o">.</span><span class="n">IGNORE</span><span class="p">)</span> <span class="ow">and</span>
+                        <span class="n">pred_atom_intention</span> <span class="ow">in</span> <span class="p">(</span><span class="n">st</span><span class="o">.</span><span class="n">EXECUTE</span><span class="p">,</span> <span class="n">st</span><span class="o">.</span><span class="n">IGNORE</span><span class="p">)):</span>
+                    <span class="k">continue</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">trace</span><span class="p">(</span><span class="s2">&quot;Unable to begin to execute since predecessor&quot;</span>
+                          <span class="s2">&quot; atom &#39;</span><span class="si">%s</span><span class="s2">&#39; is in state </span><span class="si">%s</span><span class="s2"> with intention </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span>
+                          <span class="n">pred_atom</span><span class="p">,</span> <span class="n">pred_atom_state</span><span class="p">,</span> <span class="n">pred_atom_intention</span><span class="p">)</span>
+                <span class="k">return</span> <span class="bp">False</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">trace</span><span class="p">(</span><span class="s2">&quot;Able to let &#39;</span><span class="si">%s</span><span class="s2">&#39; execute&quot;</span><span class="p">,</span> <span class="n">atom</span><span class="p">)</span>
+            <span class="k">return</span> <span class="bp">True</span>
+        <span class="n">decider_fetcher</span> <span class="o">=</span> <span class="k">lambda</span><span class="p">:</span> \
+            <span class="n">deciders</span><span class="o">.</span><span class="n">IgnoreDecider</span><span class="p">(</span>
+                <span class="n">atom</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_runtime</span><span class="o">.</span><span class="n">fetch_edge_deciders</span><span class="p">(</span><span class="n">atom</span><span class="p">))</span>
+        <span class="n">connected_fetcher</span> <span class="o">=</span> <span class="k">lambda</span><span class="p">:</span> \
+            <span class="n">traversal</span><span class="o">.</span><span class="n">depth_first_iterate</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_execution_graph</span><span class="p">,</span> <span class="n">atom</span><span class="p">,</span>
+                                          <span class="c1"># Whether the desired atom</span>
+                                          <span class="c1"># can execute is dependent on its</span>
+                                          <span class="c1"># predecessors outcomes (thus why</span>
+                                          <span class="c1"># we look backwards).</span>
+                                          <span class="n">traversal</span><span class="o">.</span><span class="n">Direction</span><span class="o">.</span><span class="n">BACKWARD</span><span class="p">)</span>
+        <span class="c1"># If this atoms current state is able to be transitioned to RUNNING</span>
+        <span class="c1"># and its intention is to EXECUTE and all of its predecessors executed</span>
+        <span class="c1"># successfully or were ignored then this atom is ready to execute.</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">trace</span><span class="p">(</span><span class="s2">&quot;Checking if &#39;</span><span class="si">%s</span><span class="s2">&#39; is ready to execute&quot;</span><span class="p">,</span> <span class="n">atom</span><span class="p">)</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_maybe_ready</span><span class="p">(</span><span class="n">atom</span><span class="p">,</span> <span class="n">st</span><span class="o">.</span><span class="n">RUNNING</span><span class="p">,</span> <span class="p">[</span><span class="n">st</span><span class="o">.</span><span class="n">EXECUTE</span><span class="p">],</span>
+                                     <span class="n">connected_fetcher</span><span class="p">,</span> <span class="n">ready_checker</span><span class="p">,</span>
+                                     <span class="n">decider_fetcher</span><span class="p">,</span> <span class="n">for_what</span><span class="o">=</span><span class="s1">&#39;execute&#39;</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_get_maybe_ready_for_revert</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">atom</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Returns if an atom is *likely* ready to be reverted.&quot;&quot;&quot;</span>
+        <span class="k">def</span> <span class="nf">ready_checker</span><span class="p">(</span><span class="n">succ_connected_it</span><span class="p">):</span>
+            <span class="k">for</span> <span class="n">succ</span> <span class="ow">in</span> <span class="n">succ_connected_it</span><span class="p">:</span>
+                <span class="n">succ_atom</span><span class="p">,</span> <span class="p">(</span><span class="n">succ_atom_state</span><span class="p">,</span> <span class="n">_succ_atom_intention</span><span class="p">)</span> <span class="o">=</span> <span class="n">succ</span>
+                <span class="k">if</span> <span class="n">succ_atom_state</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="n">st</span><span class="o">.</span><span class="n">PENDING</span><span class="p">,</span> <span class="n">st</span><span class="o">.</span><span class="n">REVERTED</span><span class="p">,</span> <span class="n">st</span><span class="o">.</span><span class="n">IGNORE</span><span class="p">):</span>
+                    <span class="n">LOG</span><span class="o">.</span><span class="n">trace</span><span class="p">(</span><span class="s2">&quot;Unable to begin to revert since successor&quot;</span>
+                              <span class="s2">&quot; atom &#39;</span><span class="si">%s</span><span class="s2">&#39; is in state </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">succ_atom</span><span class="p">,</span>
+                              <span class="n">succ_atom_state</span><span class="p">)</span>
+                    <span class="k">return</span> <span class="bp">False</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">trace</span><span class="p">(</span><span class="s2">&quot;Able to let &#39;</span><span class="si">%s</span><span class="s2">&#39; revert&quot;</span><span class="p">,</span> <span class="n">atom</span><span class="p">)</span>
+            <span class="k">return</span> <span class="bp">True</span>
+        <span class="n">noop_decider</span> <span class="o">=</span> <span class="n">deciders</span><span class="o">.</span><span class="n">NoOpDecider</span><span class="p">()</span>
+        <span class="n">connected_fetcher</span> <span class="o">=</span> <span class="k">lambda</span><span class="p">:</span> \
+            <span class="n">traversal</span><span class="o">.</span><span class="n">depth_first_iterate</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_execution_graph</span><span class="p">,</span> <span class="n">atom</span><span class="p">,</span>
+                                          <span class="c1"># Whether the desired atom</span>
+                                          <span class="c1"># can revert is dependent on its</span>
+                                          <span class="c1"># successors states (thus why we</span>
+                                          <span class="c1"># look forwards).</span>
+                                          <span class="n">traversal</span><span class="o">.</span><span class="n">Direction</span><span class="o">.</span><span class="n">FORWARD</span><span class="p">)</span>
+        <span class="n">decider_fetcher</span> <span class="o">=</span> <span class="k">lambda</span><span class="p">:</span> <span class="n">noop_decider</span>
+        <span class="c1"># If this atoms current state is able to be transitioned to REVERTING</span>
+        <span class="c1"># and its intention is either REVERT or RETRY and all of its</span>
+        <span class="c1"># successors are either PENDING or REVERTED then this atom is ready</span>
+        <span class="c1"># to revert.</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">trace</span><span class="p">(</span><span class="s2">&quot;Checking if &#39;</span><span class="si">%s</span><span class="s2">&#39; is ready to revert&quot;</span><span class="p">,</span> <span class="n">atom</span><span class="p">)</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_maybe_ready</span><span class="p">(</span><span class="n">atom</span><span class="p">,</span> <span class="n">st</span><span class="o">.</span><span class="n">REVERTING</span><span class="p">,</span> <span class="p">[</span><span class="n">st</span><span class="o">.</span><span class="n">REVERT</span><span class="p">,</span> <span class="n">st</span><span class="o">.</span><span class="n">RETRY</span><span class="p">],</span>
+                                     <span class="n">connected_fetcher</span><span class="p">,</span> <span class="n">ready_checker</span><span class="p">,</span>
+                                     <span class="n">decider_fetcher</span><span class="p">,</span> <span class="n">for_what</span><span class="o">=</span><span class="s1">&#39;revert&#39;</span><span class="p">)</span></div>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+  <h3>Navigation</h3>
+  <ul>
+
+    <li><a href="../../../../index.html">Table Of Contents</a></li>
+
+
+
+  </ul>
+
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/taskflow
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../../../index.html">TaskFlow 2.9.1.dev9 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../../../index.html" accesskey="U">Module code</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2017, OpenStack Foundation.
+      Last updated on &#39;Fri Feb 10 20:11:17 2017, commit 643495f&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/TaskFlow");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

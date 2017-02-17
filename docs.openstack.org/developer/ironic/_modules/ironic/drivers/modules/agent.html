@@ -1,0 +1,780 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>ironic.drivers.modules.agent &mdash; Ironic 7.0.1.dev7 documentation</title>
+    
+    <link rel="stylesheet" href="../../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/toggle.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../../',
+        VERSION:     '7.0.1.dev7',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../../_static/doctools.js"></script>
+    <script type="text/javascript" src="../../../../_static/toggle.js"></script>
+    <link rel="top" title="Ironic 7.0.1.dev7 documentation" href="../../../../index.html" />
+    <link rel="up" title="Module code" href="../../../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for ironic.drivers.modules.agent</h1><div class="highlight"><pre>
+<span></span><span class="c1"># Copyright 2014 Rackspace, Inc.</span>
+<span class="c1">#</span>
+<span class="c1"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);</span>
+<span class="c1"># you may not use this file except in compliance with the License.</span>
+<span class="c1"># You may obtain a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#    http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1"># Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,</span>
+<span class="c1"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.</span>
+<span class="c1"># See the License for the specific language governing permissions and</span>
+<span class="c1"># limitations under the License.</span>
+
+<span class="kn">from</span> <span class="nn">ironic_lib</span> <span class="kn">import</span> <span class="n">metrics_utils</span>
+<span class="kn">from</span> <span class="nn">ironic_lib</span> <span class="kn">import</span> <span class="n">utils</span> <span class="k">as</span> <span class="n">il_utils</span>
+<span class="kn">from</span> <span class="nn">oslo_log</span> <span class="kn">import</span> <span class="n">log</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">units</span>
+<span class="kn">import</span> <span class="nn">six.moves.urllib_parse</span> <span class="kn">as</span> <span class="nn">urlparse</span>
+
+<span class="kn">from</span> <span class="nn">ironic.common</span> <span class="kn">import</span> <span class="n">dhcp_factory</span>
+<span class="kn">from</span> <span class="nn">ironic.common</span> <span class="kn">import</span> <span class="n">exception</span>
+<span class="kn">from</span> <span class="nn">ironic.common.glance_service</span> <span class="kn">import</span> <span class="n">service_utils</span>
+<span class="kn">from</span> <span class="nn">ironic.common.i18n</span> <span class="kn">import</span> <span class="n">_</span><span class="p">,</span> <span class="n">_LI</span><span class="p">,</span> <span class="n">_LW</span>
+<span class="kn">from</span> <span class="nn">ironic.common</span> <span class="kn">import</span> <span class="n">images</span>
+<span class="kn">from</span> <span class="nn">ironic.common</span> <span class="kn">import</span> <span class="n">raid</span>
+<span class="kn">from</span> <span class="nn">ironic.common</span> <span class="kn">import</span> <span class="n">states</span>
+<span class="kn">from</span> <span class="nn">ironic.common</span> <span class="kn">import</span> <span class="n">utils</span>
+<span class="kn">from</span> <span class="nn">ironic.conductor</span> <span class="kn">import</span> <span class="n">task_manager</span>
+<span class="kn">from</span> <span class="nn">ironic.conductor</span> <span class="kn">import</span> <span class="n">utils</span> <span class="k">as</span> <span class="n">manager_utils</span>
+<span class="kn">from</span> <span class="nn">ironic.conf</span> <span class="kn">import</span> <span class="n">CONF</span>
+<span class="kn">from</span> <span class="nn">ironic.drivers</span> <span class="kn">import</span> <span class="n">base</span>
+<span class="kn">from</span> <span class="nn">ironic.drivers.modules</span> <span class="kn">import</span> <span class="n">agent_base_vendor</span>
+<span class="kn">from</span> <span class="nn">ironic.drivers.modules</span> <span class="kn">import</span> <span class="n">deploy_utils</span>
+
+
+<span class="n">LOG</span> <span class="o">=</span> <span class="n">log</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+<span class="n">METRICS</span> <span class="o">=</span> <span class="n">metrics_utils</span><span class="o">.</span><span class="n">get_metrics_logger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+<span class="n">REQUIRED_PROPERTIES</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s1">&#39;deploy_kernel&#39;</span><span class="p">:</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;UUID (from Glance) of the deployment kernel. &#39;</span>
+                       <span class="s1">&#39;Required.&#39;</span><span class="p">),</span>
+    <span class="s1">&#39;deploy_ramdisk&#39;</span><span class="p">:</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;UUID (from Glance) of the ramdisk with agent that is &#39;</span>
+                        <span class="s1">&#39;used at deploy time. Required.&#39;</span><span class="p">),</span>
+<span class="p">}</span>
+
+<span class="n">OPTIONAL_PROPERTIES</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s1">&#39;image_http_proxy&#39;</span><span class="p">:</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;URL of a proxy server for HTTP connections. &#39;</span>
+                          <span class="s1">&#39;Optional.&#39;</span><span class="p">),</span>
+    <span class="s1">&#39;image_https_proxy&#39;</span><span class="p">:</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;URL of a proxy server for HTTPS connections. &#39;</span>
+                           <span class="s1">&#39;Optional.&#39;</span><span class="p">),</span>
+    <span class="s1">&#39;image_no_proxy&#39;</span><span class="p">:</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;A comma-separated list of host names, IP addresses &#39;</span>
+                        <span class="s1">&#39;and domain names (with optional :port) that will be &#39;</span>
+                        <span class="s1">&#39;excluded from proxying. To denote a doman name, use &#39;</span>
+                        <span class="s1">&#39;a dot to prefix the domain name. This value will be &#39;</span>
+                        <span class="s1">&#39;ignored if ``image_http_proxy`` and &#39;</span>
+                        <span class="s1">&#39;``image_https_proxy`` are not specified. Optional.&#39;</span><span class="p">),</span>
+<span class="p">}</span>
+
+<span class="n">COMMON_PROPERTIES</span> <span class="o">=</span> <span class="n">REQUIRED_PROPERTIES</span><span class="o">.</span><span class="n">copy</span><span class="p">()</span>
+<span class="n">COMMON_PROPERTIES</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">OPTIONAL_PROPERTIES</span><span class="p">)</span>
+<span class="n">COMMON_PROPERTIES</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">agent_base_vendor</span><span class="o">.</span><span class="n">VENDOR_PROPERTIES</span><span class="p">)</span>
+
+<span class="n">PARTITION_IMAGE_LABELS</span> <span class="o">=</span> <span class="p">(</span><span class="s1">&#39;kernel&#39;</span><span class="p">,</span> <span class="s1">&#39;ramdisk&#39;</span><span class="p">,</span> <span class="s1">&#39;root_gb&#39;</span><span class="p">,</span> <span class="s1">&#39;root_mb&#39;</span><span class="p">,</span> <span class="s1">&#39;swap_mb&#39;</span><span class="p">,</span>
+                          <span class="s1">&#39;ephemeral_mb&#39;</span><span class="p">,</span> <span class="s1">&#39;ephemeral_format&#39;</span><span class="p">,</span> <span class="s1">&#39;configdrive&#39;</span><span class="p">,</span>
+                          <span class="s1">&#39;preserve_ephemeral&#39;</span><span class="p">,</span> <span class="s1">&#39;image_type&#39;</span><span class="p">,</span>
+                          <span class="s1">&#39;deploy_boot_mode&#39;</span><span class="p">)</span>
+
+
+<span class="k">def</span> <span class="nf">build_instance_info_for_deploy</span><span class="p">(</span><span class="n">task</span><span class="p">):</span>
+    <span class="c1"># TODO(pas-ha) remove this in Pike cycle</span>
+    <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s2">&quot;This function has moved to &quot;</span>
+                    <span class="s2">&quot;&#39;ironic.drivers.modules.deploy_utils&#39; module. &quot;</span>
+                    <span class="s2">&quot;Using it from &#39;ironic.drivers.modules.agent&#39; module &quot;</span>
+                    <span class="s2">&quot;is deprecated and will be removed in the Pike release. &quot;</span>
+                    <span class="s2">&quot;Please update your driver to use this function &quot;</span>
+                    <span class="s2">&quot;from its new location.&quot;</span><span class="p">))</span>
+    <span class="k">return</span> <span class="n">deploy_utils</span><span class="o">.</span><span class="n">build_instance_info_for_deploy</span><span class="p">(</span><span class="n">task</span><span class="p">)</span>
+
+
+<span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;check_image_size&#39;</span><span class="p">)</span>
+<span class="k">def</span> <span class="nf">check_image_size</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">image_source</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Check if the requested image is larger than the ram size.</span>
+
+<span class="sd">    :param task: a TaskManager instance containing the node to act on.</span>
+<span class="sd">    :param image_source: href of the image.</span>
+<span class="sd">    :raises: InvalidParameterValue if size of the image is greater than</span>
+<span class="sd">        the available ram size.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">node</span> <span class="o">=</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span>
+    <span class="n">properties</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">properties</span>
+    <span class="c1"># skip check if &#39;memory_mb&#39; is not defined</span>
+    <span class="k">if</span> <span class="s1">&#39;memory_mb&#39;</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">properties</span><span class="p">:</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s1">&#39;Skip the image size check as memory_mb is not &#39;</span>
+                        <span class="s1">&#39;defined in properties on node </span><span class="si">%s</span><span class="s1">.&#39;</span><span class="p">),</span> <span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+        <span class="k">return</span>
+
+    <span class="n">image_show</span> <span class="o">=</span> <span class="n">images</span><span class="o">.</span><span class="n">image_show</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">context</span><span class="p">,</span> <span class="n">image_source</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">CONF</span><span class="o">.</span><span class="n">agent</span><span class="o">.</span><span class="n">stream_raw_images</span> <span class="ow">and</span> <span class="n">image_show</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;disk_format&#39;</span><span class="p">)</span> <span class="o">==</span> <span class="s1">&#39;raw&#39;</span><span class="p">:</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;Skip the image size check since the image is going to be &#39;</span>
+                  <span class="s1">&#39;streamed directly onto the disk for node </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">,</span> <span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+        <span class="k">return</span>
+
+    <span class="n">memory_size</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">properties</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;memory_mb&#39;</span><span class="p">))</span>
+    <span class="n">image_size</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">image_show</span><span class="p">[</span><span class="s1">&#39;size&#39;</span><span class="p">])</span>
+    <span class="n">reserved_size</span> <span class="o">=</span> <span class="n">CONF</span><span class="o">.</span><span class="n">agent</span><span class="o">.</span><span class="n">memory_consumed_by_agent</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">image_size</span> <span class="o">+</span> <span class="p">(</span><span class="n">reserved_size</span> <span class="o">*</span> <span class="n">units</span><span class="o">.</span><span class="n">Mi</span><span class="p">))</span> <span class="o">&gt;</span> <span class="p">(</span><span class="n">memory_size</span> <span class="o">*</span> <span class="n">units</span><span class="o">.</span><span class="n">Mi</span><span class="p">):</span>
+        <span class="n">msg</span> <span class="o">=</span> <span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Memory size is too small for requested image, if it is &#39;</span>
+                 <span class="s1">&#39;less than (image size + reserved RAM size), will break &#39;</span>
+                 <span class="s1">&#39;the IPA deployments. Image size: </span><span class="si">%(image_size)d</span><span class="s1"> MiB, &#39;</span>
+                 <span class="s1">&#39;Memory size: </span><span class="si">%(memory_size)d</span><span class="s1"> MiB, Reserved size: &#39;</span>
+                 <span class="s1">&#39;</span><span class="si">%(reserved_size)d</span><span class="s1"> MiB.&#39;</span><span class="p">)</span>
+               <span class="o">%</span> <span class="p">{</span><span class="s1">&#39;image_size&#39;</span><span class="p">:</span> <span class="n">image_size</span> <span class="o">/</span> <span class="n">units</span><span class="o">.</span><span class="n">Mi</span><span class="p">,</span>
+                  <span class="s1">&#39;memory_size&#39;</span><span class="p">:</span> <span class="n">memory_size</span><span class="p">,</span>
+                  <span class="s1">&#39;reserved_size&#39;</span><span class="p">:</span> <span class="n">reserved_size</span><span class="p">})</span>
+        <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">InvalidParameterValue</span><span class="p">(</span><span class="n">msg</span><span class="p">)</span>
+
+
+<span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;validate_image_proxies&#39;</span><span class="p">)</span>
+<span class="k">def</span> <span class="nf">validate_image_proxies</span><span class="p">(</span><span class="n">node</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Check that the provided proxy parameters are valid.</span>
+
+<span class="sd">    :param node: an Ironic node.</span>
+<span class="sd">    :raises: InvalidParameterValue if any of the provided proxy parameters are</span>
+<span class="sd">        incorrect.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">invalid_proxies</span> <span class="o">=</span> <span class="p">{}</span>
+    <span class="k">for</span> <span class="n">scheme</span> <span class="ow">in</span> <span class="p">(</span><span class="s1">&#39;http&#39;</span><span class="p">,</span> <span class="s1">&#39;https&#39;</span><span class="p">):</span>
+        <span class="n">proxy_param</span> <span class="o">=</span> <span class="s1">&#39;image_</span><span class="si">%s</span><span class="s1">_proxy&#39;</span> <span class="o">%</span> <span class="n">scheme</span>
+        <span class="n">proxy</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">driver_info</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">proxy_param</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">proxy</span><span class="p">:</span>
+            <span class="n">chunks</span> <span class="o">=</span> <span class="n">urlparse</span><span class="o">.</span><span class="n">urlparse</span><span class="p">(</span><span class="n">proxy</span><span class="p">)</span>
+            <span class="c1"># NOTE(vdrok) If no scheme specified, this is still a valid</span>
+            <span class="c1"># proxy address. It is also possible for a proxy to have a</span>
+            <span class="c1"># scheme different from the one specified in the image URL,</span>
+            <span class="c1"># e.g. it is possible to use https:// proxy for downloading</span>
+            <span class="c1"># http:// image.</span>
+            <span class="k">if</span> <span class="n">chunks</span><span class="o">.</span><span class="n">scheme</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="s1">&#39;&#39;</span><span class="p">,</span> <span class="s1">&#39;http&#39;</span><span class="p">,</span> <span class="s1">&#39;https&#39;</span><span class="p">):</span>
+                <span class="n">invalid_proxies</span><span class="p">[</span><span class="n">proxy_param</span><span class="p">]</span> <span class="o">=</span> <span class="n">proxy</span>
+    <span class="n">msg</span> <span class="o">=</span> <span class="s1">&#39;&#39;</span>
+    <span class="k">if</span> <span class="n">invalid_proxies</span><span class="p">:</span>
+        <span class="n">msg</span> <span class="o">+=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Proxy URL should either have HTTP(S) scheme &quot;</span>
+                 <span class="s2">&quot;or no scheme at all, the following URLs are &quot;</span>
+                 <span class="s2">&quot;invalid: </span><span class="si">%s</span><span class="s2">.&quot;</span><span class="p">)</span> <span class="o">%</span> <span class="n">invalid_proxies</span>
+    <span class="n">no_proxy</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">driver_info</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;image_no_proxy&#39;</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">no_proxy</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">utils</span><span class="o">.</span><span class="n">is_valid_no_proxy</span><span class="p">(</span><span class="n">no_proxy</span><span class="p">):</span>
+        <span class="n">msg</span> <span class="o">+=</span> <span class="n">_</span><span class="p">(</span>
+            <span class="s2">&quot;image_no_proxy should be a list of host names, IP addresses &quot;</span>
+            <span class="s2">&quot;or domain names to exclude from proxying, the specified list &quot;</span>
+            <span class="s2">&quot;</span><span class="si">%s</span><span class="s2"> is incorrect. To denote a domain name, prefix it with a dot &quot;</span>
+            <span class="s2">&quot;(instead of e.g. &#39;.*&#39;).&quot;</span><span class="p">)</span> <span class="o">%</span> <span class="n">no_proxy</span>
+    <span class="k">if</span> <span class="n">msg</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">InvalidParameterValue</span><span class="p">(</span><span class="n">msg</span><span class="p">)</span>
+
+
+<div class="viewcode-block" id="AgentDeployMixin"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.agent.html#ironic.drivers.modules.agent.AgentDeployMixin">[docs]</a><span class="k">class</span> <span class="nc">AgentDeployMixin</span><span class="p">(</span><span class="n">agent_base_vendor</span><span class="o">.</span><span class="n">AgentDeployMixin</span><span class="p">):</span>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;AgentDeployMixin.deploy_has_started&#39;</span><span class="p">)</span>
+<div class="viewcode-block" id="AgentDeployMixin.deploy_has_started"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.agent.html#ironic.drivers.modules.agent.AgentDeployMixin.deploy_has_started">[docs]</a>    <span class="k">def</span> <span class="nf">deploy_has_started</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="n">commands</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">get_commands_status</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="p">)</span>
+
+        <span class="k">for</span> <span class="n">command</span> <span class="ow">in</span> <span class="n">commands</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">command</span><span class="p">[</span><span class="s1">&#39;command_name&#39;</span><span class="p">]</span> <span class="o">==</span> <span class="s1">&#39;prepare_image&#39;</span><span class="p">:</span>
+                <span class="c1"># deploy did start at some point</span>
+                <span class="k">return</span> <span class="bp">True</span>
+        <span class="k">return</span> <span class="bp">False</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;AgentDeployMixin.deploy_is_done&#39;</span><span class="p">)</span>
+<div class="viewcode-block" id="AgentDeployMixin.deploy_is_done"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.agent.html#ironic.drivers.modules.agent.AgentDeployMixin.deploy_is_done">[docs]</a>    <span class="k">def</span> <span class="nf">deploy_is_done</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="n">commands</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">get_commands_status</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">commands</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">False</span>
+
+        <span class="n">last_command</span> <span class="o">=</span> <span class="n">commands</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span>
+
+        <span class="k">if</span> <span class="n">last_command</span><span class="p">[</span><span class="s1">&#39;command_name&#39;</span><span class="p">]</span> <span class="o">!=</span> <span class="s1">&#39;prepare_image&#39;</span><span class="p">:</span>
+            <span class="c1"># catches race condition where prepare_image is still processing</span>
+            <span class="c1"># so deploy hasn&#39;t started yet</span>
+            <span class="k">return</span> <span class="bp">False</span>
+
+        <span class="k">if</span> <span class="n">last_command</span><span class="p">[</span><span class="s1">&#39;command_status&#39;</span><span class="p">]</span> <span class="o">!=</span> <span class="s1">&#39;RUNNING&#39;</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">True</span>
+
+        <span class="k">return</span> <span class="bp">False</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;AgentDeployMixin.continue_deploy&#39;</span><span class="p">)</span>
+    <span class="nd">@task_manager.require_exclusive_lock</span>
+<div class="viewcode-block" id="AgentDeployMixin.continue_deploy"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.agent.html#ironic.drivers.modules.agent.AgentDeployMixin.continue_deploy">[docs]</a>    <span class="k">def</span> <span class="nf">continue_deploy</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="n">task</span><span class="o">.</span><span class="n">process_event</span><span class="p">(</span><span class="s1">&#39;resume&#39;</span><span class="p">)</span>
+        <span class="n">node</span> <span class="o">=</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span>
+        <span class="n">image_source</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">instance_info</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;image_source&#39;</span><span class="p">)</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;Continuing deploy for node </span><span class="si">%(node)s</span><span class="s1"> with image </span><span class="si">%(img)s</span><span class="s1">&#39;</span><span class="p">,</span>
+                  <span class="p">{</span><span class="s1">&#39;node&#39;</span><span class="p">:</span> <span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="s1">&#39;img&#39;</span><span class="p">:</span> <span class="n">image_source</span><span class="p">})</span>
+
+        <span class="n">image_info</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="s1">&#39;id&#39;</span><span class="p">:</span> <span class="n">image_source</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s1">&#39;/&#39;</span><span class="p">)[</span><span class="o">-</span><span class="mi">1</span><span class="p">],</span>
+            <span class="s1">&#39;urls&#39;</span><span class="p">:</span> <span class="p">[</span><span class="n">node</span><span class="o">.</span><span class="n">instance_info</span><span class="p">[</span><span class="s1">&#39;image_url&#39;</span><span class="p">]],</span>
+            <span class="s1">&#39;checksum&#39;</span><span class="p">:</span> <span class="n">node</span><span class="o">.</span><span class="n">instance_info</span><span class="p">[</span><span class="s1">&#39;image_checksum&#39;</span><span class="p">],</span>
+            <span class="c1"># NOTE(comstud): Older versions of ironic do not set</span>
+            <span class="c1"># &#39;disk_format&#39; nor &#39;container_format&#39;, so we use .get()</span>
+            <span class="c1"># to maintain backwards compatibility in case code was</span>
+            <span class="c1"># upgraded in the middle of a build request.</span>
+            <span class="s1">&#39;disk_format&#39;</span><span class="p">:</span> <span class="n">node</span><span class="o">.</span><span class="n">instance_info</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;image_disk_format&#39;</span><span class="p">),</span>
+            <span class="s1">&#39;container_format&#39;</span><span class="p">:</span> <span class="n">node</span><span class="o">.</span><span class="n">instance_info</span><span class="o">.</span><span class="n">get</span><span class="p">(</span>
+                <span class="s1">&#39;image_container_format&#39;</span><span class="p">),</span>
+            <span class="s1">&#39;stream_raw_images&#39;</span><span class="p">:</span> <span class="n">CONF</span><span class="o">.</span><span class="n">agent</span><span class="o">.</span><span class="n">stream_raw_images</span><span class="p">,</span>
+        <span class="p">}</span>
+
+        <span class="n">proxies</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="k">for</span> <span class="n">scheme</span> <span class="ow">in</span> <span class="p">(</span><span class="s1">&#39;http&#39;</span><span class="p">,</span> <span class="s1">&#39;https&#39;</span><span class="p">):</span>
+            <span class="n">proxy_param</span> <span class="o">=</span> <span class="s1">&#39;image_</span><span class="si">%s</span><span class="s1">_proxy&#39;</span> <span class="o">%</span> <span class="n">scheme</span>
+            <span class="n">proxy</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">driver_info</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">proxy_param</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">proxy</span><span class="p">:</span>
+                <span class="n">proxies</span><span class="p">[</span><span class="n">scheme</span><span class="p">]</span> <span class="o">=</span> <span class="n">proxy</span>
+        <span class="k">if</span> <span class="n">proxies</span><span class="p">:</span>
+            <span class="n">image_info</span><span class="p">[</span><span class="s1">&#39;proxies&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">proxies</span>
+            <span class="n">no_proxy</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">driver_info</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;image_no_proxy&#39;</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">no_proxy</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="n">image_info</span><span class="p">[</span><span class="s1">&#39;no_proxy&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">no_proxy</span>
+
+        <span class="n">image_info</span><span class="p">[</span><span class="s1">&#39;node_uuid&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">uuid</span>
+        <span class="n">iwdi</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">driver_internal_info</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;is_whole_disk_image&#39;</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">iwdi</span><span class="p">:</span>
+            <span class="k">for</span> <span class="n">label</span> <span class="ow">in</span> <span class="n">PARTITION_IMAGE_LABELS</span><span class="p">:</span>
+                <span class="n">image_info</span><span class="p">[</span><span class="n">label</span><span class="p">]</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">instance_info</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">label</span><span class="p">)</span>
+            <span class="n">boot_option</span> <span class="o">=</span> <span class="n">deploy_utils</span><span class="o">.</span><span class="n">get_boot_option</span><span class="p">(</span><span class="n">node</span><span class="p">)</span>
+            <span class="n">boot_mode</span> <span class="o">=</span> <span class="n">deploy_utils</span><span class="o">.</span><span class="n">get_boot_mode_for_deploy</span><span class="p">(</span><span class="n">node</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">boot_mode</span><span class="p">:</span>
+                <span class="n">image_info</span><span class="p">[</span><span class="s1">&#39;deploy_boot_mode&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">boot_mode</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">image_info</span><span class="p">[</span><span class="s1">&#39;deploy_boot_mode&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="s1">&#39;bios&#39;</span>
+            <span class="n">image_info</span><span class="p">[</span><span class="s1">&#39;boot_option&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">boot_option</span>
+            <span class="n">disk_label</span> <span class="o">=</span> <span class="n">deploy_utils</span><span class="o">.</span><span class="n">get_disk_label</span><span class="p">(</span><span class="n">node</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">disk_label</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="n">image_info</span><span class="p">[</span><span class="s1">&#39;disk_label&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">disk_label</span>
+
+        <span class="c1"># Tell the client to download and write the image with the given args</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">prepare_image</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">image_info</span><span class="p">)</span>
+
+        <span class="n">task</span><span class="o">.</span><span class="n">process_event</span><span class="p">(</span><span class="s1">&#39;wait&#39;</span><span class="p">)</span></div>
+
+    <span class="k">def</span> <span class="nf">_get_uuid_from_result</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">,</span> <span class="n">type_uuid</span><span class="p">):</span>
+        <span class="n">command</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">get_commands_status</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="p">)[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span>
+
+        <span class="k">if</span> <span class="n">command</span><span class="p">[</span><span class="s1">&#39;command_result&#39;</span><span class="p">]</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">words</span> <span class="o">=</span> <span class="n">command</span><span class="p">[</span><span class="s1">&#39;command_result&#39;</span><span class="p">][</span><span class="s1">&#39;result&#39;</span><span class="p">]</span><span class="o">.</span><span class="n">split</span><span class="p">()</span>
+            <span class="k">for</span> <span class="n">word</span> <span class="ow">in</span> <span class="n">words</span><span class="p">:</span>
+                <span class="k">if</span> <span class="n">type_uuid</span> <span class="ow">in</span> <span class="n">word</span><span class="p">:</span>
+                    <span class="n">result</span> <span class="o">=</span> <span class="n">word</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s1">&#39;=&#39;</span><span class="p">)[</span><span class="mi">1</span><span class="p">]</span>
+                    <span class="k">if</span> <span class="ow">not</span> <span class="n">result</span><span class="p">:</span>
+                        <span class="n">msg</span> <span class="o">=</span> <span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Command result did not return </span><span class="si">%(type_uuid)s</span><span class="s1"> &#39;</span>
+                                 <span class="s1">&#39;for node </span><span class="si">%(node)s</span><span class="s1">. The version of the IPA &#39;</span>
+                                 <span class="s1">&#39;ramdisk used in the deployment might not &#39;</span>
+                                 <span class="s1">&#39;have support for provisioning of &#39;</span>
+                                 <span class="s1">&#39;partition images.&#39;</span><span class="p">)</span> <span class="o">%</span>
+                               <span class="p">{</span><span class="s1">&#39;type_uuid&#39;</span><span class="p">:</span> <span class="n">type_uuid</span><span class="p">,</span>
+                                <span class="s1">&#39;node&#39;</span><span class="p">:</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">})</span>
+                        <span class="n">LOG</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">msg</span><span class="p">)</span>
+                        <span class="n">deploy_utils</span><span class="o">.</span><span class="n">set_failed_state</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">msg</span><span class="p">)</span>
+                        <span class="k">return</span>
+                    <span class="k">return</span> <span class="n">result</span>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;AgentDeployMixin.check_deploy_success&#39;</span><span class="p">)</span>
+<div class="viewcode-block" id="AgentDeployMixin.check_deploy_success"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.agent.html#ironic.drivers.modules.agent.AgentDeployMixin.check_deploy_success">[docs]</a>    <span class="k">def</span> <span class="nf">check_deploy_success</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">node</span><span class="p">):</span>
+        <span class="c1"># should only ever be called after we&#39;ve validated that</span>
+        <span class="c1"># the prepare_image command is complete</span>
+        <span class="n">command</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_client</span><span class="o">.</span><span class="n">get_commands_status</span><span class="p">(</span><span class="n">node</span><span class="p">)[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span>
+        <span class="k">if</span> <span class="n">command</span><span class="p">[</span><span class="s1">&#39;command_status&#39;</span><span class="p">]</span> <span class="o">==</span> <span class="s1">&#39;FAILED&#39;</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">command</span><span class="p">[</span><span class="s1">&#39;command_error&#39;</span><span class="p">]</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;AgentDeployMixin.reboot_to_instance&#39;</span><span class="p">)</span>
+<div class="viewcode-block" id="AgentDeployMixin.reboot_to_instance"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.agent.html#ironic.drivers.modules.agent.AgentDeployMixin.reboot_to_instance">[docs]</a>    <span class="k">def</span> <span class="nf">reboot_to_instance</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="n">task</span><span class="o">.</span><span class="n">process_event</span><span class="p">(</span><span class="s1">&#39;resume&#39;</span><span class="p">)</span>
+        <span class="n">node</span> <span class="o">=</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span>
+        <span class="n">iwdi</span> <span class="o">=</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">driver_internal_info</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;is_whole_disk_image&#39;</span><span class="p">)</span>
+        <span class="n">error</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">check_deploy_success</span><span class="p">(</span><span class="n">node</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">error</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="c1"># TODO(jimrollenhagen) power off if using neutron dhcp to</span>
+            <span class="c1">#                      align with pxe driver?</span>
+            <span class="n">msg</span> <span class="o">=</span> <span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;node </span><span class="si">%(node)s</span><span class="s1"> command status errored: </span><span class="si">%(error)s</span><span class="s1">&#39;</span><span class="p">)</span> <span class="o">%</span>
+                   <span class="p">{</span><span class="s1">&#39;node&#39;</span><span class="p">:</span> <span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="s1">&#39;error&#39;</span><span class="p">:</span> <span class="n">error</span><span class="p">})</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">msg</span><span class="p">)</span>
+            <span class="n">deploy_utils</span><span class="o">.</span><span class="n">set_failed_state</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">msg</span><span class="p">)</span>
+            <span class="k">return</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">iwdi</span><span class="p">:</span>
+            <span class="n">root_uuid</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_uuid_from_result</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="s1">&#39;root_uuid&#39;</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">deploy_utils</span><span class="o">.</span><span class="n">get_boot_mode_for_deploy</span><span class="p">(</span><span class="n">node</span><span class="p">)</span> <span class="o">==</span> <span class="s1">&#39;uefi&#39;</span><span class="p">:</span>
+                <span class="n">efi_sys_uuid</span> <span class="o">=</span> <span class="p">(</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_get_uuid_from_result</span><span class="p">(</span><span class="n">task</span><span class="p">,</span>
+                                               <span class="s1">&#39;efi_system_partition_uuid&#39;</span><span class="p">))</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">efi_sys_uuid</span> <span class="o">=</span> <span class="bp">None</span>
+            <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">driver_internal_info</span><span class="p">[</span><span class="s1">&#39;root_uuid_or_disk_id&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">root_uuid</span>
+            <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">save</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">prepare_instance_to_boot</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">root_uuid</span><span class="p">,</span> <span class="n">efi_sys_uuid</span><span class="p">)</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">_LI</span><span class="p">(</span><span class="s1">&#39;Image successfully written to node </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">),</span> <span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;Rebooting node </span><span class="si">%s</span><span class="s1"> to instance&#39;</span><span class="p">,</span> <span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">iwdi</span><span class="p">:</span>
+            <span class="n">manager_utils</span><span class="o">.</span><span class="n">node_set_boot_device</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="s1">&#39;disk&#39;</span><span class="p">,</span> <span class="n">persistent</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">reboot_and_finish_deploy</span><span class="p">(</span><span class="n">task</span><span class="p">)</span>
+
+        <span class="c1"># NOTE(TheJulia): If we deployed a whole disk image, we</span>
+        <span class="c1"># should expect a whole disk image and clean-up the tftp files</span>
+        <span class="c1"># on-disk incase the node is disregarding the boot preference.</span>
+        <span class="c1"># TODO(rameshg87): Not all in-tree drivers using reboot_to_instance</span>
+        <span class="c1"># have a boot interface. So include a check for now. Remove this</span>
+        <span class="c1"># check once all in-tree drivers have a boot interface.</span>
+        <span class="k">if</span> <span class="n">task</span><span class="o">.</span><span class="n">driver</span><span class="o">.</span><span class="n">boot</span> <span class="ow">and</span> <span class="n">iwdi</span><span class="p">:</span>
+            <span class="n">task</span><span class="o">.</span><span class="n">driver</span><span class="o">.</span><span class="n">boot</span><span class="o">.</span><span class="n">clean_up_ramdisk</span><span class="p">(</span><span class="n">task</span><span class="p">)</span></div></div>
+
+
+<div class="viewcode-block" id="AgentDeploy"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.agent.html#ironic.drivers.modules.agent.AgentDeploy">[docs]</a><span class="k">class</span> <span class="nc">AgentDeploy</span><span class="p">(</span><span class="n">AgentDeployMixin</span><span class="p">,</span> <span class="n">base</span><span class="o">.</span><span class="n">DeployInterface</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Interface for deploy-related actions.&quot;&quot;&quot;</span>
+
+<div class="viewcode-block" id="AgentDeploy.get_properties"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.agent.html#ironic.drivers.modules.agent.AgentDeploy.get_properties">[docs]</a>    <span class="k">def</span> <span class="nf">get_properties</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Return the properties of the interface.</span>
+
+<span class="sd">        :returns: dictionary of &lt;property name&gt;:&lt;property description&gt; entries.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="n">COMMON_PROPERTIES</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;AgentDeploy.validate&#39;</span><span class="p">)</span>
+<div class="viewcode-block" id="AgentDeploy.validate"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.agent.html#ironic.drivers.modules.agent.AgentDeploy.validate">[docs]</a>    <span class="k">def</span> <span class="nf">validate</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Validate the driver-specific Node deployment info.</span>
+
+<span class="sd">        This method validates whether the properties of the supplied node</span>
+<span class="sd">        contain the required information for this driver to deploy images to</span>
+<span class="sd">        the node.</span>
+
+<span class="sd">        :param task: a TaskManager instance</span>
+<span class="sd">        :raises: MissingParameterValue, if any of the required parameters are</span>
+<span class="sd">            missing.</span>
+<span class="sd">        :raises: InvalidParameterValue, if any of the parameters have invalid</span>
+<span class="sd">            value.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="n">CONF</span><span class="o">.</span><span class="n">agent</span><span class="o">.</span><span class="n">manage_agent_boot</span><span class="p">:</span>
+            <span class="n">task</span><span class="o">.</span><span class="n">driver</span><span class="o">.</span><span class="n">boot</span><span class="o">.</span><span class="n">validate</span><span class="p">(</span><span class="n">task</span><span class="p">)</span>
+
+        <span class="n">node</span> <span class="o">=</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span>
+        <span class="n">params</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="n">image_source</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">instance_info</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;image_source&#39;</span><span class="p">)</span>
+        <span class="n">params</span><span class="p">[</span><span class="s1">&#39;instance_info.image_source&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">image_source</span>
+        <span class="n">error_msg</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;Node </span><span class="si">%s</span><span class="s1"> failed to validate deploy image info. Some &#39;</span>
+                      <span class="s1">&#39;parameters were missing&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="n">node</span><span class="o">.</span><span class="n">uuid</span>
+
+        <span class="n">deploy_utils</span><span class="o">.</span><span class="n">check_for_missing_params</span><span class="p">(</span><span class="n">params</span><span class="p">,</span> <span class="n">error_msg</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">service_utils</span><span class="o">.</span><span class="n">is_glance_image</span><span class="p">(</span><span class="n">image_source</span><span class="p">):</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">node</span><span class="o">.</span><span class="n">instance_info</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;image_checksum&#39;</span><span class="p">):</span>
+                <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">MissingParameterValue</span><span class="p">(</span><span class="n">_</span><span class="p">(</span>
+                    <span class="s2">&quot;image_source&#39;s image_checksum must be provided in &quot;</span>
+                    <span class="s2">&quot;instance_info for node </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">)</span> <span class="o">%</span> <span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+
+        <span class="n">check_image_size</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">image_source</span><span class="p">)</span>
+        <span class="c1"># Validate the root device hints</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">root_device</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">properties</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;root_device&#39;</span><span class="p">)</span>
+            <span class="n">il_utils</span><span class="o">.</span><span class="n">parse_root_device_hints</span><span class="p">(</span><span class="n">root_device</span><span class="p">)</span>
+        <span class="k">except</span> <span class="ne">ValueError</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">InvalidParameterValue</span><span class="p">(</span>
+                <span class="n">_</span><span class="p">(</span><span class="s1">&#39;Failed to validate the root device hints for node &#39;</span>
+                  <span class="s1">&#39;</span><span class="si">%(node)s</span><span class="s1">. Error: </span><span class="si">%(error)s</span><span class="s1">&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="p">{</span><span class="s1">&#39;node&#39;</span><span class="p">:</span> <span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span>
+                                                   <span class="s1">&#39;error&#39;</span><span class="p">:</span> <span class="n">e</span><span class="p">})</span>
+
+        <span class="c1"># Validate node capabilities</span>
+        <span class="n">deploy_utils</span><span class="o">.</span><span class="n">validate_capabilities</span><span class="p">(</span><span class="n">node</span><span class="p">)</span>
+
+        <span class="n">validate_image_proxies</span><span class="p">(</span><span class="n">node</span><span class="p">)</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;AgentDeploy.deploy&#39;</span><span class="p">)</span>
+    <span class="nd">@task_manager.require_exclusive_lock</span>
+<div class="viewcode-block" id="AgentDeploy.deploy"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.agent.html#ironic.drivers.modules.agent.AgentDeploy.deploy">[docs]</a>    <span class="k">def</span> <span class="nf">deploy</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Perform a deployment to a node.</span>
+
+<span class="sd">        Perform the necessary work to deploy an image onto the specified node.</span>
+<span class="sd">        This method will be called after prepare(), which may have already</span>
+<span class="sd">        performed any preparatory steps, such as pre-caching some data for the</span>
+<span class="sd">        node.</span>
+
+<span class="sd">        :param task: a TaskManager instance.</span>
+<span class="sd">        :returns: status of the deploy. One of ironic.common.states.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">manager_utils</span><span class="o">.</span><span class="n">node_power_action</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">states</span><span class="o">.</span><span class="n">REBOOT</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">states</span><span class="o">.</span><span class="n">DEPLOYWAIT</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;AgentDeploy.tear_down&#39;</span><span class="p">)</span>
+    <span class="nd">@task_manager.require_exclusive_lock</span>
+<div class="viewcode-block" id="AgentDeploy.tear_down"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.agent.html#ironic.drivers.modules.agent.AgentDeploy.tear_down">[docs]</a>    <span class="k">def</span> <span class="nf">tear_down</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Tear down a previous deployment on the task&#39;s node.</span>
+
+<span class="sd">        :param task: a TaskManager instance.</span>
+<span class="sd">        :returns: status of the deploy. One of ironic.common.states.</span>
+<span class="sd">        :raises: NetworkError if the cleaning ports cannot be removed.</span>
+<span class="sd">        :raises: InvalidParameterValue when the wrong power state is specified</span>
+<span class="sd">             or the wrong driver info is specified for power management.</span>
+<span class="sd">        :raises: other exceptions by the node&#39;s power driver if something</span>
+<span class="sd">             wrong occurred during the power action.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">manager_utils</span><span class="o">.</span><span class="n">node_power_action</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">states</span><span class="o">.</span><span class="n">POWER_OFF</span><span class="p">)</span>
+
+        <span class="n">task</span><span class="o">.</span><span class="n">driver</span><span class="o">.</span><span class="n">network</span><span class="o">.</span><span class="n">unconfigure_tenant_networks</span><span class="p">(</span><span class="n">task</span><span class="p">)</span>
+
+        <span class="k">return</span> <span class="n">states</span><span class="o">.</span><span class="n">DELETED</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;AgentDeploy.prepare&#39;</span><span class="p">)</span>
+    <span class="nd">@task_manager.require_exclusive_lock</span>
+<div class="viewcode-block" id="AgentDeploy.prepare"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.agent.html#ironic.drivers.modules.agent.AgentDeploy.prepare">[docs]</a>    <span class="k">def</span> <span class="nf">prepare</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Prepare the deployment environment for this node.</span>
+
+<span class="sd">        :param task: a TaskManager instance.</span>
+<span class="sd">        :raises: NetworkError: if the previous cleaning ports cannot be removed</span>
+<span class="sd">            or if new cleaning ports cannot be created.</span>
+<span class="sd">        :raises: InvalidParameterValue when the wrong power state is specified</span>
+<span class="sd">             or the wrong driver info is specified for power management.</span>
+<span class="sd">        :raises: other exceptions by the node&#39;s power driver if something</span>
+<span class="sd">             wrong occurred during the power action.</span>
+<span class="sd">        :raises: exception.ImageRefValidationFailed if image_source is not</span>
+<span class="sd">            Glance href and is not HTTP(S) URL.</span>
+<span class="sd">        :raises: any boot interface&#39;s prepare_ramdisk exceptions.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">node</span> <span class="o">=</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span>
+        <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">provision_state</span> <span class="o">==</span> <span class="n">states</span><span class="o">.</span><span class="n">DEPLOYING</span><span class="p">:</span>
+            <span class="c1"># Adding the node to provisioning network so that the dhcp</span>
+            <span class="c1"># options get added for the provisioning port.</span>
+            <span class="n">manager_utils</span><span class="o">.</span><span class="n">node_power_action</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">states</span><span class="o">.</span><span class="n">POWER_OFF</span><span class="p">)</span>
+            <span class="c1"># NOTE(vdrok): in case of rebuild, we have tenant network already</span>
+            <span class="c1"># configured, unbind tenant ports if present</span>
+            <span class="n">task</span><span class="o">.</span><span class="n">driver</span><span class="o">.</span><span class="n">network</span><span class="o">.</span><span class="n">unconfigure_tenant_networks</span><span class="p">(</span><span class="n">task</span><span class="p">)</span>
+            <span class="n">task</span><span class="o">.</span><span class="n">driver</span><span class="o">.</span><span class="n">network</span><span class="o">.</span><span class="n">add_provisioning_network</span><span class="p">(</span><span class="n">task</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">provision_state</span> <span class="o">==</span> <span class="n">states</span><span class="o">.</span><span class="n">ACTIVE</span><span class="p">:</span>
+            <span class="n">task</span><span class="o">.</span><span class="n">driver</span><span class="o">.</span><span class="n">boot</span><span class="o">.</span><span class="n">prepare_instance</span><span class="p">(</span><span class="n">task</span><span class="p">)</span>
+        <span class="k">elif</span> <span class="n">node</span><span class="o">.</span><span class="n">provision_state</span> <span class="o">!=</span> <span class="n">states</span><span class="o">.</span><span class="n">ADOPTING</span><span class="p">:</span>
+            <span class="n">node</span><span class="o">.</span><span class="n">instance_info</span> <span class="o">=</span> <span class="n">deploy_utils</span><span class="o">.</span><span class="n">build_instance_info_for_deploy</span><span class="p">(</span>
+                <span class="n">task</span><span class="p">)</span>
+            <span class="n">node</span><span class="o">.</span><span class="n">save</span><span class="p">()</span>
+            <span class="k">if</span> <span class="n">CONF</span><span class="o">.</span><span class="n">agent</span><span class="o">.</span><span class="n">manage_agent_boot</span><span class="p">:</span>
+                <span class="n">deploy_opts</span> <span class="o">=</span> <span class="n">deploy_utils</span><span class="o">.</span><span class="n">build_agent_options</span><span class="p">(</span><span class="n">node</span><span class="p">)</span>
+                <span class="n">task</span><span class="o">.</span><span class="n">driver</span><span class="o">.</span><span class="n">boot</span><span class="o">.</span><span class="n">prepare_ramdisk</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">deploy_opts</span><span class="p">)</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;AgentDeploy.clean_up&#39;</span><span class="p">)</span>
+    <span class="nd">@task_manager.require_exclusive_lock</span>
+<div class="viewcode-block" id="AgentDeploy.clean_up"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.agent.html#ironic.drivers.modules.agent.AgentDeploy.clean_up">[docs]</a>    <span class="k">def</span> <span class="nf">clean_up</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Clean up the deployment environment for this node.</span>
+
+<span class="sd">        If preparation of the deployment environment ahead of time is possible,</span>
+<span class="sd">        this method should be implemented by the driver. It should erase</span>
+<span class="sd">        anything cached by the `prepare` method.</span>
+
+<span class="sd">        If implemented, this method must be idempotent. It may be called</span>
+<span class="sd">        multiple times for the same node on the same conductor, and it may be</span>
+<span class="sd">        called by multiple conductors in parallel. Therefore, it must not</span>
+<span class="sd">        require an exclusive lock.</span>
+
+<span class="sd">        This method is called before `tear_down`.</span>
+
+<span class="sd">        :param task: a TaskManager instance.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="n">CONF</span><span class="o">.</span><span class="n">agent</span><span class="o">.</span><span class="n">manage_agent_boot</span><span class="p">:</span>
+            <span class="n">task</span><span class="o">.</span><span class="n">driver</span><span class="o">.</span><span class="n">boot</span><span class="o">.</span><span class="n">clean_up_ramdisk</span><span class="p">(</span><span class="n">task</span><span class="p">)</span>
+        <span class="n">provider</span> <span class="o">=</span> <span class="n">dhcp_factory</span><span class="o">.</span><span class="n">DHCPFactory</span><span class="p">()</span>
+        <span class="n">provider</span><span class="o">.</span><span class="n">clean_dhcp</span><span class="p">(</span><span class="n">task</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="AgentDeploy.take_over"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.agent.html#ironic.drivers.modules.agent.AgentDeploy.take_over">[docs]</a>    <span class="k">def</span> <span class="nf">take_over</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Take over management of this node from a dead conductor.</span>
+
+<span class="sd">        :param task: a TaskManager instance.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">pass</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;AgentDeploy.get_clean_steps&#39;</span><span class="p">)</span>
+<div class="viewcode-block" id="AgentDeploy.get_clean_steps"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.agent.html#ironic.drivers.modules.agent.AgentDeploy.get_clean_steps">[docs]</a>    <span class="k">def</span> <span class="nf">get_clean_steps</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get the list of clean steps from the agent.</span>
+
+<span class="sd">        :param task: a TaskManager object containing the node</span>
+<span class="sd">        :raises NodeCleaningFailure: if the clean steps are not yet</span>
+<span class="sd">            available (cached), for example, when a node has just been</span>
+<span class="sd">            enrolled and has not been cleaned yet.</span>
+<span class="sd">        :returns: A list of clean step dictionaries</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">new_priorities</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="s1">&#39;erase_devices&#39;</span><span class="p">:</span> <span class="n">CONF</span><span class="o">.</span><span class="n">deploy</span><span class="o">.</span><span class="n">erase_devices_priority</span><span class="p">,</span>
+            <span class="s1">&#39;erase_devices_metadata&#39;</span><span class="p">:</span>
+                <span class="n">CONF</span><span class="o">.</span><span class="n">deploy</span><span class="o">.</span><span class="n">erase_devices_metadata_priority</span><span class="p">,</span>
+        <span class="p">}</span>
+        <span class="k">return</span> <span class="n">deploy_utils</span><span class="o">.</span><span class="n">agent_get_clean_steps</span><span class="p">(</span>
+            <span class="n">task</span><span class="p">,</span> <span class="n">interface</span><span class="o">=</span><span class="s1">&#39;deploy&#39;</span><span class="p">,</span>
+            <span class="n">override_priorities</span><span class="o">=</span><span class="n">new_priorities</span><span class="p">)</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;AgentDeploy.execute_clean_step&#39;</span><span class="p">)</span>
+<div class="viewcode-block" id="AgentDeploy.execute_clean_step"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.agent.html#ironic.drivers.modules.agent.AgentDeploy.execute_clean_step">[docs]</a>    <span class="k">def</span> <span class="nf">execute_clean_step</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">,</span> <span class="n">step</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Execute a clean step asynchronously on the agent.</span>
+
+<span class="sd">        :param task: a TaskManager object containing the node</span>
+<span class="sd">        :param step: a clean step dictionary to execute</span>
+<span class="sd">        :raises: NodeCleaningFailure if the agent does not return a command</span>
+<span class="sd">            status</span>
+<span class="sd">        :returns: states.CLEANWAIT to signify the step will be completed async</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="n">deploy_utils</span><span class="o">.</span><span class="n">agent_execute_clean_step</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">step</span><span class="p">)</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;AgentDeploy.prepare_cleaning&#39;</span><span class="p">)</span>
+<div class="viewcode-block" id="AgentDeploy.prepare_cleaning"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.agent.html#ironic.drivers.modules.agent.AgentDeploy.prepare_cleaning">[docs]</a>    <span class="k">def</span> <span class="nf">prepare_cleaning</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Boot into the agent to prepare for cleaning.</span>
+
+<span class="sd">        :param task: a TaskManager object containing the node</span>
+<span class="sd">        :raises: NodeCleaningFailure, NetworkError if the previous cleaning</span>
+<span class="sd">            ports cannot be removed or if new cleaning ports cannot be created.</span>
+<span class="sd">        :raises: InvalidParameterValue if cleaning network UUID config option</span>
+<span class="sd">            has an invalid value.</span>
+<span class="sd">        :returns: states.CLEANWAIT to signify an asynchronous prepare</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="n">deploy_utils</span><span class="o">.</span><span class="n">prepare_inband_cleaning</span><span class="p">(</span>
+            <span class="n">task</span><span class="p">,</span> <span class="n">manage_boot</span><span class="o">=</span><span class="n">CONF</span><span class="o">.</span><span class="n">agent</span><span class="o">.</span><span class="n">manage_agent_boot</span><span class="p">)</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;AgentDeploy.tear_down_cleaning&#39;</span><span class="p">)</span>
+<div class="viewcode-block" id="AgentDeploy.tear_down_cleaning"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.agent.html#ironic.drivers.modules.agent.AgentDeploy.tear_down_cleaning">[docs]</a>    <span class="k">def</span> <span class="nf">tear_down_cleaning</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Clean up the PXE and DHCP files after cleaning.</span>
+
+<span class="sd">        :param task: a TaskManager object containing the node</span>
+<span class="sd">        :raises: NodeCleaningFailure, NetworkError if the cleaning ports cannot</span>
+<span class="sd">            be removed</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">deploy_utils</span><span class="o">.</span><span class="n">tear_down_inband_cleaning</span><span class="p">(</span>
+            <span class="n">task</span><span class="p">,</span> <span class="n">manage_boot</span><span class="o">=</span><span class="n">CONF</span><span class="o">.</span><span class="n">agent</span><span class="o">.</span><span class="n">manage_agent_boot</span><span class="p">)</span></div></div>
+
+
+<div class="viewcode-block" id="AgentRAID"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.agent.html#ironic.drivers.modules.agent.AgentRAID">[docs]</a><span class="k">class</span> <span class="nc">AgentRAID</span><span class="p">(</span><span class="n">base</span><span class="o">.</span><span class="n">RAIDInterface</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Implementation of RAIDInterface which uses agent ramdisk.&quot;&quot;&quot;</span>
+
+<div class="viewcode-block" id="AgentRAID.get_properties"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.agent.html#ironic.drivers.modules.agent.AgentRAID.get_properties">[docs]</a>    <span class="k">def</span> <span class="nf">get_properties</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Return the properties of the interface.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="p">{}</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;AgentRAID.create_configuration&#39;</span><span class="p">)</span>
+    <span class="nd">@base.clean_step</span><span class="p">(</span><span class="n">priority</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+<div class="viewcode-block" id="AgentRAID.create_configuration"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.agent.html#ironic.drivers.modules.agent.AgentRAID.create_configuration">[docs]</a>    <span class="k">def</span> <span class="nf">create_configuration</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">,</span>
+                             <span class="n">create_root_volume</span><span class="o">=</span><span class="bp">True</span><span class="p">,</span>
+                             <span class="n">create_nonroot_volumes</span><span class="o">=</span><span class="bp">True</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Create a RAID configuration on a bare metal using agent ramdisk.</span>
+
+<span class="sd">        This method creates a RAID configuration on the given node.</span>
+
+<span class="sd">        :param task: a TaskManager instance.</span>
+<span class="sd">        :param create_root_volume: If True, a root volume is created</span>
+<span class="sd">            during RAID configuration. Otherwise, no root volume is</span>
+<span class="sd">            created. Default is True.</span>
+<span class="sd">        :param create_nonroot_volumes: If True, non-root volumes are</span>
+<span class="sd">            created. If False, no non-root volumes are created. Default</span>
+<span class="sd">            is True.</span>
+<span class="sd">        :returns: states.CLEANWAIT if operation was successfully invoked.</span>
+<span class="sd">        :raises: MissingParameterValue, if node.target_raid_config is missing</span>
+<span class="sd">            or was found to be empty after skipping root volume and/or non-root</span>
+<span class="sd">            volumes.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">node</span> <span class="o">=</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Agent RAID create_configuration invoked for node </span><span class="si">%(node)s</span><span class="s2"> &quot;</span>
+                  <span class="s2">&quot;with create_root_volume=</span><span class="si">%(create_root_volume)s</span><span class="s2"> and &quot;</span>
+                  <span class="s2">&quot;create_nonroot_volumes=</span><span class="si">%(create_nonroot_volumes)s</span><span class="s2"> with the &quot;</span>
+                  <span class="s2">&quot;following target_raid_config: </span><span class="si">%(target_raid_config)s</span><span class="s2">.&quot;</span><span class="p">,</span>
+                  <span class="p">{</span><span class="s1">&#39;node&#39;</span><span class="p">:</span> <span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span>
+                   <span class="s1">&#39;create_root_volume&#39;</span><span class="p">:</span> <span class="n">create_root_volume</span><span class="p">,</span>
+                   <span class="s1">&#39;create_nonroot_volumes&#39;</span><span class="p">:</span> <span class="n">create_nonroot_volumes</span><span class="p">,</span>
+                   <span class="s1">&#39;target_raid_config&#39;</span><span class="p">:</span> <span class="n">node</span><span class="o">.</span><span class="n">target_raid_config</span><span class="p">})</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">node</span><span class="o">.</span><span class="n">target_raid_config</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">MissingParameterValue</span><span class="p">(</span>
+                <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Node </span><span class="si">%s</span><span class="s2"> has no target RAID configuration.&quot;</span><span class="p">)</span> <span class="o">%</span> <span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+
+        <span class="n">target_raid_config</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">target_raid_config</span><span class="o">.</span><span class="n">copy</span><span class="p">()</span>
+
+        <span class="n">error_msg_list</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">create_root_volume</span><span class="p">:</span>
+            <span class="n">target_raid_config</span><span class="p">[</span><span class="s1">&#39;logical_disks&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="p">[</span>
+                <span class="n">x</span> <span class="k">for</span> <span class="n">x</span> <span class="ow">in</span> <span class="n">target_raid_config</span><span class="p">[</span><span class="s1">&#39;logical_disks&#39;</span><span class="p">]</span>
+                <span class="k">if</span> <span class="ow">not</span> <span class="n">x</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;is_root_volume&#39;</span><span class="p">)]</span>
+            <span class="n">error_msg_list</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s2">&quot;skipping root volume&quot;</span><span class="p">))</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">create_nonroot_volumes</span><span class="p">:</span>
+            <span class="n">error_msg_list</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s2">&quot;skipping non-root volumes&quot;</span><span class="p">))</span>
+
+            <span class="n">target_raid_config</span><span class="p">[</span><span class="s1">&#39;logical_disks&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="p">[</span>
+                <span class="n">x</span> <span class="k">for</span> <span class="n">x</span> <span class="ow">in</span> <span class="n">target_raid_config</span><span class="p">[</span><span class="s1">&#39;logical_disks&#39;</span><span class="p">]</span>
+                <span class="k">if</span> <span class="n">x</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;is_root_volume&#39;</span><span class="p">)]</span>
+
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">target_raid_config</span><span class="p">[</span><span class="s1">&#39;logical_disks&#39;</span><span class="p">]:</span>
+            <span class="n">error_msg</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39; and &#39;</span><span class="p">)</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">error_msg_list</span><span class="p">)</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">MissingParameterValue</span><span class="p">(</span>
+                <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Node </span><span class="si">%(node)s</span><span class="s2"> has empty target RAID configuration &quot;</span>
+                  <span class="s2">&quot;after </span><span class="si">%(msg)s</span><span class="s2">.&quot;</span><span class="p">)</span> <span class="o">%</span> <span class="p">{</span><span class="s1">&#39;node&#39;</span><span class="p">:</span> <span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="s1">&#39;msg&#39;</span><span class="p">:</span> <span class="n">error_msg</span><span class="p">})</span>
+
+        <span class="c1"># Rewrite it back to the node object, but no need to save it as</span>
+        <span class="c1"># we need to just send this to the agent ramdisk.</span>
+        <span class="n">node</span><span class="o">.</span><span class="n">driver_internal_info</span><span class="p">[</span><span class="s1">&#39;target_raid_config&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">target_raid_config</span>
+
+        <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Calling agent RAID create_configuration for node </span><span class="si">%(node)s</span><span class="s2"> &quot;</span>
+                  <span class="s2">&quot;with the following target RAID configuration: </span><span class="si">%(target)s</span><span class="s2">&quot;</span><span class="p">,</span>
+                  <span class="p">{</span><span class="s1">&#39;node&#39;</span><span class="p">:</span> <span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="s1">&#39;target&#39;</span><span class="p">:</span> <span class="n">target_raid_config</span><span class="p">})</span>
+        <span class="n">step</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">clean_step</span>
+        <span class="k">return</span> <span class="n">deploy_utils</span><span class="o">.</span><span class="n">agent_execute_clean_step</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">step</span><span class="p">)</span></div>
+
+    <span class="nd">@staticmethod</span>
+    <span class="nd">@agent_base_vendor.post_clean_step_hook</span><span class="p">(</span>
+        <span class="n">interface</span><span class="o">=</span><span class="s1">&#39;raid&#39;</span><span class="p">,</span> <span class="n">step</span><span class="o">=</span><span class="s1">&#39;create_configuration&#39;</span><span class="p">)</span>
+    <span class="k">def</span> <span class="nf">_create_configuration_final</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">command</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Clean step hook after a RAID configuration was created.</span>
+
+<span class="sd">        This method is invoked as a post clean step hook by the Ironic</span>
+<span class="sd">        conductor once a create raid configuration is completed successfully.</span>
+<span class="sd">        The node (properties, capabilities, RAID information) will be updated</span>
+<span class="sd">        to reflect the actual RAID configuration that was created.</span>
+
+<span class="sd">        :param task: a TaskManager instance.</span>
+<span class="sd">        :param command: A command result structure of the RAID operation</span>
+<span class="sd">            returned from agent ramdisk on query of the status of command(s).</span>
+<span class="sd">        :raises: InvalidParameterValue, if &#39;current_raid_config&#39; has more than</span>
+<span class="sd">            one root volume or if node.properties[&#39;capabilities&#39;] is malformed.</span>
+<span class="sd">        :raises: IronicException, if clean_result couldn&#39;t be found within</span>
+<span class="sd">            the &#39;command&#39; argument passed.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">clean_result</span> <span class="o">=</span> <span class="n">command</span><span class="p">[</span><span class="s1">&#39;command_result&#39;</span><span class="p">][</span><span class="s1">&#39;clean_result&#39;</span><span class="p">]</span>
+        <span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">IronicException</span><span class="p">(</span>
+                <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Agent ramdisk didn&#39;t return a proper command result while &quot;</span>
+                  <span class="s2">&quot;cleaning </span><span class="si">%(node)s</span><span class="s2">. It returned &#39;</span><span class="si">%(result)s</span><span class="s2">&#39; after command &quot;</span>
+                  <span class="s2">&quot;execution.&quot;</span><span class="p">)</span> <span class="o">%</span> <span class="p">{</span><span class="s1">&#39;node&#39;</span><span class="p">:</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span>
+                                   <span class="s1">&#39;result&#39;</span><span class="p">:</span> <span class="n">command</span><span class="p">})</span>
+
+        <span class="n">raid</span><span class="o">.</span><span class="n">update_raid_info</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="p">,</span> <span class="n">clean_result</span><span class="p">)</span>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;AgentRAID.delete_configuration&#39;</span><span class="p">)</span>
+    <span class="nd">@base.clean_step</span><span class="p">(</span><span class="n">priority</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+<div class="viewcode-block" id="AgentRAID.delete_configuration"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.agent.html#ironic.drivers.modules.agent.AgentRAID.delete_configuration">[docs]</a>    <span class="k">def</span> <span class="nf">delete_configuration</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Deletes RAID configuration on the given node.</span>
+
+<span class="sd">        :param task: a TaskManager instance.</span>
+<span class="sd">        :returns: states.CLEANWAIT if operation was successfully invoked</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Agent RAID delete_configuration invoked for node </span><span class="si">%s</span><span class="s2">.&quot;</span><span class="p">,</span>
+                  <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+        <span class="n">step</span> <span class="o">=</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">clean_step</span>
+        <span class="k">return</span> <span class="n">deploy_utils</span><span class="o">.</span><span class="n">agent_execute_clean_step</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">step</span><span class="p">)</span></div>
+
+    <span class="nd">@staticmethod</span>
+    <span class="nd">@agent_base_vendor.post_clean_step_hook</span><span class="p">(</span>
+        <span class="n">interface</span><span class="o">=</span><span class="s1">&#39;raid&#39;</span><span class="p">,</span> <span class="n">step</span><span class="o">=</span><span class="s1">&#39;delete_configuration&#39;</span><span class="p">)</span>
+    <span class="k">def</span> <span class="nf">_delete_configuration_final</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">command</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Clean step hook after RAID configuration was deleted.</span>
+
+<span class="sd">        This method is invoked as a post clean step hook by the Ironic</span>
+<span class="sd">        conductor once a delete raid configuration is completed successfully.</span>
+<span class="sd">        It sets node.raid_config to empty dictionary.</span>
+
+<span class="sd">        :param task: a TaskManager instance.</span>
+<span class="sd">        :param command: A command result structure of the RAID operation</span>
+<span class="sd">            returned from agent ramdisk on query of the status of command(s).</span>
+<span class="sd">        :returns: None</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">raid_config</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">save</span><span class="p">()</span></div>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/ironic
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../../../index.html">Ironic 7.0.1.dev7 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../../../index.html" accesskey="U">Module code</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright OpenStack Foundation.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/Ironic");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

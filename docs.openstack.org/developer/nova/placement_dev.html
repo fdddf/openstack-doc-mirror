@@ -1,0 +1,465 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Placement API Developer Notes &mdash; nova 15.0.0.0rc2.dev69 documentation</title>
+    
+    <link rel="stylesheet" href="_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="_static/support-matrix.css" type="text/css" />
+    <link rel="stylesheet" href="_static/feature-matrix.css" type="text/css" />
+    <link rel="stylesheet" href="_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '15.0.0.0rc2.dev69',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <link rel="top" title="nova 15.0.0.0rc2.dev69 documentation" href="index.html" />
+    <link rel="next" title="Cells" href="cells.html" />
+    <link rel="prev" title="Placement API" href="placement.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="placement-api-developer-notes">
+<h1>Placement API Developer Notes<a class="headerlink" href="#placement-api-developer-notes" title="Permalink to this headline">¶</a></h1>
+<div class="section" id="overview">
+<h2>Overview<a class="headerlink" href="#overview" title="Permalink to this headline">¶</a></h2>
+<p>The Nova project introduced the <a class="reference internal" href="placement.html"><em>placment service</em></a> as part of
+the Newton release. The service provides an HTTP API to manage inventories of
+different classes of resources, such as disk or virtual cpus, made available by
+entities called resource providers. Information provided through the placement
+API is intended to enable more effective accounting of resources in an
+OpenStack deployment and better scheduling of various entities in the cloud.</p>
+<p>The document serves to explain the architecture of the system and to provide
+some guidance on how to maintain and extend the code. For more detail on why
+the system was created and how it does its job see <a class="reference internal" href="placement.html"><em>Placement API</em></a>.</p>
+</div>
+<div class="section" id="big-picture">
+<h2>Big Picture<a class="headerlink" href="#big-picture" title="Permalink to this headline">¶</a></h2>
+<p>The placement service is straightforward: It is a <a class="reference external" href="https://www.python.org/dev/peps/pep-3333/">WSGI</a> application that
+sends and receives JSON, using an RDBMS (usually MySQL) for persistence.
+As state is managed solely in the DB, scaling the placement service is done by
+increasing the number of WSGI application instances and scaling the RDBMS using
+traditional database scaling techniques.</p>
+<p>For sake of consistency and because there was initially intent to make the
+entities in the placement service available over RPC, <a class="reference external" href="http://docs.openstack.org/developer/oslo.versionedobjects/">versioned objects</a> are
+used to provide the interface between the HTTP application layer and the
+SQLAlchemy-driven persistence layer. Even without RPC, these objects provide
+useful structuring and separation of the code.</p>
+<p>Though the placement service doesn&#8217;t aspire to be a <cite>microservice</cite> it does
+aspire to continue to be small and minimally complex. This means a relatively
+small amount of middleware that is not configurable, and a limited number of
+exposed resources where any given resource is represented by one (and only
+one) URL that expresses a noun that is a member of the system. Adding
+additional resources should be considered a significant change requiring robust
+review from many stakeholders.</p>
+<p>The set of HTTP resources represents a concise and constrained grammar for
+expressing the management of resource providers, inventories, resource classes
+and allocations. If a solution is initially designed to need more resources or
+a more complex grammar that may be a sign that we need to give our goals
+greater scrutiny. Is there a way to do what we want with what we have already?
+Can some other service help? Is a new collaborating service required?</p>
+</div>
+<div class="section" id="minimal-framework">
+<h2>Minimal Framework<a class="headerlink" href="#minimal-framework" title="Permalink to this headline">¶</a></h2>
+<p>The API is set up to use a minimal framework that tries to keep the structure
+of the application as discoverable as possible and keeps the HTTP interaction
+near the surface. The goal of this is to make things easy to trace when
+debugging or adding functionality.</p>
+<p>Functionality which is required for every request is handled in raw WSGI
+middleware that is composed in the <cite>nova.api.openstack.placement.deploy</cite>
+module. Dispatch or routing is handled declaratively via the
+<code class="docutils literal"><span class="pre">ROUTE_DECLARATIONS</span></code> map defined in the
+<cite>nova.api.openstack.placement.handler</cite> module.</p>
+<p>Mapping is by URL plus request method. The destination is a complete WSGI
+application, using the <a class="reference external" href="http://docs.webob.org/en/latest/api/dec.html">wsgify</a>  method from <a class="reference external" href="http://docs.webob.org/en/latest/">WebOb</a> to provide a
+<a class="reference external" href="http://docs.webob.org/en/latest/reference.html#request">Request</a> object that provides convenience methods for accessing request
+headers, bodies, and query parameters and for generating responses. In the
+placement API these mini-applications are called <cite>handlers</cite>.</p>
+<p>This division between middleware, dispatch and handlers is supposed to
+provide clues on where a particular behavior or functionality should be
+implemented. Like most such systems, this doesn&#8217;t always work but is a useful
+tool.</p>
+</div>
+<div class="section" id="gotchas">
+<h2>Gotchas<a class="headerlink" href="#gotchas" title="Permalink to this headline">¶</a></h2>
+<p>This section tries to shed some light on some of the differences between the
+placement API and some of the nova APIs or on situations which may be
+surprising or unexpected.</p>
+<ul>
+<li><p class="first">The placement API is somewhat more strict about <cite>Content-Type</cite> and <cite>Accept</cite>
+headers in an effort to follow the HTTP RFCs.</p>
+<p>If a user-agent sends some JSON in a <cite>PUT</cite> or <cite>POST</cite> request without a
+<cite>Content-Type</cite> of <cite>application/json</cite> the request will result in an error.</p>
+<p>If a <cite>GET</cite> request is made without an <cite>Accept</cite> header, the response will
+default to being <cite>application/json</cite>.</p>
+<p>If a request is made with an explicit <cite>Accept</cite> header that does not include
+<cite>application/json</cite> then there will be an error and the error will attempt to
+be in the requested format (for example, <cite>text/plain</cite>).</p>
+</li>
+<li><p class="first">If a URL exists, but a request is made using a method that that URL does not
+support, the API will respond with a <cite>405</cite> error. Sometimes in the nova APIs
+this can be a <cite>404</cite> (which is wrong, but understandable given the constraints
+of the code).</p>
+</li>
+<li><p class="first">Because each handler is individually wrapped by the <a class="reference external" href="http://docs.webob.org/en/latest/api/dec.html">wsgify</a> decorator any
+exception that is a subclass of <cite>webob.exc.WSGIHTTPException</cite> that is raised
+from within the handler, such as <cite>webob.exc.HTTPBadRequest</cite>, will be caught
+by WebOb and turned into a valid <a class="reference external" href="http://docs.webob.org/en/latest/#response">Response</a> containing headers and body set
+by WebOb based on the information given when the exception was raised. It
+will not be seen as an exception by any of the middleware in the placement
+stack.</p>
+<p>In general this is a good thing, but it can lead to some confusion if, for
+example, you are trying to add some middleware that operates on exceptions.</p>
+<p>Other exceptions that are not from <a class="reference external" href="http://docs.webob.org/en/latest/">WebOb</a> will raise outside the handlers
+where they will either be caught in the <cite>__call__</cite> method of the
+<cite>PlacementHandler</cite> app that is responsible for dispatch, or by the
+<cite>FaultWrap</cite> middleware.</p>
+</li>
+</ul>
+</div>
+<div class="section" id="microversions">
+<h2>Microversions<a class="headerlink" href="#microversions" title="Permalink to this headline">¶</a></h2>
+<p>The placement API makes use of <a class="reference external" href="http://specs.openstack.org/openstack/api-wg/guidelines/microversion_specification.html">microversions</a> to allow the release of
+new features on an opt in basis. See <a class="reference internal" href="placement.html"><em>Placement API</em></a> for an up to date
+history of the available microversions.</p>
+<p>The rules around <a class="reference external" href="http://docs.openstack.org/developer/nova/api_microversion_dev.html#when-do-i-need-a-new-microversion">when a microversion is needed</a> are the same as for the
+compute API. When adding a new microversion there are a few bits of
+required housekeeping that must be done in the code:</p>
+<ul class="simple">
+<li>Update the <code class="docutils literal"><span class="pre">VERSIONS</span></code> list in
+<cite>nova.api.openstack.placement.microversion</cite> to indicate the new
+microversion and give a very brief summary of the added feature.</li>
+<li>Update <cite>nova/api/openstack/placement/rest_api_version_history.rst</cite>
+to add a more detailed section describing the new microversion.</li>
+<li>Add a <a class="reference external" href="http://docs.openstack.org/developer/reno/usage.html">release note</a> announcing the new or changed feature and
+the microversion.</li>
+<li>If the <code class="docutils literal"><span class="pre">version_handler</span></code> decorator (see below) has been used,
+increment <code class="docutils literal"><span class="pre">TOTAL_VERSIONED_METHODS</span></code> in
+<cite>nova/tests/unit/api/openstack/placement/test_microversion.py</cite>.
+This provides a confirmatory check just to make sure you&#8217;re paying
+attention and as a helpful reminder to do the other things in this
+list.</li>
+</ul>
+<p>In the placement API, microversions only use the modern form of the
+version header:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>OpenStack-API-Version: placement 1.2
+</pre></div>
+</div>
+<p>If a valid microversion is present in a request it will be placed,
+as a <code class="docutils literal"><span class="pre">Version</span></code> object, into the WSGI environment with the
+<code class="docutils literal"><span class="pre">placement.microversion</span></code> key. Often, accessing this in handler
+code directly (to control branching) is the most explicit and
+granular way to have different behavior per microversion. A
+<code class="docutils literal"><span class="pre">Version</span></code> instance can be treated as a tuple of two ints and
+compared as such or there is a <code class="docutils literal"><span class="pre">matches</span></code> method.</p>
+<p>In other cases there are some helper methods in the microversion
+package:</p>
+<ul class="simple">
+<li>The <code class="docutils literal"><span class="pre">raise_404_if_not_version</span></code> utility will cause a 404 if the
+requested microversion is not within a described version window.</li>
+<li>The <code class="docutils literal"><span class="pre">version_handler</span></code> decorator makes it possible to have
+multiple different handler methods of the same (fully-qualified by
+package) name, each available for a different microversion window.
+If a request wants a microversion that&#8217;s not available, a 404
+response is returned. There is a unit test in place which will
+fail if there are version intersections.</li>
+</ul>
+</div>
+<div class="section" id="adding-a-new-handler">
+<h2>Adding a New Handler<a class="headerlink" href="#adding-a-new-handler" title="Permalink to this headline">¶</a></h2>
+<p>Adding a new URL or a new method (e.g, <code class="docutils literal"><span class="pre">PATCH</span></code>) to an existing URL
+requires adding a new handler function. In either case a new microversion and
+release note is required. When adding an entirely new route a request for a
+lower microversion should return a <code class="docutils literal"><span class="pre">404</span></code>. When adding a new method to an
+existing URL a request for a lower microversion should return a <code class="docutils literal"><span class="pre">405</span></code>.</p>
+<p>In either case, the <code class="docutils literal"><span class="pre">ROUTE_DECLARATIONS</span></code> dictionary in the
+<cite>nova.api.openstack.placement.handler</cite> module should be updated to point to a
+function within a module that contains handlers for the type of entity
+identified by the URL. Collection and individual entity handlers of the same
+type should be in the same module.</p>
+<p>As mentioned above, the handler function should be decorated with
+<code class="docutils literal"><span class="pre">&#64;webob.dec.wsgify</span></code>, take a single argument <code class="docutils literal"><span class="pre">req</span></code> which is a WebOb
+<a class="reference external" href="http://docs.webob.org/en/latest/reference.html#request">Request</a> object, and return a WebOb <a class="reference external" href="http://docs.webob.org/en/latest/#response">Response</a>.</p>
+<p>For <code class="docutils literal"><span class="pre">PUT</span></code> and <code class="docutils literal"><span class="pre">POST</span></code> methods, request bodies are expected to be JSON
+based on a content-type of <code class="docutils literal"><span class="pre">application/json</span></code>. This may be enforced by using
+a decorator: <code class="docutils literal"><span class="pre">&#64;util.require_content('application/json')</span></code>. If the body is not
+<cite>JSON</cite>, a <code class="docutils literal"><span class="pre">415</span></code> response status is returned.</p>
+<p>Response bodies are usually <cite>JSON</cite>. A handler can check the <cite>Accept</cite> header
+provided in a request using another decorator:
+<code class="docutils literal"><span class="pre">&#64;util.check_accept('application/json')</span></code>. If the header does not allow
+<cite>JSON</cite>, a <code class="docutils literal"><span class="pre">406</span></code> response status is returned.</p>
+<p><cite>JSON</cite> sent in a request should be validated against a JSON Schema. A
+<code class="docutils literal"><span class="pre">util.extract_json</span></code> method is available. This takes a request body and a
+schema. If multiple schema are used for different microversions of the same
+request, the caller is responsible for selecting the right one before calling
+<code class="docutils literal"><span class="pre">extract_json</span></code>.</p>
+<p>When a handler needs to read or write the data store it should use methods on
+the objects found in the <cite>nova.objects.resource_provider</cite> package. Doing so
+requires a context which is provided to the handler method via the WSGI
+environment. It can be retrieved as follows:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="n">context</span> <span class="o">=</span> <span class="n">req</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s1">&#39;placement.context&#39;</span><span class="p">]</span>
+</pre></div>
+</div>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">If your change requires new methods or new objects in the
+<cite>resource_provider</cite> package, after you&#8217;ve made sure that you really
+do need those new methods or objects (you may not!) make those
+changes in a patch that is separate from and prior to the HTTP API
+change.</p>
+</div>
+<p>Testing of handler code is described in the next section.</p>
+</div>
+<div class="section" id="testing">
+<h2>Testing<a class="headerlink" href="#testing" title="Permalink to this headline">¶</a></h2>
+<p>Most of the handler code in the placement API is tested using <a class="reference external" href="https://gabbi.readthedocs.io/">gabbi</a>. Some
+utility code is tested with unit tests found in
+<cite>nova/tests/unit/api/openstack/placement/</cite>. The back-end objects are tested
+with a combination of unit and functional tests found in
+<cite>nova/tests/unit/objects/test_resource_provider.py</cite> and
+<cite>nova/tests/functional/db</cite>. Adding unit and non-gabbi functional tests is done
+in the same way as other aspects of nova.</p>
+<div class="section" id="using-gabbi">
+<h3>Using Gabbi<a class="headerlink" href="#using-gabbi" title="Permalink to this headline">¶</a></h3>
+<p>Gabbi was developed in the <a class="reference external" href="http://specs.openstack.org/openstack/telemetry-specs/specs/kilo/declarative-http-tests.html">telemetry</a> project to provide a declarative way to
+test HTTP APIs that preserves visibility of both the request and response of
+the HTTP interaction. Tests are written in YAML files where each file is an
+ordered suite of tests. Fixtures (such as a database) are set up and torn down
+at the beginning and end of each file, not each test. JSON response bodies can
+be evaluated with <a class="reference external" href="http://goessner.net/articles/JsonPath/">JSONPath</a>. The placement WSGI
+application is run via <a class="reference external" href="http://wsgi-intercept.readthedocs.io/">wsgi-intercept</a>, meaning that real HTTP requests are
+being made over a file handle that appears to Python to be a socket.</p>
+<p>In the placement API the YAML files (aka &#8220;gabbits&#8221;) can be found in
+<cite>nova/tests/functional/api/openstack/placement/gabbits</cite>. Fixture definitions are
+in <cite>fixtures.py</cite> in the parent directory. Tests are currently grouped by handlers
+(e.g., <cite>resource-provider.yaml</cite> and <cite>inventory.yaml</cite>). This is not a
+requirement and as we increase the number of tests it makes sense to have more
+YAML files with fewer tests, divided up by the arc of API interaction that they
+test.</p>
+<p>The gabbi tests are integrated into the functional tox target, loaded via
+<cite>nova/tests/functional/api/openstack/placement/test_placement_api.py</cite>. If you
+want to run just the gabbi tests one way to do so is:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>tox -efunctional test_placement_api
+</pre></div>
+</div>
+<p>If you want to run just one yaml file (in this example <cite>inventory.yaml</cite>):</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>tox -efunctional placement_api.inventory
+</pre></div>
+</div>
+<p>It is also possible to run just one test from within one file. When you do this
+every test prior to the one you asked for will also be run. This is because
+the YAML represents a sequence of dependent requests. Select the test by using
+the name in the yaml file, replacing space with <code class="docutils literal"><span class="pre">_</span></code>:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>tox -efunctional placement_api.inventory_post_new_ipv4_address_inventory
+</pre></div>
+</div>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last"><cite>.testr.conf</cite> in the nova repository is configured such that each
+gabbi YAML is considered a group. Thus, all tests in the file will
+be run in the same process when running testr concurrently (the
+default).</p>
+</div>
+</div>
+<div class="section" id="writing-more-gabbi-tests">
+<h3>Writing More Gabbi Tests<a class="headerlink" href="#writing-more-gabbi-tests" title="Permalink to this headline">¶</a></h3>
+<p>The docs for <a class="reference external" href="https://gabbi.readthedocs.io/">gabbi</a> try to be complete and explain the <a class="reference external" href="https://gabbi.readthedocs.io/en/latest/format.html">syntax</a> in some
+depth. Where something is missing or confusing, please log a <a class="reference external" href="https://github.com/cdent/gabbi/issues">bug</a>.</p>
+<p>While it is possible to test all aspects of a response (all the response
+headers, the status code, every attribute in a JSON structure) in one single
+test, doing so will likely make the test harder to read and will certainly make
+debugging more challenging. If there are multiple things that need to be
+asserted, making multiple requests is reasonable. Since database set up is only
+happening once per file (instead of once per test) and since there&#8217;s no TCP
+overhead, the tests run quickly.</p>
+<p>While <a class="reference external" href="http://gabbi.readthedocs.io/en/latest/fixtures.html">fixtures</a> can be used to establish entities that are required for
+tests, creating those entities via the HTTP API results in tests which are more
+descriptive. For example the <cite>inventory.yaml</cite> file creates the resource
+provider to which it will then add inventory. This makes it easy to explore a
+sequence of interactions and a variety of responses with the tests:</p>
+<ul class="simple">
+<li>create a resource provider</li>
+<li>confirm it has empty inventory</li>
+<li>add inventory to the resource provider (in a few different ways)</li>
+<li>confirm the resource provider now has inventory</li>
+<li>modify the inventory</li>
+<li>delete the inventory</li>
+<li>confirm the resource provider now has empty inventory</li>
+</ul>
+<p>Nothing special is required to add a new set of tests: create a YAML file with
+a unique name in the same directory as the others. The other files can provide
+examples. Gabbi can provide a useful way of doing test driven development of a
+new handler: create a YAML file that describes the desired URLs and behavior
+and write the code to make it pass.</p>
+<p>It&#8217;s also possible to use gabbi against a running placement service, for
+example in devstack. See <a class="reference external" href="http://gabbi.readthedocs.io/en/latest/runner.html">gabbi-run</a> to get started.</p>
+</div>
+</div>
+<div class="section" id="futures">
+<h2>Futures<a class="headerlink" href="#futures" title="Permalink to this headline">¶</a></h2>
+<p>Since before it was created there has been a long term goal for the placement
+service to be extracted to its own repository and operate as its own
+independent service. There are many reasons for this, but two main ones are:</p>
+<ul class="simple">
+<li>Multiple projects, not just nova, will eventually need to manage resource
+providers using the placement API.</li>
+<li>A separate service helps to maintain and preserve a strong contract between
+the placement service and the consumers of the service.</li>
+</ul>
+<p>To lessen the pain of the eventual extraction of placement the service has been
+developed in a way to limit dependency on the rest of the nova codebase and be
+self-contained:</p>
+<ul class="simple">
+<li>Most code is in <cite>nova/api/openstack/placement</cite> except for oslo versioned
+object code in <cite>nova/objects/resource_provider.py</cite>.</li>
+<li>Database query code is kept within the objects.</li>
+<li>The methods on the objects are not remotable, as the only intended caller is
+the placement API code.</li>
+</ul>
+<p>There are some exceptions to the self-contained rule (which will have to be
+addressed if the extraction ever happens):</p>
+<ul class="simple">
+<li>Exceptions unique to the placement API are still within the <cite>nova.exceptions</cite>
+package.</li>
+<li>Code related to a resource class cache is within the <cite>nova.db</cite> package.</li>
+<li>Database models, migrations and tables use the nova api database.</li>
+<li>The nova <cite>FaultWrapper</cite> middleware is being used.</li>
+<li><cite>nova.i18n</cite> package provides the <code class="docutils literal"><span class="pre">_</span></code> and related functions.</li>
+<li><cite>nova.conf</cite> is used for configuration.</li>
+<li>Unit and functional tests depend on fixtures and other functionality in base
+classes provided by nova.</li>
+</ul>
+<p>When creating new code for the placement service, please be aware of the plan
+for an eventual extraction and avoid creating unnecessary interdependencies.</p>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Placement API Developer Notes</a><ul>
+<li><a class="reference internal" href="#overview">Overview</a></li>
+<li><a class="reference internal" href="#big-picture">Big Picture</a></li>
+<li><a class="reference internal" href="#minimal-framework">Minimal Framework</a></li>
+<li><a class="reference internal" href="#gotchas">Gotchas</a></li>
+<li><a class="reference internal" href="#microversions">Microversions</a></li>
+<li><a class="reference internal" href="#adding-a-new-handler">Adding a New Handler</a></li>
+<li><a class="reference internal" href="#testing">Testing</a><ul>
+<li><a class="reference internal" href="#using-gabbi">Using Gabbi</a></li>
+<li><a class="reference internal" href="#writing-more-gabbi-tests">Writing More Gabbi Tests</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#futures">Futures</a></li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="placement.html"
+                                  title="previous chapter">Placement API</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="cells.html"
+                                  title="next chapter">Cells</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/nova
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="_sources/placement_dev.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="cells.html" title="Cells"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="placement.html" title="Placement API"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="index.html">nova 15.0.0.0rc2.dev69 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2010-present, OpenStack Foundation.
+      Last updated on &#39;Tue Feb 14 09:22:31 2017, commit 159bf6e&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/nova");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

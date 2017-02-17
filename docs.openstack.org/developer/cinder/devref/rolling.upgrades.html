@@ -1,0 +1,425 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Upgrades &mdash; cinder 10.0.0.0rc2.dev76 documentation</title>
+    
+    <link rel="stylesheet" href="../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../',
+        VERSION:     '10.0.0.0rc2.dev76',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../_static/jquery.js"></script>
+    <script type="text/javascript" src="../_static/underscore.js"></script>
+    <script type="text/javascript" src="../_static/doctools.js"></script>
+    <link rel="top" title="cinder 10.0.0.0rc2.dev76 documentation" href="../index.html" />
+    <link rel="up" title="Developer Guide" href="index.html" />
+    <link rel="next" title="Generic Volume Groups" href="groups.html" />
+    <link rel="prev" title="Running Cinder API under Apache" href="api.apache.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="upgrades">
+<h1>Upgrades<a class="headerlink" href="#upgrades" title="Permalink to this headline">¶</a></h1>
+<p>Starting from Mitaka release Cinder gained the ability to be upgraded without
+introducing downtime of control plane services. Operator can simply upgrade
+Cinder services instances one-by-one. To achieve that, developers need to make
+sure that any introduced change doesn&#8217;t break older services running in the
+same Cinder deployment.</p>
+<p>In general there is a requirement that release N will keep backward
+compatibility with release N-1 and in a deployment N&#8217;s and N-1&#8217;s services can
+safely coexist. This means that when performing a live upgrade you cannot skip
+any release (e.g. you cannot upgrade N to N+2 without upgrading it to N+1
+first). Further in the document N will denote the current release, N-1 a
+previous one, N+1 the next one, etc.</p>
+<p>Having in mind that we only support compatibility with N-1, most of the
+compatibility code written in N needs to exist just for one release and can be
+removed in the beginning of N+1. A good practice here is to mark them with
+<code class="code docutils literal"><span class="pre">TODO</span></code> or <code class="code docutils literal"><span class="pre">FIXME</span></code> comments to make them easy to find in the future.</p>
+<p>Please note that proper upgrades solution should support both
+release-to-release upgrades as well as upgrades of deployments following the
+Cinder master more closely. We cannot just merge patches implementing
+compatibility at the end of the release - we should keep things compatible
+through the whole release.</p>
+<p>To achieve compatibility, discipline is required from the developers. There are
+several planes on which incompatibility may occur:</p>
+<ul class="simple">
+<li><strong>REST API changes</strong> - these are prohibited by definition and this document
+will not describe the subject. For further information one may use <a class="reference external" href="https://specs.openstack.org/openstack/api-wg/guidelines/evaluating_api_changes.html">API
+Working Group guidelines</a>
+for reference.</li>
+<li><strong>Database schema migrations</strong> - e.g. if N-1 was relying on some column in
+the DB being present, N&#8217;s migrations cannot remove it. N+1&#8217;s however can
+(assuming N has no notion of the column).</li>
+<li><strong>Database data migrations</strong> - if a migration requires big amount of data to
+be transferred between columns or tables or converted, it will most likely
+lock the tables. This may cause services to be unresponsive, causing the
+downtime.</li>
+<li><strong>RPC API changes</strong> - adding or removing RPC method parameter, or the method
+itself, may lead to incompatibilities.</li>
+<li><strong>RPC payload changes</strong> - adding, renaming or removing a field from the dict
+passed over RPC may lead to incompatibilities.</li>
+</ul>
+<p>Next sections of this document will focus on explaining last four points and
+provide means to tackle required changes in these matters while maintaining
+backward compatibility.</p>
+<div class="section" id="database-schema-and-data-migrations">
+<h2>Database schema and data migrations<a class="headerlink" href="#database-schema-and-data-migrations" title="Permalink to this headline">¶</a></h2>
+<p>In general incompatible database schema migrations can be tracked to ALTER and
+DROP SQL commands instruction issued either against a column or table. This is
+why a unit test that blocks such migrations was introduced. We should try to
+keep our DB modifications additive. Moreover we should aim not to introduce
+migrations that cause the database tables to lock for a long period. Long lock
+on whole table can block other queries and may make real requests to fail.</p>
+<div class="section" id="adding-a-column">
+<h3>Adding a column<a class="headerlink" href="#adding-a-column" title="Permalink to this headline">¶</a></h3>
+<p>This is the simplest case - we don&#8217;t have any requirements when adding a new
+column apart from the fact that it should be added as the last one in the
+table. If that&#8217;s covered, the DB engine will make sure the migration won&#8217;t be
+disruptive.</p>
+</div>
+<div class="section" id="dropping-a-column-not-referenced-in-sqlalchemy-code">
+<h3>Dropping a column not referenced in SQLAlchemy code<a class="headerlink" href="#dropping-a-column-not-referenced-in-sqlalchemy-code" title="Permalink to this headline">¶</a></h3>
+<p>When we want to remove a column that wasn&#8217;t present in any SQLAlchemy model or
+it was in the model, but model was not referenced in any SQLAlchemy API
+function (this basically means that N-1 wasn&#8217;t depending on the presence of
+that column in the DB), then the situation is simple. We should be able to
+safely drop the column in N release.</p>
+</div>
+<div class="section" id="removal-of-unnecessary-column">
+<h3>Removal of unnecessary column<a class="headerlink" href="#removal-of-unnecessary-column" title="Permalink to this headline">¶</a></h3>
+<p>When we want to remove a used column without migrating any data out of it (for
+example because what&#8217;s kept in the column is obsolete), then we just need to
+remove it from the SQLAlchemy model and API in N release. In N+1 or as a
+post-upgrade migration in N we can merge a migration issuing DROP for this
+column (we cannot do that earlier because N-1 will depend on the presence of
+that column).</p>
+</div>
+<div class="section" id="alter-on-a-column">
+<h3>ALTER on a column<a class="headerlink" href="#alter-on-a-column" title="Permalink to this headline">¶</a></h3>
+<p>A rule of thumb to judge which ALTER or DROP migrations should be allowed is to
+look in the <a class="reference external" href="https://dev.mysql.com/doc/refman/5.7/en/innodb-create-index-overview.html#innodb-online-ddl-summary-grid">MySQL documentation</a>.
+If operation has &#8220;yes&#8221; in all 4 columns besides &#8220;Copies Table?&#8221;, then it
+<em>probably</em> can be allowed. If operation doesn&#8217;t allow concurrent DML it means
+that table row modifications or additions will be blocked during the migration.
+This sometimes isn&#8217;t a problem - for example it&#8217;s not the end of the world if a
+service won&#8217;t be able to report it&#8217;s status one or two times (and
+<code class="code docutils literal"><span class="pre">services</span></code> table is normally small). Please note that even if this does
+apply to &#8220;rename a column&#8221; operation, we cannot simply do such ALTER, as N-1
+will depend on the older name.</p>
+<p>If an operation on column or table cannot be allowed, then it is required to
+create a new column with desired properties and start moving the data (in a
+live manner). In worst case old column can be removed in N+2. Whole procedure
+is described in more details below.</p>
+<p>In aforementioned case we need to make more complicated steps stretching through
+3 releases - always keeping the backwards compatibility. In short when we want
+to start to move data inside the DB, then in N we should:</p>
+<ul class="simple">
+<li>Add a new column for the data.</li>
+<li>Write data in both places (N-1 needs to read it).</li>
+<li>Read data from the old place (N-1 writes there).</li>
+<li>Prepare online data migration cinder-manage command to be run before
+upgrading to N+1 (because N+1 will read from new place, so we need to make
+sure all the records have new place populated).</li>
+</ul>
+<p>In N+1 we should:</p>
+<ul class="simple">
+<li>Write data to both places (N reads from old one).</li>
+<li>Read data from the new place (N saves there).</li>
+</ul>
+<p>In N+2</p>
+<ul class="simple">
+<li>Remove old place from SQLAlchemy.</li>
+<li>Read and write only to the new place.</li>
+<li>Remove the column as the post-upgrade migration (or as first migration in
+N+3).</li>
+</ul>
+<p>Please note that this is the most complicated case. If data in the column
+cannot actually change (for example <code class="code docutils literal"><span class="pre">host</span></code> in <code class="code docutils literal"><span class="pre">services</span></code> table), in
+N we can read from new place and fallback to the old place if data is missing.
+This way we can skip one release from the process.</p>
+<p>Of course real-world examples may be different. E.g. sometimes it may be
+required to write some more compatibility code in the oslo.versionedobjects
+layer to compensate for different versions of objects passed over RPC. This is
+explained more in <a class="reference internal" href="#rpc-payload-changes-oslo-versionedobjects">RPC payload changes (oslo.versionedobjects)</a> section.</p>
+<p>More details about that can be found in the <a class="reference external" href="http://specs.openstack.org/openstack/cinder-specs/specs/mitaka/online-schema-upgrades.html">online-schema-upgrades spec</a>.</p>
+</div>
+</div>
+<div class="section" id="rpc-api-changes">
+<h2>RPC API changes<a class="headerlink" href="#rpc-api-changes" title="Permalink to this headline">¶</a></h2>
+<p>It can obviously break service communication if RPC interface changes. In
+particular this applies to changes of the RPC method definitions. To avoid that
+we assume N&#8217;s RPC API compatibility with N-1 version (both ways -
+<code class="code docutils literal"><span class="pre">rpcapi</span></code> module should be able to downgrade the message if needed and
+<code class="code docutils literal"><span class="pre">manager</span></code> module should be able to tolerate receiving messages in older
+version.</p>
+<p>Below is an example RPC compatibility shim from Mitaka&#8217;s
+<code class="code docutils literal"><span class="pre">cinder.volume.manager</span></code>. This code allows us to tolerate older versions
+of the messages:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="k">def</span> <span class="nf">create_volume</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">volume_id</span><span class="p">,</span> <span class="n">request_spec</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+                  <span class="n">filter_properties</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">allow_reschedule</span><span class="o">=</span><span class="bp">True</span><span class="p">,</span>
+                  <span class="n">volume</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+
+    <span class="sd">&quot;&quot;&quot;Creates the volume.&quot;&quot;&quot;</span>
+    <span class="c1"># FIXME(thangp): Remove this in v2.0 of RPC API.</span>
+    <span class="k">if</span> <span class="n">volume</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+        <span class="c1"># For older clients, mimic the old behavior and look up the volume</span>
+        <span class="c1"># by its volume_id.</span>
+        <span class="n">volume</span> <span class="o">=</span> <span class="n">objects</span><span class="o">.</span><span class="n">Volume</span><span class="o">.</span><span class="n">get_by_id</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="n">volume_id</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>And here&#8217;s a contrary shim in cinder.volume.rpcapi (RPC client) that downgrades
+the message to make sure it will be understood by older instances of the
+service:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="k">def</span> <span class="nf">create_volume</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">ctxt</span><span class="p">,</span> <span class="n">volume</span><span class="p">,</span> <span class="n">host</span><span class="p">,</span> <span class="n">request_spec</span><span class="p">,</span>
+                  <span class="n">filter_properties</span><span class="p">,</span> <span class="n">allow_reschedule</span><span class="o">=</span><span class="bp">True</span><span class="p">):</span>
+    <span class="n">request_spec_p</span> <span class="o">=</span> <span class="n">jsonutils</span><span class="o">.</span><span class="n">to_primitive</span><span class="p">(</span><span class="n">request_spec</span><span class="p">)</span>
+    <span class="n">msg_args</span> <span class="o">=</span> <span class="p">{</span><span class="s1">&#39;volume_id&#39;</span><span class="p">:</span> <span class="n">volume</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="s1">&#39;request_spec&#39;</span><span class="p">:</span> <span class="n">request_spec_p</span><span class="p">,</span>
+                <span class="s1">&#39;filter_properties&#39;</span><span class="p">:</span> <span class="n">filter_properties</span><span class="p">,</span>
+                <span class="s1">&#39;allow_reschedule&#39;</span><span class="p">:</span> <span class="n">allow_reschedule</span><span class="p">}</span>
+    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">can_send_version</span><span class="p">(</span><span class="s1">&#39;1.32&#39;</span><span class="p">):</span>
+        <span class="n">version</span> <span class="o">=</span> <span class="s1">&#39;1.32&#39;</span>
+        <span class="n">msg_args</span><span class="p">[</span><span class="s1">&#39;volume&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">volume</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">version</span> <span class="o">=</span> <span class="s1">&#39;1.24&#39;</span>
+
+    <span class="n">new_host</span> <span class="o">=</span> <span class="n">utils</span><span class="o">.</span><span class="n">extract_host</span><span class="p">(</span><span class="n">host</span><span class="p">)</span>
+    <span class="n">cctxt</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">server</span><span class="o">=</span><span class="n">new_host</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="n">version</span><span class="p">)</span>
+    <span class="n">request_spec_p</span> <span class="o">=</span> <span class="n">jsonutils</span><span class="o">.</span><span class="n">to_primitive</span><span class="p">(</span><span class="n">request_spec</span><span class="p">)</span>
+    <span class="n">cctxt</span><span class="o">.</span><span class="n">cast</span><span class="p">(</span><span class="n">ctxt</span><span class="p">,</span> <span class="s1">&#39;create_volume&#39;</span><span class="p">,</span> <span class="o">**</span><span class="n">msg_args</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>As can be seen there&#8217;s this magic <code class="code docutils literal"><span class="pre">self.client.can_send_version()</span></code> method
+which detects if we&#8217;re running in a version-heterogeneous environment and need
+to downgrade the message. Detection is based on dynamic RPC version pinning. In
+general all the services (managers) report supported RPC API version. RPC API
+client gets all the versions from the DB, chooses the lowest one and starts to
+downgrade messages to it.</p>
+<p>To limit impact on the DB the pinned version of certain RPC API is cached.
+After all the services in the deployment are updated, operator should restart
+all the services or send them a SIGHUP signal to force reload of version pins.</p>
+<p>As we need to support only N RPC API in N+1 release, we should be able to drop
+all the compatibility shims in N+1. To be technically correct when doing so we
+should also bump the major RPC API version. We do not need to do that in every
+release (it may happen that through the release nothing will change in RPC API
+or cost of technical debt of compatibility code is lower than the cost of
+complicated procedure of increasing major version of RPC APIs).</p>
+<p>The process of increasing the major version is explained in details in <a class="reference external" href="https://wiki.openstack.org/wiki/RpcMajorVersionUpdates">Nova&#8217;s
+documentation</a>.
+Please note that in case of Cinder we&#8217;re accessing the DB from all of the
+services, so we should follow the more complicated &#8220;Mixed version environments&#8221;
+process for every of our services.</p>
+<p>In case of removing whole RPC method we need to leave it there in N&#8217;s manager
+and can remove it in N+1 (because N-1 will be talking with N). When adding a
+new one we need to make sure that when the RPC client is pinned to a too low
+version any attempt to send new message should fail (because client will not
+know if manager receiving the message will understand it) or ensure the manager
+will get updated before clients by stating the recommended order of upgrades
+for that release.</p>
+</div>
+<div class="section" id="rpc-payload-changes-oslo-versionedobjects">
+<h2>RPC payload changes (oslo.versionedobjects)<a class="headerlink" href="#rpc-payload-changes-oslo-versionedobjects" title="Permalink to this headline">¶</a></h2>
+<p><a class="reference external" href="http://docs.openstack.org/developer/oslo.versionedobjects">oslo.versionedobjects</a> is a library that
+helps us to maintain compatibility of the payload sent over RPC. As during the
+process of upgrades it is possible that a newer version of the service will
+send an object to an older one, it may happen that newer object is incompatible
+with older service.</p>
+<p>Version of an object should be bumped every time we make an incompatible change
+inside it. Rule of thumb is that we should always do that, but well-thought
+exceptions were also allowed in the past (for example releasing a NOT NULL
+constraint).</p>
+<p>Imagine that we (finally!) decide that <code class="code docutils literal"><span class="pre">request_spec</span></code> sent in
+<code class="code docutils literal"><span class="pre">create_volume</span></code> RPC cast is duplicating data and we want to start to
+remove redundant occurrences.  When running in version-mixed environment older
+services will still expect this redundant data. We need a way to somehow
+downgrade the <code class="code docutils literal"><span class="pre">request_spec</span></code> before sending it over RPC. And this is were
+o.vo come in handy. o.vo provide us the infrastructure to keep the changes in
+object versioned and to be able to downgrade them to a particular version.</p>
+<p>Let&#8217;s take a step back - similarly to the RPC API situation we need a way to
+tell if we need to send a backward-compatible version of the message. In this
+case we need to know to what version to downgrade the object. We&#8217;re using a
+similar solution to the one used for RPC API for that. A problem here is that
+we need a single identifier (that we will be reported to <code class="code docutils literal"><span class="pre">services</span></code> DB
+table) to denote whole set of versions of all the objects. To do that we&#8217;ve
+introduced a concept of <code class="code docutils literal"><span class="pre">CinderObjectVersionHistory</span></code> object, where we
+keep sets of individual object versions aggregated into a single version
+string. When making an incompatible change in a single object you need to bump
+its version (we have a unit test enforcing that) <em>and</em> add a new version to
+<code class="code docutils literal"><span class="pre">cinder.objects.base.CinderObjectVersionsHistory</span></code> (there&#8217;s a unit test as
+well). Example code doing that is below:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="n">OBJ_VERSIONS</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="s1">&#39;1.1&#39;</span><span class="p">,</span> <span class="p">{</span><span class="s1">&#39;Service&#39;</span><span class="p">:</span> <span class="s1">&#39;1.2&#39;</span><span class="p">,</span> <span class="s1">&#39;ServiceList&#39;</span><span class="p">:</span> <span class="s1">&#39;1.1&#39;</span><span class="p">})</span>
+</pre></div>
+</div>
+<p>This line adds a new 1.1 aggregated object version that is different from 1.0
+by two objects - <code class="code docutils literal"><span class="pre">Service</span></code> in 1.2 and <code class="code docutils literal"><span class="pre">ServiceList</span></code> in 1.1. This
+means that the commit which added this line bumped versions of these two
+objects.</p>
+<p>Now if we know that a service we&#8217;re talking to is running 1.1 aggregated
+version - we need to downgrade <code class="code docutils literal"><span class="pre">Service</span></code> and <code class="code docutils literal"><span class="pre">ServiceList</span></code> to 1.2
+and 1.1 respectively before sending. Please note that of course other objects
+are included in the 1.1 aggregated version, but you just need to specify what
+changed (all the other versions of individual objects will be taken from the
+last version - 1.0 in this case).</p>
+<p>Getting back to <code class="code docutils literal"><span class="pre">request_spec</span></code> example. So let&#8217;s assume we want to remove
+<code class="code docutils literal"><span class="pre">volume_properties</span></code> from there (most of data in there is already
+somewhere else inside the <code class="code docutils literal"><span class="pre">request_spec</span></code> object). We&#8217;ve made a change in
+the object fields, we&#8217;ve bumped it&#8217;s version (from 1.0 to 1.1), we&#8217;ve updated
+hash in the <code class="code docutils literal"><span class="pre">cinder.tests.unit.test_objects</span></code> to synchronize it with the
+current state of the object, making the unit test pass and we&#8217;ve added a new
+aggregated object history version in <code class="code docutils literal"><span class="pre">cinder.objects.base</span></code>.</p>
+<p>What else is required? We need to provide code that actually downgrades
+RequestSpec object from 1.1 to 1.0 - to be used when sending the object to
+older services. This is done by implementing <code class="code docutils literal"><span class="pre">obj_make_compatible</span></code> method
+in the object:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">versionutils</span>
+
+<span class="k">def</span> <span class="nf">obj_make_compatible</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">primitive</span><span class="p">,</span> <span class="n">target_version</span><span class="p">):</span>
+    <span class="nb">super</span><span class="p">(</span><span class="n">RequestSpec</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">obj_make_compatible</span><span class="p">(</span><span class="n">primitive</span><span class="p">,</span> <span class="n">target_version</span><span class="p">)</span>
+    <span class="n">target_version</span> <span class="o">=</span> <span class="n">versionutils</span><span class="o">.</span><span class="n">convert_version_to_tuple</span><span class="p">(</span><span class="n">target_version</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">target_version</span> <span class="o">&lt;</span> <span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span> <span class="ow">and</span> <span class="ow">not</span> <span class="s1">&#39;volume_properties&#39;</span> <span class="ow">in</span> <span class="n">primitive</span><span class="p">:</span>
+        <span class="n">volume_properties</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="c1"># TODO: Aggregate all the required information from primitive.</span>
+        <span class="n">primitive</span><span class="p">[</span><span class="s1">&#39;volume_properties&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">volume_properties</span>
+</pre></div>
+</div>
+<p>Please note that primitive is a dictionary representation of the object and not
+an object itself. This is because o.vo are of course sent over RPC as dicts.</p>
+<p>With these pieces in place Cinder will take care of sending
+<code class="code docutils literal"><span class="pre">request_spec</span></code> with <code class="code docutils literal"><span class="pre">volume_properties</span></code> when running in mixed
+environment and without when all services are upgraded and will understand
+<code class="code docutils literal"><span class="pre">request_spec</span></code> without <code class="code docutils literal"><span class="pre">volume_properties</span></code> element.</p>
+<p>Note that o.vo layer is able to recursively downgrade all of its fields, so
+when <cite>request_spec</cite> will be used as a field in other object, it will be
+correctly downgraded.</p>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="../index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Upgrades</a><ul>
+<li><a class="reference internal" href="#database-schema-and-data-migrations">Database schema and data migrations</a><ul>
+<li><a class="reference internal" href="#adding-a-column">Adding a column</a></li>
+<li><a class="reference internal" href="#dropping-a-column-not-referenced-in-sqlalchemy-code">Dropping a column not referenced in SQLAlchemy code</a></li>
+<li><a class="reference internal" href="#removal-of-unnecessary-column">Removal of unnecessary column</a></li>
+<li><a class="reference internal" href="#alter-on-a-column">ALTER on a column</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#rpc-api-changes">RPC API changes</a></li>
+<li><a class="reference internal" href="#rpc-payload-changes-oslo-versionedobjects">RPC payload changes (oslo.versionedobjects)</a></li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="api.apache.html"
+                                  title="previous chapter">Running Cinder API under Apache</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="groups.html"
+                                  title="next chapter">Generic Volume Groups</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/cinder
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="../_sources/devref/rolling.upgrades.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="right" >
+          <a href="groups.html" title="Generic Volume Groups"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="api.apache.html" title="Running Cinder API under Apache"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../index.html">cinder 10.0.0.0rc2.dev76 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="index.html" accesskey="U">Developer Guide</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2010-present, OpenStack Foundation.
+      Last updated on Tue Feb 14 19:30:39 2017, commit 3c2819f.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/cinder");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

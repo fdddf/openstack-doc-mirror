@@ -1,0 +1,1316 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>taskflow.storage &mdash; TaskFlow 2.9.1.dev9 documentation</title>
+    
+    <link rel="stylesheet" href="../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../',
+        VERSION:     '2.9.1.dev9',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../_static/doctools.js"></script>
+    <link rel="top" title="TaskFlow 2.9.1.dev9 documentation" href="../../index.html" />
+    <link rel="up" title="Module code" href="../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for taskflow.storage</h1><div class="highlight"><pre>
+<span></span><span class="c1"># -*- coding: utf-8 -*-</span>
+
+<span class="c1">#    Copyright (C) 2013 Yahoo! Inc. All Rights Reserved.</span>
+<span class="c1">#</span>
+<span class="c1">#    Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may</span>
+<span class="c1">#    not use this file except in compliance with the License. You may obtain</span>
+<span class="c1">#    a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#         http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1">#    Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1">#    distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="c1">#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="c1">#    License for the specific language governing permissions and limitations</span>
+<span class="c1">#    under the License.</span>
+
+<span class="kn">import</span> <span class="nn">contextlib</span>
+<span class="kn">import</span> <span class="nn">functools</span>
+
+<span class="kn">import</span> <span class="nn">fasteners</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">reflection</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">uuidutils</span>
+<span class="kn">import</span> <span class="nn">six</span>
+
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">exceptions</span>
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">logging</span>
+<span class="kn">from</span> <span class="nn">taskflow.persistence.backends</span> <span class="kn">import</span> <span class="n">impl_memory</span>
+<span class="kn">from</span> <span class="nn">taskflow.persistence</span> <span class="kn">import</span> <span class="n">models</span>
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">retry</span>
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">states</span>
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">task</span>
+<span class="kn">from</span> <span class="nn">taskflow.utils</span> <span class="kn">import</span> <span class="n">misc</span>
+
+<span class="n">LOG</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+
+<span class="n">_EXECUTE_STATES_WITH_RESULTS</span> <span class="o">=</span> <span class="p">(</span>
+    <span class="c1"># The atom ``execute`` worked out :)</span>
+    <span class="n">states</span><span class="o">.</span><span class="n">SUCCESS</span><span class="p">,</span>
+    <span class="c1"># The atom ``execute`` didn&#39;t work out :(</span>
+    <span class="n">states</span><span class="o">.</span><span class="n">FAILURE</span><span class="p">,</span>
+    <span class="c1"># In this state we will still have access to prior SUCCESS (or FAILURE)</span>
+    <span class="c1"># results, so make sure extraction is still allowed in this state...</span>
+    <span class="n">states</span><span class="o">.</span><span class="n">REVERTING</span><span class="p">,</span>
+<span class="p">)</span>
+
+<span class="n">_REVERT_STATES_WITH_RESULTS</span> <span class="o">=</span> <span class="p">(</span>
+    <span class="c1"># The atom ``revert`` worked out :)</span>
+    <span class="n">states</span><span class="o">.</span><span class="n">REVERTED</span><span class="p">,</span>
+    <span class="c1"># The atom ``revert`` didn&#39;t work out :(</span>
+    <span class="n">states</span><span class="o">.</span><span class="n">REVERT_FAILURE</span><span class="p">,</span>
+    <span class="c1"># In this state we will still have access to prior SUCCESS (or FAILURE)</span>
+    <span class="c1"># results, so make sure extraction is still allowed in this state...</span>
+    <span class="n">states</span><span class="o">.</span><span class="n">REVERTING</span><span class="p">,</span>
+<span class="p">)</span>
+
+<span class="c1"># Atom states that may have results...</span>
+<span class="n">STATES_WITH_RESULTS</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+<span class="n">STATES_WITH_RESULTS</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">_REVERT_STATES_WITH_RESULTS</span><span class="p">)</span>
+<span class="n">STATES_WITH_RESULTS</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">_EXECUTE_STATES_WITH_RESULTS</span><span class="p">)</span>
+<span class="n">STATES_WITH_RESULTS</span> <span class="o">=</span> <span class="nb">tuple</span><span class="p">(</span><span class="nb">sorted</span><span class="p">(</span><span class="n">STATES_WITH_RESULTS</span><span class="p">))</span>
+
+<span class="c1"># TODO(harlowja): do this better (via a singleton or something else...)</span>
+<span class="n">_TRANSIENT_PROVIDER</span> <span class="o">=</span> <span class="nb">object</span><span class="p">()</span>
+
+<span class="c1"># Only for these intentions will we cache any failures that happened...</span>
+<span class="n">_SAVE_FAILURE_INTENTIONS</span> <span class="o">=</span> <span class="p">(</span><span class="n">states</span><span class="o">.</span><span class="n">EXECUTE</span><span class="p">,</span> <span class="n">states</span><span class="o">.</span><span class="n">REVERT</span><span class="p">)</span>
+
+<span class="c1"># NOTE(harlowja): Perhaps the container is a dictionary-like object and that</span>
+<span class="c1"># key does not exist (key error), or the container is a tuple/list and a</span>
+<span class="c1"># non-numeric key is being requested (index error), or there was no container</span>
+<span class="c1"># and an attempt to index into none/other unsubscriptable type is being</span>
+<span class="c1"># requested (type error).</span>
+<span class="c1">#</span>
+<span class="c1"># Overall this (along with the item_from* functions) try to handle the vast</span>
+<span class="c1"># majority of wrong indexing operations on the wrong/invalid types so that we</span>
+<span class="c1"># can fail extraction during lookup or emit warning on result reception...</span>
+<span class="n">_EXTRACTION_EXCEPTIONS</span> <span class="o">=</span> <span class="p">(</span><span class="ne">IndexError</span><span class="p">,</span> <span class="ne">KeyError</span><span class="p">,</span> <span class="ne">ValueError</span><span class="p">,</span> <span class="ne">TypeError</span><span class="p">)</span>
+
+<span class="c1"># Atom detail metadata key used to inject atom non-transient injected args.</span>
+<span class="n">META_INJECTED</span> <span class="o">=</span> <span class="s1">&#39;injected&#39;</span>
+
+<span class="c1"># Atom detail metadata key(s) used to set atom progress (with any details).</span>
+<span class="n">META_PROGRESS</span> <span class="o">=</span> <span class="s1">&#39;progress&#39;</span>
+<span class="n">META_PROGRESS_DETAILS</span> <span class="o">=</span> <span class="s1">&#39;progress_details&#39;</span>
+
+
+<span class="k">class</span> <span class="nc">_ProviderLocator</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Helper to start to better decouple the finding logic from storage.</span>
+
+<span class="sd">    WIP: part of the larger effort to cleanup/refactor the finding of named</span>
+<span class="sd">         arguments so that the code can be more unified and easy to</span>
+<span class="sd">         follow...</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">transient_results</span><span class="p">,</span>
+                 <span class="n">providers_fetcher</span><span class="p">,</span> <span class="n">result_fetcher</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">result_fetcher</span> <span class="o">=</span> <span class="n">result_fetcher</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">providers_fetcher</span> <span class="o">=</span> <span class="n">providers_fetcher</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">transient_results</span> <span class="o">=</span> <span class="n">transient_results</span>
+
+    <span class="k">def</span> <span class="nf">_try_get_results</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">looking_for</span><span class="p">,</span> <span class="n">provider</span><span class="p">,</span>
+                         <span class="n">look_into_results</span><span class="o">=</span><span class="bp">True</span><span class="p">,</span> <span class="n">find_potentials</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">provider</span><span class="o">.</span><span class="n">name</span> <span class="ow">is</span> <span class="n">_TRANSIENT_PROVIDER</span><span class="p">:</span>
+            <span class="c1"># TODO(harlowja): This &#39;is&#39; check still sucks, do this</span>
+            <span class="c1"># better in the future...</span>
+            <span class="n">results</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">transient_results</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">results</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">result_fetcher</span><span class="p">(</span><span class="n">provider</span><span class="o">.</span><span class="n">name</span><span class="p">)</span>
+            <span class="k">except</span> <span class="p">(</span><span class="n">exceptions</span><span class="o">.</span><span class="n">NotFound</span><span class="p">,</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">DisallowedAccess</span><span class="p">):</span>
+                <span class="k">if</span> <span class="ow">not</span> <span class="n">find_potentials</span><span class="p">:</span>
+                    <span class="k">raise</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="c1"># Ok, likely hasn&#39;t produced a result yet, but</span>
+                    <span class="c1"># at a future point it hopefully will, so stub</span>
+                    <span class="c1"># out the *expected* result.</span>
+                    <span class="n">results</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="k">if</span> <span class="n">look_into_results</span><span class="p">:</span>
+            <span class="n">_item_from_single</span><span class="p">(</span><span class="n">provider</span><span class="p">,</span> <span class="n">results</span><span class="p">,</span> <span class="n">looking_for</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">results</span>
+
+    <span class="k">def</span> <span class="nf">_find</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">looking_for</span><span class="p">,</span> <span class="n">scope_walker</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+              <span class="n">short_circuit</span><span class="o">=</span><span class="bp">True</span><span class="p">,</span> <span class="n">find_potentials</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">scope_walker</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">scope_walker</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="n">default_providers</span><span class="p">,</span> <span class="n">atom_providers</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">providers_fetcher</span><span class="p">(</span><span class="n">looking_for</span><span class="p">)</span>
+        <span class="n">searched_providers</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+        <span class="n">providers_and_results</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">if</span> <span class="n">default_providers</span><span class="p">:</span>
+            <span class="k">for</span> <span class="n">p</span> <span class="ow">in</span> <span class="n">default_providers</span><span class="p">:</span>
+                <span class="n">searched_providers</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">p</span><span class="p">)</span>
+                <span class="k">try</span><span class="p">:</span>
+                    <span class="n">provider_results</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_try_get_results</span><span class="p">(</span>
+                        <span class="n">looking_for</span><span class="p">,</span> <span class="n">p</span><span class="p">,</span> <span class="n">find_potentials</span><span class="o">=</span><span class="n">find_potentials</span><span class="p">,</span>
+                        <span class="c1"># For default providers always look into there</span>
+                        <span class="c1"># results as default providers are statically setup</span>
+                        <span class="c1"># and therefore looking into there provided results</span>
+                        <span class="c1"># should fail early.</span>
+                        <span class="n">look_into_results</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+                <span class="k">except</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">NotFound</span><span class="p">:</span>
+                    <span class="k">if</span> <span class="ow">not</span> <span class="n">find_potentials</span><span class="p">:</span>
+                        <span class="k">raise</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="n">providers_and_results</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">p</span><span class="p">,</span> <span class="n">provider_results</span><span class="p">))</span>
+            <span class="k">if</span> <span class="n">short_circuit</span><span class="p">:</span>
+                <span class="k">return</span> <span class="p">(</span><span class="n">searched_providers</span><span class="p">,</span> <span class="n">providers_and_results</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">atom_providers</span><span class="p">:</span>
+            <span class="k">return</span> <span class="p">(</span><span class="n">searched_providers</span><span class="p">,</span> <span class="n">providers_and_results</span><span class="p">)</span>
+        <span class="n">atom_providers_by_name</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">((</span><span class="n">p</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="n">p</span><span class="p">)</span> <span class="k">for</span> <span class="n">p</span> <span class="ow">in</span> <span class="n">atom_providers</span><span class="p">)</span>
+        <span class="k">for</span> <span class="n">accessible_atom_names</span> <span class="ow">in</span> <span class="nb">iter</span><span class="p">(</span><span class="n">scope_walker</span><span class="p">):</span>
+            <span class="c1"># *Always* retain the scope ordering (if any matches</span>
+            <span class="c1"># happen); instead of retaining the possible provider match</span>
+            <span class="c1"># order (which isn&#39;t that important and may be different from</span>
+            <span class="c1"># the scope requested ordering).</span>
+            <span class="n">maybe_atom_providers</span> <span class="o">=</span> <span class="p">[</span><span class="n">atom_providers_by_name</span><span class="p">[</span><span class="n">atom_name</span><span class="p">]</span>
+                                    <span class="k">for</span> <span class="n">atom_name</span> <span class="ow">in</span> <span class="n">accessible_atom_names</span>
+                                    <span class="k">if</span> <span class="n">atom_name</span> <span class="ow">in</span> <span class="n">atom_providers_by_name</span><span class="p">]</span>
+            <span class="n">tmp_providers_and_results</span> <span class="o">=</span> <span class="p">[]</span>
+            <span class="k">if</span> <span class="n">find_potentials</span><span class="p">:</span>
+                <span class="k">for</span> <span class="n">p</span> <span class="ow">in</span> <span class="n">maybe_atom_providers</span><span class="p">:</span>
+                    <span class="n">searched_providers</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">p</span><span class="p">)</span>
+                    <span class="n">tmp_providers_and_results</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">p</span><span class="p">,</span> <span class="p">{}))</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">for</span> <span class="n">p</span> <span class="ow">in</span> <span class="n">maybe_atom_providers</span><span class="p">:</span>
+                    <span class="n">searched_providers</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">p</span><span class="p">)</span>
+                    <span class="k">try</span><span class="p">:</span>
+                        <span class="c1"># Don&#39;t at this point look into the provider results</span>
+                        <span class="c1"># as calling code will grab all providers, and then</span>
+                        <span class="c1"># get the result from the *first* provider that</span>
+                        <span class="c1"># actually provided it (or die).</span>
+                        <span class="n">provider_results</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_try_get_results</span><span class="p">(</span>
+                            <span class="n">looking_for</span><span class="p">,</span> <span class="n">p</span><span class="p">,</span> <span class="n">find_potentials</span><span class="o">=</span><span class="n">find_potentials</span><span class="p">,</span>
+                            <span class="n">look_into_results</span><span class="o">=</span><span class="bp">False</span><span class="p">)</span>
+                    <span class="k">except</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">DisallowedAccess</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+                        <span class="k">if</span> <span class="n">e</span><span class="o">.</span><span class="n">state</span> <span class="o">!=</span> <span class="n">states</span><span class="o">.</span><span class="n">IGNORE</span><span class="p">:</span>
+                            <span class="n">exceptions</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span>
+                                <span class="n">exceptions</span><span class="o">.</span><span class="n">NotFound</span><span class="p">,</span>
+                                <span class="s2">&quot;Expected to be able to find output </span><span class="si">%r</span><span class="s2">&quot;</span>
+                                <span class="s2">&quot; produced by </span><span class="si">%s</span><span class="s2"> but was unable to get at&quot;</span>
+                                <span class="s2">&quot; that providers results&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">looking_for</span><span class="p">,</span> <span class="n">p</span><span class="p">))</span>
+                        <span class="k">else</span><span class="p">:</span>
+                            <span class="n">LOG</span><span class="o">.</span><span class="n">trace</span><span class="p">(</span><span class="s2">&quot;Avoiding using the results of&quot;</span>
+                                      <span class="s2">&quot; </span><span class="si">%r</span><span class="s2"> (from </span><span class="si">%s</span><span class="s2">) for name </span><span class="si">%r</span><span class="s2"> because&quot;</span>
+                                      <span class="s2">&quot; it was ignored&quot;</span><span class="p">,</span> <span class="n">p</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="n">p</span><span class="p">,</span>
+                                      <span class="n">looking_for</span><span class="p">)</span>
+                    <span class="k">else</span><span class="p">:</span>
+                        <span class="n">tmp_providers_and_results</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">p</span><span class="p">,</span> <span class="n">provider_results</span><span class="p">))</span>
+            <span class="k">if</span> <span class="n">tmp_providers_and_results</span> <span class="ow">and</span> <span class="n">short_circuit</span><span class="p">:</span>
+                <span class="k">return</span> <span class="p">(</span><span class="n">searched_providers</span><span class="p">,</span> <span class="n">tmp_providers_and_results</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">providers_and_results</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span><span class="n">tmp_providers_and_results</span><span class="p">)</span>
+        <span class="k">return</span> <span class="p">(</span><span class="n">searched_providers</span><span class="p">,</span> <span class="n">providers_and_results</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">find_potentials</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">looking_for</span><span class="p">,</span> <span class="n">scope_walker</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Returns the accessible **potential** providers.&quot;&quot;&quot;</span>
+        <span class="n">_searched_providers</span><span class="p">,</span> <span class="n">providers_and_results</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_find</span><span class="p">(</span>
+            <span class="n">looking_for</span><span class="p">,</span> <span class="n">scope_walker</span><span class="o">=</span><span class="n">scope_walker</span><span class="p">,</span>
+            <span class="n">short_circuit</span><span class="o">=</span><span class="bp">False</span><span class="p">,</span> <span class="n">find_potentials</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+        <span class="k">return</span> <span class="nb">set</span><span class="p">(</span><span class="n">p</span> <span class="k">for</span> <span class="p">(</span><span class="n">p</span><span class="p">,</span> <span class="n">_provider_results</span><span class="p">)</span> <span class="ow">in</span> <span class="n">providers_and_results</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">find</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">looking_for</span><span class="p">,</span> <span class="n">scope_walker</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">short_circuit</span><span class="o">=</span><span class="bp">True</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Returns the accessible providers.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_find</span><span class="p">(</span><span class="n">looking_for</span><span class="p">,</span> <span class="n">scope_walker</span><span class="o">=</span><span class="n">scope_walker</span><span class="p">,</span>
+                          <span class="n">short_circuit</span><span class="o">=</span><span class="n">short_circuit</span><span class="p">,</span>
+                          <span class="n">find_potentials</span><span class="o">=</span><span class="bp">False</span><span class="p">)</span>
+
+
+<span class="k">class</span> <span class="nc">_Provider</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A named symbol provider that produces a output at the given index.&quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">index</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">name</span> <span class="o">=</span> <span class="n">name</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">index</span> <span class="o">=</span> <span class="n">index</span>
+
+    <span class="k">def</span> <span class="fm">__repr__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="c1"># TODO(harlowja): clean this up...</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">name</span> <span class="ow">is</span> <span class="n">_TRANSIENT_PROVIDER</span><span class="p">:</span>
+            <span class="n">base</span> <span class="o">=</span> <span class="s2">&quot;&lt;TransientProvider&quot;</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">base</span> <span class="o">=</span> <span class="s2">&quot;&lt;Provider &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">name</span><span class="p">)</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">index</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">base</span> <span class="o">+=</span> <span class="s2">&quot;&gt;&quot;</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">base</span> <span class="o">+=</span> <span class="s2">&quot; @ index </span><span class="si">%r</span><span class="s2">&gt;&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">index</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">base</span>
+
+    <span class="k">def</span> <span class="fm">__hash__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="nb">hash</span><span class="p">((</span><span class="bp">self</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">index</span><span class="p">))</span>
+
+    <span class="k">def</span> <span class="fm">__eq__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">other</span><span class="p">):</span>
+        <span class="k">return</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">index</span><span class="p">)</span> <span class="o">==</span> <span class="p">(</span><span class="n">other</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="n">other</span><span class="o">.</span><span class="n">index</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="fm">__ne__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">other</span><span class="p">):</span>
+        <span class="k">return</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="fm">__eq__</span><span class="p">(</span><span class="n">other</span><span class="p">)</span>
+
+
+<span class="k">def</span> <span class="nf">_item_from</span><span class="p">(</span><span class="n">container</span><span class="p">,</span> <span class="n">index</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Attempts to fetch a index/key from a given container.&quot;&quot;&quot;</span>
+    <span class="k">if</span> <span class="n">index</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">container</span>
+    <span class="k">return</span> <span class="n">container</span><span class="p">[</span><span class="n">index</span><span class="p">]</span>
+
+
+<span class="k">def</span> <span class="nf">_item_from_single</span><span class="p">(</span><span class="n">provider</span><span class="p">,</span> <span class="n">container</span><span class="p">,</span> <span class="n">looking_for</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Returns item from a *single* provider.&quot;&quot;&quot;</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">_item_from</span><span class="p">(</span><span class="n">container</span><span class="p">,</span> <span class="n">provider</span><span class="o">.</span><span class="n">index</span><span class="p">)</span>
+    <span class="k">except</span> <span class="n">_EXTRACTION_EXCEPTIONS</span><span class="p">:</span>
+        <span class="n">exceptions</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span>
+            <span class="n">exceptions</span><span class="o">.</span><span class="n">NotFound</span><span class="p">,</span>
+            <span class="s2">&quot;Unable to find result </span><span class="si">%r</span><span class="s2">, expected to be able to find it&quot;</span>
+            <span class="s2">&quot; created by </span><span class="si">%s</span><span class="s2"> but was unable to perform successful&quot;</span>
+            <span class="s2">&quot; extraction&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">looking_for</span><span class="p">,</span> <span class="n">provider</span><span class="p">))</span>
+
+
+<span class="k">def</span> <span class="nf">_item_from_first_of</span><span class="p">(</span><span class="n">providers</span><span class="p">,</span> <span class="n">looking_for</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Returns item from the *first* successful container extraction.&quot;&quot;&quot;</span>
+    <span class="k">for</span> <span class="p">(</span><span class="n">provider</span><span class="p">,</span> <span class="n">container</span><span class="p">)</span> <span class="ow">in</span> <span class="n">providers</span><span class="p">:</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">return</span> <span class="p">(</span><span class="n">provider</span><span class="p">,</span> <span class="n">_item_from</span><span class="p">(</span><span class="n">container</span><span class="p">,</span> <span class="n">provider</span><span class="o">.</span><span class="n">index</span><span class="p">))</span>
+        <span class="k">except</span> <span class="n">_EXTRACTION_EXCEPTIONS</span><span class="p">:</span>
+            <span class="k">pass</span>
+    <span class="n">providers</span> <span class="o">=</span> <span class="p">[</span><span class="n">p</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="k">for</span> <span class="n">p</span> <span class="ow">in</span> <span class="n">providers</span><span class="p">]</span>
+    <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">NotFound</span><span class="p">(</span>
+        <span class="s2">&quot;Unable to find result </span><span class="si">%r</span><span class="s2">, expected to be able to find it&quot;</span>
+        <span class="s2">&quot; created by one of </span><span class="si">%s</span><span class="s2"> but was unable to perform successful&quot;</span>
+        <span class="s2">&quot; extraction&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">looking_for</span><span class="p">,</span> <span class="n">providers</span><span class="p">))</span>
+
+
+<div class="viewcode-block" id="Storage"><a class="viewcode-back" href="../../persistence.html#taskflow.storage.Storage">[docs]</a><span class="k">class</span> <span class="nc">Storage</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Interface between engines and logbook and its backend (if any).</span>
+
+<span class="sd">    This class provides a simple interface to save atoms of a given flow and</span>
+<span class="sd">    associated activity and results to persistence layer (logbook,</span>
+<span class="sd">    atom_details, flow_details) for use by engines. This makes it easier to</span>
+<span class="sd">    interact with the underlying storage &amp; backend mechanism through this</span>
+<span class="sd">    interface rather than accessing those objects directly.</span>
+
+<span class="sd">    NOTE(harlowja): if no backend is provided then a in-memory backend will</span>
+<span class="sd">    be automatically used and the provided flow detail object will be placed</span>
+<span class="sd">    into it for the duration of this objects existence.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">injector_name</span> <span class="o">=</span> <span class="s1">&#39;_TaskFlow_INJECTOR&#39;</span>
+    <span class="sd">&quot;&quot;&quot;Injector task detail name.</span>
+
+<span class="sd">    This task detail is a **special** detail that will be automatically</span>
+<span class="sd">    created and saved to store **persistent** injected values (name conflicts</span>
+<span class="sd">    with it must be avoided) that are *global* to the flow being executed.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">flow_detail</span><span class="p">,</span> <span class="n">backend</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">scope_fetcher</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_result_mappings</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_reverse_mapping</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="k">if</span> <span class="n">backend</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="c1"># Err on the likely-hood that most people don&#39;t make there</span>
+            <span class="c1"># objects able to be deepcopyable (resources, locks and such</span>
+            <span class="c1"># can&#39;t be deepcopied)...</span>
+            <span class="n">backend</span> <span class="o">=</span> <span class="n">impl_memory</span><span class="o">.</span><span class="n">MemoryBackend</span><span class="p">({</span><span class="s1">&#39;deep_copy&#39;</span><span class="p">:</span> <span class="bp">False</span><span class="p">})</span>
+            <span class="k">with</span> <span class="n">contextlib</span><span class="o">.</span><span class="n">closing</span><span class="p">(</span><span class="n">backend</span><span class="o">.</span><span class="n">get_connection</span><span class="p">())</span> <span class="k">as</span> <span class="n">conn</span><span class="p">:</span>
+                <span class="n">conn</span><span class="o">.</span><span class="n">update_flow_details</span><span class="p">(</span><span class="n">flow_detail</span><span class="p">,</span> <span class="n">ignore_missing</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_backend</span> <span class="o">=</span> <span class="n">backend</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_flowdetail</span> <span class="o">=</span> <span class="n">flow_detail</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_transients</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_injected_args</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_lock</span> <span class="o">=</span> <span class="n">fasteners</span><span class="o">.</span><span class="n">ReaderWriterLock</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_ensure_matchers</span> <span class="o">=</span> <span class="p">[</span>
+            <span class="p">((</span><span class="n">task</span><span class="o">.</span><span class="n">Task</span><span class="p">,),</span> <span class="p">(</span><span class="n">models</span><span class="o">.</span><span class="n">TaskDetail</span><span class="p">,</span> <span class="s1">&#39;Task&#39;</span><span class="p">)),</span>
+            <span class="p">((</span><span class="n">retry</span><span class="o">.</span><span class="n">Retry</span><span class="p">,),</span> <span class="p">(</span><span class="n">models</span><span class="o">.</span><span class="n">RetryDetail</span><span class="p">,</span> <span class="s1">&#39;Retry&#39;</span><span class="p">)),</span>
+        <span class="p">]</span>
+        <span class="k">if</span> <span class="n">scope_fetcher</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">scope_fetcher</span> <span class="o">=</span> <span class="k">lambda</span> <span class="n">atom_name</span><span class="p">:</span> <span class="bp">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_scope_fetcher</span> <span class="o">=</span> <span class="n">scope_fetcher</span>
+
+        <span class="c1"># NOTE(imelnikov): failure serialization looses information,</span>
+        <span class="c1"># so we cache failures here, in atom name -&gt; failure mapping.</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_failures</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="k">for</span> <span class="n">ad</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_flowdetail</span><span class="p">:</span>
+            <span class="n">fail_cache</span> <span class="o">=</span> <span class="p">{}</span>
+            <span class="k">if</span> <span class="n">ad</span><span class="o">.</span><span class="n">failure</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="n">fail_cache</span><span class="p">[</span><span class="n">states</span><span class="o">.</span><span class="n">EXECUTE</span><span class="p">]</span> <span class="o">=</span> <span class="n">ad</span><span class="o">.</span><span class="n">failure</span>
+            <span class="k">if</span> <span class="n">ad</span><span class="o">.</span><span class="n">revert_failure</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="n">fail_cache</span><span class="p">[</span><span class="n">states</span><span class="o">.</span><span class="n">REVERT</span><span class="p">]</span> <span class="o">=</span> <span class="n">ad</span><span class="o">.</span><span class="n">revert_failure</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_failures</span><span class="p">[</span><span class="n">ad</span><span class="o">.</span><span class="n">name</span><span class="p">]</span> <span class="o">=</span> <span class="n">fail_cache</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">_atom_name_to_uuid</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">((</span><span class="n">ad</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="n">ad</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+                                       <span class="k">for</span> <span class="n">ad</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_flowdetail</span><span class="p">)</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">source</span><span class="p">,</span> <span class="n">_clone</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_atomdetail_by_name</span><span class="p">(</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">injector_name</span><span class="p">,</span> <span class="n">expected_type</span><span class="o">=</span><span class="n">models</span><span class="o">.</span><span class="n">TaskDetail</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">NotFound</span><span class="p">:</span>
+            <span class="k">pass</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">names_iter</span> <span class="o">=</span> <span class="n">six</span><span class="o">.</span><span class="n">iterkeys</span><span class="p">(</span><span class="n">source</span><span class="o">.</span><span class="n">results</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_set_result_mapping</span><span class="p">(</span><span class="n">source</span><span class="o">.</span><span class="n">name</span><span class="p">,</span>
+                                     <span class="nb">dict</span><span class="p">((</span><span class="n">name</span><span class="p">,</span> <span class="n">name</span><span class="p">)</span> <span class="k">for</span> <span class="n">name</span> <span class="ow">in</span> <span class="n">names_iter</span><span class="p">))</span>
+
+    <span class="k">def</span> <span class="nf">_with_connection</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">functor</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="c1"># Run the given functor with a backend connection as its first</span>
+        <span class="c1"># argument (providing the additional positional arguments and keyword</span>
+        <span class="c1"># arguments as subsequent arguments).</span>
+        <span class="k">with</span> <span class="n">contextlib</span><span class="o">.</span><span class="n">closing</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_backend</span><span class="o">.</span><span class="n">get_connection</span><span class="p">())</span> <span class="k">as</span> <span class="n">conn</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">functor</span><span class="p">(</span><span class="n">conn</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span> <span class="nf">_create_atom_detail</span><span class="p">(</span><span class="n">atom_name</span><span class="p">,</span> <span class="n">atom_detail_cls</span><span class="p">,</span>
+                            <span class="n">atom_version</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">atom_state</span><span class="o">=</span><span class="n">states</span><span class="o">.</span><span class="n">PENDING</span><span class="p">):</span>
+        <span class="n">ad</span> <span class="o">=</span> <span class="n">atom_detail_cls</span><span class="p">(</span><span class="n">atom_name</span><span class="p">,</span> <span class="n">uuidutils</span><span class="o">.</span><span class="n">generate_uuid</span><span class="p">())</span>
+        <span class="n">ad</span><span class="o">.</span><span class="n">state</span> <span class="o">=</span> <span class="n">atom_state</span>
+        <span class="k">if</span> <span class="n">atom_version</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">ad</span><span class="o">.</span><span class="n">version</span> <span class="o">=</span> <span class="n">atom_version</span>
+        <span class="k">return</span> <span class="n">ad</span>
+
+    <span class="nd">@fasteners.write_locked</span>
+<div class="viewcode-block" id="Storage.ensure_atoms"><a class="viewcode-back" href="../../persistence.html#taskflow.storage.Storage.ensure_atoms">[docs]</a>    <span class="k">def</span> <span class="nf">ensure_atoms</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">atoms</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Ensure there is an atomdetail for **each** of the given atoms.</span>
+
+<span class="sd">        Returns list of atomdetail uuids for each atom processed.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">atom_ids</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="n">missing_ads</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="n">atom</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">atoms</span><span class="p">):</span>
+            <span class="n">match</span> <span class="o">=</span> <span class="n">misc</span><span class="o">.</span><span class="n">match_type</span><span class="p">(</span><span class="n">atom</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_ensure_matchers</span><span class="p">)</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">match</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="s2">&quot;Unknown atom &#39;</span><span class="si">%s</span><span class="s2">&#39; (</span><span class="si">%s</span><span class="s2">) requested to ensure&quot;</span>
+                                <span class="o">%</span> <span class="p">(</span><span class="n">atom</span><span class="p">,</span> <span class="nb">type</span><span class="p">(</span><span class="n">atom</span><span class="p">)))</span>
+            <span class="n">atom_detail_cls</span><span class="p">,</span> <span class="n">kind</span> <span class="o">=</span> <span class="n">match</span>
+            <span class="n">atom_name</span> <span class="o">=</span> <span class="n">atom</span><span class="o">.</span><span class="n">name</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">atom_name</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;</span><span class="si">%s</span><span class="s2"> name must be non-empty&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">kind</span><span class="p">))</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">atom_id</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_atom_name_to_uuid</span><span class="p">[</span><span class="n">atom_name</span><span class="p">]</span>
+            <span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+                <span class="n">missing_ads</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">i</span><span class="p">,</span> <span class="n">atom</span><span class="p">,</span> <span class="n">atom_detail_cls</span><span class="p">))</span>
+                <span class="c1"># This will be later replaced with the uuid that is created...</span>
+                <span class="n">atom_ids</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="bp">None</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">ad</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_flowdetail</span><span class="o">.</span><span class="n">find</span><span class="p">(</span><span class="n">atom_id</span><span class="p">)</span>
+                <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">ad</span><span class="p">,</span> <span class="n">atom_detail_cls</span><span class="p">):</span>
+                    <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">Duplicate</span><span class="p">(</span>
+                        <span class="s2">&quot;Atom detail &#39;</span><span class="si">%s</span><span class="s2">&#39; already exists in flow&quot;</span>
+                        <span class="s2">&quot; detail &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">atom_name</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_flowdetail</span><span class="o">.</span><span class="n">name</span><span class="p">))</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="n">atom_ids</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">ad</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_set_result_mapping</span><span class="p">(</span><span class="n">atom_name</span><span class="p">,</span> <span class="n">atom</span><span class="o">.</span><span class="n">save_as</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">missing_ads</span><span class="p">:</span>
+            <span class="n">needs_to_be_created_ads</span> <span class="o">=</span> <span class="p">[]</span>
+            <span class="k">for</span> <span class="p">(</span><span class="n">i</span><span class="p">,</span> <span class="n">atom</span><span class="p">,</span> <span class="n">atom_detail_cls</span><span class="p">)</span> <span class="ow">in</span> <span class="n">missing_ads</span><span class="p">:</span>
+                <span class="n">ad</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_create_atom_detail</span><span class="p">(</span>
+                    <span class="n">atom</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="n">atom_detail_cls</span><span class="p">,</span>
+                    <span class="n">atom_version</span><span class="o">=</span><span class="n">misc</span><span class="o">.</span><span class="n">get_version_string</span><span class="p">(</span><span class="n">atom</span><span class="p">))</span>
+                <span class="n">needs_to_be_created_ads</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">i</span><span class="p">,</span> <span class="n">atom</span><span class="p">,</span> <span class="n">ad</span><span class="p">))</span>
+            <span class="c1"># Add the atom detail(s) to a clone, which upon success will be</span>
+            <span class="c1"># updated into the contained flow detail; if it does not get saved</span>
+            <span class="c1"># then no update will happen.</span>
+            <span class="n">source</span><span class="p">,</span> <span class="n">clone</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_fetch_flowdetail</span><span class="p">(</span><span class="n">clone</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+            <span class="k">for</span> <span class="p">(</span><span class="n">_i</span><span class="p">,</span> <span class="n">_atom</span><span class="p">,</span> <span class="n">ad</span><span class="p">)</span> <span class="ow">in</span> <span class="n">needs_to_be_created_ads</span><span class="p">:</span>
+                <span class="n">clone</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">ad</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_with_connection</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_save_flow_detail</span><span class="p">,</span> <span class="n">source</span><span class="p">,</span> <span class="n">clone</span><span class="p">)</span>
+            <span class="c1"># Insert the needed data, and get outta here...</span>
+            <span class="k">for</span> <span class="p">(</span><span class="n">i</span><span class="p">,</span> <span class="n">atom</span><span class="p">,</span> <span class="n">ad</span><span class="p">)</span> <span class="ow">in</span> <span class="n">needs_to_be_created_ads</span><span class="p">:</span>
+                <span class="n">atom_name</span> <span class="o">=</span> <span class="n">atom</span><span class="o">.</span><span class="n">name</span>
+                <span class="n">atom_ids</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">=</span> <span class="n">ad</span><span class="o">.</span><span class="n">uuid</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_atom_name_to_uuid</span><span class="p">[</span><span class="n">atom_name</span><span class="p">]</span> <span class="o">=</span> <span class="n">ad</span><span class="o">.</span><span class="n">uuid</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_set_result_mapping</span><span class="p">(</span><span class="n">atom_name</span><span class="p">,</span> <span class="n">atom</span><span class="o">.</span><span class="n">save_as</span><span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_failures</span><span class="o">.</span><span class="n">setdefault</span><span class="p">(</span><span class="n">atom_name</span><span class="p">,</span> <span class="p">{})</span>
+        <span class="k">return</span> <span class="n">atom_ids</span></div>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">lock</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Reader/writer lock used to ensure multi-thread safety.</span>
+
+<span class="sd">        This does **not** protect against the **same** storage objects being</span>
+<span class="sd">        used by multiple engines/users across multiple processes (or</span>
+<span class="sd">        different machines); certain backends handle that situation better</span>
+<span class="sd">        than others (for example by using sequence identifiers) and it&#39;s a</span>
+<span class="sd">        ongoing work in progress to make that better).</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_lock</span>
+
+<div class="viewcode-block" id="Storage.ensure_atom"><a class="viewcode-back" href="../../persistence.html#taskflow.storage.Storage.ensure_atom">[docs]</a>    <span class="k">def</span> <span class="nf">ensure_atom</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">atom</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Ensure there is an atomdetail for the **given** atom.</span>
+
+<span class="sd">        Returns the uuid for the atomdetail that corresponds to the given atom.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">ensure_atoms</span><span class="p">([</span><span class="n">atom</span><span class="p">])[</span><span class="mi">0</span><span class="p">]</span></div>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">flow_name</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;The flow detail name this storage unit is associated with.&quot;&quot;&quot;</span>
+        <span class="c1"># This never changes (so no read locking needed).</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_flowdetail</span><span class="o">.</span><span class="n">name</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">flow_uuid</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;The flow detail uuid this storage unit is associated with.&quot;&quot;&quot;</span>
+        <span class="c1"># This never changes (so no read locking needed).</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_flowdetail</span><span class="o">.</span><span class="n">uuid</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">flow_meta</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;The flow detail metadata this storage unit is associated with.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_flowdetail</span><span class="o">.</span><span class="n">meta</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">backend</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;The backend this storage unit is associated with.&quot;&quot;&quot;</span>
+        <span class="c1"># This never changes (so no read locking needed).</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_backend</span>
+
+    <span class="k">def</span> <span class="nf">_save_flow_detail</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">conn</span><span class="p">,</span> <span class="n">original_flow_detail</span><span class="p">,</span> <span class="n">flow_detail</span><span class="p">):</span>
+        <span class="c1"># NOTE(harlowja): we need to update our contained flow detail if</span>
+        <span class="c1"># the result of the update actually added more (aka another process</span>
+        <span class="c1"># added item to the flow detail).</span>
+        <span class="n">original_flow_detail</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">conn</span><span class="o">.</span><span class="n">update_flow_details</span><span class="p">(</span><span class="n">flow_detail</span><span class="p">))</span>
+        <span class="k">return</span> <span class="n">original_flow_detail</span>
+
+    <span class="k">def</span> <span class="nf">_fetch_flowdetail</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">clone</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+        <span class="n">source</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_flowdetail</span>
+        <span class="k">if</span> <span class="n">clone</span><span class="p">:</span>
+            <span class="k">return</span> <span class="p">(</span><span class="n">source</span><span class="p">,</span> <span class="n">source</span><span class="o">.</span><span class="n">copy</span><span class="p">())</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">return</span> <span class="p">(</span><span class="n">source</span><span class="p">,</span> <span class="n">source</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_atomdetail_by_name</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">atom_name</span><span class="p">,</span> <span class="n">expected_type</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">clone</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">ad</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_flowdetail</span><span class="o">.</span><span class="n">find</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_atom_name_to_uuid</span><span class="p">[</span><span class="n">atom_name</span><span class="p">])</span>
+        <span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+            <span class="n">exceptions</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">exceptions</span><span class="o">.</span><span class="n">NotFound</span><span class="p">,</span>
+                                        <span class="s2">&quot;Unknown atom name &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span> <span class="o">%</span> <span class="n">atom_name</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="c1"># TODO(harlowja): we need to figure out how to get away from doing</span>
+            <span class="c1"># these kinds of type checks in general (since they likely mean</span>
+            <span class="c1"># we aren&#39;t doing something right).</span>
+            <span class="k">if</span> <span class="n">expected_type</span> <span class="ow">and</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">ad</span><span class="p">,</span> <span class="n">expected_type</span><span class="p">):</span>
+                <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="s2">&quot;Atom &#39;</span><span class="si">%s</span><span class="s2">&#39; is not of the expected type: </span><span class="si">%s</span><span class="s2">&quot;</span>
+                                <span class="o">%</span> <span class="p">(</span><span class="n">atom_name</span><span class="p">,</span>
+                                   <span class="n">reflection</span><span class="o">.</span><span class="n">get_class_name</span><span class="p">(</span><span class="n">expected_type</span><span class="p">)))</span>
+            <span class="k">if</span> <span class="n">clone</span><span class="p">:</span>
+                <span class="k">return</span> <span class="p">(</span><span class="n">ad</span><span class="p">,</span> <span class="n">ad</span><span class="o">.</span><span class="n">copy</span><span class="p">())</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">return</span> <span class="p">(</span><span class="n">ad</span><span class="p">,</span> <span class="n">ad</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_save_atom_detail</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">conn</span><span class="p">,</span> <span class="n">original_atom_detail</span><span class="p">,</span> <span class="n">atom_detail</span><span class="p">):</span>
+        <span class="c1"># NOTE(harlowja): we need to update our contained atom detail if</span>
+        <span class="c1"># the result of the update actually added more (aka another process</span>
+        <span class="c1"># is also modifying the task detail), since python is by reference</span>
+        <span class="c1"># and the contained atom detail will reflect the old state if we don&#39;t</span>
+        <span class="c1"># do this update.</span>
+        <span class="n">original_atom_detail</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">conn</span><span class="o">.</span><span class="n">update_atom_details</span><span class="p">(</span><span class="n">atom_detail</span><span class="p">))</span>
+        <span class="k">return</span> <span class="n">original_atom_detail</span>
+
+    <span class="nd">@fasteners.read_locked</span>
+<div class="viewcode-block" id="Storage.get_atom_uuid"><a class="viewcode-back" href="../../persistence.html#taskflow.storage.Storage.get_atom_uuid">[docs]</a>    <span class="k">def</span> <span class="nf">get_atom_uuid</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">atom_name</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Gets an atoms uuid given a atoms name.&quot;&quot;&quot;</span>
+        <span class="n">source</span><span class="p">,</span> <span class="n">_clone</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_atomdetail_by_name</span><span class="p">(</span><span class="n">atom_name</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">source</span><span class="o">.</span><span class="n">uuid</span></div>
+
+    <span class="nd">@fasteners.write_locked</span>
+<div class="viewcode-block" id="Storage.set_atom_state"><a class="viewcode-back" href="../../persistence.html#taskflow.storage.Storage.set_atom_state">[docs]</a>    <span class="k">def</span> <span class="nf">set_atom_state</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">atom_name</span><span class="p">,</span> <span class="n">state</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Sets an atoms state.&quot;&quot;&quot;</span>
+        <span class="n">source</span><span class="p">,</span> <span class="n">clone</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_atomdetail_by_name</span><span class="p">(</span><span class="n">atom_name</span><span class="p">,</span> <span class="n">clone</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">source</span><span class="o">.</span><span class="n">state</span> <span class="o">!=</span> <span class="n">state</span><span class="p">:</span>
+            <span class="n">clone</span><span class="o">.</span><span class="n">state</span> <span class="o">=</span> <span class="n">state</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_with_connection</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_save_atom_detail</span><span class="p">,</span> <span class="n">source</span><span class="p">,</span> <span class="n">clone</span><span class="p">)</span></div>
+
+    <span class="nd">@fasteners.read_locked</span>
+<div class="viewcode-block" id="Storage.get_atom_state"><a class="viewcode-back" href="../../persistence.html#taskflow.storage.Storage.get_atom_state">[docs]</a>    <span class="k">def</span> <span class="nf">get_atom_state</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">atom_name</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Gets the state of an atom given an atoms name.&quot;&quot;&quot;</span>
+        <span class="n">source</span><span class="p">,</span> <span class="n">_clone</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_atomdetail_by_name</span><span class="p">(</span><span class="n">atom_name</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">source</span><span class="o">.</span><span class="n">state</span></div>
+
+    <span class="nd">@fasteners.write_locked</span>
+<div class="viewcode-block" id="Storage.set_atom_intention"><a class="viewcode-back" href="../../persistence.html#taskflow.storage.Storage.set_atom_intention">[docs]</a>    <span class="k">def</span> <span class="nf">set_atom_intention</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">atom_name</span><span class="p">,</span> <span class="n">intention</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Sets the intention of an atom given an atoms name.&quot;&quot;&quot;</span>
+        <span class="n">source</span><span class="p">,</span> <span class="n">clone</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_atomdetail_by_name</span><span class="p">(</span><span class="n">atom_name</span><span class="p">,</span> <span class="n">clone</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">source</span><span class="o">.</span><span class="n">intention</span> <span class="o">!=</span> <span class="n">intention</span><span class="p">:</span>
+            <span class="n">clone</span><span class="o">.</span><span class="n">intention</span> <span class="o">=</span> <span class="n">intention</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_with_connection</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_save_atom_detail</span><span class="p">,</span> <span class="n">source</span><span class="p">,</span> <span class="n">clone</span><span class="p">)</span></div>
+
+    <span class="nd">@fasteners.read_locked</span>
+<div class="viewcode-block" id="Storage.get_atom_intention"><a class="viewcode-back" href="../../persistence.html#taskflow.storage.Storage.get_atom_intention">[docs]</a>    <span class="k">def</span> <span class="nf">get_atom_intention</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">atom_name</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Gets the intention of an atom given an atoms name.&quot;&quot;&quot;</span>
+        <span class="n">source</span><span class="p">,</span> <span class="n">_clone</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_atomdetail_by_name</span><span class="p">(</span><span class="n">atom_name</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">source</span><span class="o">.</span><span class="n">intention</span></div>
+
+    <span class="nd">@fasteners.read_locked</span>
+<div class="viewcode-block" id="Storage.get_atoms_states"><a class="viewcode-back" href="../../persistence.html#taskflow.storage.Storage.get_atoms_states">[docs]</a>    <span class="k">def</span> <span class="nf">get_atoms_states</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">atom_names</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Gets a dict of atom name =&gt; (state, intention) given atom names.&quot;&quot;&quot;</span>
+        <span class="n">details</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="k">for</span> <span class="n">name</span> <span class="ow">in</span> <span class="nb">set</span><span class="p">(</span><span class="n">atom_names</span><span class="p">):</span>
+            <span class="n">source</span><span class="p">,</span> <span class="n">_clone</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_atomdetail_by_name</span><span class="p">(</span><span class="n">name</span><span class="p">)</span>
+            <span class="n">details</span><span class="p">[</span><span class="n">name</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span><span class="n">source</span><span class="o">.</span><span class="n">state</span><span class="p">,</span> <span class="n">source</span><span class="o">.</span><span class="n">intention</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">details</span></div>
+
+    <span class="nd">@fasteners.write_locked</span>
+    <span class="k">def</span> <span class="nf">_update_atom_metadata</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">atom_name</span><span class="p">,</span> <span class="n">update_with</span><span class="p">,</span>
+                              <span class="n">expected_type</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="n">source</span><span class="p">,</span> <span class="n">clone</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_atomdetail_by_name</span><span class="p">(</span><span class="n">atom_name</span><span class="p">,</span>
+                                                 <span class="n">expected_type</span><span class="o">=</span><span class="n">expected_type</span><span class="p">,</span>
+                                                 <span class="n">clone</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">update_with</span><span class="p">:</span>
+            <span class="n">clone</span><span class="o">.</span><span class="n">meta</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">update_with</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_with_connection</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_save_atom_detail</span><span class="p">,</span> <span class="n">source</span><span class="p">,</span> <span class="n">clone</span><span class="p">)</span>
+
+<div class="viewcode-block" id="Storage.update_atom_metadata"><a class="viewcode-back" href="../../persistence.html#taskflow.storage.Storage.update_atom_metadata">[docs]</a>    <span class="k">def</span> <span class="nf">update_atom_metadata</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">atom_name</span><span class="p">,</span> <span class="n">update_with</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Updates a atoms associated metadata.</span>
+
+<span class="sd">        This update will take a provided dictionary or a list of (key, value)</span>
+<span class="sd">        pairs to include in the updated metadata (newer keys will overwrite</span>
+<span class="sd">        older keys) and after merging saves the updated data into the</span>
+<span class="sd">        underlying persistence layer.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_update_atom_metadata</span><span class="p">(</span><span class="n">atom_name</span><span class="p">,</span> <span class="n">update_with</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="Storage.set_task_progress"><a class="viewcode-back" href="../../persistence.html#taskflow.storage.Storage.set_task_progress">[docs]</a>    <span class="k">def</span> <span class="nf">set_task_progress</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task_name</span><span class="p">,</span> <span class="n">progress</span><span class="p">,</span> <span class="n">details</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Set a tasks progress.</span>
+
+<span class="sd">        :param task_name: task name</span>
+<span class="sd">        :param progress: tasks progress (0.0 &lt;-&gt; 1.0)</span>
+<span class="sd">        :param details: any task specific progress details</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">update_with</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="n">META_PROGRESS</span><span class="p">:</span> <span class="n">progress</span><span class="p">,</span>
+        <span class="p">}</span>
+        <span class="k">if</span> <span class="n">details</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="c1"># NOTE(imelnikov): as we can update progress without</span>
+            <span class="c1"># updating details (e.g. automatically from engine)</span>
+            <span class="c1"># we save progress value with details, too.</span>
+            <span class="k">if</span> <span class="n">details</span><span class="p">:</span>
+                <span class="n">update_with</span><span class="p">[</span><span class="n">META_PROGRESS_DETAILS</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span>
+                    <span class="s1">&#39;at_progress&#39;</span><span class="p">:</span> <span class="n">progress</span><span class="p">,</span>
+                    <span class="s1">&#39;details&#39;</span><span class="p">:</span> <span class="n">details</span><span class="p">,</span>
+                <span class="p">}</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">update_with</span><span class="p">[</span><span class="n">META_PROGRESS_DETAILS</span><span class="p">]</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_update_atom_metadata</span><span class="p">(</span><span class="n">task_name</span><span class="p">,</span> <span class="n">update_with</span><span class="p">,</span>
+                                   <span class="n">expected_type</span><span class="o">=</span><span class="n">models</span><span class="o">.</span><span class="n">TaskDetail</span><span class="p">)</span></div>
+
+    <span class="nd">@fasteners.read_locked</span>
+<div class="viewcode-block" id="Storage.get_task_progress"><a class="viewcode-back" href="../../persistence.html#taskflow.storage.Storage.get_task_progress">[docs]</a>    <span class="k">def</span> <span class="nf">get_task_progress</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task_name</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get the progress of a task given a tasks name.</span>
+
+<span class="sd">        :param task_name: tasks name</span>
+<span class="sd">        :returns: current task progress value</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">source</span><span class="p">,</span> <span class="n">_clone</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_atomdetail_by_name</span><span class="p">(</span>
+            <span class="n">task_name</span><span class="p">,</span> <span class="n">expected_type</span><span class="o">=</span><span class="n">models</span><span class="o">.</span><span class="n">TaskDetail</span><span class="p">)</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">source</span><span class="o">.</span><span class="n">meta</span><span class="p">[</span><span class="n">META_PROGRESS</span><span class="p">]</span>
+        <span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+            <span class="k">return</span> <span class="mf">0.0</span></div>
+
+    <span class="nd">@fasteners.read_locked</span>
+<div class="viewcode-block" id="Storage.get_task_progress_details"><a class="viewcode-back" href="../../persistence.html#taskflow.storage.Storage.get_task_progress_details">[docs]</a>    <span class="k">def</span> <span class="nf">get_task_progress_details</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task_name</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get the progress details of a task given a tasks name.</span>
+
+<span class="sd">        :param task_name: task name</span>
+<span class="sd">        :returns: None if progress_details not defined, else progress_details</span>
+<span class="sd">                 dict</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">source</span><span class="p">,</span> <span class="n">_clone</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_atomdetail_by_name</span><span class="p">(</span>
+            <span class="n">task_name</span><span class="p">,</span> <span class="n">expected_type</span><span class="o">=</span><span class="n">models</span><span class="o">.</span><span class="n">TaskDetail</span><span class="p">)</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">source</span><span class="o">.</span><span class="n">meta</span><span class="p">[</span><span class="n">META_PROGRESS_DETAILS</span><span class="p">]</span>
+        <span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">None</span></div>
+
+    <span class="k">def</span> <span class="nf">_check_all_results_provided</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">atom_name</span><span class="p">,</span> <span class="n">container</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Warn if an atom did not provide some of its expected results.</span>
+
+<span class="sd">        This may happen if atom returns shorter tuple or list or dict</span>
+<span class="sd">        without all needed keys. It may also happen if atom returns</span>
+<span class="sd">        result of wrong type.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">result_mapping</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_result_mappings</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">atom_name</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">result_mapping</span><span class="p">:</span>
+            <span class="k">return</span>
+        <span class="k">for</span> <span class="n">name</span><span class="p">,</span> <span class="n">index</span> <span class="ow">in</span> <span class="n">six</span><span class="o">.</span><span class="n">iteritems</span><span class="p">(</span><span class="n">result_mapping</span><span class="p">):</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">_item_from</span><span class="p">(</span><span class="n">container</span><span class="p">,</span> <span class="n">index</span><span class="p">)</span>
+            <span class="k">except</span> <span class="n">_EXTRACTION_EXCEPTIONS</span><span class="p">:</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">&quot;Atom &#39;</span><span class="si">%s</span><span class="s2">&#39; did not supply result &quot;</span>
+                            <span class="s2">&quot;with index </span><span class="si">%r</span><span class="s2"> (name &#39;</span><span class="si">%s</span><span class="s2">&#39;)&quot;</span><span class="p">,</span> <span class="n">atom_name</span><span class="p">,</span> <span class="n">index</span><span class="p">,</span>
+                            <span class="n">name</span><span class="p">)</span>
+
+    <span class="nd">@fasteners.write_locked</span>
+<div class="viewcode-block" id="Storage.save"><a class="viewcode-back" href="../../persistence.html#taskflow.storage.Storage.save">[docs]</a>    <span class="k">def</span> <span class="nf">save</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">atom_name</span><span class="p">,</span> <span class="n">result</span><span class="p">,</span> <span class="n">state</span><span class="o">=</span><span class="n">states</span><span class="o">.</span><span class="n">SUCCESS</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Put result for atom with provided name to storage.&quot;&quot;&quot;</span>
+        <span class="n">source</span><span class="p">,</span> <span class="n">clone</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_atomdetail_by_name</span><span class="p">(</span><span class="n">atom_name</span><span class="p">,</span> <span class="n">clone</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">clone</span><span class="o">.</span><span class="n">put</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">result</span><span class="p">):</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_with_connection</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_save_atom_detail</span><span class="p">,</span> <span class="n">source</span><span class="p">,</span> <span class="n">clone</span><span class="p">)</span>
+        <span class="c1"># We need to somehow place more of this responsibility on the atom</span>
+        <span class="c1"># detail class itself, vs doing it here; since it ties those two</span>
+        <span class="c1"># together (which is bad)...</span>
+        <span class="k">if</span> <span class="n">state</span> <span class="ow">in</span> <span class="p">(</span><span class="n">states</span><span class="o">.</span><span class="n">FAILURE</span><span class="p">,</span> <span class="n">states</span><span class="o">.</span><span class="n">REVERT_FAILURE</span><span class="p">):</span>
+            <span class="c1"># NOTE(imelnikov): failure serialization looses information,</span>
+            <span class="c1"># so we cache failures here, in atom name -&gt; failure mapping so</span>
+            <span class="c1"># that we can later use the better version on fetch/get.</span>
+            <span class="k">if</span> <span class="n">clone</span><span class="o">.</span><span class="n">intention</span> <span class="ow">in</span> <span class="n">_SAVE_FAILURE_INTENTIONS</span><span class="p">:</span>
+                <span class="n">fail_cache</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_failures</span><span class="p">[</span><span class="n">clone</span><span class="o">.</span><span class="n">name</span><span class="p">]</span>
+                <span class="n">fail_cache</span><span class="p">[</span><span class="n">clone</span><span class="o">.</span><span class="n">intention</span><span class="p">]</span> <span class="o">=</span> <span class="n">result</span>
+        <span class="k">if</span> <span class="n">state</span> <span class="o">==</span> <span class="n">states</span><span class="o">.</span><span class="n">SUCCESS</span> <span class="ow">and</span> <span class="n">clone</span><span class="o">.</span><span class="n">intention</span> <span class="o">==</span> <span class="n">states</span><span class="o">.</span><span class="n">EXECUTE</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_check_all_results_provided</span><span class="p">(</span><span class="n">clone</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="n">result</span><span class="p">)</span></div>
+
+    <span class="nd">@fasteners.write_locked</span>
+<div class="viewcode-block" id="Storage.save_retry_failure"><a class="viewcode-back" href="../../persistence.html#taskflow.storage.Storage.save_retry_failure">[docs]</a>    <span class="k">def</span> <span class="nf">save_retry_failure</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">retry_name</span><span class="p">,</span> <span class="n">failed_atom_name</span><span class="p">,</span> <span class="n">failure</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Save subflow failure to retry controller history.&quot;&quot;&quot;</span>
+        <span class="n">source</span><span class="p">,</span> <span class="n">clone</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_atomdetail_by_name</span><span class="p">(</span>
+            <span class="n">retry_name</span><span class="p">,</span> <span class="n">expected_type</span><span class="o">=</span><span class="n">models</span><span class="o">.</span><span class="n">RetryDetail</span><span class="p">,</span> <span class="n">clone</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">failures</span> <span class="o">=</span> <span class="n">clone</span><span class="o">.</span><span class="n">last_failures</span>
+        <span class="k">except</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">NotFound</span><span class="p">:</span>
+            <span class="n">exceptions</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">exceptions</span><span class="o">.</span><span class="n">StorageFailure</span><span class="p">,</span>
+                                        <span class="s2">&quot;Unable to fetch most recent retry&quot;</span>
+                                        <span class="s2">&quot; failures so new retry failure can&quot;</span>
+                                        <span class="s2">&quot; be inserted&quot;</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">failed_atom_name</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">failures</span><span class="p">:</span>
+                <span class="n">failures</span><span class="p">[</span><span class="n">failed_atom_name</span><span class="p">]</span> <span class="o">=</span> <span class="n">failure</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_with_connection</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_save_atom_detail</span><span class="p">,</span> <span class="n">source</span><span class="p">,</span> <span class="n">clone</span><span class="p">)</span></div>
+
+    <span class="nd">@fasteners.write_locked</span>
+<div class="viewcode-block" id="Storage.cleanup_retry_history"><a class="viewcode-back" href="../../persistence.html#taskflow.storage.Storage.cleanup_retry_history">[docs]</a>    <span class="k">def</span> <span class="nf">cleanup_retry_history</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">retry_name</span><span class="p">,</span> <span class="n">state</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Cleanup history of retry atom with given name.&quot;&quot;&quot;</span>
+        <span class="n">source</span><span class="p">,</span> <span class="n">clone</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_atomdetail_by_name</span><span class="p">(</span>
+            <span class="n">retry_name</span><span class="p">,</span> <span class="n">expected_type</span><span class="o">=</span><span class="n">models</span><span class="o">.</span><span class="n">RetryDetail</span><span class="p">,</span> <span class="n">clone</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+        <span class="n">clone</span><span class="o">.</span><span class="n">state</span> <span class="o">=</span> <span class="n">state</span>
+        <span class="n">clone</span><span class="o">.</span><span class="n">results</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_with_connection</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_save_atom_detail</span><span class="p">,</span> <span class="n">source</span><span class="p">,</span> <span class="n">clone</span><span class="p">)</span></div>
+
+    <span class="nd">@fasteners.read_locked</span>
+    <span class="k">def</span> <span class="nf">_get</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">atom_name</span><span class="p">,</span>
+             <span class="n">results_attr_name</span><span class="p">,</span> <span class="n">fail_attr_name</span><span class="p">,</span>
+             <span class="n">allowed_states</span><span class="p">,</span> <span class="n">fail_cache_key</span><span class="p">):</span>
+        <span class="n">source</span><span class="p">,</span> <span class="n">_clone</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_atomdetail_by_name</span><span class="p">(</span><span class="n">atom_name</span><span class="p">)</span>
+        <span class="n">failure</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">source</span><span class="p">,</span> <span class="n">fail_attr_name</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">failure</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">fail_cache</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_failures</span><span class="p">[</span><span class="n">atom_name</span><span class="p">]</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">fail</span> <span class="o">=</span> <span class="n">fail_cache</span><span class="p">[</span><span class="n">fail_cache_key</span><span class="p">]</span>
+                <span class="k">if</span> <span class="n">failure</span><span class="o">.</span><span class="n">matches</span><span class="p">(</span><span class="n">fail</span><span class="p">):</span>
+                    <span class="c1"># Try to give the version back that should have the</span>
+                    <span class="c1"># backtrace instead of one that has it</span>
+                    <span class="c1"># stripped (since backtraces are not serializable).</span>
+                    <span class="n">failure</span> <span class="o">=</span> <span class="n">fail</span>
+            <span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+                <span class="k">pass</span>
+            <span class="k">return</span> <span class="n">failure</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">source</span><span class="o">.</span><span class="n">state</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">allowed_states</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">DisallowedAccess</span><span class="p">(</span>
+                    <span class="s2">&quot;Result for atom &#39;</span><span class="si">%s</span><span class="s2">&#39; is not known/accessible&quot;</span>
+                    <span class="s2">&quot; due to it being in </span><span class="si">%s</span><span class="s2"> state when result access&quot;</span>
+                    <span class="s2">&quot; is restricted to </span><span class="si">%s</span><span class="s2"> states&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">atom_name</span><span class="p">,</span>
+                                                     <span class="n">source</span><span class="o">.</span><span class="n">state</span><span class="p">,</span>
+                                                     <span class="n">allowed_states</span><span class="p">),</span>
+                    <span class="n">state</span><span class="o">=</span><span class="n">source</span><span class="o">.</span><span class="n">state</span><span class="p">)</span>
+            <span class="k">return</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">source</span><span class="p">,</span> <span class="n">results_attr_name</span><span class="p">)</span>
+
+<div class="viewcode-block" id="Storage.get_execute_result"><a class="viewcode-back" href="../../persistence.html#taskflow.storage.Storage.get_execute_result">[docs]</a>    <span class="k">def</span> <span class="nf">get_execute_result</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">atom_name</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Gets the ``execute`` results for an atom from storage.&quot;&quot;&quot;</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">results</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get</span><span class="p">(</span><span class="n">atom_name</span><span class="p">,</span> <span class="s1">&#39;results&#39;</span><span class="p">,</span> <span class="s1">&#39;failure&#39;</span><span class="p">,</span>
+                                <span class="n">_EXECUTE_STATES_WITH_RESULTS</span><span class="p">,</span> <span class="n">states</span><span class="o">.</span><span class="n">EXECUTE</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">DisallowedAccess</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">e</span><span class="o">.</span><span class="n">state</span> <span class="o">==</span> <span class="n">states</span><span class="o">.</span><span class="n">IGNORE</span><span class="p">:</span>
+                <span class="n">exceptions</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">exceptions</span><span class="o">.</span><span class="n">NotFound</span><span class="p">,</span>
+                                            <span class="s2">&quot;Result for atom &#39;</span><span class="si">%s</span><span class="s2">&#39; execution&quot;</span>
+                                            <span class="s2">&quot; is not known (as it was&quot;</span>
+                                            <span class="s2">&quot; ignored)&quot;</span> <span class="o">%</span> <span class="n">atom_name</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">exceptions</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">exceptions</span><span class="o">.</span><span class="n">NotFound</span><span class="p">,</span>
+                                            <span class="s2">&quot;Result for atom &#39;</span><span class="si">%s</span><span class="s2">&#39; execution&quot;</span>
+                                            <span class="s2">&quot; is not known&quot;</span> <span class="o">%</span> <span class="n">atom_name</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">results</span></div>
+
+    <span class="nd">@fasteners.read_locked</span>
+    <span class="k">def</span> <span class="nf">_get_failures</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">fail_cache_key</span><span class="p">):</span>
+        <span class="n">failures</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="k">for</span> <span class="n">atom_name</span><span class="p">,</span> <span class="n">fail_cache</span> <span class="ow">in</span> <span class="n">six</span><span class="o">.</span><span class="n">iteritems</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_failures</span><span class="p">):</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">failures</span><span class="p">[</span><span class="n">atom_name</span><span class="p">]</span> <span class="o">=</span> <span class="n">fail_cache</span><span class="p">[</span><span class="n">fail_cache_key</span><span class="p">]</span>
+            <span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+                <span class="k">pass</span>
+        <span class="k">return</span> <span class="n">failures</span>
+
+<div class="viewcode-block" id="Storage.get_execute_failures"><a class="viewcode-back" href="../../persistence.html#taskflow.storage.Storage.get_execute_failures">[docs]</a>    <span class="k">def</span> <span class="nf">get_execute_failures</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get all ``execute`` failures that happened with this flow.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_failures</span><span class="p">(</span><span class="n">states</span><span class="o">.</span><span class="n">EXECUTE</span><span class="p">)</span></div>
+
+    <span class="c1"># TODO(harlowja): remove these in the future?</span>
+    <span class="n">get</span> <span class="o">=</span> <span class="n">get_execute_result</span>
+    <span class="n">get_failures</span> <span class="o">=</span> <span class="n">get_execute_failures</span>
+
+<div class="viewcode-block" id="Storage.get_revert_result"><a class="viewcode-back" href="../../persistence.html#taskflow.storage.Storage.get_revert_result">[docs]</a>    <span class="k">def</span> <span class="nf">get_revert_result</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">atom_name</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Gets the ``revert`` results for an atom from storage.&quot;&quot;&quot;</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">results</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get</span><span class="p">(</span><span class="n">atom_name</span><span class="p">,</span> <span class="s1">&#39;revert_results&#39;</span><span class="p">,</span> <span class="s1">&#39;revert_failure&#39;</span><span class="p">,</span>
+                                <span class="n">_REVERT_STATES_WITH_RESULTS</span><span class="p">,</span> <span class="n">states</span><span class="o">.</span><span class="n">REVERT</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">DisallowedAccess</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">e</span><span class="o">.</span><span class="n">state</span> <span class="o">==</span> <span class="n">states</span><span class="o">.</span><span class="n">IGNORE</span><span class="p">:</span>
+                <span class="n">exceptions</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">exceptions</span><span class="o">.</span><span class="n">NotFound</span><span class="p">,</span>
+                                            <span class="s2">&quot;Result for atom &#39;</span><span class="si">%s</span><span class="s2">&#39; revert is&quot;</span>
+                                            <span class="s2">&quot; not known (as it was&quot;</span>
+                                            <span class="s2">&quot; ignored)&quot;</span> <span class="o">%</span> <span class="n">atom_name</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">exceptions</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">exceptions</span><span class="o">.</span><span class="n">NotFound</span><span class="p">,</span>
+                                            <span class="s2">&quot;Result for atom &#39;</span><span class="si">%s</span><span class="s2">&#39; revert is&quot;</span>
+                                            <span class="s2">&quot; not known&quot;</span> <span class="o">%</span> <span class="n">atom_name</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">results</span></div>
+
+<div class="viewcode-block" id="Storage.get_revert_failures"><a class="viewcode-back" href="../../persistence.html#taskflow.storage.Storage.get_revert_failures">[docs]</a>    <span class="k">def</span> <span class="nf">get_revert_failures</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get all ``revert`` failures that happened with this flow.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_failures</span><span class="p">(</span><span class="n">states</span><span class="o">.</span><span class="n">REVERT</span><span class="p">)</span></div>
+
+    <span class="nd">@fasteners.read_locked</span>
+<div class="viewcode-block" id="Storage.has_failures"><a class="viewcode-back" href="../../persistence.html#taskflow.storage.Storage.has_failures">[docs]</a>    <span class="k">def</span> <span class="nf">has_failures</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Returns true if there are **any** failures in storage.&quot;&quot;&quot;</span>
+        <span class="k">for</span> <span class="n">fail_cache</span> <span class="ow">in</span> <span class="n">six</span><span class="o">.</span><span class="n">itervalues</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_failures</span><span class="p">):</span>
+            <span class="k">if</span> <span class="n">fail_cache</span><span class="p">:</span>
+                <span class="k">return</span> <span class="bp">True</span>
+        <span class="k">return</span> <span class="bp">False</span></div>
+
+    <span class="nd">@fasteners.write_locked</span>
+<div class="viewcode-block" id="Storage.reset"><a class="viewcode-back" href="../../persistence.html#taskflow.storage.Storage.reset">[docs]</a>    <span class="k">def</span> <span class="nf">reset</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">atom_name</span><span class="p">,</span> <span class="n">state</span><span class="o">=</span><span class="n">states</span><span class="o">.</span><span class="n">PENDING</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Reset atom with given name (if the atom is not in a given state).&quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="n">atom_name</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">injector_name</span><span class="p">:</span>
+            <span class="k">return</span>
+        <span class="n">source</span><span class="p">,</span> <span class="n">clone</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_atomdetail_by_name</span><span class="p">(</span><span class="n">atom_name</span><span class="p">,</span> <span class="n">clone</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">source</span><span class="o">.</span><span class="n">state</span> <span class="o">==</span> <span class="n">state</span><span class="p">:</span>
+            <span class="k">return</span>
+        <span class="n">clone</span><span class="o">.</span><span class="n">reset</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_with_connection</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_save_atom_detail</span><span class="p">,</span> <span class="n">source</span><span class="p">,</span> <span class="n">clone</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_failures</span><span class="p">[</span><span class="n">clone</span><span class="o">.</span><span class="n">name</span><span class="p">]</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span></div>
+
+<div class="viewcode-block" id="Storage.inject_atom_args"><a class="viewcode-back" href="../../persistence.html#taskflow.storage.Storage.inject_atom_args">[docs]</a>    <span class="k">def</span> <span class="nf">inject_atom_args</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">atom_name</span><span class="p">,</span> <span class="n">pairs</span><span class="p">,</span> <span class="n">transient</span><span class="o">=</span><span class="bp">True</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Add values into storage for a specific atom only.</span>
+
+<span class="sd">        :param transient: save the data in-memory only instead of persisting</span>
+<span class="sd">                the data to backend storage (useful for resource-like objects</span>
+<span class="sd">                or similar objects which can **not** be persisted)</span>
+
+<span class="sd">        This method injects a dictionary/pairs of arguments for an atom so that</span>
+<span class="sd">        when that atom is scheduled for execution it will have immediate access</span>
+<span class="sd">        to these arguments.</span>
+
+<span class="sd">        .. note::</span>
+
+<span class="sd">            Injected atom arguments take precedence over arguments</span>
+<span class="sd">            provided by predecessor atoms or arguments provided by injecting</span>
+<span class="sd">            into the flow scope (using</span>
+<span class="sd">            the :py:meth:`~taskflow.storage.Storage.inject` method).</span>
+
+<span class="sd">        .. warning::</span>
+
+<span class="sd">            It should be noted that injected atom arguments (that are scoped</span>
+<span class="sd">            to the atom with the given name) *should* be serializable</span>
+<span class="sd">            whenever possible. This is a **requirement** for the</span>
+<span class="sd">            :doc:`worker based engine &lt;workers&gt;` which **must**</span>
+<span class="sd">            serialize (typically using ``json``) all</span>
+<span class="sd">            atom :py:meth:`~taskflow.atom.Atom.execute` and</span>
+<span class="sd">            :py:meth:`~taskflow.atom.Atom.revert` arguments to</span>
+<span class="sd">            be able to transmit those arguments to the target worker(s). If</span>
+<span class="sd">            the use-case being applied/desired is to later use the worker</span>
+<span class="sd">            based engine then it is highly recommended to ensure all injected</span>
+<span class="sd">            atoms (even transient ones) are serializable to avoid issues</span>
+<span class="sd">            that *may* appear later (when a object turned out to not actually</span>
+<span class="sd">            be serializable).</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="n">atom_name</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_atom_name_to_uuid</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">NotFound</span><span class="p">(</span><span class="s2">&quot;Unknown atom name &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span> <span class="o">%</span> <span class="n">atom_name</span><span class="p">)</span>
+
+        <span class="k">def</span> <span class="nf">save_transient</span><span class="p">():</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_injected_args</span><span class="o">.</span><span class="n">setdefault</span><span class="p">(</span><span class="n">atom_name</span><span class="p">,</span> <span class="p">{})</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_injected_args</span><span class="p">[</span><span class="n">atom_name</span><span class="p">]</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">pairs</span><span class="p">)</span>
+
+        <span class="k">def</span> <span class="nf">save_persistent</span><span class="p">():</span>
+            <span class="n">source</span><span class="p">,</span> <span class="n">clone</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_atomdetail_by_name</span><span class="p">(</span><span class="n">atom_name</span><span class="p">,</span> <span class="n">clone</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+            <span class="n">injected</span> <span class="o">=</span> <span class="n">source</span><span class="o">.</span><span class="n">meta</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">META_INJECTED</span><span class="p">)</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">injected</span><span class="p">:</span>
+                <span class="n">injected</span> <span class="o">=</span> <span class="p">{}</span>
+            <span class="n">injected</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">pairs</span><span class="p">)</span>
+            <span class="n">clone</span><span class="o">.</span><span class="n">meta</span><span class="p">[</span><span class="n">META_INJECTED</span><span class="p">]</span> <span class="o">=</span> <span class="n">injected</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_with_connection</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_save_atom_detail</span><span class="p">,</span> <span class="n">source</span><span class="p">,</span> <span class="n">clone</span><span class="p">)</span>
+
+        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_lock</span><span class="o">.</span><span class="n">write_lock</span><span class="p">():</span>
+            <span class="k">if</span> <span class="n">transient</span><span class="p">:</span>
+                <span class="n">save_transient</span><span class="p">()</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">save_persistent</span><span class="p">()</span></div>
+
+    <span class="nd">@fasteners.write_locked</span>
+<div class="viewcode-block" id="Storage.inject"><a class="viewcode-back" href="../../persistence.html#taskflow.storage.Storage.inject">[docs]</a>    <span class="k">def</span> <span class="nf">inject</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">pairs</span><span class="p">,</span> <span class="n">transient</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Add values into storage.</span>
+
+<span class="sd">        This method should be used to put flow parameters (requirements that</span>
+<span class="sd">        are not satisfied by any atom in the flow) into storage.</span>
+
+<span class="sd">        :param transient: save the data in-memory only instead of persisting</span>
+<span class="sd">                the data to backend storage (useful for resource-like objects</span>
+<span class="sd">                or similar objects which can **not** be persisted)</span>
+
+<span class="sd">        .. warning::</span>
+
+<span class="sd">            It should be noted that injected flow arguments (that are scoped</span>
+<span class="sd">            to all atoms in this flow) *should* be serializable whenever</span>
+<span class="sd">            possible. This is a **requirement** for</span>
+<span class="sd">            the :doc:`worker based engine &lt;workers&gt;` which **must**</span>
+<span class="sd">            serialize (typically using ``json``) all</span>
+<span class="sd">            atom :py:meth:`~taskflow.atom.Atom.execute` and</span>
+<span class="sd">            :py:meth:`~taskflow.atom.Atom.revert` arguments to</span>
+<span class="sd">            be able to transmit those arguments to the target worker(s). If</span>
+<span class="sd">            the use-case being applied/desired is to later use the worker</span>
+<span class="sd">            based engine then it is highly recommended to ensure all injected</span>
+<span class="sd">            atoms (even transient ones) are serializable to avoid issues</span>
+<span class="sd">            that *may* appear later (when a object turned out to not actually</span>
+<span class="sd">            be serializable).</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+
+        <span class="k">def</span> <span class="nf">save_persistent</span><span class="p">():</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">source</span><span class="p">,</span> <span class="n">clone</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_atomdetail_by_name</span><span class="p">(</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">injector_name</span><span class="p">,</span>
+                    <span class="n">expected_type</span><span class="o">=</span><span class="n">models</span><span class="o">.</span><span class="n">TaskDetail</span><span class="p">,</span>
+                    <span class="n">clone</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+            <span class="k">except</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">NotFound</span><span class="p">:</span>
+                <span class="c1"># Ensure we have our special task detail...</span>
+                <span class="c1">#</span>
+                <span class="c1"># TODO(harlowja): get this removed when</span>
+                <span class="c1"># https://review.openstack.org/#/c/165645/ merges.</span>
+                <span class="n">source</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_create_atom_detail</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">injector_name</span><span class="p">,</span>
+                                                  <span class="n">models</span><span class="o">.</span><span class="n">TaskDetail</span><span class="p">,</span>
+                                                  <span class="n">atom_state</span><span class="o">=</span><span class="bp">None</span><span class="p">)</span>
+                <span class="n">fd_source</span><span class="p">,</span> <span class="n">fd_clone</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_fetch_flowdetail</span><span class="p">(</span><span class="n">clone</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+                <span class="n">fd_clone</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">source</span><span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_with_connection</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_save_flow_detail</span><span class="p">,</span> <span class="n">fd_source</span><span class="p">,</span>
+                                      <span class="n">fd_clone</span><span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_atom_name_to_uuid</span><span class="p">[</span><span class="n">source</span><span class="o">.</span><span class="n">name</span><span class="p">]</span> <span class="o">=</span> <span class="n">source</span><span class="o">.</span><span class="n">uuid</span>
+                <span class="n">clone</span> <span class="o">=</span> <span class="n">source</span>
+                <span class="n">clone</span><span class="o">.</span><span class="n">results</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">(</span><span class="n">pairs</span><span class="p">)</span>
+                <span class="n">clone</span><span class="o">.</span><span class="n">state</span> <span class="o">=</span> <span class="n">states</span><span class="o">.</span><span class="n">SUCCESS</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">clone</span><span class="o">.</span><span class="n">results</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">pairs</span><span class="p">)</span>
+            <span class="n">result</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_with_connection</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_save_atom_detail</span><span class="p">,</span>
+                                           <span class="n">source</span><span class="p">,</span> <span class="n">clone</span><span class="p">)</span>
+            <span class="k">return</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">injector_name</span><span class="p">,</span> <span class="n">six</span><span class="o">.</span><span class="n">iterkeys</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">results</span><span class="p">))</span>
+
+        <span class="k">def</span> <span class="nf">save_transient</span><span class="p">():</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_transients</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">pairs</span><span class="p">)</span>
+            <span class="k">return</span> <span class="p">(</span><span class="n">_TRANSIENT_PROVIDER</span><span class="p">,</span> <span class="n">six</span><span class="o">.</span><span class="n">iterkeys</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_transients</span><span class="p">))</span>
+
+        <span class="k">if</span> <span class="n">transient</span><span class="p">:</span>
+            <span class="n">provider_name</span><span class="p">,</span> <span class="n">names</span> <span class="o">=</span> <span class="n">save_transient</span><span class="p">()</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">provider_name</span><span class="p">,</span> <span class="n">names</span> <span class="o">=</span> <span class="n">save_persistent</span><span class="p">()</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">_set_result_mapping</span><span class="p">(</span><span class="n">provider_name</span><span class="p">,</span>
+                                 <span class="nb">dict</span><span class="p">((</span><span class="n">name</span><span class="p">,</span> <span class="n">name</span><span class="p">)</span> <span class="k">for</span> <span class="n">name</span> <span class="ow">in</span> <span class="n">names</span><span class="p">))</span></div>
+
+    <span class="k">def</span> <span class="nf">_fetch_providers</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">looking_for</span><span class="p">,</span> <span class="n">providers</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Return pair of (default providers, atom providers).&quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="n">providers</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">providers</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_reverse_mapping</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">looking_for</span><span class="p">,</span> <span class="p">[])</span>
+        <span class="n">default_providers</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="n">atom_providers</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">for</span> <span class="n">p</span> <span class="ow">in</span> <span class="n">providers</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">p</span><span class="o">.</span><span class="n">name</span> <span class="ow">in</span> <span class="p">(</span><span class="n">_TRANSIENT_PROVIDER</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">injector_name</span><span class="p">):</span>
+                <span class="n">default_providers</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">p</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">atom_providers</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">p</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">default_providers</span><span class="p">,</span> <span class="n">atom_providers</span>
+
+    <span class="k">def</span> <span class="nf">_set_result_mapping</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">provider_name</span><span class="p">,</span> <span class="n">mapping</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Sets the result mapping for a given producer.</span>
+
+<span class="sd">        The result saved with given name would be accessible by names</span>
+<span class="sd">        defined in mapping. Mapping is a dict name =&gt; index. If index</span>
+<span class="sd">        is None, the whole result will have this name; else, only</span>
+<span class="sd">        part of it, result[index].</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">provider_mapping</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_result_mappings</span><span class="o">.</span><span class="n">setdefault</span><span class="p">(</span><span class="n">provider_name</span><span class="p">,</span> <span class="p">{})</span>
+        <span class="k">if</span> <span class="n">mapping</span><span class="p">:</span>
+            <span class="n">provider_mapping</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">mapping</span><span class="p">)</span>
+            <span class="c1"># Ensure the reverse mapping/index is updated (for faster lookups).</span>
+            <span class="k">for</span> <span class="n">name</span><span class="p">,</span> <span class="n">index</span> <span class="ow">in</span> <span class="n">six</span><span class="o">.</span><span class="n">iteritems</span><span class="p">(</span><span class="n">provider_mapping</span><span class="p">):</span>
+                <span class="n">entries</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_reverse_mapping</span><span class="o">.</span><span class="n">setdefault</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="p">[])</span>
+                <span class="n">provider</span> <span class="o">=</span> <span class="n">_Provider</span><span class="p">(</span><span class="n">provider_name</span><span class="p">,</span> <span class="n">index</span><span class="p">)</span>
+                <span class="k">if</span> <span class="n">provider</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">entries</span><span class="p">:</span>
+                    <span class="n">entries</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">provider</span><span class="p">)</span>
+
+    <span class="nd">@fasteners.read_locked</span>
+<div class="viewcode-block" id="Storage.fetch"><a class="viewcode-back" href="../../persistence.html#taskflow.storage.Storage.fetch">[docs]</a>    <span class="k">def</span> <span class="nf">fetch</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">many_handler</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Fetch a named ``execute`` result.&quot;&quot;&quot;</span>
+        <span class="k">def</span> <span class="nf">_many_handler</span><span class="p">(</span><span class="n">values</span><span class="p">):</span>
+            <span class="c1"># By default we just return the first of many (unless provided</span>
+            <span class="c1"># a different callback that can translate many results into</span>
+            <span class="c1"># something more meaningful).</span>
+            <span class="k">return</span> <span class="n">values</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+        <span class="k">if</span> <span class="n">many_handler</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">many_handler</span> <span class="o">=</span> <span class="n">_many_handler</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">maybe_providers</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_reverse_mapping</span><span class="p">[</span><span class="n">name</span><span class="p">]</span>
+        <span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">NotFound</span><span class="p">(</span><span class="s2">&quot;Name </span><span class="si">%r</span><span class="s2"> is not mapped as a produced&quot;</span>
+                                      <span class="s2">&quot; output by any providers&quot;</span> <span class="o">%</span> <span class="n">name</span><span class="p">)</span>
+        <span class="n">locator</span> <span class="o">=</span> <span class="n">_ProviderLocator</span><span class="p">(</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_transients</span><span class="p">,</span>
+            <span class="n">functools</span><span class="o">.</span><span class="n">partial</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_fetch_providers</span><span class="p">,</span>
+                              <span class="n">providers</span><span class="o">=</span><span class="n">maybe_providers</span><span class="p">),</span>
+            <span class="k">lambda</span> <span class="n">atom_name</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_get</span><span class="p">(</span><span class="n">atom_name</span><span class="p">,</span> <span class="s1">&#39;last_results&#39;</span><span class="p">,</span> <span class="s1">&#39;failure&#39;</span><span class="p">,</span>
+                          <span class="n">_EXECUTE_STATES_WITH_RESULTS</span><span class="p">,</span> <span class="n">states</span><span class="o">.</span><span class="n">EXECUTE</span><span class="p">))</span>
+        <span class="n">values</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="n">searched_providers</span><span class="p">,</span> <span class="n">providers</span> <span class="o">=</span> <span class="n">locator</span><span class="o">.</span><span class="n">find</span><span class="p">(</span>
+            <span class="n">name</span><span class="p">,</span> <span class="n">short_circuit</span><span class="o">=</span><span class="bp">False</span><span class="p">,</span>
+            <span class="c1"># NOTE(harlowja): There are no scopes used here (as of now), so</span>
+            <span class="c1"># we just return all known providers as if it was one large</span>
+            <span class="c1"># scope.</span>
+            <span class="n">scope_walker</span><span class="o">=</span><span class="p">[[</span><span class="n">p</span><span class="o">.</span><span class="n">name</span> <span class="k">for</span> <span class="n">p</span> <span class="ow">in</span> <span class="n">maybe_providers</span><span class="p">]])</span>
+        <span class="k">for</span> <span class="n">provider</span><span class="p">,</span> <span class="n">results</span> <span class="ow">in</span> <span class="n">providers</span><span class="p">:</span>
+            <span class="n">values</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">_item_from_single</span><span class="p">(</span><span class="n">provider</span><span class="p">,</span> <span class="n">results</span><span class="p">,</span> <span class="n">name</span><span class="p">))</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">values</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">NotFound</span><span class="p">(</span>
+                <span class="s2">&quot;Unable to find result </span><span class="si">%r</span><span class="s2">, searched </span><span class="si">%s</span><span class="s2"> providers&quot;</span>
+                <span class="o">%</span> <span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">searched_providers</span><span class="p">)))</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">many_handler</span><span class="p">(</span><span class="n">values</span><span class="p">)</span></div>
+
+    <span class="nd">@fasteners.read_locked</span>
+<div class="viewcode-block" id="Storage.fetch_unsatisfied_args"><a class="viewcode-back" href="../../persistence.html#taskflow.storage.Storage.fetch_unsatisfied_args">[docs]</a>    <span class="k">def</span> <span class="nf">fetch_unsatisfied_args</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">atom_name</span><span class="p">,</span> <span class="n">args_mapping</span><span class="p">,</span>
+                               <span class="n">scope_walker</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">optional_args</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Fetch unsatisfied ``execute`` arguments using an atoms args mapping.</span>
+
+<span class="sd">        NOTE(harlowja): this takes into account the provided scope walker</span>
+<span class="sd">        atoms who should produce the required value at runtime, as well as</span>
+<span class="sd">        the transient/persistent flow and atom specific injected arguments.</span>
+<span class="sd">        It does **not** check if the providers actually have produced the</span>
+<span class="sd">        needed values; it just checks that they are registered to produce</span>
+<span class="sd">        it in the future.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">source</span><span class="p">,</span> <span class="n">_clone</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_atomdetail_by_name</span><span class="p">(</span><span class="n">atom_name</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">scope_walker</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">scope_walker</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_scope_fetcher</span><span class="p">(</span><span class="n">atom_name</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">optional_args</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">optional_args</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="n">injected_sources</span> <span class="o">=</span> <span class="p">[</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_injected_args</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">atom_name</span><span class="p">,</span> <span class="p">{}),</span>
+            <span class="n">source</span><span class="o">.</span><span class="n">meta</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">META_INJECTED</span><span class="p">,</span> <span class="p">{}),</span>
+        <span class="p">]</span>
+        <span class="n">missing</span> <span class="o">=</span> <span class="nb">set</span><span class="p">(</span><span class="n">six</span><span class="o">.</span><span class="n">iterkeys</span><span class="p">(</span><span class="n">args_mapping</span><span class="p">))</span>
+        <span class="n">locator</span> <span class="o">=</span> <span class="n">_ProviderLocator</span><span class="p">(</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_transients</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_fetch_providers</span><span class="p">,</span>
+            <span class="k">lambda</span> <span class="n">atom_name</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_get</span><span class="p">(</span><span class="n">atom_name</span><span class="p">,</span> <span class="s1">&#39;last_results&#39;</span><span class="p">,</span> <span class="s1">&#39;failure&#39;</span><span class="p">,</span>
+                          <span class="n">_EXECUTE_STATES_WITH_RESULTS</span><span class="p">,</span> <span class="n">states</span><span class="o">.</span><span class="n">EXECUTE</span><span class="p">))</span>
+        <span class="k">for</span> <span class="p">(</span><span class="n">bound_name</span><span class="p">,</span> <span class="n">name</span><span class="p">)</span> <span class="ow">in</span> <span class="n">six</span><span class="o">.</span><span class="n">iteritems</span><span class="p">(</span><span class="n">args_mapping</span><span class="p">):</span>
+            <span class="k">if</span> <span class="n">LOG</span><span class="o">.</span><span class="n">isEnabledFor</span><span class="p">(</span><span class="n">logging</span><span class="o">.</span><span class="n">TRACE</span><span class="p">):</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">trace</span><span class="p">(</span><span class="s2">&quot;Looking for </span><span class="si">%r</span><span class="s2"> &lt;= </span><span class="si">%r</span><span class="s2"> for atom &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span><span class="p">,</span>
+                          <span class="n">bound_name</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">atom_name</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">bound_name</span> <span class="ow">in</span> <span class="n">optional_args</span><span class="p">:</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">trace</span><span class="p">(</span><span class="s2">&quot;Argument </span><span class="si">%r</span><span class="s2"> is optional, skipping&quot;</span><span class="p">,</span> <span class="n">bound_name</span><span class="p">)</span>
+                <span class="n">missing</span><span class="o">.</span><span class="n">discard</span><span class="p">(</span><span class="n">bound_name</span><span class="p">)</span>
+                <span class="k">continue</span>
+            <span class="n">maybe_providers</span> <span class="o">=</span> <span class="mi">0</span>
+            <span class="k">for</span> <span class="n">source</span> <span class="ow">in</span> <span class="n">injected_sources</span><span class="p">:</span>
+                <span class="k">if</span> <span class="ow">not</span> <span class="n">source</span><span class="p">:</span>
+                    <span class="k">continue</span>
+                <span class="k">if</span> <span class="n">name</span> <span class="ow">in</span> <span class="n">source</span><span class="p">:</span>
+                    <span class="n">maybe_providers</span> <span class="o">+=</span> <span class="mi">1</span>
+            <span class="n">maybe_providers</span> <span class="o">+=</span> <span class="nb">len</span><span class="p">(</span>
+                <span class="n">locator</span><span class="o">.</span><span class="n">find_potentials</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">scope_walker</span><span class="o">=</span><span class="n">scope_walker</span><span class="p">))</span>
+            <span class="k">if</span> <span class="n">maybe_providers</span><span class="p">:</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">trace</span><span class="p">(</span><span class="s2">&quot;Atom &#39;</span><span class="si">%s</span><span class="s2">&#39; will have </span><span class="si">%s</span><span class="s2"> potential providers&quot;</span>
+                          <span class="s2">&quot; of </span><span class="si">%r</span><span class="s2"> &lt;= </span><span class="si">%r</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">atom_name</span><span class="p">,</span> <span class="n">maybe_providers</span><span class="p">,</span>
+                          <span class="n">bound_name</span><span class="p">,</span> <span class="n">name</span><span class="p">)</span>
+                <span class="n">missing</span><span class="o">.</span><span class="n">discard</span><span class="p">(</span><span class="n">bound_name</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">missing</span></div>
+
+    <span class="nd">@fasteners.read_locked</span>
+<div class="viewcode-block" id="Storage.fetch_all"><a class="viewcode-back" href="../../persistence.html#taskflow.storage.Storage.fetch_all">[docs]</a>    <span class="k">def</span> <span class="nf">fetch_all</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">many_handler</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Fetch all named ``execute`` results known so far.&quot;&quot;&quot;</span>
+        <span class="k">def</span> <span class="nf">_many_handler</span><span class="p">(</span><span class="n">values</span><span class="p">):</span>
+            <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">values</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">1</span><span class="p">:</span>
+                <span class="k">return</span> <span class="n">values</span>
+            <span class="k">return</span> <span class="n">values</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+        <span class="k">if</span> <span class="n">many_handler</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">many_handler</span> <span class="o">=</span> <span class="n">_many_handler</span>
+        <span class="n">results</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="k">for</span> <span class="n">name</span> <span class="ow">in</span> <span class="n">six</span><span class="o">.</span><span class="n">iterkeys</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_reverse_mapping</span><span class="p">):</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">results</span><span class="p">[</span><span class="n">name</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">fetch</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">many_handler</span><span class="o">=</span><span class="n">many_handler</span><span class="p">)</span>
+            <span class="k">except</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">NotFound</span><span class="p">:</span>
+                <span class="k">pass</span>
+        <span class="k">return</span> <span class="n">results</span></div>
+
+    <span class="nd">@fasteners.read_locked</span>
+<div class="viewcode-block" id="Storage.fetch_mapped_args"><a class="viewcode-back" href="../../persistence.html#taskflow.storage.Storage.fetch_mapped_args">[docs]</a>    <span class="k">def</span> <span class="nf">fetch_mapped_args</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">args_mapping</span><span class="p">,</span>
+                          <span class="n">atom_name</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">scope_walker</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+                          <span class="n">optional_args</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Fetch ``execute`` arguments for an atom using its args mapping.&quot;&quot;&quot;</span>
+        <span class="k">def</span> <span class="nf">_extract_first_from</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">sources</span><span class="p">):</span>
+            <span class="sd">&quot;&quot;&quot;Extracts/returns first occurrence of key in list of dicts.&quot;&quot;&quot;</span>
+            <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="n">source</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">sources</span><span class="p">):</span>
+                <span class="k">if</span> <span class="ow">not</span> <span class="n">source</span><span class="p">:</span>
+                    <span class="k">continue</span>
+                <span class="k">if</span> <span class="n">name</span> <span class="ow">in</span> <span class="n">source</span><span class="p">:</span>
+                    <span class="k">return</span> <span class="p">(</span><span class="n">i</span><span class="p">,</span> <span class="n">source</span><span class="p">[</span><span class="n">name</span><span class="p">])</span>
+            <span class="k">raise</span> <span class="ne">KeyError</span><span class="p">(</span><span class="n">name</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">optional_args</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">optional_args</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">if</span> <span class="n">atom_name</span><span class="p">:</span>
+            <span class="n">source</span><span class="p">,</span> <span class="n">_clone</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_atomdetail_by_name</span><span class="p">(</span><span class="n">atom_name</span><span class="p">)</span>
+            <span class="n">injected_sources</span> <span class="o">=</span> <span class="p">[</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_injected_args</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">atom_name</span><span class="p">,</span> <span class="p">{}),</span>
+                <span class="n">source</span><span class="o">.</span><span class="n">meta</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">META_INJECTED</span><span class="p">,</span> <span class="p">{}),</span>
+            <span class="p">]</span>
+            <span class="k">if</span> <span class="n">scope_walker</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="n">scope_walker</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_scope_fetcher</span><span class="p">(</span><span class="n">atom_name</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">injected_sources</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">args_mapping</span><span class="p">:</span>
+            <span class="k">return</span> <span class="p">{}</span>
+        <span class="n">get_results</span> <span class="o">=</span> <span class="k">lambda</span> <span class="n">atom_name</span><span class="p">:</span> \
+            <span class="bp">self</span><span class="o">.</span><span class="n">_get</span><span class="p">(</span><span class="n">atom_name</span><span class="p">,</span> <span class="s1">&#39;last_results&#39;</span><span class="p">,</span> <span class="s1">&#39;failure&#39;</span><span class="p">,</span>
+                      <span class="n">_EXECUTE_STATES_WITH_RESULTS</span><span class="p">,</span> <span class="n">states</span><span class="o">.</span><span class="n">EXECUTE</span><span class="p">)</span>
+        <span class="n">mapped_args</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="k">for</span> <span class="p">(</span><span class="n">bound_name</span><span class="p">,</span> <span class="n">name</span><span class="p">)</span> <span class="ow">in</span> <span class="n">six</span><span class="o">.</span><span class="n">iteritems</span><span class="p">(</span><span class="n">args_mapping</span><span class="p">):</span>
+            <span class="k">if</span> <span class="n">LOG</span><span class="o">.</span><span class="n">isEnabledFor</span><span class="p">(</span><span class="n">logging</span><span class="o">.</span><span class="n">TRACE</span><span class="p">):</span>
+                <span class="k">if</span> <span class="n">atom_name</span><span class="p">:</span>
+                    <span class="n">LOG</span><span class="o">.</span><span class="n">trace</span><span class="p">(</span><span class="s2">&quot;Looking for </span><span class="si">%r</span><span class="s2"> &lt;= </span><span class="si">%r</span><span class="s2"> for atom &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span><span class="p">,</span>
+                              <span class="n">bound_name</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">atom_name</span><span class="p">)</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="n">LOG</span><span class="o">.</span><span class="n">trace</span><span class="p">(</span><span class="s2">&quot;Looking for </span><span class="si">%r</span><span class="s2"> &lt;= </span><span class="si">%r</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">bound_name</span><span class="p">,</span> <span class="n">name</span><span class="p">)</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">source_index</span><span class="p">,</span> <span class="n">value</span> <span class="o">=</span> <span class="n">_extract_first_from</span><span class="p">(</span>
+                    <span class="n">name</span><span class="p">,</span> <span class="n">injected_sources</span><span class="p">)</span>
+                <span class="n">mapped_args</span><span class="p">[</span><span class="n">bound_name</span><span class="p">]</span> <span class="o">=</span> <span class="n">value</span>
+                <span class="k">if</span> <span class="n">LOG</span><span class="o">.</span><span class="n">isEnabledFor</span><span class="p">(</span><span class="n">logging</span><span class="o">.</span><span class="n">TRACE</span><span class="p">):</span>
+                    <span class="k">if</span> <span class="n">source_index</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+                        <span class="n">LOG</span><span class="o">.</span><span class="n">trace</span><span class="p">(</span><span class="s2">&quot;Matched </span><span class="si">%r</span><span class="s2"> &lt;= </span><span class="si">%r</span><span class="s2"> to </span><span class="si">%r</span><span class="s2"> (from injected&quot;</span>
+                                  <span class="s2">&quot; atom-specific transient&quot;</span>
+                                  <span class="s2">&quot; values)&quot;</span><span class="p">,</span> <span class="n">bound_name</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+                    <span class="k">else</span><span class="p">:</span>
+                        <span class="n">LOG</span><span class="o">.</span><span class="n">trace</span><span class="p">(</span><span class="s2">&quot;Matched </span><span class="si">%r</span><span class="s2"> &lt;= </span><span class="si">%r</span><span class="s2"> to </span><span class="si">%r</span><span class="s2"> (from injected&quot;</span>
+                                  <span class="s2">&quot; atom-specific persistent&quot;</span>
+                                  <span class="s2">&quot; values)&quot;</span><span class="p">,</span> <span class="n">bound_name</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+            <span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+                <span class="k">try</span><span class="p">:</span>
+                    <span class="n">maybe_providers</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_reverse_mapping</span><span class="p">[</span><span class="n">name</span><span class="p">]</span>
+                <span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+                    <span class="k">if</span> <span class="n">bound_name</span> <span class="ow">in</span> <span class="n">optional_args</span><span class="p">:</span>
+                        <span class="n">LOG</span><span class="o">.</span><span class="n">trace</span><span class="p">(</span><span class="s2">&quot;Argument </span><span class="si">%r</span><span class="s2"> is optional, skipping&quot;</span><span class="p">,</span>
+                                  <span class="n">bound_name</span><span class="p">)</span>
+                        <span class="k">continue</span>
+                    <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">NotFound</span><span class="p">(</span><span class="s2">&quot;Name </span><span class="si">%r</span><span class="s2"> is not mapped as a&quot;</span>
+                                              <span class="s2">&quot; produced output by any&quot;</span>
+                                              <span class="s2">&quot; providers&quot;</span> <span class="o">%</span> <span class="n">name</span><span class="p">)</span>
+                <span class="n">locator</span> <span class="o">=</span> <span class="n">_ProviderLocator</span><span class="p">(</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_transients</span><span class="p">,</span>
+                    <span class="n">functools</span><span class="o">.</span><span class="n">partial</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_fetch_providers</span><span class="p">,</span>
+                                      <span class="n">providers</span><span class="o">=</span><span class="n">maybe_providers</span><span class="p">),</span> <span class="n">get_results</span><span class="p">)</span>
+                <span class="n">searched_providers</span><span class="p">,</span> <span class="n">providers</span> <span class="o">=</span> <span class="n">locator</span><span class="o">.</span><span class="n">find</span><span class="p">(</span>
+                    <span class="n">name</span><span class="p">,</span> <span class="n">scope_walker</span><span class="o">=</span><span class="n">scope_walker</span><span class="p">)</span>
+                <span class="k">if</span> <span class="ow">not</span> <span class="n">providers</span><span class="p">:</span>
+                    <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">NotFound</span><span class="p">(</span>
+                        <span class="s2">&quot;Mapped argument </span><span class="si">%r</span><span class="s2"> &lt;= </span><span class="si">%r</span><span class="s2"> was not produced&quot;</span>
+                        <span class="s2">&quot; by any accessible provider (</span><span class="si">%s</span><span class="s2"> possible&quot;</span>
+                        <span class="s2">&quot; providers were scanned)&quot;</span>
+                        <span class="o">%</span> <span class="p">(</span><span class="n">bound_name</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">searched_providers</span><span class="p">)))</span>
+                <span class="n">provider</span><span class="p">,</span> <span class="n">value</span> <span class="o">=</span> <span class="n">_item_from_first_of</span><span class="p">(</span><span class="n">providers</span><span class="p">,</span> <span class="n">name</span><span class="p">)</span>
+                <span class="n">mapped_args</span><span class="p">[</span><span class="n">bound_name</span><span class="p">]</span> <span class="o">=</span> <span class="n">value</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">trace</span><span class="p">(</span><span class="s2">&quot;Matched </span><span class="si">%r</span><span class="s2"> &lt;= </span><span class="si">%r</span><span class="s2"> to </span><span class="si">%r</span><span class="s2"> (from </span><span class="si">%s</span><span class="s2">)&quot;</span><span class="p">,</span>
+                          <span class="n">bound_name</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">value</span><span class="p">,</span> <span class="n">provider</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">mapped_args</span></div>
+
+    <span class="nd">@fasteners.write_locked</span>
+<div class="viewcode-block" id="Storage.set_flow_state"><a class="viewcode-back" href="../../persistence.html#taskflow.storage.Storage.set_flow_state">[docs]</a>    <span class="k">def</span> <span class="nf">set_flow_state</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Set flow details state and save it.&quot;&quot;&quot;</span>
+        <span class="n">source</span><span class="p">,</span> <span class="n">clone</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_fetch_flowdetail</span><span class="p">(</span><span class="n">clone</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+        <span class="n">clone</span><span class="o">.</span><span class="n">state</span> <span class="o">=</span> <span class="n">state</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_with_connection</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_save_flow_detail</span><span class="p">,</span> <span class="n">source</span><span class="p">,</span> <span class="n">clone</span><span class="p">)</span></div>
+
+    <span class="nd">@fasteners.write_locked</span>
+<div class="viewcode-block" id="Storage.update_flow_metadata"><a class="viewcode-back" href="../../persistence.html#taskflow.storage.Storage.update_flow_metadata">[docs]</a>    <span class="k">def</span> <span class="nf">update_flow_metadata</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">update_with</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Update flowdetails metadata and save it.&quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="n">update_with</span><span class="p">:</span>
+            <span class="n">source</span><span class="p">,</span> <span class="n">clone</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_fetch_flowdetail</span><span class="p">(</span><span class="n">clone</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+            <span class="n">clone</span><span class="o">.</span><span class="n">meta</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">update_with</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_with_connection</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_save_flow_detail</span><span class="p">,</span> <span class="n">source</span><span class="p">,</span> <span class="n">clone</span><span class="p">)</span></div>
+
+    <span class="nd">@fasteners.write_locked</span>
+<div class="viewcode-block" id="Storage.change_flow_state"><a class="viewcode-back" href="../../persistence.html#taskflow.storage.Storage.change_flow_state">[docs]</a>    <span class="k">def</span> <span class="nf">change_flow_state</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Transition flow from old state to new state.</span>
+
+<span class="sd">        Returns ``(True, old_state)`` if transition was performed,</span>
+<span class="sd">        or ``(False, old_state)`` if it was ignored, or raises a</span>
+<span class="sd">        :py:class:`~taskflow.exceptions.InvalidState` exception if transition</span>
+<span class="sd">        is invalid.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">old_state</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_flow_state</span><span class="p">()</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">states</span><span class="o">.</span><span class="n">check_flow_transition</span><span class="p">(</span><span class="n">old_state</span><span class="p">,</span> <span class="n">state</span><span class="p">):</span>
+            <span class="k">return</span> <span class="p">(</span><span class="bp">False</span><span class="p">,</span> <span class="n">old_state</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">set_flow_state</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+        <span class="k">return</span> <span class="p">(</span><span class="bp">True</span><span class="p">,</span> <span class="n">old_state</span><span class="p">)</span></div>
+
+    <span class="nd">@fasteners.read_locked</span>
+<div class="viewcode-block" id="Storage.get_flow_state"><a class="viewcode-back" href="../../persistence.html#taskflow.storage.Storage.get_flow_state">[docs]</a>    <span class="k">def</span> <span class="nf">get_flow_state</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get state from flow details.&quot;&quot;&quot;</span>
+        <span class="n">source</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_flowdetail</span>
+        <span class="n">state</span> <span class="o">=</span> <span class="n">source</span><span class="o">.</span><span class="n">state</span>
+        <span class="k">if</span> <span class="n">state</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">state</span> <span class="o">=</span> <span class="n">states</span><span class="o">.</span><span class="n">PENDING</span>
+        <span class="k">return</span> <span class="n">state</span></div>
+
+    <span class="k">def</span> <span class="nf">_translate_into_history</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">ad</span><span class="p">):</span>
+        <span class="n">failure</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="k">if</span> <span class="n">ad</span><span class="o">.</span><span class="n">failure</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="c1"># NOTE(harlowja): Try to use our local cache to get a more</span>
+            <span class="c1"># complete failure object that has a traceback (instead of the</span>
+            <span class="c1"># one that is saved which will *typically* not have one)...</span>
+            <span class="n">failure</span> <span class="o">=</span> <span class="n">ad</span><span class="o">.</span><span class="n">failure</span>
+            <span class="n">fail_cache</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_failures</span><span class="p">[</span><span class="n">ad</span><span class="o">.</span><span class="n">name</span><span class="p">]</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">fail</span> <span class="o">=</span> <span class="n">fail_cache</span><span class="p">[</span><span class="n">states</span><span class="o">.</span><span class="n">EXECUTE</span><span class="p">]</span>
+                <span class="k">if</span> <span class="n">failure</span><span class="o">.</span><span class="n">matches</span><span class="p">(</span><span class="n">fail</span><span class="p">):</span>
+                    <span class="n">failure</span> <span class="o">=</span> <span class="n">fail</span>
+            <span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+                <span class="k">pass</span>
+        <span class="k">return</span> <span class="n">retry</span><span class="o">.</span><span class="n">History</span><span class="p">(</span><span class="n">ad</span><span class="o">.</span><span class="n">results</span><span class="p">,</span> <span class="n">failure</span><span class="o">=</span><span class="n">failure</span><span class="p">)</span>
+
+    <span class="nd">@fasteners.read_locked</span>
+<div class="viewcode-block" id="Storage.get_retry_history"><a class="viewcode-back" href="../../persistence.html#taskflow.storage.Storage.get_retry_history">[docs]</a>    <span class="k">def</span> <span class="nf">get_retry_history</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">retry_name</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Fetch a single retrys history.&quot;&quot;&quot;</span>
+        <span class="n">source</span><span class="p">,</span> <span class="n">_clone</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_atomdetail_by_name</span><span class="p">(</span>
+            <span class="n">retry_name</span><span class="p">,</span> <span class="n">expected_type</span><span class="o">=</span><span class="n">models</span><span class="o">.</span><span class="n">RetryDetail</span><span class="p">)</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_translate_into_history</span><span class="p">(</span><span class="n">source</span><span class="p">)</span></div>
+
+    <span class="nd">@fasteners.read_locked</span>
+<div class="viewcode-block" id="Storage.get_retry_histories"><a class="viewcode-back" href="../../persistence.html#taskflow.storage.Storage.get_retry_histories">[docs]</a>    <span class="k">def</span> <span class="nf">get_retry_histories</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Fetch all retrys histories.&quot;&quot;&quot;</span>
+        <span class="n">histories</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">for</span> <span class="n">ad</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_flowdetail</span><span class="p">:</span>
+            <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">ad</span><span class="p">,</span> <span class="n">models</span><span class="o">.</span><span class="n">RetryDetail</span><span class="p">):</span>
+                <span class="n">histories</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">ad</span><span class="o">.</span><span class="n">name</span><span class="p">,</span>
+                                  <span class="bp">self</span><span class="o">.</span><span class="n">_translate_into_history</span><span class="p">(</span><span class="n">ad</span><span class="p">)))</span>
+        <span class="k">return</span> <span class="n">histories</span></div></div>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+  <h3>Navigation</h3>
+  <ul>
+
+    <li><a href="../../index.html">Table Of Contents</a></li>
+
+
+
+  </ul>
+
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/taskflow
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../index.html">TaskFlow 2.9.1.dev9 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../index.html" accesskey="U">Module code</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2017, OpenStack Foundation.
+      Last updated on &#39;Fri Feb 10 20:11:17 2017, commit 643495f&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/TaskFlow");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

@@ -1,0 +1,359 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Testing Zero Downtime Upgrade Process &mdash; nova 15.0.0.0rc2.dev69 documentation</title>
+    
+    <link rel="stylesheet" href="../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/support-matrix.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/feature-matrix.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../',
+        VERSION:     '15.0.0.0rc2.dev69',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../_static/jquery.js"></script>
+    <script type="text/javascript" src="../_static/underscore.js"></script>
+    <script type="text/javascript" src="../_static/doctools.js"></script>
+    <link rel="top" title="nova 15.0.0.0rc2.dev69 documentation" href="../index.html" />
+    <link rel="next" title="Nova Configuration Options" href="../sample_config.html" />
+    <link rel="prev" title="Testing Serial Console" href="serial-console.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="testing-zero-downtime-upgrade-process">
+<h1>Testing Zero Downtime Upgrade Process<a class="headerlink" href="#testing-zero-downtime-upgrade-process" title="Permalink to this headline">¶</a></h1>
+<p>Zero Downtime upgrade eliminates any disruption to nova API service
+during upgrade.</p>
+<p>Nova API services are upgraded at the end. The basic idea of the zero downtime
+upgrade process is to have the connections drain from the old API before
+being upgraded. In this process, new connections go to the new API nodes
+while old connections slowly drain from the old nodes. This ensures that the
+user sees the max_supported API version as a monotonically increasing number.
+There might be some performance degradation during the process due to slow
+HTTP responses and delayed request handling, but there is no API downtime.</p>
+<p>This page describes how to test the zero downtime upgrade process.</p>
+<div class="section" id="environment">
+<h2>Environment<a class="headerlink" href="#environment" title="Permalink to this headline">¶</a></h2>
+<ul>
+<li><dl class="first docutils">
+<dt>Multinode devstack environment with 2 nodes:</dt>
+<dd><ul class="first last simple">
+<li>controller  - All services (N release)</li>
+<li>compute-api - Only n-cpu and n-api services (N release)</li>
+</ul>
+</dd>
+</dl>
+</li>
+<li><p class="first">Highly available load balancer (HAProxy) on top of the n-api services.
+This is required for zero downtime upgrade as it allows one n-api service
+to run while we upgrade the other. See instructions to setup HAProxy below.</p>
+</li>
+</ul>
+</div>
+<div class="section" id="instructions-to-setup-haproxy">
+<h2>Instructions to setup HAProxy<a class="headerlink" href="#instructions-to-setup-haproxy" title="Permalink to this headline">¶</a></h2>
+<p>Install HAProxy and Keepalived on both nodes.</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span><span class="c1"># apt-get install haproxy keepalived</span>
+</pre></div>
+</div>
+<p>Let the kernel know that we intend to bind additional IP addresses that
+won&#8217;t be defined in the interfaces file. To do this, edit <code class="docutils literal"><span class="pre">/etc/sysctl.conf</span></code>
+and add the following line:</p>
+<div class="highlight-INI"><div class="highlight"><pre><span></span><span class="na">net.ipv4.ip_nonlocal_bind</span><span class="o">=</span><span class="s">1</span>
+</pre></div>
+</div>
+<p>Make this take effect without rebooting.</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span><span class="c1"># sysctl -p</span>
+</pre></div>
+</div>
+<p>Configure HAProxy to add backend servers and assign virtual IP to the frontend.
+On both nodes add the below HAProxy config:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span><span class="c1"># cd /etc/haproxy</span>
+<span class="c1"># cat &gt;&gt; haproxy.cfg &lt;&lt;EOF</span>
+
+   global
+      chroot /var/lib/haproxy
+      user haproxy
+      group haproxy
+      daemon
+      log <span class="m">192</span>.168.0.88 local0
+      pidfile  /var/run/haproxy.pid
+      stats socket /var/run/haproxy.sock mode <span class="m">600</span> level admin
+      stats timeout 2m
+      maxconn <span class="m">4000</span>
+
+   defaults
+      log  global
+      maxconn  <span class="m">8000</span>
+      mode  http
+      option  redispatch
+      retries  <span class="m">3</span>
+      stats  <span class="nb">enable</span>
+      timeout  http-request 10s
+      timeout  queue 1m
+      timeout  connect 10s
+      timeout  client 1m
+      timeout  server 1m
+      timeout  check 10s
+
+   frontend nova-api-vip
+      <span class="nb">bind</span> <span class="m">192</span>.168.0.95:8282             <span class="s">&lt;&lt;ha proxy virtual ip&gt;&gt;</span>
+<span class="s">      default_backend nova-api</span>
+
+<span class="s">   backend nova-api</span>
+<span class="s">      balance  roundrobin</span>
+<span class="s">      option  tcplog</span>
+<span class="s">      server  controller 192.168.0.88:8774  ch</span>eck
+      server  apicomp  <span class="m">192</span>.168.0.89:8774  check
+
+  EOF
+</pre></div>
+</div>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">Just change the IP for log in the global section on each node.</p>
+</div>
+<p>On both nodes add <code class="docutils literal"><span class="pre">keepalived.conf</span></code>:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span><span class="c1"># cd /etc/keepalived</span>
+<span class="c1"># cat &gt;&gt; keepalived.conf &lt;&lt;EOF</span>
+
+   global_defs <span class="o">{</span>
+      router_id controller
+   <span class="o">}</span>
+   vrrp_script haproxy <span class="o">{</span>
+      script <span class="s2">&quot;killall -0 haproxy&quot;</span>
+      interval <span class="m">2</span>
+      weight <span class="m">2</span>
+   <span class="o">}</span>
+   vrrp_instance <span class="m">50</span> <span class="o">{</span>
+      virtual_router_id <span class="m">50</span>
+      advert_int <span class="m">1</span>
+      priority <span class="m">101</span>
+      state MASTER
+      interface eth0
+      virtual_ipaddress <span class="o">{</span>
+         <span class="m">192</span>.168.0.95 dev eth0
+      <span class="o">}</span>
+      track_script <span class="o">{</span>
+         haproxy
+      <span class="o">}</span>
+   <span class="o">}</span>
+
+ EOF
+</pre></div>
+</div>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">Change priority on node2 to 100 ( or vice-versa). Add HAProxy virtual IP.</p>
+</div>
+<p>Restart keepalived service.</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span><span class="c1"># service keepalived restart</span>
+</pre></div>
+</div>
+<p>Add <code class="docutils literal"><span class="pre">ENABLED=1</span></code> in <code class="docutils literal"><span class="pre">/etc/default/haproxy</span></code> and then restart HAProxy service.</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span><span class="c1"># service haproxy restart</span>
+</pre></div>
+</div>
+<p>When both the services have restarted, node with the highest priority for keepalived
+claims the virtual IP. You can check which node claimed the virtual IP using:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span><span class="c1"># ip a</span>
+</pre></div>
+</div>
+</div>
+<div class="section" id="zero-downtime-upgrade-process">
+<h2>Zero Downtime upgrade process<a class="headerlink" href="#zero-downtime-upgrade-process" title="Permalink to this headline">¶</a></h2>
+<p>General rolling upgrade process:
+<a class="reference external" href="http://docs.openstack.org/developer/nova/upgrade.html#minimal-downtime-upgrade-process">http://docs.openstack.org/developer/nova/upgrade.html#minimal-downtime-upgrade-process</a></p>
+<div class="section" id="before-upgrade">
+<h3>Before Upgrade<a class="headerlink" href="#before-upgrade" title="Permalink to this headline">¶</a></h3>
+<ul class="simple">
+<li>Change nova-api endpoint in keystone to point to the HAProxy virtual IP.</li>
+<li>Run tempest tests</li>
+<li>Check if n-api services on both nodes are serving the requests.</li>
+</ul>
+</div>
+<div class="section" id="before-maintenance-window">
+<h3>Before maintenance window<a class="headerlink" href="#before-maintenance-window" title="Permalink to this headline">¶</a></h3>
+<ul class="simple">
+<li>Start the upgrade process with controller node.</li>
+<li>Follow the steps from the general rolling upgrade process to install new code and sync the
+db for schema changes.</li>
+</ul>
+</div>
+<div class="section" id="during-maintenance-window">
+<h3>During maintenance window<a class="headerlink" href="#during-maintenance-window" title="Permalink to this headline">¶</a></h3>
+<ul>
+<li><p class="first">Set compute option in upgrade_levels to auto in <code class="docutils literal"><span class="pre">nova.conf</span></code>.</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span><span class="o">[</span>upgrade_levels<span class="o">]</span>
+<span class="nv">compute</span> <span class="o">=</span> auto
+</pre></div>
+</div>
+</li>
+<li><p class="first">Starting with n-cond restart all services except n-api and n-cpu.</p>
+</li>
+<li><p class="first">In small batches gracefully shutdown nova-cpu, then start n-cpu service
+with new version of the code.</p>
+</li>
+<li><p class="first">Run tempest tests.</p>
+</li>
+<li><p class="first">Drain connections on n-api while the tempest tests are running.
+HAProxy allows you to drain the connections by setting weight to zero:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span><span class="c1"># echo &quot;set weight nova-api/&lt;&lt;server&gt;&gt; 0&quot; | sudo socat /var/run/haproxy.sock stdio</span>
+</pre></div>
+</div>
+</li>
+<li><p class="first">OR disable service using:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span><span class="c1"># echo &quot;disable server nova-api/&lt;&lt;server&gt;&gt;&quot; | sudo socat /var/run/haproxy.sock stdio</span>
+</pre></div>
+</div>
+</li>
+<li><p class="first">This allows the current node to complete all the pending requests. When this
+is being upgraded, other api node serves the requests. This way we can
+achieve zero downtime.</p>
+</li>
+<li><p class="first">Restart n-api service and enable n-api using the command:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span><span class="c1"># echo &quot;enable server nova-api/&lt;&lt;server&gt;&gt;&quot; | sudo socat /var/run/haproxy.sock stdio</span>
+</pre></div>
+</div>
+</li>
+<li><p class="first">Drain connections from other old api node in the same way and upgrade.</p>
+</li>
+<li><p class="first">No tempest tests should fail since there is no API downtime.</p>
+</li>
+</ul>
+</div>
+<div class="section" id="after-maintenance-window">
+<h3>After maintenance window<a class="headerlink" href="#after-maintenance-window" title="Permalink to this headline">¶</a></h3>
+<ul class="simple">
+<li>Follow the steps from general rolling upgrade process to clear any cached
+service version data and complete all online data migrations.</li>
+</ul>
+</div>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="../index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Testing Zero Downtime Upgrade Process</a><ul>
+<li><a class="reference internal" href="#environment">Environment</a></li>
+<li><a class="reference internal" href="#instructions-to-setup-haproxy">Instructions to setup HAProxy</a></li>
+<li><a class="reference internal" href="#zero-downtime-upgrade-process">Zero Downtime upgrade process</a><ul>
+<li><a class="reference internal" href="#before-upgrade">Before Upgrade</a></li>
+<li><a class="reference internal" href="#before-maintenance-window">Before maintenance window</a></li>
+<li><a class="reference internal" href="#during-maintenance-window">During maintenance window</a></li>
+<li><a class="reference internal" href="#after-maintenance-window">After maintenance window</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="serial-console.html"
+                                  title="previous chapter">Testing Serial Console</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="../sample_config.html"
+                                  title="next chapter">Nova Configuration Options</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/nova
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="../_sources/testing/zero-downtime-upgrade.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../sample_config.html" title="Nova Configuration Options"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="serial-console.html" title="Testing Serial Console"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../index.html">nova 15.0.0.0rc2.dev69 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2010-present, OpenStack Foundation.
+      Last updated on &#39;Tue Feb 14 09:22:31 2017, commit 159bf6e&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/nova");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

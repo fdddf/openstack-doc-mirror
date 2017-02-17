@@ -1,0 +1,763 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>taskflow.engines.action_engine.engine &mdash; TaskFlow 2.9.1.dev9 documentation</title>
+    
+    <link rel="stylesheet" href="../../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../../',
+        VERSION:     '2.9.1.dev9',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../../_static/doctools.js"></script>
+    <link rel="top" title="TaskFlow 2.9.1.dev9 documentation" href="../../../../index.html" />
+    <link rel="up" title="Module code" href="../../../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for taskflow.engines.action_engine.engine</h1><div class="highlight"><pre>
+<span></span><span class="c1"># -*- coding: utf-8 -*-</span>
+
+<span class="c1">#    Copyright (C) 2012 Yahoo! Inc. All Rights Reserved.</span>
+<span class="c1">#</span>
+<span class="c1">#    Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may</span>
+<span class="c1">#    not use this file except in compliance with the License. You may obtain</span>
+<span class="c1">#    a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#         http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1">#    Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1">#    distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="c1">#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="c1">#    License for the specific language governing permissions and limitations</span>
+<span class="c1">#    under the License.</span>
+
+<span class="kn">import</span> <span class="nn">collections</span>
+<span class="kn">import</span> <span class="nn">contextlib</span>
+<span class="kn">import</span> <span class="nn">itertools</span>
+<span class="kn">import</span> <span class="nn">threading</span>
+
+<span class="kn">from</span> <span class="nn">automaton</span> <span class="kn">import</span> <span class="n">runners</span>
+<span class="kn">from</span> <span class="nn">concurrent</span> <span class="kn">import</span> <span class="n">futures</span>
+<span class="kn">import</span> <span class="nn">fasteners</span>
+<span class="kn">import</span> <span class="nn">networkx</span> <span class="kn">as</span> <span class="nn">nx</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">excutils</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">strutils</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">timeutils</span>
+<span class="kn">import</span> <span class="nn">six</span>
+
+<span class="kn">from</span> <span class="nn">taskflow.engines.action_engine</span> <span class="kn">import</span> <span class="n">builder</span>
+<span class="kn">from</span> <span class="nn">taskflow.engines.action_engine</span> <span class="kn">import</span> <span class="n">compiler</span>
+<span class="kn">from</span> <span class="nn">taskflow.engines.action_engine</span> <span class="kn">import</span> <span class="n">executor</span>
+<span class="kn">from</span> <span class="nn">taskflow.engines.action_engine</span> <span class="kn">import</span> <span class="n">process_executor</span>
+<span class="kn">from</span> <span class="nn">taskflow.engines.action_engine</span> <span class="kn">import</span> <span class="n">runtime</span>
+<span class="kn">from</span> <span class="nn">taskflow.engines</span> <span class="kn">import</span> <span class="n">base</span>
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">exceptions</span> <span class="k">as</span> <span class="n">exc</span>
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">logging</span>
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">states</span>
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">storage</span>
+<span class="kn">from</span> <span class="nn">taskflow.types</span> <span class="kn">import</span> <span class="n">failure</span>
+<span class="kn">from</span> <span class="nn">taskflow.utils</span> <span class="kn">import</span> <span class="n">misc</span>
+
+<span class="n">LOG</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+
+<span class="nd">@contextlib.contextmanager</span>
+<span class="k">def</span> <span class="nf">_start_stop</span><span class="p">(</span><span class="n">task_executor</span><span class="p">,</span> <span class="n">retry_executor</span><span class="p">):</span>
+    <span class="c1"># A teenie helper context manager to safely start/stop engine executors...</span>
+    <span class="n">task_executor</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">retry_executor</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">yield</span> <span class="p">(</span><span class="n">task_executor</span><span class="p">,</span> <span class="n">retry_executor</span><span class="p">)</span>
+        <span class="k">finally</span><span class="p">:</span>
+            <span class="n">retry_executor</span><span class="o">.</span><span class="n">stop</span><span class="p">()</span>
+    <span class="k">finally</span><span class="p">:</span>
+        <span class="n">task_executor</span><span class="o">.</span><span class="n">stop</span><span class="p">()</span>
+
+
+<span class="k">def</span> <span class="nf">_pre_check</span><span class="p">(</span><span class="n">check_compiled</span><span class="o">=</span><span class="bp">True</span><span class="p">,</span> <span class="n">check_storage_ensured</span><span class="o">=</span><span class="bp">True</span><span class="p">,</span>
+               <span class="n">check_validated</span><span class="o">=</span><span class="bp">True</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Engine state precondition checking decorator.&quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="nf">decorator</span><span class="p">(</span><span class="n">meth</span><span class="p">):</span>
+        <span class="n">do_what</span> <span class="o">=</span> <span class="n">meth</span><span class="o">.</span><span class="vm">__name__</span>
+
+        <span class="nd">@six.wraps</span><span class="p">(</span><span class="n">meth</span><span class="p">)</span>
+        <span class="k">def</span> <span class="nf">wrapper</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+            <span class="k">if</span> <span class="n">check_compiled</span> <span class="ow">and</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_compiled</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">InvalidState</span><span class="p">(</span><span class="s2">&quot;Can not </span><span class="si">%s</span><span class="s2"> an engine which&quot;</span>
+                                       <span class="s2">&quot; has not been compiled&quot;</span> <span class="o">%</span> <span class="n">do_what</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">check_storage_ensured</span> <span class="ow">and</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_storage_ensured</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">InvalidState</span><span class="p">(</span><span class="s2">&quot;Can not </span><span class="si">%s</span><span class="s2"> an engine&quot;</span>
+                                       <span class="s2">&quot; which has not had its storage&quot;</span>
+                                       <span class="s2">&quot; populated&quot;</span> <span class="o">%</span> <span class="n">do_what</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">check_validated</span> <span class="ow">and</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_validated</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">InvalidState</span><span class="p">(</span><span class="s2">&quot;Can not </span><span class="si">%s</span><span class="s2"> an engine which&quot;</span>
+                                       <span class="s2">&quot; has not been validated&quot;</span> <span class="o">%</span> <span class="n">do_what</span><span class="p">)</span>
+            <span class="k">return</span> <span class="n">meth</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+
+        <span class="k">return</span> <span class="n">wrapper</span>
+
+    <span class="k">return</span> <span class="n">decorator</span>
+
+
+<div class="viewcode-block" id="ActionEngine"><a class="viewcode-back" href="../../../../engines.html#taskflow.engines.action_engine.engine.ActionEngine">[docs]</a><span class="k">class</span> <span class="nc">ActionEngine</span><span class="p">(</span><span class="n">base</span><span class="o">.</span><span class="n">Engine</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Generic action-based engine.</span>
+
+<span class="sd">    This engine compiles the flow (and any subflows) into a compilation unit</span>
+<span class="sd">    which contains the full runtime definition to be executed and then uses</span>
+<span class="sd">    this compilation unit in combination with the executor, runtime, machine</span>
+<span class="sd">    builder and storage classes to attempt to run your flow (and any</span>
+<span class="sd">    subflows &amp; contained atoms) to completion.</span>
+
+<span class="sd">    NOTE(harlowja): during this process it is permissible and valid to have a</span>
+<span class="sd">    task or multiple tasks in the execution graph fail (at the same time even),</span>
+<span class="sd">    which will cause the process of reversion or retrying to commence. See the</span>
+<span class="sd">    valid states in the states module to learn more about what other states</span>
+<span class="sd">    the tasks and flow being ran can go through.</span>
+
+<span class="sd">    **Engine options:**</span>
+
+<span class="sd">    +----------------------+-----------------------+------+------------+</span>
+<span class="sd">    | Name/key             | Description           | Type | Default    |</span>
+<span class="sd">    +======================+=======================+======+============+</span>
+<span class="sd">    | ``defer_reverts``    | This option lets you  | bool | ``False``  |</span>
+<span class="sd">    |                      | safely nest flows     |      |            |</span>
+<span class="sd">    |                      | with retries inside   |      |            |</span>
+<span class="sd">    |                      | flows without retries |      |            |</span>
+<span class="sd">    |                      | and it still behaves  |      |            |</span>
+<span class="sd">    |                      | as a user would       |      |            |</span>
+<span class="sd">    |                      | expect (for example   |      |            |</span>
+<span class="sd">    |                      | if the retry gets     |      |            |</span>
+<span class="sd">    |                      | exhausted it reverts  |      |            |</span>
+<span class="sd">    |                      | the outer flow unless |      |            |</span>
+<span class="sd">    |                      | the outer flow has a  |      |            |</span>
+<span class="sd">    |                      | has a separate retry  |      |            |</span>
+<span class="sd">    |                      | behavior).            |      |            |</span>
+<span class="sd">    +----------------------+-----------------------+------+------------+</span>
+<span class="sd">    | ``never_resolve``    | When true, instead    | bool | ``False``  |</span>
+<span class="sd">    |                      | of reverting          |      |            |</span>
+<span class="sd">    |                      | and trying to resolve |      |            |</span>
+<span class="sd">    |                      | a atom failure the    |      |            |</span>
+<span class="sd">    |                      | engine will skip      |      |            |</span>
+<span class="sd">    |                      | reverting and abort   |      |            |</span>
+<span class="sd">    |                      | instead of reverting  |      |            |</span>
+<span class="sd">    |                      | and/or retrying.      |      |            |</span>
+<span class="sd">    +----------------------+-----------------------+------+------------+</span>
+<span class="sd">    | ``inject_transient`` | When true, values     | bool | ``True``   |</span>
+<span class="sd">    |                      | that are local to     |      |            |</span>
+<span class="sd">    |                      | each atoms scope      |      |            |</span>
+<span class="sd">    |                      | are injected into     |      |            |</span>
+<span class="sd">    |                      | storage into a        |      |            |</span>
+<span class="sd">    |                      | transient location    |      |            |</span>
+<span class="sd">    |                      | (typically a local    |      |            |</span>
+<span class="sd">    |                      | dictionary), when     |      |            |</span>
+<span class="sd">    |                      | false those values    |      |            |</span>
+<span class="sd">    |                      | are instead persisted |      |            |</span>
+<span class="sd">    |                      | into atom details     |      |            |</span>
+<span class="sd">    |                      | (and saved in a non-  |      |            |</span>
+<span class="sd">    |                      | transient manner).    |      |            |</span>
+<span class="sd">    +----------------------+-----------------------+------+------------+</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">NO_RERAISING_STATES</span> <span class="o">=</span> <span class="nb">frozenset</span><span class="p">([</span><span class="n">states</span><span class="o">.</span><span class="n">SUSPENDED</span><span class="p">,</span> <span class="n">states</span><span class="o">.</span><span class="n">SUCCESS</span><span class="p">])</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    States that if the engine stops in will **not** cause any potential</span>
+<span class="sd">    failures to be reraised. States **not** in this list will cause any</span>
+<span class="sd">    failure/s that were captured (if any) to get reraised.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">IGNORABLE_STATES</span> <span class="o">=</span> <span class="nb">frozenset</span><span class="p">(</span>
+        <span class="n">itertools</span><span class="o">.</span><span class="n">chain</span><span class="p">([</span><span class="n">states</span><span class="o">.</span><span class="n">SCHEDULING</span><span class="p">,</span> <span class="n">states</span><span class="o">.</span><span class="n">WAITING</span><span class="p">,</span> <span class="n">states</span><span class="o">.</span><span class="n">RESUMING</span><span class="p">,</span>
+                         <span class="n">states</span><span class="o">.</span><span class="n">ANALYZING</span><span class="p">],</span> <span class="n">builder</span><span class="o">.</span><span class="n">META_STATES</span><span class="p">))</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Informational states this engines internal machine yields back while</span>
+<span class="sd">    running, not useful to have the engine record but useful to provide to</span>
+<span class="sd">    end-users when doing execution iterations via :py:meth:`.run_iter`.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">MAX_MACHINE_STATES_RETAINED</span> <span class="o">=</span> <span class="mi">10</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    During :py:meth:`~.run_iter` the last X state machine transitions will</span>
+<span class="sd">    be recorded (typically only useful on failure).</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">flow</span><span class="p">,</span> <span class="n">flow_detail</span><span class="p">,</span> <span class="n">backend</span><span class="p">,</span> <span class="n">options</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">ActionEngine</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">flow</span><span class="p">,</span> <span class="n">flow_detail</span><span class="p">,</span> <span class="n">backend</span><span class="p">,</span> <span class="n">options</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_runtime</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_compiled</span> <span class="o">=</span> <span class="bp">False</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_compilation</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_compiler</span> <span class="o">=</span> <span class="n">compiler</span><span class="o">.</span><span class="n">PatternCompiler</span><span class="p">(</span><span class="n">flow</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_lock</span> <span class="o">=</span> <span class="n">threading</span><span class="o">.</span><span class="n">RLock</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_storage_ensured</span> <span class="o">=</span> <span class="bp">False</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_validated</span> <span class="o">=</span> <span class="bp">False</span>
+        <span class="c1"># Retries are not *currently* executed out of the engines process</span>
+        <span class="c1"># or thread (this could change in the future if we desire it to).</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_retry_executor</span> <span class="o">=</span> <span class="n">executor</span><span class="o">.</span><span class="n">SerialRetryExecutor</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_inject_transient</span> <span class="o">=</span> <span class="n">strutils</span><span class="o">.</span><span class="n">bool_from_string</span><span class="p">(</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_options</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;inject_transient&#39;</span><span class="p">,</span> <span class="bp">True</span><span class="p">))</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_gather_statistics</span> <span class="o">=</span> <span class="n">strutils</span><span class="o">.</span><span class="n">bool_from_string</span><span class="p">(</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_options</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;gather_statistics&#39;</span><span class="p">,</span> <span class="bp">True</span><span class="p">))</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_statistics</span> <span class="o">=</span> <span class="p">{}</span>
+
+    <span class="nd">@_pre_check</span><span class="p">(</span><span class="n">check_compiled</span><span class="o">=</span><span class="bp">True</span><span class="p">,</span>
+                <span class="c1"># NOTE(harlowja): We can alter the state of the</span>
+                <span class="c1"># flow without ensuring its storage is setup for</span>
+                <span class="c1"># its atoms (since this state change does not affect</span>
+                <span class="c1"># those units).</span>
+                <span class="n">check_storage_ensured</span><span class="o">=</span><span class="bp">False</span><span class="p">,</span>
+                <span class="n">check_validated</span><span class="o">=</span><span class="bp">False</span><span class="p">)</span>
+    <span class="k">def</span> <span class="nf">suspend</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_change_state</span><span class="p">(</span><span class="n">states</span><span class="o">.</span><span class="n">SUSPENDING</span><span class="p">)</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">statistics</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_statistics</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">compilation</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;The compilation result.</span>
+
+<span class="sd">        NOTE(harlowja): Only accessible after compilation has completed (None</span>
+<span class="sd">        will be returned when this property is accessed before compilation has</span>
+<span class="sd">        completed successfully).</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_compiled</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_compilation</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">None</span>
+
+    <span class="nd">@misc.cachedproperty</span>
+    <span class="k">def</span> <span class="nf">storage</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;The storage unit for this engine.</span>
+
+<span class="sd">        NOTE(harlowja): the atom argument lookup strategy will change for</span>
+<span class="sd">        this storage unit after</span>
+<span class="sd">        :py:func:`~taskflow.engines.base.Engine.compile` has</span>
+<span class="sd">        completed (since **only** after compilation is the actual structure</span>
+<span class="sd">        known). Before :py:func:`~taskflow.engines.base.Engine.compile`</span>
+<span class="sd">        has completed the atom argument lookup strategy lookup will be</span>
+<span class="sd">        restricted to injected arguments **only** (this will **not** reflect</span>
+<span class="sd">        the actual runtime lookup strategy, which typically will be, but is</span>
+<span class="sd">        not always different).</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">def</span> <span class="nf">_scope_fetcher</span><span class="p">(</span><span class="n">atom_name</span><span class="p">):</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_compiled</span><span class="p">:</span>
+                <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_runtime</span><span class="o">.</span><span class="n">fetch_scopes_for</span><span class="p">(</span><span class="n">atom_name</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">return</span> <span class="bp">None</span>
+        <span class="k">return</span> <span class="n">storage</span><span class="o">.</span><span class="n">Storage</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_flow_detail</span><span class="p">,</span>
+                               <span class="n">backend</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_backend</span><span class="p">,</span>
+                               <span class="n">scope_fetcher</span><span class="o">=</span><span class="n">_scope_fetcher</span><span class="p">)</span>
+
+<div class="viewcode-block" id="ActionEngine.run"><a class="viewcode-back" href="../../../../engines.html#taskflow.engines.action_engine.engine.ActionEngine.run">[docs]</a>    <span class="k">def</span> <span class="nf">run</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Runs the engine (or die trying).</span>
+
+<span class="sd">        :param timeout: timeout to wait for any atoms to complete (this timeout</span>
+<span class="sd">            will be used during the waiting period that occurs when</span>
+<span class="sd">            unfinished atoms are being waited on).</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">with</span> <span class="n">fasteners</span><span class="o">.</span><span class="n">try_lock</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_lock</span><span class="p">)</span> <span class="k">as</span> <span class="n">was_locked</span><span class="p">:</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">was_locked</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">ExecutionFailure</span><span class="p">(</span><span class="s2">&quot;Engine currently locked, please&quot;</span>
+                                           <span class="s2">&quot; try again later&quot;</span><span class="p">)</span>
+            <span class="k">for</span> <span class="n">_state</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">run_iter</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">):</span>
+                <span class="k">pass</span></div>
+
+<div class="viewcode-block" id="ActionEngine.run_iter"><a class="viewcode-back" href="../../../../engines.html#taskflow.engines.action_engine.engine.ActionEngine.run_iter">[docs]</a>    <span class="k">def</span> <span class="nf">run_iter</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Runs the engine using iteration (or die trying).</span>
+
+<span class="sd">        :param timeout: timeout to wait for any atoms to complete (this timeout</span>
+<span class="sd">            will be used during the waiting period that occurs after the</span>
+<span class="sd">            waiting state is yielded when unfinished atoms are being waited</span>
+<span class="sd">            on).</span>
+
+<span class="sd">        Instead of running to completion in a blocking manner, this will</span>
+<span class="sd">        return a generator which will yield back the various states that the</span>
+<span class="sd">        engine is going through (and can be used to run multiple engines at</span>
+<span class="sd">        once using a generator per engine). The iterator returned also</span>
+<span class="sd">        responds to the ``send()`` method from :pep:`0342` and will attempt to</span>
+<span class="sd">        suspend itself if a truthy value is sent in (the suspend may be</span>
+<span class="sd">        delayed until all active atoms have finished).</span>
+
+<span class="sd">        NOTE(harlowja): using the ``run_iter`` method will **not** retain the</span>
+<span class="sd">        engine lock while executing so the user should ensure that there is</span>
+<span class="sd">        only one entity using a returned engine iterator (one per engine) at a</span>
+<span class="sd">        given time.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">compile</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">prepare</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">validate</span><span class="p">()</span>
+        <span class="c1"># Keep track of the last X state changes, which if a failure happens</span>
+        <span class="c1"># are quite useful to log (and the performance of tracking this</span>
+        <span class="c1"># should be negligible).</span>
+        <span class="n">last_transitions</span> <span class="o">=</span> <span class="n">collections</span><span class="o">.</span><span class="n">deque</span><span class="p">(</span>
+            <span class="n">maxlen</span><span class="o">=</span><span class="nb">max</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">MAX_MACHINE_STATES_RETAINED</span><span class="p">))</span>
+        <span class="k">with</span> <span class="n">_start_stop</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_task_executor</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_retry_executor</span><span class="p">):</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_change_state</span><span class="p">(</span><span class="n">states</span><span class="o">.</span><span class="n">RUNNING</span><span class="p">)</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_gather_statistics</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_statistics</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
+                <span class="n">w</span> <span class="o">=</span> <span class="n">timeutils</span><span class="o">.</span><span class="n">StopWatch</span><span class="p">()</span>
+                <span class="n">w</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">w</span> <span class="o">=</span> <span class="bp">None</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">closed</span> <span class="o">=</span> <span class="bp">False</span>
+                <span class="n">machine</span><span class="p">,</span> <span class="n">memory</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_runtime</span><span class="o">.</span><span class="n">builder</span><span class="o">.</span><span class="n">build</span><span class="p">(</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_statistics</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">,</span>
+                    <span class="n">gather_statistics</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_gather_statistics</span><span class="p">)</span>
+                <span class="n">r</span> <span class="o">=</span> <span class="n">runners</span><span class="o">.</span><span class="n">FiniteRunner</span><span class="p">(</span><span class="n">machine</span><span class="p">)</span>
+                <span class="k">for</span> <span class="n">transition</span> <span class="ow">in</span> <span class="n">r</span><span class="o">.</span><span class="n">run_iter</span><span class="p">(</span><span class="n">builder</span><span class="o">.</span><span class="n">START</span><span class="p">):</span>
+                    <span class="n">last_transitions</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">transition</span><span class="p">)</span>
+                    <span class="n">_prior_state</span><span class="p">,</span> <span class="n">new_state</span> <span class="o">=</span> <span class="n">transition</span>
+                    <span class="c1"># NOTE(harlowja): skip over meta-states</span>
+                    <span class="k">if</span> <span class="n">new_state</span> <span class="ow">in</span> <span class="n">builder</span><span class="o">.</span><span class="n">META_STATES</span><span class="p">:</span>
+                        <span class="k">continue</span>
+                    <span class="k">if</span> <span class="n">new_state</span> <span class="o">==</span> <span class="n">states</span><span class="o">.</span><span class="n">FAILURE</span><span class="p">:</span>
+                        <span class="n">failure</span><span class="o">.</span><span class="n">Failure</span><span class="o">.</span><span class="n">reraise_if_any</span><span class="p">(</span><span class="n">memory</span><span class="o">.</span><span class="n">failures</span><span class="p">)</span>
+                    <span class="k">if</span> <span class="n">closed</span><span class="p">:</span>
+                        <span class="k">continue</span>
+                    <span class="k">try</span><span class="p">:</span>
+                        <span class="n">try_suspend</span> <span class="o">=</span> <span class="k">yield</span> <span class="n">new_state</span>
+                    <span class="k">except</span> <span class="ne">GeneratorExit</span><span class="p">:</span>
+                        <span class="c1"># The generator was closed, attempt to suspend and</span>
+                        <span class="c1"># continue looping until we have cleanly closed up</span>
+                        <span class="c1"># shop...</span>
+                        <span class="n">closed</span> <span class="o">=</span> <span class="bp">True</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">suspend</span><span class="p">()</span>
+                    <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+                        <span class="c1"># Capture the failure, and ensure that the</span>
+                        <span class="c1"># machine will notice that something externally</span>
+                        <span class="c1"># has sent an exception in and that it should</span>
+                        <span class="c1"># finish up and reraise.</span>
+                        <span class="n">memory</span><span class="o">.</span><span class="n">failures</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">failure</span><span class="o">.</span><span class="n">Failure</span><span class="p">())</span>
+                        <span class="n">closed</span> <span class="o">=</span> <span class="bp">True</span>
+                    <span class="k">else</span><span class="p">:</span>
+                        <span class="k">if</span> <span class="n">try_suspend</span><span class="p">:</span>
+                            <span class="bp">self</span><span class="o">.</span><span class="n">suspend</span><span class="p">()</span>
+            <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+                <span class="k">with</span> <span class="n">excutils</span><span class="o">.</span><span class="n">save_and_reraise_exception</span><span class="p">():</span>
+                    <span class="n">LOG</span><span class="o">.</span><span class="n">exception</span><span class="p">(</span><span class="s2">&quot;Engine execution has failed, something&quot;</span>
+                                  <span class="s2">&quot; bad must of happened (last&quot;</span>
+                                  <span class="s2">&quot; </span><span class="si">%s</span><span class="s2"> machine transitions were </span><span class="si">%s</span><span class="s2">)&quot;</span><span class="p">,</span>
+                                  <span class="n">last_transitions</span><span class="o">.</span><span class="n">maxlen</span><span class="p">,</span>
+                                  <span class="nb">list</span><span class="p">(</span><span class="n">last_transitions</span><span class="p">))</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_change_state</span><span class="p">(</span><span class="n">states</span><span class="o">.</span><span class="n">FAILURE</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">if</span> <span class="n">last_transitions</span><span class="p">:</span>
+                    <span class="n">_prior_state</span><span class="p">,</span> <span class="n">new_state</span> <span class="o">=</span> <span class="n">last_transitions</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span>
+                    <span class="k">if</span> <span class="n">new_state</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">IGNORABLE_STATES</span><span class="p">:</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">_change_state</span><span class="p">(</span><span class="n">new_state</span><span class="p">)</span>
+                        <span class="k">if</span> <span class="n">new_state</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">NO_RERAISING_STATES</span><span class="p">:</span>
+                            <span class="n">e_failures</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">storage</span><span class="o">.</span><span class="n">get_execute_failures</span><span class="p">()</span>
+                            <span class="n">r_failures</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">storage</span><span class="o">.</span><span class="n">get_revert_failures</span><span class="p">()</span>
+                            <span class="n">er_failures</span> <span class="o">=</span> <span class="n">itertools</span><span class="o">.</span><span class="n">chain</span><span class="p">(</span>
+                                <span class="n">six</span><span class="o">.</span><span class="n">itervalues</span><span class="p">(</span><span class="n">e_failures</span><span class="p">),</span>
+                                <span class="n">six</span><span class="o">.</span><span class="n">itervalues</span><span class="p">(</span><span class="n">r_failures</span><span class="p">))</span>
+                            <span class="n">failure</span><span class="o">.</span><span class="n">Failure</span><span class="o">.</span><span class="n">reraise_if_any</span><span class="p">(</span><span class="n">er_failures</span><span class="p">)</span>
+            <span class="k">finally</span><span class="p">:</span>
+                <span class="k">if</span> <span class="n">w</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+                    <span class="n">w</span><span class="o">.</span><span class="n">stop</span><span class="p">()</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_statistics</span><span class="p">[</span><span class="s1">&#39;active_for&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">w</span><span class="o">.</span><span class="n">elapsed</span><span class="p">()</span></div>
+
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span> <span class="nf">_check_compilation</span><span class="p">(</span><span class="n">compilation</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Performs post compilation validation/checks.&quot;&quot;&quot;</span>
+        <span class="n">seen</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+        <span class="n">dups</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+        <span class="n">execution_graph</span> <span class="o">=</span> <span class="n">compilation</span><span class="o">.</span><span class="n">execution_graph</span>
+        <span class="k">for</span> <span class="n">node</span><span class="p">,</span> <span class="n">node_attrs</span> <span class="ow">in</span> <span class="n">execution_graph</span><span class="o">.</span><span class="n">nodes_iter</span><span class="p">(</span><span class="n">data</span><span class="o">=</span><span class="bp">True</span><span class="p">):</span>
+            <span class="k">if</span> <span class="n">node_attrs</span><span class="p">[</span><span class="s1">&#39;kind&#39;</span><span class="p">]</span> <span class="ow">in</span> <span class="n">compiler</span><span class="o">.</span><span class="n">ATOMS</span><span class="p">:</span>
+                <span class="n">atom_name</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">name</span>
+                <span class="k">if</span> <span class="n">atom_name</span> <span class="ow">in</span> <span class="n">seen</span><span class="p">:</span>
+                    <span class="n">dups</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">atom_name</span><span class="p">)</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="n">seen</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">atom_name</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">dups</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">Duplicate</span><span class="p">(</span>
+                <span class="s2">&quot;Atoms with duplicate names found: </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="nb">sorted</span><span class="p">(</span><span class="n">dups</span><span class="p">)))</span>
+        <span class="k">return</span> <span class="n">compilation</span>
+
+    <span class="k">def</span> <span class="nf">_change_state</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state</span><span class="p">):</span>
+        <span class="n">moved</span><span class="p">,</span> <span class="n">old_state</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">storage</span><span class="o">.</span><span class="n">change_flow_state</span><span class="p">(</span><span class="n">state</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">moved</span><span class="p">:</span>
+            <span class="n">details</span> <span class="o">=</span> <span class="p">{</span>
+                <span class="s1">&#39;engine&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="p">,</span>
+                <span class="s1">&#39;flow_name&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">storage</span><span class="o">.</span><span class="n">flow_name</span><span class="p">,</span>
+                <span class="s1">&#39;flow_uuid&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">storage</span><span class="o">.</span><span class="n">flow_uuid</span><span class="p">,</span>
+                <span class="s1">&#39;old_state&#39;</span><span class="p">:</span> <span class="n">old_state</span><span class="p">,</span>
+            <span class="p">}</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">notifier</span><span class="o">.</span><span class="n">notify</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">details</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_ensure_storage</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Ensure all contained atoms exist in the storage unit.&quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">storage</span><span class="o">.</span><span class="n">ensure_atoms</span><span class="p">(</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_runtime</span><span class="o">.</span><span class="n">iterate_nodes</span><span class="p">(</span><span class="n">compiler</span><span class="o">.</span><span class="n">ATOMS</span><span class="p">))</span>
+        <span class="k">for</span> <span class="n">atom</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_runtime</span><span class="o">.</span><span class="n">iterate_nodes</span><span class="p">(</span><span class="n">compiler</span><span class="o">.</span><span class="n">ATOMS</span><span class="p">):</span>
+            <span class="k">if</span> <span class="n">atom</span><span class="o">.</span><span class="n">inject</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">storage</span><span class="o">.</span><span class="n">inject_atom_args</span><span class="p">(</span><span class="n">atom</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="n">atom</span><span class="o">.</span><span class="n">inject</span><span class="p">,</span>
+                                              <span class="n">transient</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_inject_transient</span><span class="p">)</span>
+
+    <span class="nd">@fasteners.locked</span>
+    <span class="nd">@_pre_check</span><span class="p">(</span><span class="n">check_validated</span><span class="o">=</span><span class="bp">False</span><span class="p">)</span>
+    <span class="k">def</span> <span class="nf">validate</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="c1"># At this point we can check to ensure all dependencies are either</span>
+        <span class="c1"># flow/task provided or storage provided, if there are still missing</span>
+        <span class="c1"># dependencies then this flow will fail at runtime (which we can avoid</span>
+        <span class="c1"># by failing at validation time).</span>
+        <span class="k">if</span> <span class="n">LOG</span><span class="o">.</span><span class="n">isEnabledFor</span><span class="p">(</span><span class="n">logging</span><span class="o">.</span><span class="n">TRACE</span><span class="p">):</span>
+            <span class="n">execution_graph</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_compilation</span><span class="o">.</span><span class="n">execution_graph</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">trace</span><span class="p">(</span><span class="s2">&quot;Validating scoping and argument visibility for&quot;</span>
+                      <span class="s2">&quot; execution graph with </span><span class="si">%s</span><span class="s2"> nodes and </span><span class="si">%s</span><span class="s2"> edges with&quot;</span>
+                      <span class="s2">&quot; density </span><span class="si">%0.3f</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">execution_graph</span><span class="o">.</span><span class="n">number_of_nodes</span><span class="p">(),</span>
+                      <span class="n">execution_graph</span><span class="o">.</span><span class="n">number_of_edges</span><span class="p">(),</span>
+                      <span class="n">nx</span><span class="o">.</span><span class="n">density</span><span class="p">(</span><span class="n">execution_graph</span><span class="p">))</span>
+        <span class="n">missing</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+        <span class="c1"># Attempt to retain a chain of what was missing (so that the final</span>
+        <span class="c1"># raised exception for the flow has the nodes that had missing</span>
+        <span class="c1"># dependencies).</span>
+        <span class="n">last_cause</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="n">last_node</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="n">missing_nodes</span> <span class="o">=</span> <span class="mi">0</span>
+        <span class="k">for</span> <span class="n">atom</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_runtime</span><span class="o">.</span><span class="n">iterate_nodes</span><span class="p">(</span><span class="n">compiler</span><span class="o">.</span><span class="n">ATOMS</span><span class="p">):</span>
+            <span class="n">exec_missing</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">storage</span><span class="o">.</span><span class="n">fetch_unsatisfied_args</span><span class="p">(</span>
+                <span class="n">atom</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="n">atom</span><span class="o">.</span><span class="n">rebind</span><span class="p">,</span> <span class="n">optional_args</span><span class="o">=</span><span class="n">atom</span><span class="o">.</span><span class="n">optional</span><span class="p">)</span>
+            <span class="n">revert_missing</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">storage</span><span class="o">.</span><span class="n">fetch_unsatisfied_args</span><span class="p">(</span>
+                <span class="n">atom</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="n">atom</span><span class="o">.</span><span class="n">revert_rebind</span><span class="p">,</span>
+                <span class="n">optional_args</span><span class="o">=</span><span class="n">atom</span><span class="o">.</span><span class="n">revert_optional</span><span class="p">)</span>
+            <span class="n">atom_missing</span> <span class="o">=</span> <span class="p">((</span><span class="s1">&#39;execute&#39;</span><span class="p">,</span> <span class="n">exec_missing</span><span class="p">),</span>
+                            <span class="p">(</span><span class="s1">&#39;revert&#39;</span><span class="p">,</span> <span class="n">revert_missing</span><span class="p">))</span>
+            <span class="k">for</span> <span class="n">method</span><span class="p">,</span> <span class="n">method_missing</span> <span class="ow">in</span> <span class="n">atom_missing</span><span class="p">:</span>
+                <span class="k">if</span> <span class="n">method_missing</span><span class="p">:</span>
+                    <span class="n">cause</span> <span class="o">=</span> <span class="n">exc</span><span class="o">.</span><span class="n">MissingDependencies</span><span class="p">(</span><span class="n">atom</span><span class="p">,</span>
+                                                    <span class="nb">sorted</span><span class="p">(</span><span class="n">method_missing</span><span class="p">),</span>
+                                                    <span class="n">cause</span><span class="o">=</span><span class="n">last_cause</span><span class="p">,</span>
+                                                    <span class="n">method</span><span class="o">=</span><span class="n">method</span><span class="p">)</span>
+                    <span class="n">last_cause</span> <span class="o">=</span> <span class="n">cause</span>
+                    <span class="n">last_node</span> <span class="o">=</span> <span class="n">atom</span>
+                    <span class="n">missing_nodes</span> <span class="o">+=</span> <span class="mi">1</span>
+                    <span class="n">missing</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">method_missing</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">missing</span><span class="p">:</span>
+            <span class="c1"># For when a task is provided (instead of a flow) and that</span>
+            <span class="c1"># task is the only item in the graph and its missing deps, avoid</span>
+            <span class="c1"># re-wrapping it in yet another exception...</span>
+            <span class="k">if</span> <span class="n">missing_nodes</span> <span class="o">==</span> <span class="mi">1</span> <span class="ow">and</span> <span class="n">last_node</span> <span class="ow">is</span> <span class="bp">self</span><span class="o">.</span><span class="n">_flow</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="n">last_cause</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">MissingDependencies</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_flow</span><span class="p">,</span>
+                                              <span class="nb">sorted</span><span class="p">(</span><span class="n">missing</span><span class="p">),</span>
+                                              <span class="n">cause</span><span class="o">=</span><span class="n">last_cause</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_validated</span> <span class="o">=</span> <span class="bp">True</span>
+
+    <span class="nd">@fasteners.locked</span>
+    <span class="nd">@_pre_check</span><span class="p">(</span><span class="n">check_storage_ensured</span><span class="o">=</span><span class="bp">False</span><span class="p">,</span> <span class="n">check_validated</span><span class="o">=</span><span class="bp">False</span><span class="p">)</span>
+    <span class="k">def</span> <span class="nf">prepare</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_storage_ensured</span><span class="p">:</span>
+            <span class="c1"># Set our own state to resuming -&gt; (ensure atoms exist</span>
+            <span class="c1"># in storage) -&gt; suspended in the storage unit and notify any</span>
+            <span class="c1"># attached listeners of these changes.</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_change_state</span><span class="p">(</span><span class="n">states</span><span class="o">.</span><span class="n">RESUMING</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_ensure_storage</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_change_state</span><span class="p">(</span><span class="n">states</span><span class="o">.</span><span class="n">SUSPENDED</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_storage_ensured</span> <span class="o">=</span> <span class="bp">True</span>
+        <span class="c1"># Reset everything back to pending (if we were previously reverted).</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">storage</span><span class="o">.</span><span class="n">get_flow_state</span><span class="p">()</span> <span class="o">==</span> <span class="n">states</span><span class="o">.</span><span class="n">REVERTED</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">reset</span><span class="p">()</span>
+
+    <span class="nd">@fasteners.locked</span>
+    <span class="nd">@_pre_check</span><span class="p">(</span><span class="n">check_validated</span><span class="o">=</span><span class="bp">False</span><span class="p">)</span>
+    <span class="k">def</span> <span class="nf">reset</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="c1"># This transitions *all* contained atoms back into the PENDING state</span>
+        <span class="c1"># with an intention to EXECUTE (or dies trying to do that) and then</span>
+        <span class="c1"># changes the state of the flow to PENDING so that it can then run...</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_runtime</span><span class="o">.</span><span class="n">reset_all</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_change_state</span><span class="p">(</span><span class="n">states</span><span class="o">.</span><span class="n">PENDING</span><span class="p">)</span>
+
+    <span class="nd">@fasteners.locked</span>
+    <span class="k">def</span> <span class="nf">compile</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_compiled</span><span class="p">:</span>
+            <span class="k">return</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_compilation</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_check_compilation</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_compiler</span><span class="o">.</span><span class="n">compile</span><span class="p">())</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_runtime</span> <span class="o">=</span> <span class="n">runtime</span><span class="o">.</span><span class="n">Runtime</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_compilation</span><span class="p">,</span>
+                                        <span class="bp">self</span><span class="o">.</span><span class="n">storage</span><span class="p">,</span>
+                                        <span class="bp">self</span><span class="o">.</span><span class="n">atom_notifier</span><span class="p">,</span>
+                                        <span class="bp">self</span><span class="o">.</span><span class="n">_task_executor</span><span class="p">,</span>
+                                        <span class="bp">self</span><span class="o">.</span><span class="n">_retry_executor</span><span class="p">,</span>
+                                        <span class="n">options</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_options</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_runtime</span><span class="o">.</span><span class="n">compile</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_compiled</span> <span class="o">=</span> <span class="bp">True</span></div>
+
+
+<div class="viewcode-block" id="SerialActionEngine"><a class="viewcode-back" href="../../../../engines.html#taskflow.engines.action_engine.engine.SerialActionEngine">[docs]</a><span class="k">class</span> <span class="nc">SerialActionEngine</span><span class="p">(</span><span class="n">ActionEngine</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Engine that runs tasks in serial manner.&quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">flow</span><span class="p">,</span> <span class="n">flow_detail</span><span class="p">,</span> <span class="n">backend</span><span class="p">,</span> <span class="n">options</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">SerialActionEngine</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">flow</span><span class="p">,</span> <span class="n">flow_detail</span><span class="p">,</span>
+                                                 <span class="n">backend</span><span class="p">,</span> <span class="n">options</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_task_executor</span> <span class="o">=</span> <span class="n">executor</span><span class="o">.</span><span class="n">SerialTaskExecutor</span><span class="p">()</span></div>
+
+
+<span class="k">class</span> <span class="nc">_ExecutorTypeMatch</span><span class="p">(</span><span class="n">collections</span><span class="o">.</span><span class="n">namedtuple</span><span class="p">(</span><span class="s1">&#39;_ExecutorTypeMatch&#39;</span><span class="p">,</span>
+                                                <span class="p">[</span><span class="s1">&#39;types&#39;</span><span class="p">,</span> <span class="s1">&#39;executor_cls&#39;</span><span class="p">])):</span>
+    <span class="k">def</span> <span class="nf">matches</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">executor</span><span class="p">):</span>
+        <span class="k">return</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">executor</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">types</span><span class="p">)</span>
+
+
+<span class="k">class</span> <span class="nc">_ExecutorTextMatch</span><span class="p">(</span><span class="n">collections</span><span class="o">.</span><span class="n">namedtuple</span><span class="p">(</span><span class="s1">&#39;_ExecutorTextMatch&#39;</span><span class="p">,</span>
+                                                <span class="p">[</span><span class="s1">&#39;strings&#39;</span><span class="p">,</span> <span class="s1">&#39;executor_cls&#39;</span><span class="p">])):</span>
+    <span class="k">def</span> <span class="nf">matches</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">text</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">text</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">strings</span>
+
+
+<div class="viewcode-block" id="ParallelActionEngine"><a class="viewcode-back" href="../../../../engines.html#taskflow.engines.action_engine.engine.ParallelActionEngine">[docs]</a><span class="k">class</span> <span class="nc">ParallelActionEngine</span><span class="p">(</span><span class="n">ActionEngine</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Engine that runs tasks in parallel manner.</span>
+
+<span class="sd">    **Additional engine options:**</span>
+
+<span class="sd">    * ``executor``: a object that implements a :pep:`3148` compatible executor</span>
+<span class="sd">      interface; it will be used for scheduling tasks. The following</span>
+<span class="sd">      type are applicable (other unknown types passed will cause a type</span>
+<span class="sd">      error to be raised).</span>
+
+<span class="sd">=========================  ===============================================</span>
+<span class="sd">Type provided              Executor used</span>
+<span class="sd">=========================  ===============================================</span>
+<span class="sd">|cft|.ThreadPoolExecutor   :class:`~.executor.ParallelThreadTaskExecutor`</span>
+<span class="sd">|cfp|.ProcessPoolExecutor  :class:`~.|pe|.ParallelProcessTaskExecutor`</span>
+<span class="sd">|cf|._base.Executor        :class:`~.executor.ParallelThreadTaskExecutor`</span>
+<span class="sd">=========================  ===============================================</span>
+
+<span class="sd">    * ``executor``: a string that will be used to select a :pep:`3148`</span>
+<span class="sd">      compatible executor; it will be used for scheduling tasks. The following</span>
+<span class="sd">      string are applicable (other unknown strings passed will cause a value</span>
+<span class="sd">      error to be raised).</span>
+
+<span class="sd">===========================  ===============================================</span>
+<span class="sd">String (case insensitive)    Executor used</span>
+<span class="sd">===========================  ===============================================</span>
+<span class="sd">``process``                  :class:`~.|pe|.ParallelProcessTaskExecutor`</span>
+<span class="sd">``processes``                :class:`~.|pe|.ParallelProcessTaskExecutor`</span>
+<span class="sd">``thread``                   :class:`~.executor.ParallelThreadTaskExecutor`</span>
+<span class="sd">``threaded``                 :class:`~.executor.ParallelThreadTaskExecutor`</span>
+<span class="sd">``threads``                  :class:`~.executor.ParallelThreadTaskExecutor`</span>
+<span class="sd">``greenthread``              :class:`~.executor.ParallelThreadTaskExecutor`</span>
+<span class="sd">                              (greened version)</span>
+<span class="sd">``greedthreaded``            :class:`~.executor.ParallelThreadTaskExecutor`</span>
+<span class="sd">                              (greened version)</span>
+<span class="sd">``greenthreads``             :class:`~.executor.ParallelThreadTaskExecutor`</span>
+<span class="sd">                              (greened version)</span>
+<span class="sd">===========================  ===============================================</span>
+
+<span class="sd">    * ``max_workers``: a integer that will affect the number of parallel</span>
+<span class="sd">      workers that are used to dispatch tasks into (this number is bounded</span>
+<span class="sd">      by the maximum parallelization your workflow can support).</span>
+
+<span class="sd">    * ``wait_timeout``: a float (in seconds) that will affect the</span>
+<span class="sd">      parallel process task executor (and therefore is **only** applicable when</span>
+<span class="sd">      the executor provided above is of the process variant). This number</span>
+<span class="sd">      affects how much time the process task executor waits for messages from</span>
+<span class="sd">      child processes (typically indicating they have finished or failed). A</span>
+<span class="sd">      lower number will have high granularity but *currently* involves more</span>
+<span class="sd">      polling while a higher number will involve less polling but a slower time</span>
+<span class="sd">      for an engine to notice a task has completed.</span>
+
+<span class="sd">    .. |pe|  replace:: process_executor</span>
+<span class="sd">    .. |cfp| replace:: concurrent.futures.process</span>
+<span class="sd">    .. |cft| replace:: concurrent.futures.thread</span>
+<span class="sd">    .. |cf| replace:: concurrent.futures</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="c1"># One of these types should match when a object (non-string) is provided</span>
+    <span class="c1"># for the &#39;executor&#39; option.</span>
+    <span class="c1">#</span>
+    <span class="c1"># NOTE(harlowja): the reason we use the library/built-in futures is to</span>
+    <span class="c1"># allow for instances of that to be detected and handled correctly, instead</span>
+    <span class="c1"># of forcing everyone to use our derivatives (futurist or other)...</span>
+    <span class="n">_executor_cls_matchers</span> <span class="o">=</span> <span class="p">[</span>
+        <span class="n">_ExecutorTypeMatch</span><span class="p">((</span><span class="n">futures</span><span class="o">.</span><span class="n">ThreadPoolExecutor</span><span class="p">,),</span>
+                           <span class="n">executor</span><span class="o">.</span><span class="n">ParallelThreadTaskExecutor</span><span class="p">),</span>
+        <span class="n">_ExecutorTypeMatch</span><span class="p">((</span><span class="n">futures</span><span class="o">.</span><span class="n">ProcessPoolExecutor</span><span class="p">,),</span>
+                           <span class="n">process_executor</span><span class="o">.</span><span class="n">ParallelProcessTaskExecutor</span><span class="p">),</span>
+        <span class="n">_ExecutorTypeMatch</span><span class="p">((</span><span class="n">futures</span><span class="o">.</span><span class="n">Executor</span><span class="p">,),</span>
+                           <span class="n">executor</span><span class="o">.</span><span class="n">ParallelThreadTaskExecutor</span><span class="p">),</span>
+    <span class="p">]</span>
+
+    <span class="c1"># One of these should match when a string/text is provided for the</span>
+    <span class="c1"># &#39;executor&#39; option (a mixed case equivalent is allowed since the match</span>
+    <span class="c1"># will be lower-cased before checking).</span>
+    <span class="n">_executor_str_matchers</span> <span class="o">=</span> <span class="p">[</span>
+        <span class="n">_ExecutorTextMatch</span><span class="p">(</span><span class="nb">frozenset</span><span class="p">([</span><span class="s1">&#39;processes&#39;</span><span class="p">,</span> <span class="s1">&#39;process&#39;</span><span class="p">]),</span>
+                           <span class="n">process_executor</span><span class="o">.</span><span class="n">ParallelProcessTaskExecutor</span><span class="p">),</span>
+        <span class="n">_ExecutorTextMatch</span><span class="p">(</span><span class="nb">frozenset</span><span class="p">([</span><span class="s1">&#39;thread&#39;</span><span class="p">,</span> <span class="s1">&#39;threads&#39;</span><span class="p">,</span> <span class="s1">&#39;threaded&#39;</span><span class="p">]),</span>
+                           <span class="n">executor</span><span class="o">.</span><span class="n">ParallelThreadTaskExecutor</span><span class="p">),</span>
+        <span class="n">_ExecutorTextMatch</span><span class="p">(</span><span class="nb">frozenset</span><span class="p">([</span><span class="s1">&#39;greenthread&#39;</span><span class="p">,</span> <span class="s1">&#39;greenthreads&#39;</span><span class="p">,</span>
+                                      <span class="s1">&#39;greenthreaded&#39;</span><span class="p">]),</span>
+                           <span class="n">executor</span><span class="o">.</span><span class="n">ParallelGreenThreadTaskExecutor</span><span class="p">),</span>
+    <span class="p">]</span>
+
+    <span class="c1"># Used when no executor is provided (either a string or object)...</span>
+    <span class="n">_default_executor_cls</span> <span class="o">=</span> <span class="n">executor</span><span class="o">.</span><span class="n">ParallelThreadTaskExecutor</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">flow</span><span class="p">,</span> <span class="n">flow_detail</span><span class="p">,</span> <span class="n">backend</span><span class="p">,</span> <span class="n">options</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">ParallelActionEngine</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">flow</span><span class="p">,</span> <span class="n">flow_detail</span><span class="p">,</span>
+                                                   <span class="n">backend</span><span class="p">,</span> <span class="n">options</span><span class="p">)</span>
+        <span class="c1"># This ensures that any provided executor will be validated before</span>
+        <span class="c1"># we get to far in the compilation/execution pipeline...</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_task_executor</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_fetch_task_executor</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_options</span><span class="p">)</span>
+
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span> <span class="nf">_fetch_task_executor</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">options</span><span class="p">):</span>
+        <span class="n">kwargs</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="n">executor_cls</span> <span class="o">=</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_default_executor_cls</span>
+        <span class="c1"># Match the desired executor to a class that will work with it...</span>
+        <span class="n">desired_executor</span> <span class="o">=</span> <span class="n">options</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;executor&#39;</span><span class="p">)</span>
+        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">desired_executor</span><span class="p">,</span> <span class="n">six</span><span class="o">.</span><span class="n">string_types</span><span class="p">):</span>
+            <span class="n">matched_executor_cls</span> <span class="o">=</span> <span class="bp">None</span>
+            <span class="k">for</span> <span class="n">m</span> <span class="ow">in</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_executor_str_matchers</span><span class="p">:</span>
+                <span class="k">if</span> <span class="n">m</span><span class="o">.</span><span class="n">matches</span><span class="p">(</span><span class="n">desired_executor</span><span class="p">):</span>
+                    <span class="n">matched_executor_cls</span> <span class="o">=</span> <span class="n">m</span><span class="o">.</span><span class="n">executor_cls</span>
+                    <span class="k">break</span>
+            <span class="k">if</span> <span class="n">matched_executor_cls</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="n">expected</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+                <span class="k">for</span> <span class="n">m</span> <span class="ow">in</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_executor_str_matchers</span><span class="p">:</span>
+                    <span class="n">expected</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">m</span><span class="o">.</span><span class="n">strings</span><span class="p">)</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;Unknown executor string &#39;</span><span class="si">%s</span><span class="s2">&#39; expected&quot;</span>
+                                 <span class="s2">&quot; one of </span><span class="si">%s</span><span class="s2"> (or mixed case equivalent)&quot;</span>
+                                 <span class="o">%</span> <span class="p">(</span><span class="n">desired_executor</span><span class="p">,</span> <span class="nb">list</span><span class="p">(</span><span class="n">expected</span><span class="p">)))</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">executor_cls</span> <span class="o">=</span> <span class="n">matched_executor_cls</span>
+        <span class="k">elif</span> <span class="n">desired_executor</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">matched_executor_cls</span> <span class="o">=</span> <span class="bp">None</span>
+            <span class="k">for</span> <span class="n">m</span> <span class="ow">in</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_executor_cls_matchers</span><span class="p">:</span>
+                <span class="k">if</span> <span class="n">m</span><span class="o">.</span><span class="n">matches</span><span class="p">(</span><span class="n">desired_executor</span><span class="p">):</span>
+                    <span class="n">matched_executor_cls</span> <span class="o">=</span> <span class="n">m</span><span class="o">.</span><span class="n">executor_cls</span>
+                    <span class="k">break</span>
+            <span class="k">if</span> <span class="n">matched_executor_cls</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="n">expected</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+                <span class="k">for</span> <span class="n">m</span> <span class="ow">in</span> <span class="bp">cls</span><span class="o">.</span><span class="n">_executor_cls_matchers</span><span class="p">:</span>
+                    <span class="n">expected</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">m</span><span class="o">.</span><span class="n">types</span><span class="p">)</span>
+                <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="s2">&quot;Unknown executor &#39;</span><span class="si">%s</span><span class="s2">&#39; (</span><span class="si">%s</span><span class="s2">) expected an&quot;</span>
+                                <span class="s2">&quot; instance of </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">desired_executor</span><span class="p">,</span>
+                                                     <span class="nb">type</span><span class="p">(</span><span class="n">desired_executor</span><span class="p">),</span>
+                                                     <span class="nb">list</span><span class="p">(</span><span class="n">expected</span><span class="p">)))</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">executor_cls</span> <span class="o">=</span> <span class="n">matched_executor_cls</span>
+                <span class="n">kwargs</span><span class="p">[</span><span class="s1">&#39;executor&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">desired_executor</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">for</span> <span class="p">(</span><span class="n">k</span><span class="p">,</span> <span class="n">value_converter</span><span class="p">)</span> <span class="ow">in</span> <span class="n">executor_cls</span><span class="o">.</span><span class="n">constructor_options</span><span class="p">:</span>
+                <span class="k">try</span><span class="p">:</span>
+                    <span class="n">kwargs</span><span class="p">[</span><span class="n">k</span><span class="p">]</span> <span class="o">=</span> <span class="n">value_converter</span><span class="p">(</span><span class="n">options</span><span class="p">[</span><span class="n">k</span><span class="p">])</span>
+                <span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+                    <span class="k">pass</span>
+        <span class="k">except</span> <span class="ne">AttributeError</span><span class="p">:</span>
+            <span class="k">pass</span>
+        <span class="k">return</span> <span class="n">executor_cls</span><span class="p">(</span><span class="o">**</span><span class="n">kwargs</span><span class="p">)</span></div>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+  <h3>Navigation</h3>
+  <ul>
+
+    <li><a href="../../../../index.html">Table Of Contents</a></li>
+
+
+
+  </ul>
+
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/taskflow
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../../../index.html">TaskFlow 2.9.1.dev9 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../../../index.html" accesskey="U">Module code</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2017, OpenStack Foundation.
+      Last updated on &#39;Fri Feb 10 20:11:17 2017, commit 643495f&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/TaskFlow");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

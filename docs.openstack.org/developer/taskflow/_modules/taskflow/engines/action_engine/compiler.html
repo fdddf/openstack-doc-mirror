@@ -1,0 +1,525 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>taskflow.engines.action_engine.compiler &mdash; TaskFlow 2.9.1.dev9 documentation</title>
+    
+    <link rel="stylesheet" href="../../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../../',
+        VERSION:     '2.9.1.dev9',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../../_static/doctools.js"></script>
+    <link rel="top" title="TaskFlow 2.9.1.dev9 documentation" href="../../../../index.html" />
+    <link rel="up" title="Module code" href="../../../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for taskflow.engines.action_engine.compiler</h1><div class="highlight"><pre>
+<span></span><span class="c1"># -*- coding: utf-8 -*-</span>
+
+<span class="c1">#    Copyright (C) 2014 Yahoo! Inc. All Rights Reserved.</span>
+<span class="c1">#</span>
+<span class="c1">#    Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may</span>
+<span class="c1">#    not use this file except in compliance with the License. You may obtain</span>
+<span class="c1">#    a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#         http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1">#    Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1">#    distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="c1">#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="c1">#    License for the specific language governing permissions and limitations</span>
+<span class="c1">#    under the License.</span>
+
+<span class="kn">import</span> <span class="nn">threading</span>
+
+<span class="kn">import</span> <span class="nn">fasteners</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">excutils</span>
+<span class="kn">import</span> <span class="nn">six</span>
+
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">flow</span>
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">logging</span>
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">task</span>
+<span class="kn">from</span> <span class="nn">taskflow.types</span> <span class="kn">import</span> <span class="n">graph</span> <span class="k">as</span> <span class="n">gr</span>
+<span class="kn">from</span> <span class="nn">taskflow.types</span> <span class="kn">import</span> <span class="n">tree</span> <span class="k">as</span> <span class="n">tr</span>
+<span class="kn">from</span> <span class="nn">taskflow.utils</span> <span class="kn">import</span> <span class="n">iter_utils</span>
+<span class="kn">from</span> <span class="nn">taskflow.utils</span> <span class="kn">import</span> <span class="n">misc</span>
+
+<span class="kn">from</span> <span class="nn">taskflow.flow</span> <span class="kn">import</span> <span class="p">(</span><span class="n">LINK_INVARIANT</span><span class="p">,</span> <span class="n">LINK_RETRY</span><span class="p">)</span>  <span class="c1"># noqa</span>
+
+<span class="n">LOG</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+<span class="c1"># Constants attached to node attributes in the execution graph (and tree</span>
+<span class="c1"># node metadata), provided as constants here and constants in the compilation</span>
+<span class="c1"># class (so that users will not have to import this file to access them); but</span>
+<span class="c1"># provide them as module constants so that internal code can more</span>
+<span class="c1"># easily access them...</span>
+<span class="n">TASK</span> <span class="o">=</span> <span class="s1">&#39;task&#39;</span>
+<span class="n">RETRY</span> <span class="o">=</span> <span class="s1">&#39;retry&#39;</span>
+<span class="n">FLOW</span> <span class="o">=</span> <span class="s1">&#39;flow&#39;</span>
+<span class="n">FLOW_END</span> <span class="o">=</span> <span class="s1">&#39;flow_end&#39;</span>
+
+<span class="c1"># Quite often used together, so make a tuple everyone can share...</span>
+<span class="n">ATOMS</span> <span class="o">=</span> <span class="p">(</span><span class="n">TASK</span><span class="p">,</span> <span class="n">RETRY</span><span class="p">)</span>
+<span class="n">FLOWS</span> <span class="o">=</span> <span class="p">(</span><span class="n">FLOW</span><span class="p">,</span> <span class="n">FLOW_END</span><span class="p">)</span>
+
+
+<div class="viewcode-block" id="Terminator"><a class="viewcode-back" href="../../../../engines.html#taskflow.engines.action_engine.compiler.Terminator">[docs]</a><span class="k">class</span> <span class="nc">Terminator</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Flow terminator class.&quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">flow</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_flow</span> <span class="o">=</span> <span class="n">flow</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_name</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="si">%s</span><span class="s2">[$]&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_flow</span><span class="o">.</span><span class="n">name</span><span class="p">,)</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">flow</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;The flow which this terminator signifies/marks the end of.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_flow</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">name</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Useful name this end terminator has (derived from flow name).&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_name</span>
+
+    <span class="k">def</span> <span class="fm">__str__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="s2">&quot;</span><span class="si">%s</span><span class="s2">[$]&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_flow</span><span class="p">,)</span></div>
+
+
+<div class="viewcode-block" id="Compilation"><a class="viewcode-back" href="../../../../engines.html#taskflow.engines.action_engine.compiler.Compilation">[docs]</a><span class="k">class</span> <span class="nc">Compilation</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;The result of a compilers ``compile()`` is this *immutable* object.&quot;&quot;&quot;</span>
+
+    <span class="c1">#: Task nodes will have a ``kind`` metadata key with this value.</span>
+    <span class="n">TASK</span> <span class="o">=</span> <span class="n">TASK</span>
+
+    <span class="c1">#: Retry nodes will have a ``kind`` metadata key with this value.</span>
+    <span class="n">RETRY</span> <span class="o">=</span> <span class="n">RETRY</span>
+
+    <span class="n">FLOW</span> <span class="o">=</span> <span class="n">FLOW</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Flow **entry** nodes will have a ``kind`` metadata key with</span>
+<span class="sd">    this value.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">FLOW_END</span> <span class="o">=</span> <span class="n">FLOW_END</span>
+    <span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Flow **exit** nodes will have a ``kind`` metadata key with</span>
+<span class="sd">    this value (only applicable for compilation execution graph, not currently</span>
+<span class="sd">    used in tree hierarchy).</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">execution_graph</span><span class="p">,</span> <span class="n">hierarchy</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_execution_graph</span> <span class="o">=</span> <span class="n">execution_graph</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_hierarchy</span> <span class="o">=</span> <span class="n">hierarchy</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">execution_graph</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;The execution ordering of atoms (as a graph structure).&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_execution_graph</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">hierarchy</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;The hierarchy of patterns (as a tree structure).&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_hierarchy</span></div>
+
+
+<span class="k">def</span> <span class="nf">_overlap_occurrence_detector</span><span class="p">(</span><span class="n">to_graph</span><span class="p">,</span> <span class="n">from_graph</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Returns how many nodes in &#39;from&#39; graph are in &#39;to&#39; graph (if any).&quot;&quot;&quot;</span>
+    <span class="k">return</span> <span class="n">iter_utils</span><span class="o">.</span><span class="n">count</span><span class="p">(</span><span class="n">node</span> <span class="k">for</span> <span class="n">node</span> <span class="ow">in</span> <span class="n">from_graph</span><span class="o">.</span><span class="n">nodes_iter</span><span class="p">()</span>
+                            <span class="k">if</span> <span class="n">node</span> <span class="ow">in</span> <span class="n">to_graph</span><span class="p">)</span>
+
+
+<span class="k">def</span> <span class="nf">_add_update_edges</span><span class="p">(</span><span class="n">graph</span><span class="p">,</span> <span class="n">nodes_from</span><span class="p">,</span> <span class="n">nodes_to</span><span class="p">,</span> <span class="n">attr_dict</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Adds/updates edges from nodes to other nodes in the specified graph.</span>
+
+<span class="sd">    It will connect the &#39;nodes_from&#39; to the &#39;nodes_to&#39; if an edge currently</span>
+<span class="sd">    does *not* exist (if it does already exist then the edges attributes</span>
+<span class="sd">    are just updated instead). When an edge is created the provided edge</span>
+<span class="sd">    attributes dictionary will be applied to the new edge between these two</span>
+<span class="sd">    nodes.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="c1"># NOTE(harlowja): give each edge its own attr copy so that if it&#39;s</span>
+    <span class="c1"># later modified that the same copy isn&#39;t modified...</span>
+    <span class="k">for</span> <span class="n">u</span> <span class="ow">in</span> <span class="n">nodes_from</span><span class="p">:</span>
+        <span class="k">for</span> <span class="n">v</span> <span class="ow">in</span> <span class="n">nodes_to</span><span class="p">:</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">graph</span><span class="o">.</span><span class="n">has_edge</span><span class="p">(</span><span class="n">u</span><span class="p">,</span> <span class="n">v</span><span class="p">):</span>
+                <span class="k">if</span> <span class="n">attr_dict</span><span class="p">:</span>
+                    <span class="n">graph</span><span class="o">.</span><span class="n">add_edge</span><span class="p">(</span><span class="n">u</span><span class="p">,</span> <span class="n">v</span><span class="p">,</span> <span class="n">attr_dict</span><span class="o">=</span><span class="n">attr_dict</span><span class="o">.</span><span class="n">copy</span><span class="p">())</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="n">graph</span><span class="o">.</span><span class="n">add_edge</span><span class="p">(</span><span class="n">u</span><span class="p">,</span> <span class="n">v</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="c1"># Just update the attr_dict (if any).</span>
+                <span class="k">if</span> <span class="n">attr_dict</span><span class="p">:</span>
+                    <span class="n">graph</span><span class="o">.</span><span class="n">add_edge</span><span class="p">(</span><span class="n">u</span><span class="p">,</span> <span class="n">v</span><span class="p">,</span> <span class="n">attr_dict</span><span class="o">=</span><span class="n">attr_dict</span><span class="o">.</span><span class="n">copy</span><span class="p">())</span>
+
+
+<div class="viewcode-block" id="TaskCompiler"><a class="viewcode-back" href="../../../../engines.html#taskflow.engines.action_engine.compiler.TaskCompiler">[docs]</a><span class="k">class</span> <span class="nc">TaskCompiler</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Non-recursive compiler of tasks.&quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="nf">compile</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">,</span> <span class="n">parent</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="n">graph</span> <span class="o">=</span> <span class="n">gr</span><span class="o">.</span><span class="n">DiGraph</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="n">task</span><span class="o">.</span><span class="n">name</span><span class="p">)</span>
+        <span class="n">graph</span><span class="o">.</span><span class="n">add_node</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">kind</span><span class="o">=</span><span class="n">TASK</span><span class="p">)</span>
+        <span class="n">node</span> <span class="o">=</span> <span class="n">tr</span><span class="o">.</span><span class="n">Node</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">kind</span><span class="o">=</span><span class="n">TASK</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">parent</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">parent</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">node</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">graph</span><span class="p">,</span> <span class="n">node</span></div>
+
+
+<div class="viewcode-block" id="FlowCompiler"><a class="viewcode-back" href="../../../../engines.html#taskflow.engines.action_engine.compiler.FlowCompiler">[docs]</a><span class="k">class</span> <span class="nc">FlowCompiler</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Recursive compiler of flows.&quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">deep_compiler_func</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_deep_compiler_func</span> <span class="o">=</span> <span class="n">deep_compiler_func</span>
+
+<div class="viewcode-block" id="FlowCompiler.compile"><a class="viewcode-back" href="../../../../engines.html#taskflow.engines.action_engine.compiler.FlowCompiler.compile">[docs]</a>    <span class="k">def</span> <span class="nf">compile</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">flow</span><span class="p">,</span> <span class="n">parent</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Decomposes a flow into a graph and scope tree hierarchy.&quot;&quot;&quot;</span>
+        <span class="n">graph</span> <span class="o">=</span> <span class="n">gr</span><span class="o">.</span><span class="n">DiGraph</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="n">flow</span><span class="o">.</span><span class="n">name</span><span class="p">)</span>
+        <span class="n">graph</span><span class="o">.</span><span class="n">add_node</span><span class="p">(</span><span class="n">flow</span><span class="p">,</span> <span class="n">kind</span><span class="o">=</span><span class="n">FLOW</span><span class="p">,</span> <span class="n">noop</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+        <span class="n">tree_node</span> <span class="o">=</span> <span class="n">tr</span><span class="o">.</span><span class="n">Node</span><span class="p">(</span><span class="n">flow</span><span class="p">,</span> <span class="n">kind</span><span class="o">=</span><span class="n">FLOW</span><span class="p">,</span> <span class="n">noop</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">parent</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">parent</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">tree_node</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">flow</span><span class="o">.</span><span class="n">retry</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">tree_node</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">tr</span><span class="o">.</span><span class="n">Node</span><span class="p">(</span><span class="n">flow</span><span class="o">.</span><span class="n">retry</span><span class="p">,</span> <span class="n">kind</span><span class="o">=</span><span class="n">RETRY</span><span class="p">))</span>
+        <span class="n">decomposed</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">(</span>
+            <span class="p">(</span><span class="n">child</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_deep_compiler_func</span><span class="p">(</span><span class="n">child</span><span class="p">,</span> <span class="n">parent</span><span class="o">=</span><span class="n">tree_node</span><span class="p">)[</span><span class="mi">0</span><span class="p">])</span>
+            <span class="k">for</span> <span class="n">child</span> <span class="ow">in</span> <span class="n">flow</span><span class="p">)</span>
+        <span class="n">decomposed_graphs</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="n">six</span><span class="o">.</span><span class="n">itervalues</span><span class="p">(</span><span class="n">decomposed</span><span class="p">))</span>
+        <span class="n">graph</span> <span class="o">=</span> <span class="n">gr</span><span class="o">.</span><span class="n">merge_graphs</span><span class="p">(</span><span class="n">graph</span><span class="p">,</span> <span class="o">*</span><span class="n">decomposed_graphs</span><span class="p">,</span>
+                                <span class="n">overlap_detector</span><span class="o">=</span><span class="n">_overlap_occurrence_detector</span><span class="p">)</span>
+        <span class="k">for</span> <span class="n">u</span><span class="p">,</span> <span class="n">v</span><span class="p">,</span> <span class="n">attr_dict</span> <span class="ow">in</span> <span class="n">flow</span><span class="o">.</span><span class="n">iter_links</span><span class="p">():</span>
+            <span class="n">u_graph</span> <span class="o">=</span> <span class="n">decomposed</span><span class="p">[</span><span class="n">u</span><span class="p">]</span>
+            <span class="n">v_graph</span> <span class="o">=</span> <span class="n">decomposed</span><span class="p">[</span><span class="n">v</span><span class="p">]</span>
+            <span class="n">_add_update_edges</span><span class="p">(</span><span class="n">graph</span><span class="p">,</span> <span class="n">u_graph</span><span class="o">.</span><span class="n">no_successors_iter</span><span class="p">(),</span>
+                              <span class="nb">list</span><span class="p">(</span><span class="n">v_graph</span><span class="o">.</span><span class="n">no_predecessors_iter</span><span class="p">()),</span>
+                              <span class="n">attr_dict</span><span class="o">=</span><span class="n">attr_dict</span><span class="p">)</span>
+        <span class="c1"># Insert the flow(s) retry if needed, and always make sure it</span>
+        <span class="c1"># is the **immediate** successor of the flow node itself.</span>
+        <span class="k">if</span> <span class="n">flow</span><span class="o">.</span><span class="n">retry</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">graph</span><span class="o">.</span><span class="n">add_node</span><span class="p">(</span><span class="n">flow</span><span class="o">.</span><span class="n">retry</span><span class="p">,</span> <span class="n">kind</span><span class="o">=</span><span class="n">RETRY</span><span class="p">)</span>
+            <span class="n">_add_update_edges</span><span class="p">(</span><span class="n">graph</span><span class="p">,</span> <span class="p">[</span><span class="n">flow</span><span class="p">],</span> <span class="p">[</span><span class="n">flow</span><span class="o">.</span><span class="n">retry</span><span class="p">],</span>
+                              <span class="n">attr_dict</span><span class="o">=</span><span class="p">{</span><span class="n">LINK_INVARIANT</span><span class="p">:</span> <span class="bp">True</span><span class="p">})</span>
+            <span class="k">for</span> <span class="n">node</span> <span class="ow">in</span> <span class="n">graph</span><span class="o">.</span><span class="n">nodes_iter</span><span class="p">():</span>
+                <span class="k">if</span> <span class="n">node</span> <span class="ow">is</span> <span class="ow">not</span> <span class="n">flow</span><span class="o">.</span><span class="n">retry</span> <span class="ow">and</span> <span class="n">node</span> <span class="ow">is</span> <span class="ow">not</span> <span class="n">flow</span><span class="p">:</span>
+                    <span class="n">graph</span><span class="o">.</span><span class="n">node</span><span class="p">[</span><span class="n">node</span><span class="p">]</span><span class="o">.</span><span class="n">setdefault</span><span class="p">(</span><span class="n">RETRY</span><span class="p">,</span> <span class="n">flow</span><span class="o">.</span><span class="n">retry</span><span class="p">)</span>
+            <span class="n">from_nodes</span> <span class="o">=</span> <span class="p">[</span><span class="n">flow</span><span class="o">.</span><span class="n">retry</span><span class="p">]</span>
+            <span class="n">attr_dict</span> <span class="o">=</span> <span class="p">{</span><span class="n">LINK_INVARIANT</span><span class="p">:</span> <span class="bp">True</span><span class="p">,</span> <span class="n">LINK_RETRY</span><span class="p">:</span> <span class="bp">True</span><span class="p">}</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">from_nodes</span> <span class="o">=</span> <span class="p">[</span><span class="n">flow</span><span class="p">]</span>
+            <span class="n">attr_dict</span> <span class="o">=</span> <span class="p">{</span><span class="n">LINK_INVARIANT</span><span class="p">:</span> <span class="bp">True</span><span class="p">}</span>
+        <span class="c1"># Ensure all nodes with no predecessors are connected to this flow</span>
+        <span class="c1"># or its retry node (so that the invariant that the flow node is</span>
+        <span class="c1"># traversed through before its contents is maintained); this allows</span>
+        <span class="c1"># us to easily know when we have entered a flow (when running) and</span>
+        <span class="c1"># do special and/or smart things such as only traverse up to the</span>
+        <span class="c1"># start of a flow when looking for node deciders.</span>
+        <span class="n">_add_update_edges</span><span class="p">(</span><span class="n">graph</span><span class="p">,</span> <span class="n">from_nodes</span><span class="p">,</span> <span class="p">[</span>
+            <span class="n">node</span> <span class="k">for</span> <span class="n">node</span> <span class="ow">in</span> <span class="n">graph</span><span class="o">.</span><span class="n">no_predecessors_iter</span><span class="p">()</span>
+            <span class="k">if</span> <span class="n">node</span> <span class="ow">is</span> <span class="ow">not</span> <span class="n">flow</span>
+        <span class="p">],</span> <span class="n">attr_dict</span><span class="o">=</span><span class="n">attr_dict</span><span class="p">)</span>
+        <span class="c1"># Connect all nodes with no successors into a special terminator</span>
+        <span class="c1"># that is used to identify the end of the flow and ensure that all</span>
+        <span class="c1"># execution traversals will traverse over this node before executing</span>
+        <span class="c1"># further work (this is especially useful for nesting and knowing</span>
+        <span class="c1"># when we have exited a nesting level); it allows us to do special</span>
+        <span class="c1"># and/or smart things such as applying deciders up to (but not</span>
+        <span class="c1"># beyond) a flow termination point.</span>
+        <span class="c1">#</span>
+        <span class="c1"># Do note that in a empty flow this will just connect itself to</span>
+        <span class="c1"># the flow node itself... and also note we can not use the flow</span>
+        <span class="c1"># object itself (primarily because the underlying graph library</span>
+        <span class="c1"># uses hashing to identify node uniqueness and we can easily create</span>
+        <span class="c1"># a loop if we don&#39;t do this correctly, so avoid that by just</span>
+        <span class="c1"># creating this special node and tagging it with a special kind); we</span>
+        <span class="c1"># may be able to make this better in the future with a multidigraph</span>
+        <span class="c1"># that networkx provides??</span>
+        <span class="n">flow_term</span> <span class="o">=</span> <span class="n">Terminator</span><span class="p">(</span><span class="n">flow</span><span class="p">)</span>
+        <span class="n">graph</span><span class="o">.</span><span class="n">add_node</span><span class="p">(</span><span class="n">flow_term</span><span class="p">,</span> <span class="n">kind</span><span class="o">=</span><span class="n">FLOW_END</span><span class="p">,</span> <span class="n">noop</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+        <span class="n">_add_update_edges</span><span class="p">(</span><span class="n">graph</span><span class="p">,</span> <span class="p">[</span>
+            <span class="n">node</span> <span class="k">for</span> <span class="n">node</span> <span class="ow">in</span> <span class="n">graph</span><span class="o">.</span><span class="n">no_successors_iter</span><span class="p">()</span>
+            <span class="k">if</span> <span class="n">node</span> <span class="ow">is</span> <span class="ow">not</span> <span class="n">flow_term</span>
+        <span class="p">],</span> <span class="p">[</span><span class="n">flow_term</span><span class="p">],</span> <span class="n">attr_dict</span><span class="o">=</span><span class="p">{</span><span class="n">LINK_INVARIANT</span><span class="p">:</span> <span class="bp">True</span><span class="p">})</span>
+        <span class="k">return</span> <span class="n">graph</span><span class="p">,</span> <span class="n">tree_node</span></div></div>
+
+
+<div class="viewcode-block" id="PatternCompiler"><a class="viewcode-back" href="../../../../engines.html#taskflow.engines.action_engine.compiler.PatternCompiler">[docs]</a><span class="k">class</span> <span class="nc">PatternCompiler</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Compiles a flow pattern (or task) into a compilation unit.</span>
+
+<span class="sd">    Let&#39;s dive into the basic idea for how this works:</span>
+
+<span class="sd">    The compiler here is provided a &#39;root&#39; object via its __init__ method,</span>
+<span class="sd">    this object could be a task, or a flow (one of the supported patterns),</span>
+<span class="sd">    the end-goal is to produce a :py:class:`.Compilation` object as the result</span>
+<span class="sd">    with the needed components. If this is not possible a</span>
+<span class="sd">    :py:class:`~.taskflow.exceptions.CompilationFailure` will be raised.</span>
+<span class="sd">    In the case where a **unknown** type is being requested to compile</span>
+<span class="sd">    a ``TypeError`` will be raised and when a duplicate object (one that</span>
+<span class="sd">    has **already** been compiled) is encountered a ``ValueError`` is raised.</span>
+
+<span class="sd">    The complexity of this comes into play when the &#39;root&#39; is a flow that</span>
+<span class="sd">    contains itself other nested flows (and so-on); to compile this object and</span>
+<span class="sd">    its contained objects into a graph that *preserves* the constraints the</span>
+<span class="sd">    pattern mandates we have to go through a recursive algorithm that creates</span>
+<span class="sd">    subgraphs for each nesting level, and then on the way back up through</span>
+<span class="sd">    the recursion (now with a decomposed mapping from contained patterns or</span>
+<span class="sd">    atoms to there corresponding subgraph) we have to then connect the</span>
+<span class="sd">    subgraphs (and the atom(s) there-in) that were decomposed for a pattern</span>
+<span class="sd">    correctly into a new graph and then ensure the pattern mandated</span>
+<span class="sd">    constraints are retained. Finally we then return to the</span>
+<span class="sd">    caller (and they will do the same thing up until the root node, which by</span>
+<span class="sd">    that point one graph is created with all contained atoms in the</span>
+<span class="sd">    pattern/nested patterns mandated ordering).</span>
+
+<span class="sd">    Also maintained in the :py:class:`.Compilation` object is a hierarchy of</span>
+<span class="sd">    the nesting of items (which is also built up during the above mentioned</span>
+<span class="sd">    recusion, via a much simpler algorithm); this is typically used later to</span>
+<span class="sd">    determine the prior atoms of a given atom when looking up values that can</span>
+<span class="sd">    be provided to that atom for execution (see the scopes.py file for how this</span>
+<span class="sd">    works). Note that although you *could* think that the graph itself could be</span>
+<span class="sd">    used for this, which in some ways it can (for limited usage) the hierarchy</span>
+<span class="sd">    retains the nested structure (which is useful for scoping analysis/lookup)</span>
+<span class="sd">    to be able to provide back a iterator that gives back the scopes visible</span>
+<span class="sd">    at each level (the graph does not have this information once flattened).</span>
+
+<span class="sd">    Let&#39;s take an example:</span>
+
+<span class="sd">    Given the pattern ``f(a(b, c), d)`` where ``f`` is a</span>
+<span class="sd">    :py:class:`~taskflow.patterns.linear_flow.Flow` with items ``a(b, c)``</span>
+<span class="sd">    where ``a`` is a :py:class:`~taskflow.patterns.linear_flow.Flow` composed</span>
+<span class="sd">    of tasks ``(b, c)`` and task ``d``.</span>
+
+<span class="sd">    The algorithm that will be performed (mirroring the above described logic)</span>
+<span class="sd">    will go through the following steps (the tree hierarchy building is left</span>
+<span class="sd">    out as that is more obvious)::</span>
+
+<span class="sd">        Compiling f</span>
+<span class="sd">          - Decomposing flow f with no parent (must be the root)</span>
+<span class="sd">          - Compiling a</span>
+<span class="sd">              - Decomposing flow a with parent f</span>
+<span class="sd">              - Compiling b</span>
+<span class="sd">                  - Decomposing task b with parent a</span>
+<span class="sd">                  - Decomposed b into:</span>
+<span class="sd">                    Name: b</span>
+<span class="sd">                    Nodes: 1</span>
+<span class="sd">                      - b</span>
+<span class="sd">                    Edges: 0</span>
+<span class="sd">              - Compiling c</span>
+<span class="sd">                  - Decomposing task c with parent a</span>
+<span class="sd">                  - Decomposed c into:</span>
+<span class="sd">                    Name: c</span>
+<span class="sd">                    Nodes: 1</span>
+<span class="sd">                      - c</span>
+<span class="sd">                    Edges: 0</span>
+<span class="sd">              - Relinking decomposed b -&gt; decomposed c</span>
+<span class="sd">              - Decomposed a into:</span>
+<span class="sd">                Name: a</span>
+<span class="sd">                Nodes: 2</span>
+<span class="sd">                  - b</span>
+<span class="sd">                  - c</span>
+<span class="sd">                Edges: 1</span>
+<span class="sd">                  b -&gt; c ({&#39;invariant&#39;: True})</span>
+<span class="sd">          - Compiling d</span>
+<span class="sd">              - Decomposing task d with parent f</span>
+<span class="sd">              - Decomposed d into:</span>
+<span class="sd">                Name: d</span>
+<span class="sd">                Nodes: 1</span>
+<span class="sd">                  - d</span>
+<span class="sd">                Edges: 0</span>
+<span class="sd">          - Relinking decomposed a -&gt; decomposed d</span>
+<span class="sd">          - Decomposed f into:</span>
+<span class="sd">            Name: f</span>
+<span class="sd">            Nodes: 3</span>
+<span class="sd">              - c</span>
+<span class="sd">              - b</span>
+<span class="sd">              - d</span>
+<span class="sd">            Edges: 2</span>
+<span class="sd">              c -&gt; d ({&#39;invariant&#39;: True})</span>
+<span class="sd">              b -&gt; c ({&#39;invariant&#39;: True})</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">root</span><span class="p">,</span> <span class="n">freeze</span><span class="o">=</span><span class="bp">True</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_root</span> <span class="o">=</span> <span class="n">root</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_history</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_freeze</span> <span class="o">=</span> <span class="n">freeze</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_lock</span> <span class="o">=</span> <span class="n">threading</span><span class="o">.</span><span class="n">Lock</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_compilation</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_matchers</span> <span class="o">=</span> <span class="p">[</span>
+            <span class="p">(</span><span class="n">flow</span><span class="o">.</span><span class="n">Flow</span><span class="p">,</span> <span class="n">FlowCompiler</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_compile</span><span class="p">)),</span>
+            <span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">Task</span><span class="p">,</span> <span class="n">TaskCompiler</span><span class="p">()),</span>
+        <span class="p">]</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_level</span> <span class="o">=</span> <span class="mi">0</span>
+
+    <span class="k">def</span> <span class="nf">_compile</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">item</span><span class="p">,</span> <span class="n">parent</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Compiles a item (pattern, task) into a graph + tree node.&quot;&quot;&quot;</span>
+        <span class="n">item_compiler</span> <span class="o">=</span> <span class="n">misc</span><span class="o">.</span><span class="n">match_type</span><span class="p">(</span><span class="n">item</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_matchers</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">item_compiler</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_pre_item_compile</span><span class="p">(</span><span class="n">item</span><span class="p">)</span>
+            <span class="n">graph</span><span class="p">,</span> <span class="n">node</span> <span class="o">=</span> <span class="n">item_compiler</span><span class="o">.</span><span class="n">compile</span><span class="p">(</span><span class="n">item</span><span class="p">,</span> <span class="n">parent</span><span class="o">=</span><span class="n">parent</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_post_item_compile</span><span class="p">(</span><span class="n">item</span><span class="p">,</span> <span class="n">graph</span><span class="p">,</span> <span class="n">node</span><span class="p">)</span>
+            <span class="k">return</span> <span class="n">graph</span><span class="p">,</span> <span class="n">node</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="s2">&quot;Unknown object &#39;</span><span class="si">%s</span><span class="s2">&#39; (</span><span class="si">%s</span><span class="s2">) requested to compile&quot;</span>
+                            <span class="o">%</span> <span class="p">(</span><span class="n">item</span><span class="p">,</span> <span class="nb">type</span><span class="p">(</span><span class="n">item</span><span class="p">)))</span>
+
+    <span class="k">def</span> <span class="nf">_pre_item_compile</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">item</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Called before a item is compiled; any pre-compilation actions.&quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="n">item</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_history</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;Already compiled item &#39;</span><span class="si">%s</span><span class="s2">&#39; (</span><span class="si">%s</span><span class="s2">), duplicate&quot;</span>
+                             <span class="s2">&quot; and/or recursive compiling is not&quot;</span>
+                             <span class="s2">&quot; supported&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">item</span><span class="p">,</span> <span class="nb">type</span><span class="p">(</span><span class="n">item</span><span class="p">)))</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_history</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">item</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">LOG</span><span class="o">.</span><span class="n">isEnabledFor</span><span class="p">(</span><span class="n">logging</span><span class="o">.</span><span class="n">TRACE</span><span class="p">):</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">trace</span><span class="p">(</span><span class="s2">&quot;</span><span class="si">%s</span><span class="s2">Compiling &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span><span class="p">,</span> <span class="s2">&quot;  &quot;</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">_level</span><span class="p">,</span> <span class="n">item</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_level</span> <span class="o">+=</span> <span class="mi">1</span>
+
+    <span class="k">def</span> <span class="nf">_post_item_compile</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">item</span><span class="p">,</span> <span class="n">graph</span><span class="p">,</span> <span class="n">node</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Called after a item is compiled; doing post-compilation actions.&quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_level</span> <span class="o">-=</span> <span class="mi">1</span>
+        <span class="k">if</span> <span class="n">LOG</span><span class="o">.</span><span class="n">isEnabledFor</span><span class="p">(</span><span class="n">logging</span><span class="o">.</span><span class="n">TRACE</span><span class="p">):</span>
+            <span class="n">prefix</span> <span class="o">=</span> <span class="s1">&#39;  &#39;</span> <span class="o">*</span> <span class="bp">self</span><span class="o">.</span><span class="n">_level</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">trace</span><span class="p">(</span><span class="s2">&quot;</span><span class="si">%s</span><span class="s2">Decomposed &#39;</span><span class="si">%s</span><span class="s2">&#39; into:&quot;</span><span class="p">,</span> <span class="n">prefix</span><span class="p">,</span> <span class="n">item</span><span class="p">)</span>
+            <span class="n">prefix</span> <span class="o">=</span> <span class="s1">&#39;  &#39;</span> <span class="o">*</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_level</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">trace</span><span class="p">(</span><span class="s2">&quot;</span><span class="si">%s</span><span class="s2">Graph:&quot;</span><span class="p">,</span> <span class="n">prefix</span><span class="p">)</span>
+            <span class="k">for</span> <span class="n">line</span> <span class="ow">in</span> <span class="n">graph</span><span class="o">.</span><span class="n">pformat</span><span class="p">()</span><span class="o">.</span><span class="n">splitlines</span><span class="p">():</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">trace</span><span class="p">(</span><span class="s2">&quot;</span><span class="si">%s</span><span class="s2">  </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">prefix</span><span class="p">,</span> <span class="n">line</span><span class="p">)</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">trace</span><span class="p">(</span><span class="s2">&quot;</span><span class="si">%s</span><span class="s2">Hierarchy:&quot;</span><span class="p">,</span> <span class="n">prefix</span><span class="p">)</span>
+            <span class="k">for</span> <span class="n">line</span> <span class="ow">in</span> <span class="n">node</span><span class="o">.</span><span class="n">pformat</span><span class="p">()</span><span class="o">.</span><span class="n">splitlines</span><span class="p">():</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">trace</span><span class="p">(</span><span class="s2">&quot;</span><span class="si">%s</span><span class="s2">  </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">prefix</span><span class="p">,</span> <span class="n">line</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_pre_compile</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Called before the compilation of the root starts.&quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_history</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_level</span> <span class="o">=</span> <span class="mi">0</span>
+
+    <span class="k">def</span> <span class="nf">_post_compile</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">graph</span><span class="p">,</span> <span class="n">node</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Called after the compilation of the root finishes successfully.&quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_history</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_level</span> <span class="o">=</span> <span class="mi">0</span>
+
+    <span class="nd">@fasteners.locked</span>
+<div class="viewcode-block" id="PatternCompiler.compile"><a class="viewcode-back" href="../../../../engines.html#taskflow.engines.action_engine.compiler.PatternCompiler.compile">[docs]</a>    <span class="k">def</span> <span class="nf">compile</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Compiles the contained item into a compiled equivalent.&quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_compilation</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_pre_compile</span><span class="p">()</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">graph</span><span class="p">,</span> <span class="n">node</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_compile</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_root</span><span class="p">,</span> <span class="n">parent</span><span class="o">=</span><span class="bp">None</span><span class="p">)</span>
+            <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+                <span class="k">with</span> <span class="n">excutils</span><span class="o">.</span><span class="n">save_and_reraise_exception</span><span class="p">():</span>
+                    <span class="c1"># Always clear the history, to avoid retaining junk</span>
+                    <span class="c1"># in memory that isn&#39;t needed to be in memory if</span>
+                    <span class="c1"># compilation fails...</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_history</span><span class="o">.</span><span class="n">clear</span><span class="p">()</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_post_compile</span><span class="p">(</span><span class="n">graph</span><span class="p">,</span> <span class="n">node</span><span class="p">)</span>
+                <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_freeze</span><span class="p">:</span>
+                    <span class="n">graph</span><span class="o">.</span><span class="n">freeze</span><span class="p">()</span>
+                    <span class="n">node</span><span class="o">.</span><span class="n">freeze</span><span class="p">()</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_compilation</span> <span class="o">=</span> <span class="n">Compilation</span><span class="p">(</span><span class="n">graph</span><span class="p">,</span> <span class="n">node</span><span class="p">)</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_compilation</span></div></div>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+  <h3>Navigation</h3>
+  <ul>
+
+    <li><a href="../../../../index.html">Table Of Contents</a></li>
+
+
+
+  </ul>
+
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/taskflow
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../../../index.html">TaskFlow 2.9.1.dev9 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../../../index.html" accesskey="U">Module code</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2017, OpenStack Foundation.
+      Last updated on &#39;Fri Feb 10 20:11:17 2017, commit 643495f&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/TaskFlow");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

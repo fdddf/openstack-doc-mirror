@@ -1,0 +1,287 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>taskflow.engines.worker_based.worker &mdash; TaskFlow 2.9.1.dev9 documentation</title>
+    
+    <link rel="stylesheet" href="../../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../../',
+        VERSION:     '2.9.1.dev9',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../../_static/doctools.js"></script>
+    <link rel="top" title="TaskFlow 2.9.1.dev9 documentation" href="../../../../index.html" />
+    <link rel="up" title="Module code" href="../../../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for taskflow.engines.worker_based.worker</h1><div class="highlight"><pre>
+<span></span><span class="c1"># -*- coding: utf-8 -*-</span>
+
+<span class="c1">#    Copyright (C) 2014 Yahoo! Inc. All Rights Reserved.</span>
+<span class="c1">#</span>
+<span class="c1">#    Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may</span>
+<span class="c1">#    not use this file except in compliance with the License. You may obtain</span>
+<span class="c1">#    a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#         http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1">#    Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1">#    distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="c1">#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="c1">#    License for the specific language governing permissions and limitations</span>
+<span class="c1">#    under the License.</span>
+
+<span class="kn">import</span> <span class="nn">os</span>
+<span class="kn">import</span> <span class="nn">platform</span>
+<span class="kn">import</span> <span class="nn">socket</span>
+<span class="kn">import</span> <span class="nn">sys</span>
+
+<span class="kn">import</span> <span class="nn">futurist</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">reflection</span>
+
+<span class="kn">from</span> <span class="nn">taskflow.engines.worker_based</span> <span class="kn">import</span> <span class="n">endpoint</span>
+<span class="kn">from</span> <span class="nn">taskflow.engines.worker_based</span> <span class="kn">import</span> <span class="n">server</span>
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">logging</span>
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">task</span> <span class="k">as</span> <span class="n">t_task</span>
+<span class="kn">from</span> <span class="nn">taskflow.utils</span> <span class="kn">import</span> <span class="n">banner</span>
+<span class="kn">from</span> <span class="nn">taskflow.utils</span> <span class="kn">import</span> <span class="n">misc</span>
+<span class="kn">from</span> <span class="nn">taskflow.utils</span> <span class="kn">import</span> <span class="n">threading_utils</span> <span class="k">as</span> <span class="n">tu</span>
+
+<span class="n">LOG</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+
+<div class="viewcode-block" id="Worker"><a class="viewcode-back" href="../../../../workers.html#taskflow.engines.worker_based.worker.Worker">[docs]</a><span class="k">class</span> <span class="nc">Worker</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Worker that can be started on a remote host for handling tasks requests.</span>
+
+<span class="sd">    :param url: broker url</span>
+<span class="sd">    :param exchange: broker exchange name</span>
+<span class="sd">    :param topic: topic name under which worker is stated</span>
+<span class="sd">    :param tasks: task list that worker is capable of performing, items in</span>
+<span class="sd">        the list can be one of the following types; 1, a string naming the</span>
+<span class="sd">        python module name to search for tasks in or the task class name; 2, a</span>
+<span class="sd">        python module  to search for tasks in; 3, a task class object that</span>
+<span class="sd">        will be used to create tasks from.</span>
+<span class="sd">    :param executor: custom executor object that can used for processing</span>
+<span class="sd">        requests in separate threads (if not provided one will be created)</span>
+<span class="sd">    :param threads_count: threads count to be passed to the</span>
+<span class="sd">                          default executor (used only if an executor is not</span>
+<span class="sd">                          passed in)</span>
+<span class="sd">    :param transport: transport to be used (e.g. amqp, memory, etc.)</span>
+<span class="sd">    :param transport_options: transport specific options (see:</span>
+<span class="sd">                              http://kombu.readthedocs.org/ for what these</span>
+<span class="sd">                              options imply and are expected to be)</span>
+<span class="sd">    :param retry_options: retry specific options</span>
+<span class="sd">                          (see: :py:attr:`~.proxy.Proxy.DEFAULT_RETRY_OPTIONS`)</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">exchange</span><span class="p">,</span> <span class="n">topic</span><span class="p">,</span> <span class="n">tasks</span><span class="p">,</span>
+                 <span class="n">executor</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">threads_count</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">url</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+                 <span class="n">transport</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">transport_options</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+                 <span class="n">retry_options</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_topic</span> <span class="o">=</span> <span class="n">topic</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_executor</span> <span class="o">=</span> <span class="n">executor</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_owns_executor</span> <span class="o">=</span> <span class="bp">False</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_executor</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_executor</span> <span class="o">=</span> <span class="n">futurist</span><span class="o">.</span><span class="n">ThreadPoolExecutor</span><span class="p">(</span>
+                <span class="n">max_workers</span><span class="o">=</span><span class="n">threads_count</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_owns_executor</span> <span class="o">=</span> <span class="bp">True</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_endpoints</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_derive_endpoints</span><span class="p">(</span><span class="n">tasks</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_exchange</span> <span class="o">=</span> <span class="n">exchange</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_server</span> <span class="o">=</span> <span class="n">server</span><span class="o">.</span><span class="n">Server</span><span class="p">(</span><span class="n">topic</span><span class="p">,</span> <span class="n">exchange</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_executor</span><span class="p">,</span>
+                                     <span class="bp">self</span><span class="o">.</span><span class="n">_endpoints</span><span class="p">,</span> <span class="n">url</span><span class="o">=</span><span class="n">url</span><span class="p">,</span>
+                                     <span class="n">transport</span><span class="o">=</span><span class="n">transport</span><span class="p">,</span>
+                                     <span class="n">transport_options</span><span class="o">=</span><span class="n">transport_options</span><span class="p">,</span>
+                                     <span class="n">retry_options</span><span class="o">=</span><span class="n">retry_options</span><span class="p">)</span>
+
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span> <span class="nf">_derive_endpoints</span><span class="p">(</span><span class="n">tasks</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Derive endpoints from list of strings, classes or packages.&quot;&quot;&quot;</span>
+        <span class="n">derived_tasks</span> <span class="o">=</span> <span class="n">misc</span><span class="o">.</span><span class="n">find_subclasses</span><span class="p">(</span><span class="n">tasks</span><span class="p">,</span> <span class="n">t_task</span><span class="o">.</span><span class="n">Task</span><span class="p">)</span>
+        <span class="k">return</span> <span class="p">[</span><span class="n">endpoint</span><span class="o">.</span><span class="n">Endpoint</span><span class="p">(</span><span class="n">task</span><span class="p">)</span> <span class="k">for</span> <span class="n">task</span> <span class="ow">in</span> <span class="n">derived_tasks</span><span class="p">]</span>
+
+    <span class="nd">@misc.cachedproperty</span>
+    <span class="k">def</span> <span class="nf">banner</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;A banner that can be useful to display before running.&quot;&quot;&quot;</span>
+        <span class="n">connection_details</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_server</span><span class="o">.</span><span class="n">connection_details</span>
+        <span class="n">transport</span> <span class="o">=</span> <span class="n">connection_details</span><span class="o">.</span><span class="n">transport</span>
+        <span class="k">if</span> <span class="n">transport</span><span class="o">.</span><span class="n">driver_version</span><span class="p">:</span>
+            <span class="n">transport_driver</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="si">%s</span><span class="s2"> v</span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">transport</span><span class="o">.</span><span class="n">driver_name</span><span class="p">,</span>
+                                           <span class="n">transport</span><span class="o">.</span><span class="n">driver_version</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">transport_driver</span> <span class="o">=</span> <span class="n">transport</span><span class="o">.</span><span class="n">driver_name</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">hostname</span> <span class="o">=</span> <span class="n">socket</span><span class="o">.</span><span class="n">getfqdn</span><span class="p">()</span>
+        <span class="k">except</span> <span class="n">socket</span><span class="o">.</span><span class="n">error</span><span class="p">:</span>
+            <span class="n">hostname</span> <span class="o">=</span> <span class="s2">&quot;???&quot;</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">pid</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">getpid</span><span class="p">()</span>
+        <span class="k">except</span> <span class="ne">OSError</span><span class="p">:</span>
+            <span class="n">pid</span> <span class="o">=</span> <span class="s2">&quot;???&quot;</span>
+        <span class="n">chapters</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="s1">&#39;Connection details&#39;</span><span class="p">:</span> <span class="p">{</span>
+                <span class="s1">&#39;Driver&#39;</span><span class="p">:</span> <span class="n">transport_driver</span><span class="p">,</span>
+                <span class="s1">&#39;Exchange&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_exchange</span><span class="p">,</span>
+                <span class="s1">&#39;Topic&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_topic</span><span class="p">,</span>
+                <span class="s1">&#39;Transport&#39;</span><span class="p">:</span> <span class="n">transport</span><span class="o">.</span><span class="n">driver_type</span><span class="p">,</span>
+                <span class="s1">&#39;Uri&#39;</span><span class="p">:</span> <span class="n">connection_details</span><span class="o">.</span><span class="n">uri</span><span class="p">,</span>
+            <span class="p">},</span>
+            <span class="s1">&#39;Powered by&#39;</span><span class="p">:</span> <span class="p">{</span>
+                <span class="s1">&#39;Executor&#39;</span><span class="p">:</span> <span class="n">reflection</span><span class="o">.</span><span class="n">get_class_name</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_executor</span><span class="p">),</span>
+                <span class="s1">&#39;Thread count&#39;</span><span class="p">:</span> <span class="nb">getattr</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_executor</span><span class="p">,</span> <span class="s1">&#39;max_workers&#39;</span><span class="p">,</span> <span class="s2">&quot;???&quot;</span><span class="p">),</span>
+            <span class="p">},</span>
+            <span class="s1">&#39;Supported endpoints&#39;</span><span class="p">:</span> <span class="p">[</span><span class="nb">str</span><span class="p">(</span><span class="n">ep</span><span class="p">)</span> <span class="k">for</span> <span class="n">ep</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_endpoints</span><span class="p">],</span>
+            <span class="s1">&#39;System details&#39;</span><span class="p">:</span> <span class="p">{</span>
+                <span class="s1">&#39;Hostname&#39;</span><span class="p">:</span> <span class="n">hostname</span><span class="p">,</span>
+                <span class="s1">&#39;Pid&#39;</span><span class="p">:</span> <span class="n">pid</span><span class="p">,</span>
+                <span class="s1">&#39;Platform&#39;</span><span class="p">:</span> <span class="n">platform</span><span class="o">.</span><span class="n">platform</span><span class="p">(),</span>
+                <span class="s1">&#39;Python&#39;</span><span class="p">:</span> <span class="n">sys</span><span class="o">.</span><span class="n">version</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s2">&quot;</span><span class="se">\n</span><span class="s2">&quot;</span><span class="p">,</span> <span class="mi">1</span><span class="p">)[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">strip</span><span class="p">(),</span>
+                <span class="s1">&#39;Thread id&#39;</span><span class="p">:</span> <span class="n">tu</span><span class="o">.</span><span class="n">get_ident</span><span class="p">(),</span>
+            <span class="p">},</span>
+        <span class="p">}</span>
+        <span class="k">return</span> <span class="n">banner</span><span class="o">.</span><span class="n">make_banner</span><span class="p">(</span><span class="s1">&#39;WBE worker&#39;</span><span class="p">,</span> <span class="n">chapters</span><span class="p">)</span>
+
+<div class="viewcode-block" id="Worker.run"><a class="viewcode-back" href="../../../../workers.html#taskflow.engines.worker_based.worker.Worker.run">[docs]</a>    <span class="k">def</span> <span class="nf">run</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">display_banner</span><span class="o">=</span><span class="bp">True</span><span class="p">,</span> <span class="n">banner_writer</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Runs the worker.&quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="n">display_banner</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">banner_writer</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="k">for</span> <span class="n">line</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">banner</span><span class="o">.</span><span class="n">splitlines</span><span class="p">():</span>
+                    <span class="n">LOG</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">line</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">banner_writer</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">banner</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_server</span><span class="o">.</span><span class="n">start</span><span class="p">()</span></div>
+
+<div class="viewcode-block" id="Worker.wait"><a class="viewcode-back" href="../../../../workers.html#taskflow.engines.worker_based.worker.Worker.wait">[docs]</a>    <span class="k">def</span> <span class="nf">wait</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Wait until worker is started.&quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_server</span><span class="o">.</span><span class="n">wait</span><span class="p">()</span></div>
+
+<div class="viewcode-block" id="Worker.stop"><a class="viewcode-back" href="../../../../workers.html#taskflow.engines.worker_based.worker.Worker.stop">[docs]</a>    <span class="k">def</span> <span class="nf">stop</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Stop worker.&quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_server</span><span class="o">.</span><span class="n">stop</span><span class="p">()</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_owns_executor</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_executor</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span></div></div>
+
+
+<span class="k">if</span> <span class="vm">__name__</span> <span class="o">==</span> <span class="s1">&#39;__main__&#39;</span><span class="p">:</span>
+    <span class="kn">import</span> <span class="nn">argparse</span>
+    <span class="kn">import</span> <span class="nn">logging</span> <span class="kn">as</span> <span class="nn">log</span>
+    <span class="n">parser</span> <span class="o">=</span> <span class="n">argparse</span><span class="o">.</span><span class="n">ArgumentParser</span><span class="p">()</span>
+    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;--exchange&quot;</span><span class="p">,</span> <span class="n">required</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;--connection-url&quot;</span><span class="p">,</span> <span class="n">required</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;--topic&quot;</span><span class="p">,</span> <span class="n">required</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;--task&quot;</span><span class="p">,</span> <span class="n">action</span><span class="o">=</span><span class="s1">&#39;append&#39;</span><span class="p">,</span>
+                        <span class="n">metavar</span><span class="o">=</span><span class="s2">&quot;TASK&quot;</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="p">[])</span>
+    <span class="n">parser</span><span class="o">.</span><span class="n">add_argument</span><span class="p">(</span><span class="s2">&quot;-v&quot;</span><span class="p">,</span> <span class="s2">&quot;--verbose&quot;</span><span class="p">,</span> <span class="n">action</span><span class="o">=</span><span class="s1">&#39;store_true&#39;</span><span class="p">)</span>
+    <span class="n">args</span> <span class="o">=</span> <span class="n">parser</span><span class="o">.</span><span class="n">parse_args</span><span class="p">()</span>
+    <span class="k">if</span> <span class="n">args</span><span class="o">.</span><span class="n">verbose</span><span class="p">:</span>
+        <span class="n">log</span><span class="o">.</span><span class="n">basicConfig</span><span class="p">(</span><span class="n">level</span><span class="o">=</span><span class="n">logging</span><span class="o">.</span><span class="n">DEBUG</span><span class="p">,</span> <span class="n">format</span><span class="o">=</span><span class="s2">&quot;&quot;</span><span class="p">)</span>
+    <span class="n">w</span> <span class="o">=</span> <span class="n">Worker</span><span class="p">(</span><span class="n">args</span><span class="o">.</span><span class="n">exchange</span><span class="p">,</span> <span class="n">args</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="n">args</span><span class="o">.</span><span class="n">task</span><span class="p">,</span> <span class="n">url</span><span class="o">=</span><span class="n">args</span><span class="o">.</span><span class="n">connection_url</span><span class="p">)</span>
+    <span class="n">w</span><span class="o">.</span><span class="n">run</span><span class="p">()</span>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+  <h3>Navigation</h3>
+  <ul>
+
+    <li><a href="../../../../index.html">Table Of Contents</a></li>
+
+
+
+  </ul>
+
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/taskflow
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../../../index.html">TaskFlow 2.9.1.dev9 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../../../index.html" accesskey="U">Module code</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2017, OpenStack Foundation.
+      Last updated on &#39;Fri Feb 10 20:11:17 2017, commit 643495f&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/TaskFlow");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

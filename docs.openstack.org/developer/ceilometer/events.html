@@ -1,0 +1,409 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Events and Event Processing &mdash; Ceilometer 8.0.1.dev11 documentation</title>
+    
+    <link rel="stylesheet" href="_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="_static/toggle.css" type="text/css" />
+    <link rel="stylesheet" href="_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '8.0.1.dev11',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <script type="text/javascript" src="_static/toggle.js"></script>
+    <link rel="top" title="Ceilometer 8.0.1.dev11 documentation" href="index.html" />
+    <link rel="next" title="PaaS Event Format" href="format.html" />
+    <link rel="prev" title="Measurements" href="measurements.html" /> 
+  </head>
+  <body>
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body">
+            
+  <div class="section" id="events-and-event-processing">
+<span id="events"></span><h1>Events and Event Processing<a class="headerlink" href="#events-and-event-processing" title="Permalink to this headline">¶</a></h1>
+<div class="section" id="events-vs-samples">
+<h2>Events vs. Samples<a class="headerlink" href="#events-vs-samples" title="Permalink to this headline">¶</a></h2>
+<p>In addition to Meters, and related Sample data, Ceilometer can also process
+Events.  While a Sample represents a single numeric datapoint, driving a Meter
+that represents the changes in that value over time, an Event represents the
+state of an object in an OpenStack service (such as an Instance in Nova, or
+an Image in Glance) at a point in time when something of interest has occurred.
+This can include non-numeric data, such as an instance&#8217;s flavor, or network
+address.</p>
+<p>In general, Events let you know when something has changed about an
+object in an OpenStack system, such as the resize of an instance, or creation
+of an image.</p>
+<p>While Samples can be relatively cheap (small), disposable (losing an individual
+sample datapoint won&#8217;t matter much), and fast, Events are larger, more
+informative, and should be handled more consistently (you do not want to lose
+one).</p>
+</div>
+<div class="section" id="event-structure">
+<h2>Event Structure<a class="headerlink" href="#event-structure" title="Permalink to this headline">¶</a></h2>
+<p>To facilitate downstream processing (billing and/or aggregation), a
+<a class="reference internal" href="format.html"><em>minimum required data set and format</em></a> has been defined for
+services, however events generally contain the following information:</p>
+<dl class="docutils">
+<dt>event_type</dt>
+<dd>A dotted string defining what event occurred, such as
+<tt class="docutils literal"><span class="pre">compute.instance.resize.start</span></tt></dd>
+<dt>message_id</dt>
+<dd>A UUID for this event.</dd>
+<dt>generated</dt>
+<dd>A timestamp of when the event occurred on the source system.</dd>
+<dt>traits</dt>
+<dd>A flat mapping of key-value pairs.
+The event&#8217;s Traits contain most of the details of the event. Traits are
+typed, and can be strings, ints, floats, or datetimes.</dd>
+<dt>raw</dt>
+<dd>(Optional) Mainly for auditing purpose, the full notification message
+can be stored (unindexed) for future evaluation.</dd>
+</dl>
+</div>
+<div class="section" id="events-from-notifications">
+<h2>Events from Notifications<a class="headerlink" href="#events-from-notifications" title="Permalink to this headline">¶</a></h2>
+<p>Events are primarily created via the notifications system in OpenStack.
+OpenStack systems, such as Nova, Glance, Neutron, etc. will emit
+notifications in a JSON format to the message queue when some notable action is
+taken by that system. Ceilometer will consume such notifications from the
+message queue, and process them.</p>
+<p>The general philosophy of notifications in OpenStack is to emit any and all
+data someone might need, and let the consumer filter out what they are not
+interested in. In order to make processing simpler and more efficient,
+the notifications are stored and processed within Ceilometer as Events.
+The notification payload, which can be an arbitrarily complex JSON data
+structure, is converted to a flat set of key-value pairs known as Traits.
+This conversion is specified by a config file, so that only the specific
+fields within the notification that are actually needed for processing the
+event will have to be stored as Traits.</p>
+<p>Note that the Event format is meant for efficient processing and querying,
+there are other means available for archiving notifications (i.e. for audit
+purposes, etc), possibly to different datastores.</p>
+<div class="section" id="converting-notifications-to-events">
+<h3>Converting Notifications to Events<a class="headerlink" href="#converting-notifications-to-events" title="Permalink to this headline">¶</a></h3>
+<p>In order to make it easier to allow users to extract what they need,
+the conversion from Notifications to Events is driven by a
+configuration file (specified by the flag <a class="reference external" href="http://docs.openstack.org/trunk/config-reference/content/ch_configuring-openstack-telemetry.html">definitions_cfg_file</a> in
+<tt class="file docutils literal"><span class="pre">ceilometer.conf</span></tt>).</p>
+<p>This includes descriptions of how to map fields in the notification body
+to Traits, and optional plugins for doing any programmatic translations
+(splitting a string, forcing case, etc.)</p>
+<p>The mapping of notifications to events is defined per event_type, which
+can be wildcarded. Traits are added to events if the corresponding fields
+in the notification exist and are non-null. (As a special case, an empty
+string is considered null for non-text traits. This is due to some openstack
+projects (mostly Nova) using empty string for null dates.)</p>
+<p>If the definitions file is not present, a warning will be logged, but an empty
+set of definitions will be assumed. By default, any notifications that
+do not have a corresponding event definition in the definitions file will be
+converted to events with a set of minimal, default traits.  This can be
+changed by setting the flag <a class="reference external" href="http://docs.openstack.org/trunk/config-reference/content/ch_configuring-openstack-telemetry.html">drop_unmatched_notifications</a> in the
+<tt class="file docutils literal"><span class="pre">ceilometer.conf</span></tt> file. If this is set to True, then any notifications
+that don&#8217;t have events defined for them in the file will be dropped.
+This can be what you want, the notification system is quite chatty by design
+(notifications philosophy is &#8220;tell us everything, we&#8217;ll ignore what we don&#8217;t
+need&#8221;), so you may want to ignore the noisier ones if you don&#8217;t use them.</p>
+<p>There is a set of default traits (all are TEXT type) that will be added to
+all events if the notification has the relevant data:</p>
+<ul class="simple">
+<li>service: (All notifications should have this) notification&#8217;s publisher</li>
+<li>tenant_id</li>
+<li>request_id</li>
+<li>project_id</li>
+<li>user_id</li>
+</ul>
+<p>These do not have to be specified in the event definition, they are
+automatically added, but their definitions can be overridden for a given
+<tt class="docutils literal"><span class="pre">event_type</span></tt>.</p>
+</div>
+<div class="section" id="definitions-file-format">
+<h3>Definitions file format<a class="headerlink" href="#definitions-file-format" title="Permalink to this headline">¶</a></h3>
+<p>The event definitions file is in YAML format. It consists of a list of event
+definitions, which are mappings. Order is significant, the list of definitions
+is scanned in <em>reverse</em> order (last definition in the file to the first),
+to find a definition which matches the notification&#8217;s event_type. That
+definition will be used to generate the Event. The reverse ordering is done
+because it is common to want to have a more general wildcarded definition
+(such as <tt class="docutils literal"><span class="pre">compute.instance.*</span></tt>) with a set of traits common to all of those
+events, with a few more specific event definitions (like
+<tt class="docutils literal"><span class="pre">compute.instance.exists</span></tt>) afterward that have all of the above traits, plus
+a few more. This lets you put the general definition first, followed by the
+specific ones, and use YAML mapping include syntax to avoid copying all of the
+trait definitions.</p>
+</div>
+<div class="section" id="event-definitions">
+<h3>Event Definitions<a class="headerlink" href="#event-definitions" title="Permalink to this headline">¶</a></h3>
+<p>Each event definition is a mapping with two keys (both required):</p>
+<dl class="docutils">
+<dt>event_type</dt>
+<dd>This is a list (or a string, which will be taken as a 1 element
+list) of event_types this definition will handle. These can be
+wildcarded with unix shell glob syntax. An exclusion listing
+(starting with a &#8216;!&#8217;) will exclude any types listed from matching.
+If ONLY exclusions are listed, the definition will match anything
+not matching the exclusions.</dd>
+<dt>traits</dt>
+<dd>This is a mapping, the keys are the trait names, and the values are
+trait definitions.</dd>
+</dl>
+</div>
+<div class="section" id="trait-definitions">
+<h3>Trait Definitions<a class="headerlink" href="#trait-definitions" title="Permalink to this headline">¶</a></h3>
+<p>Each trait definition is a mapping with the following keys:</p>
+<dl class="docutils">
+<dt>type</dt>
+<dd>(optional) The data type for this trait. (as a string). Valid
+options are: <em>text</em>, <em>int</em>, <em>float</em>, and <em>datetime</em>.
+defaults to <em>text</em> if not specified.</dd>
+<dt>fields</dt>
+<dd>A path specification for the field(s) in the notification you wish
+to extract for this trait. Specifications can be written to match
+multiple possible fields, the value for the trait will be derived
+from the matching fields that exist and have a non-null values in
+the notification. By default the value will be the first such field.
+(plugins can alter that, if they wish). This is normally a string,
+but, for convenience, it can be specified as a list of
+specifications, which will match the fields for all of them.
+(See <a class="reference internal" href="#field-path-specifications">Field Path Specifications</a> for more info on this syntax.)</dd>
+<dt>plugin</dt>
+<dd><p class="first">(optional) This is a mapping (For convenience, this value can also
+be specified as a string, which is interpreted as the name of a
+plugin to be loaded with no parameters) with the following keys:</p>
+<dl class="last docutils">
+<dt>name</dt>
+<dd>(string) name of a plugin to load</dd>
+<dt>parameters</dt>
+<dd>(optional) Mapping of keyword arguments to pass to the plugin on
+initialization. (See documentation on each plugin to see what
+arguments it accepts.)</dd>
+</dl>
+</dd>
+</dl>
+</div>
+<div class="section" id="field-path-specifications">
+<h3>Field Path Specifications<a class="headerlink" href="#field-path-specifications" title="Permalink to this headline">¶</a></h3>
+<p>The path specifications define which fields in the JSON notification
+body are extracted to provide the value for a given trait.  The paths
+can be specified with a dot syntax (e.g. <tt class="docutils literal"><span class="pre">payload.host</span></tt>). Square
+bracket syntax (e.g. <tt class="docutils literal"><span class="pre">payload[host]</span></tt>) is also supported. In either
+case, if the key for the field you are looking for contains special
+characters, like &#8216;.&#8217;, it will need to be quoted (with double or single
+quotes) like so:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>payload.image_meta.&#39;org.openstack__1__architecture&#39;
+</pre></div>
+</div>
+<p>The syntax used for the field specification is a variant of JSONPath,
+and is fairly flexible.
+(see: <a class="reference external" href="https://github.com/kennknowles/python-jsonpath-rw">https://github.com/kennknowles/python-jsonpath-rw</a> for more info)</p>
+</div>
+<div class="section" id="example-definitions-file">
+<h3>Example Definitions file<a class="headerlink" href="#example-definitions-file" title="Permalink to this headline">¶</a></h3>
+<div class="highlight-python"><div class="highlight"><pre><span></span>---
+- event_type: compute.instance.*
+  traits: &amp;instance_traits
+    user_id:
+      fields: payload.user_id
+    instance_id:
+      fields: payload.instance_id
+    host:
+      fields: publisher_id
+      plugin:
+        name: split
+        parameters:
+          segment: 1
+          max_split: 1
+    service_name:
+      fields: publisher_id
+      plugin: split
+    instance_type_id:
+      type: int
+      fields: payload.instance_type_id
+    os_architecture:
+      fields: payload.image_meta.&#39;org.openstack__1__architecture&#39;
+    launched_at:
+      type: datetime
+      fields: payload.launched_at
+    deleted_at:
+      type: datetime
+      fields: payload.deleted_at
+- event_type:
+    - compute.instance.exists
+    - compute.instance.update
+  traits:
+    &lt;&lt;: *instance_traits
+    audit_period_beginning:
+      type: datetime
+      fields: payload.audit_period_beginning
+    audit_period_ending:
+      type: datetime
+      fields: payload.audit_period_ending
+</pre></div>
+</div>
+</div>
+<div class="section" id="trait-plugins">
+<h3>Trait plugins<a class="headerlink" href="#trait-plugins" title="Permalink to this headline">¶</a></h3>
+<p>Trait plugins can be used to do simple programmatic conversions on the value in
+a notification field, like splitting a string, lowercasing a value, converting
+a screwball date into ISO format, or the like. They are initialized with the
+parameters from the trait definition, if any, which can customize their
+behavior for a given trait. They are called with a list of all matching fields
+from the notification, so they can derive a value from multiple fields. The
+plugin will be called even if there are no fields found matching the field
+path(s), this lets a plugin set a default value, if needed. A plugin can also
+reject a value by returning <em>None</em>, which will cause the trait not to be
+added. If the plugin returns anything other than <em>None</em>, the trait&#8217;s value
+will be set to whatever the plugin returned (coerced to the appropriate type
+for the trait).</p>
+</div>
+</div>
+<div class="section" id="building-notifications">
+<h2>Building Notifications<a class="headerlink" href="#building-notifications" title="Permalink to this headline">¶</a></h2>
+<p>In general, the payload format OpenStack services emit could be described as
+the Wild West. The payloads are often arbitrary data dumps at the time of
+the event which is often susceptible to change. To make consumption easier,
+the Ceilometer team offers two proposals: <a class="reference external" href="http://docs.openstack.org/developer/pycadf/">CADF</a>, an open, cloud standard
+which helps model cloud events and the PaaS Event Format.</p>
+<div class="toctree-wrapper compound">
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="format.html">PaaS Event Format</a></li>
+</ul>
+</div>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Events and Event Processing</a><ul>
+<li><a class="reference internal" href="#events-vs-samples">Events vs. Samples</a></li>
+<li><a class="reference internal" href="#event-structure">Event Structure</a></li>
+<li><a class="reference internal" href="#events-from-notifications">Events from Notifications</a><ul>
+<li><a class="reference internal" href="#converting-notifications-to-events">Converting Notifications to Events</a></li>
+<li><a class="reference internal" href="#definitions-file-format">Definitions file format</a></li>
+<li><a class="reference internal" href="#event-definitions">Event Definitions</a></li>
+<li><a class="reference internal" href="#trait-definitions">Trait Definitions</a></li>
+<li><a class="reference internal" href="#field-path-specifications">Field Path Specifications</a></li>
+<li><a class="reference internal" href="#example-definitions-file">Example Definitions file</a></li>
+<li><a class="reference internal" href="#trait-plugins">Trait plugins</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#building-notifications">Building Notifications</a></li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="measurements.html"
+                                  title="previous chapter">Measurements</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="format.html"
+                                  title="next chapter">PaaS Event Format</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/ceilometer
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="_sources/events.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="http-routingtable.html" title="HTTP Routing Table"
+             >routing table</a> |</li>
+        <li class="right" >
+          <a href="py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="right" >
+          <a href="format.html" title="PaaS Event Format"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="measurements.html" title="Measurements"
+             accesskey="P">previous</a> |</li>
+        <li><a href="index.html">Ceilometer 8.0.1.dev11 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer">
+        &copy; Copyright 2012-2015, OpenStack Foundation.
+      Last updated on &#39;Mon Feb 13 17:56:46 2017, commit ec508a1&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.2.3.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/Ceilometer");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

@@ -1,0 +1,472 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Authorization Policy Enforcement &mdash; neutron 10.0.0.0rc2.dev58 documentation</title>
+    
+    <link rel="stylesheet" href="../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../',
+        VERSION:     '10.0.0.0rc2.dev58',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../_static/jquery.js"></script>
+    <script type="text/javascript" src="../_static/underscore.js"></script>
+    <script type="text/javascript" src="../_static/doctools.js"></script>
+    <link rel="top" title="neutron 10.0.0.0rc2.dev58 documentation" href="../index.html" />
+    <link rel="up" title="Developer Guide" href="index.html" />
+    <link rel="next" title="Neutron RPC API Layer" href="rpc_api.html" />
+    <link rel="prev" title="Relocation of Database Models" href="db_models.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="authorization-policy-enforcement">
+<h1>Authorization Policy Enforcement<a class="headerlink" href="#authorization-policy-enforcement" title="Permalink to this headline">¶</a></h1>
+<p>As most OpenStack projects, Neutron leverages oslo_policy <a class="footnote-reference" href="#id7" id="id1">[1]</a>. However, since
+Neutron loves to be special and complicate every developer&#8217;s life, it also
+&#8220;augments&#8221; oslo_policy capabilities by:</p>
+<blockquote>
+<div><ul class="simple">
+<li>A wrapper module with its own API: neutron.policy;</li>
+<li>The ability of adding fine-grained checks on attributes for resources in
+request bodies;</li>
+<li>The ability of using the policy engine to filter out attributes in responses;</li>
+<li>Adding some custom rule checks beyond those defined in oslo_policy;</li>
+</ul>
+</div></blockquote>
+<p>This document discusses Neutron-specific aspects of policy enforcement, and in
+particular how the enforcement logic is wired into API processing.
+For any other information please refer to the developer documentation for
+oslo_policy <a class="footnote-reference" href="#id8" id="id2">[2]</a>.</p>
+<div class="section" id="authorization-workflow">
+<h2>Authorization workflow<a class="headerlink" href="#authorization-workflow" title="Permalink to this headline">¶</a></h2>
+<p>The Neutron API controllers perform policy checks in two phases during the
+processing of an API request:</p>
+<blockquote>
+<div><ul class="simple">
+<li>Request authorization, immediately before dispatching the request to the
+plugin layer for <code class="docutils literal"><span class="pre">POST</span></code>, <code class="docutils literal"><span class="pre">PUT</span></code>, and <code class="docutils literal"><span class="pre">DELETE</span></code>, and immediately after
+returning from the plugin layer for <code class="docutils literal"><span class="pre">GET</span></code> requests;</li>
+<li>Response filtering, when building the response to be returned to the API
+consumer.</li>
+</ul>
+</div></blockquote>
+<div class="section" id="request-authorization">
+<h3>Request authorization<a class="headerlink" href="#request-authorization" title="Permalink to this headline">¶</a></h3>
+<p>The aim of this step is to authorize processing for a request or reject it
+with an error status code.
+This step uses the <code class="docutils literal"><span class="pre">neutron.policy.enforce</span></code> routine. This routine raises
+<code class="docutils literal"><span class="pre">oslo_policy.PolicyNotAuthorized</span></code> when policy enforcement fails. The Neutron
+REST API controllers catch this exception and return:</p>
+<blockquote>
+<div><ul class="simple">
+<li>A 403 response code on a <code class="docutils literal"><span class="pre">POST</span></code> request or an <code class="docutils literal"><span class="pre">PUT</span></code> request for an
+object owned by the project submitting the request;</li>
+<li>A 403 response for failures while authorizing API actions such as
+<code class="docutils literal"><span class="pre">add_router_interface</span></code>;</li>
+<li>A 404 response for <code class="docutils literal"><span class="pre">DELETE</span></code>, <code class="docutils literal"><span class="pre">GET</span></code> and all other <code class="docutils literal"><span class="pre">PUT</span></code> requests.</li>
+</ul>
+</div></blockquote>
+<p>For <code class="docutils literal"><span class="pre">DELETE</span></code> operations the resource must first be fetched. This is done
+invoking the same <code class="docutils literal"><span class="pre">_item</span></code> <a class="footnote-reference" href="#id9" id="id3">[3]</a> method used for processing <code class="docutils literal"><span class="pre">GET</span></code> requests.
+This is also true for <code class="docutils literal"><span class="pre">PUT</span></code> operations, since the Neutron API implements
+<code class="docutils literal"><span class="pre">PATCH</span></code> semantics for <code class="docutils literal"><span class="pre">PUTs</span></code>.
+The criteria to evaluate are built in the <code class="docutils literal"><span class="pre">_build_match_rule</span></code> <a class="footnote-reference" href="#id10" id="id4">[4]</a> routine.
+This routine takes in input the following parameters:</p>
+<blockquote>
+<div><ul class="simple">
+<li>The action to be performed, in the <code class="docutils literal"><span class="pre">&lt;operation&gt;_&lt;resource&gt;</span></code> form,
+<code class="docutils literal"><span class="pre">e.g.:</span> <span class="pre">create_network</span></code></li>
+<li>The data to use for performing checks. For <code class="docutils literal"><span class="pre">POST</span></code> operations this could
+be a partial specification of the object, whereas it is always a full
+specification for <code class="docutils literal"><span class="pre">GET</span></code>, <code class="docutils literal"><span class="pre">PUT</span></code>, and <code class="docutils literal"><span class="pre">DELETE</span></code> requests, as resource
+data are retrieved before dispatching the call to the plugin layer.</li>
+<li>The collection name for the resource specified in the previous parameter;
+for instance, for a network it would be the &#8220;networks&#8221;.</li>
+</ul>
+</div></blockquote>
+<p>The <code class="docutils literal"><span class="pre">_build_match_rule</span></code> routine returns a <code class="docutils literal"><span class="pre">oslo_policy.RuleCheck</span></code> instance
+built in the following way:</p>
+<blockquote>
+<div><ul class="simple">
+<li>Always add a check for the action being performed. This will match
+a policy like create_network in <code class="docutils literal"><span class="pre">policy.json</span></code>;</li>
+<li>Return for <code class="docutils literal"><span class="pre">GET</span></code> operations; more detailed checks will be performed anyway
+when building the response;</li>
+<li>For each attribute which has been explicitly specified in the request
+create a rule matching policy names in the form
+<code class="docutils literal"><span class="pre">&lt;operation&gt;_&lt;resource&gt;:&lt;attribute&gt;</span></code> rule, and link it with the
+previous rule with an &#8216;And&#8217; relationship (using <code class="docutils literal"><span class="pre">oslo_policy.AndCheck</span></code>);
+this step will be performed only if the enforce_policy flag is set to
+True in the resource attribute descriptor (usually found in a data
+structure called <code class="docutils literal"><span class="pre">RESOURCE_ATTRIBUTE_MAP</span></code>);</li>
+<li>If the attribute is a composite one then further rules will be created;
+These will match policy names in the form <code class="docutils literal"><span class="pre">&lt;operation&gt;_&lt;resource&gt;:</span>
+<span class="pre">&lt;attribute&gt;:&lt;sub_attribute&gt;</span></code>. An &#8216;And&#8217; relationship will be used in this
+case too.</li>
+</ul>
+</div></blockquote>
+<p>As all the rules to verify are linked by &#8216;And&#8217; relationships, all the policy
+checks should succeed in order for a request to be authorized. Rule
+verification is performed by <code class="docutils literal"><span class="pre">oslo_policy</span></code> with no &#8220;customization&#8221; from the
+Neutron side.</p>
+</div>
+<div class="section" id="response-filtering">
+<h3>Response Filtering<a class="headerlink" href="#response-filtering" title="Permalink to this headline">¶</a></h3>
+<p>Some Neutron extensions, like the provider networks one, add some attribute
+to resources which are however not meant to be consumed by all clients. This
+might be because these attributes contain implementation details, or are
+meant only to be used when exchanging information between services, such
+as Nova and Neutron;</p>
+<p>For this reason the policy engine is invoked again when building API
+responses. This is achieved by the <code class="docutils literal"><span class="pre">_exclude_attributes_by_policy</span></code> <a class="footnote-reference" href="#id11" id="id5">[5]</a>
+method in <code class="docutils literal"><span class="pre">neutron.api.v2.base.Controller</span></code>;</p>
+<p>This method, for each attribute in the response returned by the plugin layer,
+first checks if the <code class="docutils literal"><span class="pre">is_visible</span></code> flag is True. In that case it proceeds to
+checking policies for the attribute; if the policy check fails the attribute
+is added to a list of attributes that should be removed from the response
+before returning it to the API client.</p>
+</div>
+</div>
+<div class="section" id="the-neutron-policy-api">
+<h2>The neutron.policy API<a class="headerlink" href="#the-neutron-policy-api" title="Permalink to this headline">¶</a></h2>
+<p>The <code class="docutils literal"><span class="pre">neutron.policy</span></code> module exposes a simple API whose main goal if to allow the
+REST API controllers to implement the authorization workflow discussed in this
+document. It is a bad practice to call the policy engine from within the plugin
+layer, as this would make request authorization dependent on configured
+plugins, and therefore make API behaviour dependent on the plugin itself, which
+defies Neutron tenet of being backend agnostic.</p>
+<p>The neutron.policy API exposes the following routines:</p>
+<blockquote>
+<div><ul class="simple">
+<li><code class="docutils literal"><span class="pre">init</span></code>
+Initializes the policy engine loading rules from the json policy (files).
+This method can safely be called several times.</li>
+<li><code class="docutils literal"><span class="pre">reset</span></code>
+Clears all the rules currently configured in the policy engine. It is
+called in unit tests and at the end of the initialization of core API
+router <a class="footnote-reference" href="#id12" id="id6">[6]</a> in order to ensure rules are loaded after all the extensions
+are loaded.</li>
+<li><code class="docutils literal"><span class="pre">refresh</span></code>
+Combines init and reset. Called when a SIGHUP signal is sent to an API
+worker.</li>
+<li><code class="docutils literal"><span class="pre">set_rules</span></code>
+Explicitly set policy engine&#8217;s rules. Used only in unit tests.</li>
+<li><code class="docutils literal"><span class="pre">check</span></code>
+Perform a check using the policy engine. Builds match rules as described
+in this document, and then evaluates the resulting rule using oslo_policy&#8217;s
+policy engine. Returns True if the checks succeeds, false otherwise.</li>
+<li><code class="docutils literal"><span class="pre">enforce</span></code>
+Operates like the check routine but raises if the check in oslo_policy
+fails.</li>
+<li><code class="docutils literal"><span class="pre">check_is_admin</span></code>
+Enforce the predefined context_is_admin rule; used to determine the is_admin
+property for a neutron context.</li>
+<li><code class="docutils literal"><span class="pre">check_is_advsvc</span></code>
+Enforce the predefined context_is_advsvc rule; used to determine the
+is_advsvc property for a neutron context.</li>
+</ul>
+</div></blockquote>
+</div>
+<div class="section" id="neutron-specific-policy-rules">
+<h2>Neutron specific policy rules<a class="headerlink" href="#neutron-specific-policy-rules" title="Permalink to this headline">¶</a></h2>
+<p>Neutron provides two additional policy rule classes in order to support the
+&#8220;augmented&#8221; authorization capabilities it provides. They both extend
+<code class="docutils literal"><span class="pre">oslo_policy.RuleCheck</span></code> and are registered using the
+<code class="docutils literal"><span class="pre">oslo_policy.register</span></code> decorator.</p>
+<div class="section" id="ownercheck-extended-checks-for-resource-ownership">
+<h3>OwnerCheck: Extended Checks for Resource Ownership<a class="headerlink" href="#ownercheck-extended-checks-for-resource-ownership" title="Permalink to this headline">¶</a></h3>
+<p>This class is registered for rules matching the <code class="docutils literal"><span class="pre">tenant_id</span></code> keyword and
+overrides the generic check performed by oslo_policy in this case.
+It uses for those cases where neutron needs to check whether the project
+submitting a request for a new resource owns the parent resource of the one
+being created. Current usages of <code class="docutils literal"><span class="pre">OwnerCheck</span></code> include, for instance,
+creating and updating a subnet.</p>
+<p>The check, performed in the <code class="docutils literal"><span class="pre">__call__</span></code> method, works as follows:</p>
+<blockquote>
+<div><ul class="simple">
+<li>verify if the target field is already in the target data. If yes, then
+simply verify whether the value for the target field in target data
+is equal to value for the same field in credentials, just like
+<code class="docutils literal"><span class="pre">oslo_policy.GeneriCheck</span></code> would do. This is also the most frequent case
+as the target field is usually <code class="docutils literal"><span class="pre">tenant_id</span></code>;</li>
+<li>if the previous check failed, extract a parent resource type and a
+parent field name from the target field. For instance
+<code class="docutils literal"><span class="pre">networks:tenant_id</span></code> identifies the <code class="docutils literal"><span class="pre">tenant_id</span></code> attribute of the
+<code class="docutils literal"><span class="pre">network</span></code> resource;</li>
+<li>if no parent resource or target field could be identified raise a
+<code class="docutils literal"><span class="pre">PolicyCheckError</span></code> exception;</li>
+<li>Retrieve a &#8216;parent foreign key&#8217; from the <code class="docutils literal"><span class="pre">RESOURCE_FOREIGN_KEYS</span></code> data
+structure in <code class="docutils literal"><span class="pre">neutron.api.v2.attributes</span></code>. This foreign key is simply the
+attribute acting as a primary key in the parent resource. A
+<code class="docutils literal"><span class="pre">PolicyCheckError</span></code> exception will be raised if such &#8216;parent foreign key&#8217;
+cannot be retrieved;</li>
+<li>Using the core plugin, retrieve an instance of the resource having
+&#8216;parent foreign key&#8217; as an identifier;</li>
+<li>Finally, verify whether the target field in this resource matches the
+one in the initial request data. For instance, for a port create request,
+verify whether the <code class="docutils literal"><span class="pre">tenant_id</span></code> of the port data structure matches the
+<code class="docutils literal"><span class="pre">tenant_id</span></code> of the network where this port is being created.</li>
+</ul>
+</div></blockquote>
+</div>
+<div class="section" id="fieldcheck-verify-resource-attributes">
+<h3>FieldCheck: Verify Resource Attributes<a class="headerlink" href="#fieldcheck-verify-resource-attributes" title="Permalink to this headline">¶</a></h3>
+<p>This class is registered with the policy engine for rules matching the &#8216;field&#8217;
+keyword, and provides a way to perform fine grained checks on resource
+attributes. For instance, using this class of rules it is possible to specify
+a rule for granting every project read access to shared resources.</p>
+<p>In policy.json, a FieldCheck rules is specified in the following way:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>&gt; field: &lt;resource&gt;:&lt;field&gt;=&lt;value&gt;
+</pre></div>
+</div>
+<p>This will result in the initialization of a FieldCheck that will check for
+<code class="docutils literal"><span class="pre">&lt;field&gt;</span></code> in the target resource data, and return <code class="docutils literal"><span class="pre">True</span></code> if it is equal
+to <code class="docutils literal"><span class="pre">&lt;value&gt;</span></code> or return <code class="docutils literal"><span class="pre">False</span></code> is the <code class="docutils literal"><span class="pre">&lt;field&gt;</span></code> either is not equal to
+<code class="docutils literal"><span class="pre">&lt;value&gt;</span></code> or does not exist at all.</p>
+</div>
+</div>
+<div class="section" id="guidance-for-api-developers">
+<h2>Guidance for API developers<a class="headerlink" href="#guidance-for-api-developers" title="Permalink to this headline">¶</a></h2>
+<p>When developing REST APIs for Neutron it is important to be aware of how the
+policy engine will authorize these requests. This is true both for APIs
+served by Neutron &#8220;core&#8221; and for the APIs served by the various Neutron
+&#8220;stadium&#8221; services.</p>
+<blockquote>
+<div><ul class="simple">
+<li>If an attribute of a resource might be subject to authorization checks
+then the <code class="docutils literal"><span class="pre">enforce_policy</span></code> attribute should be set to <code class="docutils literal"><span class="pre">True</span></code>. While
+setting this flag to <code class="docutils literal"><span class="pre">True</span></code> for each attribute is a viable strategy,
+it is worth noting that this will require a call to the policy engine
+for each attribute, thus consistently increasing the time required to
+complete policy checks for a resource. This could result in a scalability
+issue, especially in the case of list operations retrieving a large
+number of resources;</li>
+<li>Some resource attributes, even if not directly used in policy checks
+might still be required by the policy engine. This is for instance the
+case of the <code class="docutils literal"><span class="pre">tenant_id</span></code> attribute. For these attributes the
+<code class="docutils literal"><span class="pre">required_by_policy</span></code> attribute should always set to <code class="docutils literal"><span class="pre">True</span></code>. This will
+ensure that the attribute is included in the resource data sent to the
+policy engine for evaluation;</li>
+<li>The <code class="docutils literal"><span class="pre">tenant_id</span></code> attribute is a fundamental one in Neutron API request
+authorization. The default policy, <code class="docutils literal"><span class="pre">admin_or_owner</span></code>, uses it to validate
+if a project owns the resource it is trying to operate on. To this aim,
+if a resource without a tenant_id is created, it is important to ensure
+that ad-hoc authZ policies are specified for this resource.</li>
+<li>There is still only one check which is hardcoded in Neutron&#8217;s API layer:
+the check to verify that a project owns the network on which it is creating
+a port. This check is hardcoded and is always executed when creating a
+port, unless the network is shared. Unfortunatelu a solution for performing
+this check in an efficient way through the policy engine has not yet been
+found. Due to its nature, there is no way to override this check using the
+policy engine.</li>
+<li>It is strongly advised to not perform policy checks in the plugin or in
+the database management classes. This might lead to divergent API
+behaviours across plugins. Also, it might leave the Neutron DB in an
+inconsistent state if a request is not authorized after it has already
+been dispatched to the backend.</li>
+</ul>
+</div></blockquote>
+</div>
+<div class="section" id="notes">
+<h2>Notes<a class="headerlink" href="#notes" title="Permalink to this headline">¶</a></h2>
+<blockquote>
+<div><ul class="simple">
+<li>No authorization checks are performed for requests coming from the RPC over
+AMQP channel. For all these requests a neutron admin context is built, and
+the plugins will process them as such.</li>
+<li>For <code class="docutils literal"><span class="pre">PUT</span></code> and <code class="docutils literal"><span class="pre">DELETE</span></code> requests a 404 error is returned on request
+authorization failures rather than a 403, unless the project submitting the
+request own the resource to update or delete. This is to avoid conditions
+in which an API client might try and find out other projects&#8217; resource
+identifiers by sending out <code class="docutils literal"><span class="pre">PUT</span></code> and <code class="docutils literal"><span class="pre">DELETE</span></code> requests for random
+resource identifiers.</li>
+<li>There is no way at the moment to specify an <code class="docutils literal"><span class="pre">OR</span></code> relationship between two
+attributes of a given resource (eg.: <code class="docutils literal"><span class="pre">port.name</span> <span class="pre">==</span> <span class="pre">'meh'</span> <span class="pre">or</span>
+<span class="pre">port.status</span> <span class="pre">==</span> <span class="pre">'DOWN'</span></code>), unless the rule with the or condition is explicitly
+added to the policy.json file.</li>
+<li><code class="docutils literal"><span class="pre">OwnerCheck</span></code> performs a plugin access; this will likely require a database
+access, but since the behaviour is implementation specific it might also
+imply a round-trip to the backend. This class of checks, when involving
+retrieving attributes for &#8216;parent&#8217; resources should be used very sparingly.</li>
+<li>In order for <code class="docutils literal"><span class="pre">OwnerCheck</span></code> rules to work, parent resources should have an
+entry in <code class="docutils literal"><span class="pre">neutron.api.v2.attributes.RESOURCE_FOREIGN_KEYS</span></code>; moreover the
+resource must be managed by the &#8216;core&#8217; plugin (ie: the one defined in the
+core_plugin configuration variable)</li>
+</ul>
+</div></blockquote>
+</div>
+<div class="section" id="references">
+<h2>References<a class="headerlink" href="#references" title="Permalink to this headline">¶</a></h2>
+<table class="docutils footnote" frame="void" id="id7" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label"><a class="fn-backref" href="#id1">[1]</a></td><td><a class="reference external" href="http://git.openstack.org/cgit/openstack/oslo.policy/">Oslo policy module</a></td></tr>
+</tbody>
+</table>
+<table class="docutils footnote" frame="void" id="id8" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label"><a class="fn-backref" href="#id2">[2]</a></td><td><a class="reference external" href="documentation:http://docs.openstack.org/developer/oslo.policy/">Oslo policy developer</a></td></tr>
+</tbody>
+</table>
+<table class="docutils footnote" frame="void" id="id9" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label"><a class="fn-backref" href="#id3">[3]</a></td><td>API controller <a class="reference external" href="http://git.openstack.org/cgit/openstack/neutron/tree/neutron/api/v2/base.py?id=2015.1.1#n282">item</a> method</td></tr>
+</tbody>
+</table>
+<table class="docutils footnote" frame="void" id="id10" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label"><a class="fn-backref" href="#id4">[4]</a></td><td>Policy engine&#8217;s <a class="reference external" href="http://git.openstack.org/cgit/openstack/neutron/tree/neutron/policy.py?id=2015.1.1#n187">build_match_rule</a> method</td></tr>
+</tbody>
+</table>
+<table class="docutils footnote" frame="void" id="id11" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label"><a class="fn-backref" href="#id5">[5]</a></td><td><a class="reference external" href="http://git.openstack.org/cgit/openstack/neutron/tree/neutron/api/v2/base.py?id=2015.1.1#n132">exclude_attributes_by_policy</a> method</td></tr>
+</tbody>
+</table>
+<table class="docutils footnote" frame="void" id="id12" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label"><a class="fn-backref" href="#id6">[6]</a></td><td>Policy <a class="reference external" href="http://git.openstack.org/cgit/openstack/neutron/tree/neutron/api/v2/router.py?id=2015.1.1#n122">reset</a> in neutron.api.v2.router</td></tr>
+</tbody>
+</table>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="../index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Authorization Policy Enforcement</a><ul>
+<li><a class="reference internal" href="#authorization-workflow">Authorization workflow</a><ul>
+<li><a class="reference internal" href="#request-authorization">Request authorization</a></li>
+<li><a class="reference internal" href="#response-filtering">Response Filtering</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#the-neutron-policy-api">The neutron.policy API</a></li>
+<li><a class="reference internal" href="#neutron-specific-policy-rules">Neutron specific policy rules</a><ul>
+<li><a class="reference internal" href="#ownercheck-extended-checks-for-resource-ownership">OwnerCheck: Extended Checks for Resource Ownership</a></li>
+<li><a class="reference internal" href="#fieldcheck-verify-resource-attributes">FieldCheck: Verify Resource Attributes</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#guidance-for-api-developers">Guidance for API developers</a></li>
+<li><a class="reference internal" href="#notes">Notes</a></li>
+<li><a class="reference internal" href="#references">References</a></li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="db_models.html"
+                                  title="previous chapter">Relocation of Database Models</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="rpc_api.html"
+                                  title="next chapter">Neutron RPC API Layer</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/neutron
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="../_sources/devref/policy.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="right" >
+          <a href="rpc_api.html" title="Neutron RPC API Layer"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="db_models.html" title="Relocation of Database Models"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../index.html">neutron 10.0.0.0rc2.dev58 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="index.html" accesskey="U">Developer Guide</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2011-present, OpenStack Foundation..
+      Last updated on Feb 14, 2017.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/neutron");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

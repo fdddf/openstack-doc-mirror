@@ -1,0 +1,264 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Enabling your project for mutable config &mdash; oslo.config 3.22.1.dev4 documentation</title>
+    
+    <link rel="stylesheet" href="_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '3.22.1.dev4',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <link rel="top" title="oslo.config 3.22.1.dev4 documentation" href="index.html" />
+    <link rel="next" title="oslo-config-generator" href="generator.html" />
+    <link rel="prev" title="Style Guide for Help Strings" href="styleguide.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="enabling-your-project-for-mutable-config">
+<h1>Enabling your project for mutable config<a class="headerlink" href="#enabling-your-project-for-mutable-config" title="Permalink to this headline">¶</a></h1>
+<p>As of OpenStack Newton, config options can be marked as &#8216;mutable&#8217;. This means
+they can be reloaded (usually via SIGHUP) at runtime, without a service
+restart. However, each project has to be enabled before this will work and some
+care needs to be taken over how each option is used before it can safely be
+marked mutable.</p>
+<div class="contents local topic" id="table-of-contents">
+<p class="topic-title first">Table of Contents</p>
+<ul class="simple">
+<li><a class="reference internal" href="#calling-mutate-config-files" id="id1">Calling mutate_config_files</a></li>
+<li><a class="reference internal" href="#making-options-mutable-safe" id="id2">Making options mutable-safe</a><ul>
+<li><a class="reference internal" href="#the-option-is-checked-every-time" id="id3">The option is checked every time</a></li>
+<li><a class="reference internal" href="#the-option-is-cached-on-the-stack" id="id4">The option is cached on the stack</a></li>
+<li><a class="reference internal" href="#the-option-affects-state" id="id5">The option affects state</a></li>
+</ul>
+</li>
+</ul>
+</div>
+<div class="section" id="calling-mutate-config-files">
+<h2><a class="toc-backref" href="#id1">Calling mutate_config_files</a><a class="headerlink" href="#calling-mutate-config-files" title="Permalink to this headline">¶</a></h2>
+<p>Config mutation is triggered by <code class="docutils literal"><span class="pre">ConfigOpts#mutate_config_files</span></code> being
+called. Services launched with oslo.service get a signal handler on SIGHUP but
+by default that calls the older <code class="docutils literal"><span class="pre">ConfigOpts#reload_config_files</span></code> method. To
+get the new behaviour, we have to pass <code class="docutils literal"><span class="pre">restart_method='mutate'</span></code>. For
+example:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="n">service</span><span class="o">.</span><span class="n">ProcessLauncher</span><span class="p">(</span><span class="n">CONF</span><span class="p">,</span> <span class="n">restart_method</span><span class="o">=</span><span class="s1">&#39;mutate&#39;</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>An example patch is here: <a class="reference external" href="https://review.openstack.org/#/c/280851">https://review.openstack.org/#/c/280851</a></p>
+<p>Some projects may call <code class="docutils literal"><span class="pre">reload_config_files</span></code> directly, in this case just
+change that call to <code class="docutils literal"><span class="pre">mutate_config_files</span></code>. If there is no signal handler or
+you want to trigger reload by a different method, maybe via a web UI or
+watching a file, just ensure your trigger calls <code class="docutils literal"><span class="pre">mutate_config_files</span></code>.</p>
+</div>
+<div class="section" id="making-options-mutable-safe">
+<h2><a class="toc-backref" href="#id2">Making options mutable-safe</a><a class="headerlink" href="#making-options-mutable-safe" title="Permalink to this headline">¶</a></h2>
+<p>When options are mutated, they change in the ConfigOpts object but this will
+not necessarily affect your service immediately. There are three main cases to
+deal with:</p>
+<ul class="simple">
+<li>The option is checked every time</li>
+<li>The option is cached on the stack</li>
+<li>The option affects state</li>
+</ul>
+<div class="section" id="the-option-is-checked-every-time">
+<h3><a class="toc-backref" href="#id3">The option is checked every time</a><a class="headerlink" href="#the-option-is-checked-every-time" title="Permalink to this headline">¶</a></h3>
+<p>This pattern is already safe. Example code:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="k">while</span> <span class="bp">True</span><span class="p">:</span>
+    <span class="n">progress_timeout</span> <span class="o">=</span> <span class="n">CONF</span><span class="o">.</span><span class="n">libvirt</span><span class="o">.</span><span class="n">live_migration_progress_timeout</span>
+    <span class="n">completion_timeout</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span>
+        <span class="n">CONF</span><span class="o">.</span><span class="n">libvirt</span><span class="o">.</span><span class="n">live_migration_completion_timeout</span> <span class="o">*</span> <span class="n">data_gb</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">libvirt_migrate</span><span class="o">.</span><span class="n">should_abort</span><span class="p">(</span><span class="n">instance</span><span class="p">,</span> <span class="n">now</span><span class="p">,</span> <span class="n">progress_time</span><span class="p">,</span>
+                                    <span class="n">progress_timeout</span><span class="p">,</span> <span class="n">completion_timeout</span><span class="p">):</span>
+        <span class="n">guest</span><span class="o">.</span><span class="n">abort_job</span><span class="p">()</span>
+</pre></div>
+</div>
+</div>
+<div class="section" id="the-option-is-cached-on-the-stack">
+<h3><a class="toc-backref" href="#id4">The option is cached on the stack</a><a class="headerlink" href="#the-option-is-cached-on-the-stack" title="Permalink to this headline">¶</a></h3>
+<p>Just putting the option value in a local variable is enough to cache it. This
+is tempting to do with loops. Example code:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="n">progress_timeout</span> <span class="o">=</span> <span class="n">CONF</span><span class="o">.</span><span class="n">libvirt</span><span class="o">.</span><span class="n">live_migration_progress_timeout</span>
+<span class="n">completion_timeout</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span>
+    <span class="n">CONF</span><span class="o">.</span><span class="n">libvirt</span><span class="o">.</span><span class="n">live_migration_completion_timeout</span> <span class="o">*</span> <span class="n">data_gb</span><span class="p">)</span>
+<span class="k">while</span> <span class="bp">True</span><span class="p">:</span>
+    <span class="k">if</span> <span class="n">libvirt_migrate</span><span class="o">.</span><span class="n">should_abort</span><span class="p">(</span><span class="n">instance</span><span class="p">,</span> <span class="n">now</span><span class="p">,</span> <span class="n">progress_time</span><span class="p">,</span>
+                                    <span class="n">progress_timeout</span><span class="p">,</span> <span class="n">completion_timeout</span><span class="p">):</span>
+        <span class="n">guest</span><span class="o">.</span><span class="n">abort_job</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>The goal is to check the option exactly once every time it could have an
+effect. Usually this is as simple as checking it every time, for example by
+moving the locals into the loop. Example patch:
+<a class="reference external" href="https://review.openstack.org/#/c/319203">https://review.openstack.org/#/c/319203</a></p>
+<p>Sometimes multiple computations have to be performed using the option values
+and it&#8217;s important that the result is consistent. In this case, it&#8217;s necessary
+to cache the option values in locals. Example patch:
+<a class="reference external" href="https://review.openstack.org/#/c/319254">https://review.openstack.org/#/c/319254</a></p>
+</div>
+<div class="section" id="the-option-affects-state">
+<h3><a class="toc-backref" href="#id5">The option affects state</a><a class="headerlink" href="#the-option-affects-state" title="Permalink to this headline">¶</a></h3>
+<p>An option value can also be cached, after a fashion, by state - either system
+or external. For example, the &#8216;debug&#8217; option of oslo.log is used to set the
+default log level on startup. The option is not normally checked again, so if
+it is mutated, the system state will not reflect the new value of the option.
+In this case we have to use a <em>mutate hook</em>:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="k">def</span> <span class="nf">_mutate_hook</span><span class="p">(</span><span class="n">conf</span><span class="p">,</span> <span class="n">fresh</span><span class="p">):</span>
+    <span class="k">if</span> <span class="p">(</span><span class="bp">None</span><span class="p">,</span> <span class="s1">&#39;debug&#39;</span><span class="p">)</span> <span class="ow">in</span> <span class="n">fresh</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">conf</span><span class="o">.</span><span class="n">debug</span><span class="p">:</span>
+            <span class="n">log_root</span><span class="o">.</span><span class="n">setLevel</span><span class="p">(</span><span class="n">logging</span><span class="o">.</span><span class="n">DEBUG</span><span class="p">)</span>
+
+<span class="k">def</span> <span class="nf">register_options</span><span class="p">(</span><span class="n">conf</span><span class="p">):</span>
+    <span class="o">...</span> <span class="n">snip</span> <span class="o">...</span>
+    <span class="n">conf</span><span class="o">.</span><span class="n">register_mutate_hook</span><span class="p">(</span><span class="n">_mutate_hook</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Mutate hook functions will be passed two positional parameters, &#8216;conf&#8217; and
+&#8216;fresh&#8217;. &#8216;conf&#8217; is a reference to the updated ConfigOpts object. &#8216;fresh&#8217; looks
+like:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>{ (group, option_name): (old_value, new_value), ... }
+</pre></div>
+</div>
+<p>for example:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="p">{</span> <span class="p">(</span><span class="bp">None</span><span class="p">,</span> <span class="s1">&#39;debug&#39;</span><span class="p">):</span> <span class="p">(</span><span class="bp">False</span><span class="p">,</span> <span class="bp">True</span><span class="p">),</span>
+  <span class="p">(</span><span class="s1">&#39;libvirt&#39;</span><span class="p">,</span> <span class="s1">&#39;live_migration_progress_timeout&#39;</span><span class="p">):</span> <span class="p">(</span><span class="mi">50</span><span class="p">,</span> <span class="mi">75</span><span class="p">)</span> <span class="p">}</span>
+</pre></div>
+</div>
+<p>Hooks may be called in any order.</p>
+<p>Each project should register one hook, which does whatever is necessary to
+apply all the new option values. This hook function could grow very large. For
+good style, modularise the hook using secondary functions rather than accreting
+a monolith or registering multiple hooks.</p>
+<p>Example patch: <a class="reference external" href="https://review.openstack.org/#/c/254821/">https://review.openstack.org/#/c/254821/</a></p>
+</div>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Enabling your project for mutable config</a><ul>
+<li><a class="reference internal" href="#calling-mutate-config-files">Calling mutate_config_files</a></li>
+<li><a class="reference internal" href="#making-options-mutable-safe">Making options mutable-safe</a><ul>
+<li><a class="reference internal" href="#the-option-is-checked-every-time">The option is checked every time</a></li>
+<li><a class="reference internal" href="#the-option-is-cached-on-the-stack">The option is cached on the stack</a></li>
+<li><a class="reference internal" href="#the-option-affects-state">The option affects state</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="styleguide.html"
+                                  title="previous chapter">Style Guide for Help Strings</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="generator.html"
+                                  title="next chapter">oslo-config-generator</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/oslo.config
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="_sources/mutable.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="right" >
+          <a href="generator.html" title="oslo-config-generator"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="styleguide.html" title="Style Guide for Help Strings"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="index.html">oslo.config 3.22.1.dev4 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2013, OpenStack Foundation.
+      Last updated on &#39;Fri Feb 10 05:57:31 2017, commit 572003b&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/oslo.config");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

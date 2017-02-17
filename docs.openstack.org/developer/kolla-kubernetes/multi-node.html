@@ -1,0 +1,397 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Kolla Kubernetes Multi-Node Guide &mdash; kolla-kubernetes 0.4.1.dev179 documentation</title>
+    
+    <link rel="stylesheet" href="_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '0.4.1.dev179',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <link rel="top" title="kolla-kubernetes 0.4.1.dev179 documentation" href="index.html" />
+    <link rel="next" title="Kolla Kubernetes Private Docker Registry Guide" href="private-registry.html" />
+    <link rel="prev" title="Kolla Kubernetes Setup Guide" href="kubernetes-setup.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="kolla-kubernetes-multi-node-guide">
+<h1>Kolla Kubernetes Multi-Node Guide<a class="headerlink" href="#kolla-kubernetes-multi-node-guide" title="Permalink to this headline">¶</a></h1>
+<p>This guide documents how to deploy Kolla-Kubernetes within a
+multi-node Kubernetes cluster.  It will guide you through all of the
+dependencies required to deploy Horizon, the OpenStack Admin Web
+Interface.  It works for Kubernetes clusters supporting various
+storage providers including GCE compute disks, AWS EBS, Ceph RBD, and
+even local host mounts if you are developing multi-node on an
+all-in-one system.</p>
+<p>This is an advanced guide.  Before attempting to deploy on a
+multi-node cluster, please follow the <a class="reference internal" href="quickstart.html"><em>Kolla-Kubernetes Quickstart Guide</em></a> and ensure
+that you have successfully deployed Kolla-Kubernetes on a single host
+using the <code class="xref doc docutils literal"><span class="pre">kubernetes-all-in-one</span></code>.  This multi-node guide
+requires quite a few system dependencies to be addressed by the
+<a class="reference internal" href="quickstart.html"><em>Kolla-Kubernetes Quickstart Guide</em></a>.</p>
+<p>Following this guide will result in a minimal Kolla-Kubernetes
+multi-node deployment consisting of:</p>
+<ul class="simple">
+<li>1 mariadb instance</li>
+<li>1 memcached instance</li>
+<li>3 keystone instances</li>
+<li>3 horizon instances</li>
+</ul>
+<p>The end result will be a working Horizon admin interface and its
+dependencies deployed with all of the self-healing and auto-wiring
+benefits that a Kubernetes cluster has to offer.  You should be able
+to destroy Kubernetes nodes at will, and the system should self-heal
+and maintain state as pods migrate from destroyed nodes to new nodes.
+You may also destroy <em>all</em> Kubernetes nodes, then bring some back, and
+the system should again self-heal.  Because we are using network
+volumes, mariadb state is maintained since its network volume will
+follow the pod as it is rescheduled from one node to the next.</p>
+<div class="section" id="pre-requisites">
+<h2>Pre-Requisites<a class="headerlink" href="#pre-requisites" title="Permalink to this headline">¶</a></h2>
+<p>Follow the <a class="reference internal" href="quickstart.html"><em>Kolla-Kubernetes Quickstart Guide</em></a>, configure your system, and do a
+&#8220;Development Install&#8221; of Kolla and Kolla-Kubernetes.  This is
+absolutely required.</p>
+</div>
+<div class="section" id="configure-kolla">
+<h2>Configure Kolla<a class="headerlink" href="#configure-kolla" title="Permalink to this headline">¶</a></h2>
+<p>For multi-node deployments, a Docker registry is required since the
+Kubernetes nodes will not be able to find the Kolla images that your
+development machine has built.  Thus, we must configure Kolla to name
+the images correctly, so that we may easily push the images to the
+right Docker registry.</p>
+<p>Add your Docker registry settings in the Kolla-Ansible configuration file
+<code class="docutils literal"><span class="pre">`./etc/kolla/globals.yml`</span></code>.</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span># Edit Kolla-Ansible config ./etc/kolla/globals.yml
+docker_registry: &quot;&lt;registry_url&gt;&quot;  # e.g. &quot;gcr.io&quot;
+docker_namespace: &quot;&lt;registry_namespace&gt;&quot;  # e.g. &quot;annular-reef-123&quot;
+</pre></div>
+</div>
+<p>Generate the Kolla configurations, build the Kolla images, and push
+the Kolla images to your Docker registry.</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span># Generate the Kolla-Ansible configurations
+pushd kolla-ansible
+sudo ./tools/generate_passwords.py  # (Optional: will overwrite)
+sudo ./tools/kolla-ansible genconfig
+popd
+</pre></div>
+</div>
+</div>
+<div class="section" id="build-kolla-images-and-push-to-docker-registry">
+<h2>Build Kolla Images and Push to Docker Registry<a class="headerlink" href="#build-kolla-images-and-push-to-docker-registry" title="Permalink to this headline">¶</a></h2>
+<div class="highlight-python"><div class="highlight"><pre><span></span># Set env variables to make subsequent commands cut-and-pasteable
+export DOCKER_REGISTRY=&quot;&lt;registry_url&gt;&quot;
+export DOCKER_NAMESPACE=&quot;&lt;registry_namespace&gt;&quot;
+export DOCKER_TAG=&quot;4.0.0&quot;
+export KOLLA_CONTAINERS=&quot;mariadb memcached kolla-toolbox keystone horizon&quot;
+
+# Build the Kolla containers
+kolla-build $KOLLA_CONTAINERS --registry $DOCKER_REGISTRY --namespace $DOCKER_NAMESPACE
+
+# Authenticate with your Docker registry
+#   This may not be necessary if you are using a cloud provider
+docker login
+
+# Push the newly-built Kolla containers to your Docker registry
+#   For GKE, change the command below to be &quot;gcloud docker push&quot;
+for i in $KOLLA_CONTAINERS; do
+  docker push &quot;$DOCKER_REGISTRY/$DOCKER_NAMESPACE/centos-binary-$i:$DOCKER_TAG&quot;
+done
+</pre></div>
+</div>
+</div>
+<div class="section" id="configure-kolla-kubernetes">
+<h2>Configure Kolla-Kubernetes<a class="headerlink" href="#configure-kolla-kubernetes" title="Permalink to this headline">¶</a></h2>
+<p>Modify the Kolla-Kubernetes configuration file
+<code class="docutils literal"><span class="pre">`./etc/kolla-kubernetes/kolla-kubernetes.yml`</span></code> to set the number of
+instance replicas.  In addition, set the storage_provider settings to
+match your environment.</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span># Edit Kolla-Kubernetes config ./etc/kolla-kubernetes/kolla-kubernetes.yml
+
+########################
+# Kubernetes Cluster
+########################
+keystone_replicas: &quot;3&quot;
+horizon_replicas: &quot;3&quot;
+
+########################
+# Persistent Storage
+########################
+storage_provider: &quot;host&quot;  # host, ceph, gce, aws
+storage_ceph:
+  keyring: /etc/ceph/ceph.client.admin.keyring
+  monitors:
+  - x.x.x.x
+  - y.y.y.y
+  pool: rbd
+  secretName: pkt-ceph-secret
+  ssh_user: root
+  user: admin
+</pre></div>
+</div>
+</div>
+<div class="section" id="known-issues">
+<h2>Known Issues<a class="headerlink" href="#known-issues" title="Permalink to this headline">¶</a></h2>
+<p>#1. On GCE, the mariadb pod is unable to mount the network drive that
+was prior mounted by the mariadb-bootstrap job, until the
+mariadb-bootstrap job is deleted.  The same should also occur for AWS
+and Ceph.</p>
+<p>#2. When running Kubernetes, Ceph RBD volumes will not auto-unlock
+when Kubernetes nodes disappear, causing problems when a pod migrates
+to a new node and cannot mount the required volume.  This was supposed
+to have been fixed in Kubernetes 1.3, but we have been unable to
+verify it working.  Details are found in the in this <a class="reference external" href="https://github.com/kubernetes/kubernetes/pull/26351">kubernetes pull
+request</a>.</p>
+</div>
+<div class="section" id="create-all-kolla-kubernetes-resources">
+<h2>Create all Kolla-Kubernetes Resources<a class="headerlink" href="#create-all-kolla-kubernetes-resources" title="Permalink to this headline">¶</a></h2>
+<p>Execute the following commands to create the Kolla-Kubernetes
+multi-node cluster.  There are two unique perspectives, that of an
+operator and that of a workflow engine.  The workflow engine drives
+the same CLI subcommands that are accessible to operators.</p>
+<p>However, since the workflow engine does not yet exist, the shortcut
+workflow commands as defined in the quickstart are still supported.</p>
+<p>All of the commands below are cut and pasteable.</p>
+<div class="section" id="operator-create-resources">
+<h3>Operator Create Resources<a class="headerlink" href="#operator-create-resources" title="Permalink to this headline">¶</a></h3>
+<div class="highlight-python"><div class="highlight"><pre><span></span>kolla-kubernetes bootstrap ceph  # adds ceph secret, no-op for storage_provider!=ceph
+kolla-kubernetes bootstrap mariadb
+sleep 30  # wait for mariadb bootstrap to finish
+kolla-kubernetes resource delete bootstrap mariadb  # workaround known issue #1
+kolla-kubernetes run mariadb
+kolla-kubernetes run memcached
+sleep 30  # wait for mariadb and memcached to start up
+kolla-kubernetes bootstrap keystone
+sleep 30  # wait for keystone to bootstrap in mariadb
+kolla-kubernetes run keystone
+sleep 30  # wait for keystone to start up
+kolla-kubernetes run horizon
+</pre></div>
+</div>
+</div>
+<div class="section" id="workflow-engine-create-resources">
+<h3>Workflow Engine Create Resources<a class="headerlink" href="#workflow-engine-create-resources" title="Permalink to this headline">¶</a></h3>
+<p>A future Ansible Workflow Engine would individually call the discrete
+bits of logic.</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>kolla-kubernetes resource create disk mariadb
+kolla-kubernetes resource create pv mariadb
+kolla-kubernetes resource create pvc mariadb
+kolla-kubernetes resource create svc mariadb
+kolla-kubernetes resource create configmap mariadb
+kolla-kubernetes resource create bootstrap mariadb
+sleep 30  # wait for mariadb bootstrap to finish
+kolla-kubernetes resource delete bootstap mariadb  # workaround known issue #1
+kolla-kubernetes resource create pod mariadb
+kolla-kubernetes resource create svc memcached
+kolla-kubernetes resource create configmap memcached
+kolla-kubernetes resource create pod memcached
+kolla-kubernetes resource create svc keystone
+kolla-kubernetes resource create configmap keystone
+sleep 30  # wait for mariadb and memcached to start up
+kolla-kubernetes resource create bootstrap keystone
+sleep 30  # wait for keystone to bootstrap in mariadb
+kolla-kubernetes resource create pod keystone
+kolla-kubernetes resource create svc horizon
+kolla-kubernetes resource create configmap horizon
+sleep 30  # wait for keystone to start up
+kolla-kubernetes resource create pod horizon
+</pre></div>
+</div>
+</div>
+</div>
+<div class="section" id="check-status-of-all-kolla-kubernetes-resources">
+<h2>Check Status of all Kolla-Kubernetes Resources<a class="headerlink" href="#check-status-of-all-kolla-kubernetes-resources" title="Permalink to this headline">¶</a></h2>
+<p>Checking status is the same whether for operators or workflow engine.</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>kolla-kubernetes resource status disk mariadb
+kolla-kubernetes resource status pv mariadb
+kolla-kubernetes resource status pvc mariadb
+kolla-kubernetes resource status svc mariadb
+kolla-kubernetes resource status configmap mariadb
+kolla-kubernetes resource status bootstrap mariadb
+kolla-kubernetes resource status pod mariadb
+kolla-kubernetes resource status svc memcached
+kolla-kubernetes resource status configmap memcached
+kolla-kubernetes resource status pod memcached
+kolla-kubernetes resource status svc keystone
+kolla-kubernetes resource status configmap keystone
+kolla-kubernetes resource status bootstrap keystone
+kolla-kubernetes resource status pod keystone
+kolla-kubernetes resource status svc horizon
+kolla-kubernetes resource status configmap horizon
+kolla-kubernetes resource status pod horizon
+</pre></div>
+</div>
+</div>
+<div class="section" id="delete-all-kolla-kubernetes-resources">
+<h2>Delete all Kolla-Kubernetes Resources<a class="headerlink" href="#delete-all-kolla-kubernetes-resources" title="Permalink to this headline">¶</a></h2>
+<p>Deleting all resources is exactly executing the creation steps in
+reverse.</p>
+<div class="section" id="operator-delete-resources">
+<h3>Operator Delete Resources<a class="headerlink" href="#operator-delete-resources" title="Permalink to this headline">¶</a></h3>
+<div class="highlight-python"><div class="highlight"><pre><span></span>kolla-kubernetes kill horizon
+kolla-kubernetes kill keystone
+kolla-kubernetes kill memcached
+kolla-kubernetes kill mariadb
+kolla-kubernetes kill ceph
+</pre></div>
+</div>
+</div>
+<div class="section" id="workflow-engine-delete-resources">
+<h3>Workflow Engine Delete Resources<a class="headerlink" href="#workflow-engine-delete-resources" title="Permalink to this headline">¶</a></h3>
+<div class="highlight-python"><div class="highlight"><pre><span></span>kolla-kubernetes resource delete pod horizon
+kolla-kubernetes resource delete configmap horizon
+kolla-kubernetes resource delete svc horizon
+kolla-kubernetes resource delete pod keystone
+kolla-kubernetes resource delete bootstrap keystone
+kolla-kubernetes resource delete configmap keystone
+kolla-kubernetes resource delete svc keystone
+kolla-kubernetes resource delete pod memcached
+kolla-kubernetes resource delete configmap memcached
+kolla-kubernetes resource delete svc memcached
+kolla-kubernetes resource delete pod mariadb
+kolla-kubernetes resource delete bootstrap mariadb
+kolla-kubernetes resource delete configmap mariadb
+kolla-kubernetes resource delete svc mariadb
+kolla-kubernetes resource delete pvc mariadb
+kolla-kubernetes resource delete pv mariadb
+kolla-kubernetes resource delete disk mariadb
+</pre></div>
+</div>
+</div>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Kolla Kubernetes Multi-Node Guide</a><ul>
+<li><a class="reference internal" href="#pre-requisites">Pre-Requisites</a></li>
+<li><a class="reference internal" href="#configure-kolla">Configure Kolla</a></li>
+<li><a class="reference internal" href="#build-kolla-images-and-push-to-docker-registry">Build Kolla Images and Push to Docker Registry</a></li>
+<li><a class="reference internal" href="#configure-kolla-kubernetes">Configure Kolla-Kubernetes</a></li>
+<li><a class="reference internal" href="#known-issues">Known Issues</a></li>
+<li><a class="reference internal" href="#create-all-kolla-kubernetes-resources">Create all Kolla-Kubernetes Resources</a><ul>
+<li><a class="reference internal" href="#operator-create-resources">Operator Create Resources</a></li>
+<li><a class="reference internal" href="#workflow-engine-create-resources">Workflow Engine Create Resources</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#check-status-of-all-kolla-kubernetes-resources">Check Status of all Kolla-Kubernetes Resources</a></li>
+<li><a class="reference internal" href="#delete-all-kolla-kubernetes-resources">Delete all Kolla-Kubernetes Resources</a><ul>
+<li><a class="reference internal" href="#operator-delete-resources">Operator Delete Resources</a></li>
+<li><a class="reference internal" href="#workflow-engine-delete-resources">Workflow Engine Delete Resources</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="kubernetes-setup.html"
+                                  title="previous chapter">Kolla Kubernetes Setup Guide</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="private-registry.html"
+                                  title="next chapter">Kolla Kubernetes Private Docker Registry Guide</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/kolla-kubernetes
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="_sources/multi-node.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="private-registry.html" title="Kolla Kubernetes Private Docker Registry Guide"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="kubernetes-setup.html" title="Kolla Kubernetes Setup Guide"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="index.html">kolla-kubernetes 0.4.1.dev179 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2013, OpenStack Foundation.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/kolla-kubernetes");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

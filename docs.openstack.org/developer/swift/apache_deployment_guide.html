@@ -1,0 +1,310 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Apache Deployment Guide &mdash; swift 2.12.1.dev102 documentation</title>
+    
+    <link rel="stylesheet" href="_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '2.12.1.dev102',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <link rel="top" title="swift 2.12.1.dev102 documentation" href="index.html" />
+    <link rel="next" title="Administrator’s Guide" href="admin_guide.html" />
+    <link rel="prev" title="Deployment Guide" href="deployment_guide.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="apache-deployment-guide">
+<h1>Apache Deployment Guide<a class="headerlink" href="#apache-deployment-guide" title="Permalink to this headline">¶</a></h1>
+<div class="section" id="web-front-end-considerations">
+<h2>Web Front End Considerations<a class="headerlink" href="#web-front-end-considerations" title="Permalink to this headline">¶</a></h2>
+<p>Swift can be configured to work both using an integral web front-end
+and using a full-fledged Web Server such as the Apache2 (HTTPD) web server.
+The integral web front-end is a wsgi mini &#8220;Web Server&#8221; which opens
+up its own socket and serves http requests directly.
+The incoming requests accepted by the integral web front-end are then forwarded
+to a wsgi application (the core swift) for further handling, possibly
+via wsgi middleware sub-components.</p>
+<p>client&lt;&#8212;-&gt;&#8217;integral web front-end&#8217;&lt;&#8212;-&gt;middleware&lt;&#8212;-&gt;&#8217;core swift&#8217;</p>
+<p>To gain full advantage of Apache2, Swift can alternatively be
+configured to work as a request processor of the Apache2 server.
+This alternative deployment scenario uses mod_wsgi of Apache2
+to forward requests to the swift wsgi application and middleware.</p>
+<p>client&lt;&#8212;-&gt;&#8217;Apache2 with mod_wsgi&#8217;&lt;&#8212;&#8211;&gt;middleware&lt;&#8212;-&gt;&#8217;core swift&#8217;</p>
+<p>The integral web front-end offers simplicity and requires
+minimal configuration. It is also the web front-end most commonly used
+with Swift.
+Additionally, the integral web front-end includes support for
+receiving chunked transfer encoding from a client,
+presently not supported by Apache2 in the operation mode described here.</p>
+<p>The use of Apache2 offers new ways to extend Swift and integrate it with
+existing authentication, administration and control systems.
+A single Apache2 server can serve as the web front end of any number of swift
+servers residing on a swift node.
+For example when a storage node offers account, container and object services,
+a single Apache2 server can serve as the web front end of all three services.</p>
+<p>The apache variant described here was tested as part of an IBM research work.
+It was found that following tuning, the Apache2 offer generally equivalent
+performance to that offered by the integral web front-end.
+Alternative to Apache2, other web servers may be used, but were never tested.</p>
+</div>
+<div class="section" id="apache2-setup">
+<h2>Apache2 Setup<a class="headerlink" href="#apache2-setup" title="Permalink to this headline">¶</a></h2>
+<p>Both Apache2 and mod-wsgi needs to be installed on the system.
+Ubuntu comes with Apache2 installed. Install mod-wsgi using:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>sudo apt-get install libapache2-mod-wsgi
+</pre></div>
+</div>
+<p>First, change the User and Group IDs of Apache2 to be those used by Swift.
+For example in /etc/apache2/envvars use:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>export APACHE_RUN_USER=swift
+export APACHE_RUN_GROUP=swift
+</pre></div>
+</div>
+<p>Create a directory for the Apache2 wsgi files:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>sudo mkdir /var/www/swift
+</pre></div>
+</div>
+<p>Create a file for each service under /var/www/swift.</p>
+<p>For a proxy service create /var/www/swift/proxy-server.wsgi:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="kn">from</span> <span class="nn">swift.common.wsgi</span> <span class="kn">import</span> <span class="n">init_request_processor</span>
+<span class="n">application</span><span class="p">,</span> <span class="n">conf</span><span class="p">,</span> <span class="n">logger</span><span class="p">,</span> <span class="n">log_name</span> <span class="o">=</span> \
+    <span class="n">init_request_processor</span><span class="p">(</span><span class="s1">&#39;/etc/swift/proxy-server.conf&#39;</span><span class="p">,</span><span class="s1">&#39;proxy-server&#39;</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>For an account service create /var/www/swift/account-server.wsgi:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="kn">from</span> <span class="nn">swift.common.wsgi</span> <span class="kn">import</span> <span class="n">init_request_processor</span>
+<span class="n">application</span><span class="p">,</span> <span class="n">conf</span><span class="p">,</span> <span class="n">logger</span><span class="p">,</span> <span class="n">log_name</span> <span class="o">=</span> \
+    <span class="n">init_request_processor</span><span class="p">(</span><span class="s1">&#39;/etc/swift/account-server.conf&#39;</span><span class="p">,</span>
+                           <span class="s1">&#39;account-server&#39;</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>For an container service create /var/www/swift/container-server.wsgi:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="kn">from</span> <span class="nn">swift.common.wsgi</span> <span class="kn">import</span> <span class="n">init_request_processor</span>
+<span class="n">application</span><span class="p">,</span> <span class="n">conf</span><span class="p">,</span> <span class="n">logger</span><span class="p">,</span> <span class="n">log_name</span> <span class="o">=</span> \
+    <span class="n">init_request_processor</span><span class="p">(</span><span class="s1">&#39;/etc/swift/container-server.conf&#39;</span><span class="p">,</span>
+                          <span class="s1">&#39;container-server&#39;</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>For an object service create /var/www/swift/object-server.wsgi:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="kn">from</span> <span class="nn">swift.common.wsgi</span> <span class="kn">import</span> <span class="n">init_request_processor</span>
+<span class="n">application</span><span class="p">,</span> <span class="n">conf</span><span class="p">,</span> <span class="n">logger</span><span class="p">,</span> <span class="n">log_name</span> <span class="o">=</span> \
+    <span class="n">init_request_processor</span><span class="p">(</span><span class="s1">&#39;/etc/swift/object-server.conf&#39;</span><span class="p">,</span>
+                           <span class="s1">&#39;object-server&#39;</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Create a /etc/apache2/conf.d/swift_wsgi.conf configuration file that will
+define a port and Virtual Host per each local service.
+For example an Apache2 serving as a web front end of a proxy service:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>#Proxy
+NameVirtualHost *:8080
+Listen 8080
+&lt;VirtualHost *:8080&gt;
+    ServerName proxy-server
+    LimitRequestBody 5368709122
+    WSGIDaemonProcess proxy-server processes=5 threads=1
+    WSGIProcessGroup proxy-server
+    WSGIScriptAlias / /var/www/swift/proxy-server.wsgi
+    LimitRequestFields 200
+    ErrorLog /var/log/apache2/proxy-server
+    LogLevel debug
+    CustomLog /var/log/apache2/proxy.log combined
+&lt;/VirtualHost&gt;
+</pre></div>
+</div>
+<p>Notice that when using Apache the limit on the maximal object size should
+be imposed by Apache using the LimitRequestBody rather by the swift proxy.
+Note also that the LimitRequestBody should indicate the same value
+as indicated by max_file_size located in both
+/etc/swift/swift.conf and in /etc/swift/test.conf.
+The Swift default value for max_file_size (when not present) is 5368709122.
+For example an Apache2 serving as a web front end of a storage node:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>#Object Service
+NameVirtualHost *:6200
+Listen 6200
+&lt;VirtualHost *:6200&gt;
+    ServerName object-server
+    WSGIDaemonProcess object-server processes=5 threads=1
+    WSGIProcessGroup object-server
+    WSGIScriptAlias / /var/www/swift/object-server.wsgi
+    LimitRequestFields 200
+    ErrorLog /var/log/apache2/object-server
+    LogLevel debug
+    CustomLog /var/log/apache2/access.log combined
+&lt;/VirtualHost&gt;
+
+#Container Service
+NameVirtualHost *:6201
+Listen 6201
+&lt;VirtualHost *:6201&gt;
+    ServerName container-server
+    WSGIDaemonProcess container-server processes=5 threads=1
+    WSGIProcessGroup container-server
+    WSGIScriptAlias / /var/www/swift/container-server.wsgi
+    LimitRequestFields 200
+    ErrorLog /var/log/apache2/container-server
+    LogLevel debug
+    CustomLog /var/log/apache2/access.log combined
+&lt;/VirtualHost&gt;
+
+#Account Service
+NameVirtualHost *:6202
+Listen 6202
+&lt;VirtualHost *:6202&gt;
+    ServerName account-server
+    WSGIDaemonProcess account-server processes=5 threads=1
+    WSGIProcessGroup account-server
+    WSGIScriptAlias / /var/www/swift/account-server.wsgi
+    LimitRequestFields 200
+    ErrorLog /var/log/apache2/account-server
+    LogLevel debug
+    CustomLog /var/log/apache2/access.log combined
+&lt;/VirtualHost&gt;
+</pre></div>
+</div>
+<p>Next stop the Apache2 and start it again (apache2ctl restart is not enough):</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>apache2ctl stop
+apache2ctl start
+</pre></div>
+</div>
+<p>Edit the tests config file and add:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="n">web_front_end</span> <span class="o">=</span> <span class="n">apache2</span>
+<span class="n">normalized_urls</span> <span class="o">=</span> <span class="bp">True</span>
+</pre></div>
+</div>
+<p>Also check to see that the file includes max_file_size of the same value as
+used for the LimitRequestBody in the apache config file above.</p>
+<p>We are done.
+You may run functional tests to test - e.g.:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>cd ~swift/swift
+./.functests
+</pre></div>
+</div>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Apache Deployment Guide</a><ul>
+<li><a class="reference internal" href="#web-front-end-considerations">Web Front End Considerations</a></li>
+<li><a class="reference internal" href="#apache2-setup">Apache2 Setup</a></li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="deployment_guide.html"
+                                  title="previous chapter">Deployment Guide</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="admin_guide.html"
+                                  title="next chapter">Administrator&#8217;s Guide</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/swift
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="_sources/apache_deployment_guide.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="right" >
+          <a href="admin_guide.html" title="Administrator’s Guide"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="deployment_guide.html" title="Deployment Guide"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="index.html">swift 2.12.1.dev102 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2017, OpenStack Foundation.
+      Last updated on &#39;Tue Feb 14 07:57:22 2017, commit 7cb6882&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/swift");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

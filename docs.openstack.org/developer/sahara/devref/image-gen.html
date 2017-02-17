@@ -1,0 +1,499 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Image Generation &mdash; Sahara</title>
+    
+    <link rel="stylesheet" href="../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../',
+        VERSION:     '6.0.0.0rc2.dev34',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../_static/jquery.js"></script>
+    <script type="text/javascript" src="../_static/underscore.js"></script>
+    <script type="text/javascript" src="../_static/doctools.js"></script>
+    <link rel="top" title="Sahara" href="../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="image-generation">
+<h1>Image Generation<a class="headerlink" href="#image-generation" title="Permalink to this headline">¶</a></h1>
+<p>As of Newton, Sahara supports the creation of image generation and image
+validation tooling as part of the plugin. If implemented properly, this
+feature will enable your plugin to:</p>
+<ul class="simple">
+<li>Validate that images passed to it for use in cluster provisioning meet its
+specifications.</li>
+<li>Provision images from &#8220;clean&#8221; (OS-only) images.</li>
+<li>Pack pre-populated images for registration in Glance and use by Sahara.</li>
+</ul>
+<p>All of these features can use the same image declaration, meaning that logic
+for these three use cases can be maintained in one place.</p>
+<p>This guide will explain how to enable this feature for your plugin, as well as
+how to write or modify the image generation manifests that this feature uses.</p>
+<div class="section" id="image-generation-cli">
+<h2>Image Generation CLI<a class="headerlink" href="#image-generation-cli" title="Permalink to this headline">¶</a></h2>
+<p>The key user-facing interface to this feature is the CLI script
+<code class="docutils literal"><span class="pre">sahara-image-pack</span></code>. This script will be installed with all other Sahara
+binaries.</p>
+<div class="section" id="interface">
+<h3>Interface<a class="headerlink" href="#interface" title="Permalink to this headline">¶</a></h3>
+<p>The script <code class="docutils literal"><span class="pre">sahara-image-pack</span></code> takes the following primary arguments:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>--config-file PATH    Path to a config file to use. Multiple config files
+                      can be specified, with values in later files taking
+                      precedence. Defaults to None.
+--image IMAGE         The path to an image to modify. This image will be
+                      modified in-place: be sure to target a copy if you
+                      wish to maintain a clean master image.
+--root-filesystem ROOT_FS
+                      The filesystem to mount as the root volume on the
+                      image. Novalue is required if only one filesystem is
+                      detected.
+--test-only           If this flag is set, no changes will be made to the
+                      image; instead, the script will fail if discrepancies
+                      are found between the image and the intended state.
+</pre></div>
+</div>
+<p>After these arguments, the script takes <code class="docutils literal"><span class="pre">PLUGIN</span></code> and <code class="docutils literal"><span class="pre">VERSION</span></code> arguments.
+These arguments will allow any plugin and version combination which supports
+the image packing feature. Plugins may require their own arguments at specific
+versions; use the <code class="docutils literal"><span class="pre">--help</span></code> feature with <code class="docutils literal"><span class="pre">PLUGIN</span></code> and <code class="docutils literal"><span class="pre">VERSION</span></code> to see
+the appropriate argument structure.</p>
+<p>a plausible command-line invocation would be:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>sahara-image-pack --image CentOS.qcow2 \
+    --config-file etc/sahara/sahara.conf \
+    cdh 5.7.0 [cdh 5.7.0 specific arguments, if any]
+</pre></div>
+</div>
+<p>This script will modify the target image in-place. Please copy your image
+if you want a backup or if you wish to create multiple images from a single
+base image.</p>
+<p>This CLI will automatically populate the set of available plugins and
+versions from the plugin set loaded in Sahara, and will show any plugin for
+which the image packing feature is available. The next sections of this guide
+will first describe how to modify an image packing specification for one
+of the plugins, and second, how to enable the image packing feature for new
+or existing plugins.</p>
+</div>
+<div class="section" id="dev-notes-on-the-cli-itself">
+<h3>Dev notes on the CLI itself<a class="headerlink" href="#dev-notes-on-the-cli-itself" title="Permalink to this headline">¶</a></h3>
+<p>The script depends on a python library which is not packaged
+in pip, but is available through yum, dnf, and apt. If you have installed
+Sahara through yum, dnf, or apt, you should have appropriate dependencies,
+but if you wish to use the script but are working with Sahara from source,
+run whichever of the following is appropriate to your OS:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>sudo yum install -y libguestfs python-libguestfs libguestfs-tools
+sudo dnf install -y libguestfs python-libguestfs libguestfs-tools
+sudo apt-get install -y libguestfs python-libguestfs libguestfs-tools
+</pre></div>
+</div>
+<p>If you are using tox to create virtual environments for your Sahara work,
+please use the <code class="docutils literal"><span class="pre">images</span></code> environment to run sahara-image-pack. This
+environment is configured to use system site packages, and will thus
+be able to find its dependency on python-libguestfs.</p>
+</div>
+</div>
+<div class="section" id="the-image-manifest">
+<h2>The Image Manifest<a class="headerlink" href="#the-image-manifest" title="Permalink to this headline">¶</a></h2>
+<p>As you&#8217;ll read in the next section, Sahara&#8217;s image packing tools allow plugin
+authors to use any toolchain they choose. However, Sahara does provide a
+built-in image packing framework which is uniquely suited to OpenStack use
+cases, as it is designed to run the same logic while pre-packing an image or
+while preparing an instance to launch a cluster after it is spawned in
+OpenStack.</p>
+<p>By convention, the image specification, and all the scripts that it calls,
+should be located in the plugin&#8217;s resources directory under a subdirectory
+named &#8220;images&#8221;.</p>
+<p>A sample specification is below; the example is reasonably silly in practice,
+and is only designed to highlight the use of the currently available
+validator types. We&#8217;ll go through each piece of this specification, but the
+full sample is presented for context.</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>arguments:
+  java-distro:
+    description: The java distribution.
+    default: openjdk
+    required: false
+    choices:
+      - oracle-java
+      - openjdk
+
+validators:
+  - os_case:
+      - redhat:
+          - package: nfs-utils
+      - debian:
+          - package: nfs-common
+  - argument_case:
+      argument_name: java-distro
+      cases:
+        openjdk:
+          - any:
+            - all:
+              - package: java-1.8.0-openjdk-devel
+              - argument_set:
+                  argument_name: java-version
+                  value: 1.8.0
+            - all:
+              - package: java-1.7.0-openjdk-devel
+              - argument_set:
+                  argument_name: java-version
+                  value: 1.7.0
+        oracle-java:
+          - script: install_oracle_java.sh
+  - script: setup_java.sh
+  - package:
+    - hadoop
+    - hadoop-libhdfs
+    - hadoop-native
+    - hadoop-pipes
+    - hadoop-sbin
+    - hadoop-lzo
+    - lzo
+    - lzo-devel
+    - hadoop-lzo-native
+</pre></div>
+</div>
+</div>
+<div class="section" id="the-arguments-section">
+<h2>The Arguments Section<a class="headerlink" href="#the-arguments-section" title="Permalink to this headline">¶</a></h2>
+<p>First, the image specification should describe any arguments that may be used
+to adjust properties of the image:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>arguments:                                 # The section header
+  - java-distro:                           # The friendly name of the argument, and the name of the variable passed to scripts
+      description: The java distribution.  # A friendly description to be used in help text
+      default: openjdk                     # A default value for the argument
+      required: false                      # Whether or not the argument is required
+      choices:                             # The argument value must match an element of this list
+        - oracle-java
+        - openjdk
+</pre></div>
+</div>
+<p>Specifications may contain any number of arguments, as declared above, by
+adding more members to the list under the <code class="docutils literal"><span class="pre">arguments</span></code> key.</p>
+</div>
+<div class="section" id="the-validators-section">
+<h2>The Validators Section<a class="headerlink" href="#the-validators-section" title="Permalink to this headline">¶</a></h2>
+<p>This is where the logical flow of the image packing and validation process
+is declared. A tiny example validator list is specified below.</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>validators:
+  - package: nfs-utils
+  - script: setup_java.sh
+</pre></div>
+</div>
+<p>This is fairly straightforward: this specification will install the nfs-utils
+package (or check that it&#8217;s present) and then run the <code class="docutils literal"><span class="pre">setup_java.sh</span></code> script.</p>
+<p>All validators may be run in two modes: reconcile mode and test-only mode
+(reconcile == false). If validators are run in reconcile mode, any image or
+instance state which is not already true will be updated, if possible. If
+validators are run in test-only mode, they will only test the image or
+instance, and will raise an error if this fails.</p>
+<p>We&#8217;ll now go over the types of validators that are currently available in
+Sahara. This framework is made to easily allow new validators to be created
+and old ones to be extended: if there&#8217;s something you need, please do file a
+wishlist bug or write and propose your own!</p>
+</div>
+<div class="section" id="action-validators">
+<h2>Action validators<a class="headerlink" href="#action-validators" title="Permalink to this headline">¶</a></h2>
+<p>These validators take specific, concrete actions to assess or modify your
+image or instance.</p>
+<div class="section" id="the-package-validator">
+<h3>The Package Validator<a class="headerlink" href="#the-package-validator" title="Permalink to this headline">¶</a></h3>
+<p>This validator type will install a package on the image, or validate that a
+package is installed on the image. It can take several formats, as below:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>validators:
+  - package: hadoop
+  - package:
+    - hadoop-libhdfs
+    - nfs-utils:
+        version: 1.3.3-8
+</pre></div>
+</div>
+<p>As you can see, a package declaration can consist of:</p>
+<ul class="simple">
+<li>The package name as a string</li>
+<li>A list of packages, any of which may be:
+* The package name as a string
+* A dict with the package name as a key and a version property</li>
+</ul>
+</div>
+<div class="section" id="the-script-validator">
+<h3>The Script Validator<a class="headerlink" href="#the-script-validator" title="Permalink to this headline">¶</a></h3>
+<p>This validator will run a script on the image. It can take several formats
+as well:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>validators:
+  - script: simple_script.sh        # Runs this file
+  - script:
+      set_java_home:                # The name of a script file
+        arguments:                  # Only the named environment arguments are passed, for clarity
+          - jdk-home
+          - jre-home
+        output: OUTPUT_VAR
+  - script:
+      store_nfs_version:            # Because inline is set, this is just a friendly name
+        - inline: rpm -q nfs-utils  # Runs this text directly, rather than reading a file
+        - output: nfs-version       # Places the stdout of this script into an argument
+                                    # for future scripts to consume; if none exists, the
+                                    # argument is created
+</pre></div>
+</div>
+<p>Two variables are always available to scripts run under this framework:</p>
+<ul class="simple">
+<li><code class="docutils literal"><span class="pre">distro</span></code>: The distro of the image, in case you want to switch on distro
+within your script (rather than by using the os_case validator).</li>
+<li><code class="docutils literal"><span class="pre">reconcile</span></code>: If this value equates to boolean true, then the script should
+attempt to change the image or instance if it does not already meet the
+specification. If this equates to boolean false, the script should exit with
+a failure code if the image or instance does not already meet the
+specification.</li>
+</ul>
+</div>
+</div>
+<div class="section" id="flow-control-validators">
+<h2>Flow Control Validators<a class="headerlink" href="#flow-control-validators" title="Permalink to this headline">¶</a></h2>
+<p>These validators are used to build more complex logic into your
+specifications explicitly in the yaml layer, rather than by deferring
+too much logic to scripts.</p>
+<div class="section" id="the-os-case-validator">
+<h3>The OS Case Validator<a class="headerlink" href="#the-os-case-validator" title="Permalink to this headline">¶</a></h3>
+<p>This validator runs different logic depending on which distribution of Linux
+is being used in the guest.</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>validators:
+  - os_case:                      # The contents are expressed as a list, not a dict, to preserve order
+      - fedora:                   # Only the first match runs, so put distros before families
+          - package: nfs_utils    # The content of each case is a list of validators
+      - redhat:                   # Red Hat distros include fedora, centos, and rhel
+          - package: nfs-utils
+      - debian:                   # The major supported Debian distro in Sahara is ubuntu
+          - package: nfs-common
+</pre></div>
+</div>
+</div>
+<div class="section" id="the-argument-case-validator">
+<h3>The Argument Case Validator<a class="headerlink" href="#the-argument-case-validator" title="Permalink to this headline">¶</a></h3>
+<p>This validator runs different logic depending on the value of an argument.</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>validators:
+  - argument_case:
+      argument_name: java-distro       # The name of the argument
+      cases:                           # The cases are expressed as a dict, as only one can equal the argument&#39;s value
+        openjdk:
+          - script: setup-openjdk      # The content of each case is a list of validators
+        oracle-java:
+          - script: setup-oracle-java
+</pre></div>
+</div>
+</div>
+<div class="section" id="the-all-validator">
+<h3>The All Validator<a class="headerlink" href="#the-all-validator" title="Permalink to this headline">¶</a></h3>
+<p>This validator runs all the validators within it, as one logical block. If any
+validators within it fail to validate or modify the image or instance, it will
+fail.</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>validators:
+  - all:
+      - package: nfs-utils
+      - script: setup-nfs.sh
+</pre></div>
+</div>
+</div>
+<div class="section" id="the-any-validator">
+<h3>The Any Validator<a class="headerlink" href="#the-any-validator" title="Permalink to this headline">¶</a></h3>
+<p>This validator attempts to run each validator within it, until one succeeds,
+and will report success if any do. If this is run in reconcile mode, it will
+first try each validator in test-only mode, and will succeed without
+making changes if any succeed (in the case below, if openjdk 1.7.0 were
+already installed, the validator would succeed and would not install 1.8.0.)</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>validators:
+  - any:  # This validator will try to install openjdk-1.8.0, but it will settle for 1.7.0 if that fails
+      - package: java-1.8.0-openjdk-devel
+      - package: java-1.7.0-openjdk-devel
+</pre></div>
+</div>
+</div>
+<div class="section" id="the-argument-set-validator">
+<h3>The Argument Set Validator<a class="headerlink" href="#the-argument-set-validator" title="Permalink to this headline">¶</a></h3>
+<p>You may find that you wish to store state in one place in the specification
+for use in another. In this case, you can use this validator to set an
+argument for future use.</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>validators:
+  - argument_set:
+      argument_name: java-version
+      value: 1.7.0
+</pre></div>
+</div>
+</div>
+</div>
+<div class="section" id="spi-methods">
+<h2>SPI Methods<a class="headerlink" href="#spi-methods" title="Permalink to this headline">¶</a></h2>
+<p>In order to make this feature available for your plugin, you must
+implement the following optional plugin SPI methods.</p>
+<p>When implementing these, you may choose to use your own framework of choice
+(Packer for image packing, etc.) By doing so, you can ignore the entire
+framework and specification language described above. However, you may
+wish to instead use the abstraction we&#8217;ve provided (its ability to keep
+logic in one place for both image packing and cluster validation is useful
+in the OpenStack context.) We will, of course, focus on that framework here.</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="k">def</span> <span class="nf">get_image_arguments</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">hadoop_version</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Gets the argument set taken by the plugin&#39;s image generator&quot;&quot;&quot;</span>
+
+<span class="k">def</span> <span class="nf">pack_image</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">hadoop_version</span><span class="p">,</span> <span class="n">remote</span><span class="p">,</span>
+               <span class="n">reconcile</span><span class="o">=</span><span class="bp">True</span><span class="p">,</span> <span class="n">image_arguments</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Packs an image for registration in Glance and use by Sahara&quot;&quot;&quot;</span>
+
+<span class="k">def</span> <span class="nf">validate_images</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">cluster</span><span class="p">,</span> <span class="n">reconcile</span><span class="o">=</span><span class="bp">True</span><span class="p">,</span> <span class="n">image_arguments</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Validates the image to be used by a cluster&quot;&quot;&quot;</span>
+</pre></div>
+</div>
+<p>The validate_images method is called after Heat provisioning of your cluster,
+but before cluster configuration. If the reconcile keyword of this method is
+set to False, the method should only test the instances without modification.
+If it is set to True, the method should make any necessary changes (this can
+be used to allow clusters to be spun up from clean, OS-only images.) This
+method is expected to use an ssh remote to communicate with instances, as
+per normal in Sahara.</p>
+<p>The pack_image method can be used to modify an image file (it is called by the
+CLI above). This method expects an ImageRemote, which is essentially a
+libguestfs handle to the disk image file, allowing commands to be run on the
+image directly (though it could be any concretion that allows commands to be
+run against the image.)</p>
+<p>By this means, the validators described above can execute the same logic in
+the image packing, instance validation, and instance preparation cases with
+the same degree of interactivity and logical control.</p>
+<p>In order to future-proof this document against possible changes, the doctext
+of these methods will not be reproduced here, but they are documented very
+fully in the sahara.plugins.provisioning abstraction.</p>
+<p>These abstractions can be found in the module sahara.plugins.images.
+You will find that the framework has been built with extensibility and
+abstraction in mind: you can overwrite validator types, add your own
+without modifying any core sahara modules, declare hierarchies of resource
+locations for shared resources, and more. These features are documented in
+the sahara.plugins.images module itself (which has copious doctext,) and we
+encourage you to explore and ask questions of the community if you are
+curious or wish to build your own image generation tooling.</p>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="../index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Image Generation</a><ul>
+<li><a class="reference internal" href="#image-generation-cli">Image Generation CLI</a><ul>
+<li><a class="reference internal" href="#interface">Interface</a></li>
+<li><a class="reference internal" href="#dev-notes-on-the-cli-itself">Dev notes on the CLI itself</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#the-image-manifest">The Image Manifest</a></li>
+<li><a class="reference internal" href="#the-arguments-section">The Arguments Section</a></li>
+<li><a class="reference internal" href="#the-validators-section">The Validators Section</a></li>
+<li><a class="reference internal" href="#action-validators">Action validators</a><ul>
+<li><a class="reference internal" href="#the-package-validator">The Package Validator</a></li>
+<li><a class="reference internal" href="#the-script-validator">The Script Validator</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#flow-control-validators">Flow Control Validators</a><ul>
+<li><a class="reference internal" href="#the-os-case-validator">The OS Case Validator</a></li>
+<li><a class="reference internal" href="#the-argument-case-validator">The Argument Case Validator</a></li>
+<li><a class="reference internal" href="#the-all-validator">The All Validator</a></li>
+<li><a class="reference internal" href="#the-any-validator">The Any Validator</a></li>
+<li><a class="reference internal" href="#the-argument-set-validator">The Argument Set Validator</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#spi-methods">SPI Methods</a></li>
+</ul>
+</li>
+</ul>
+
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/sahara
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="../_sources/devref/image-gen.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="nav-item nav-item-0"><a href="../index.html">Sahara</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2014, OpenStack Foundation.
+      Last updated on &#39;Mon Feb 13 17:36:11 2017, commit 23ee18f&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/sahara");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

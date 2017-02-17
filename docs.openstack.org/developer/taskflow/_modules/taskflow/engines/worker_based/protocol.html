@@ -1,0 +1,697 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>taskflow.engines.worker_based.protocol &mdash; TaskFlow 2.9.1.dev9 documentation</title>
+    
+    <link rel="stylesheet" href="../../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../../',
+        VERSION:     '2.9.1.dev9',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../../_static/doctools.js"></script>
+    <link rel="top" title="TaskFlow 2.9.1.dev9 documentation" href="../../../../index.html" />
+    <link rel="up" title="Module code" href="../../../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for taskflow.engines.worker_based.protocol</h1><div class="highlight"><pre>
+<span></span><span class="c1"># -*- coding: utf-8 -*-</span>
+
+<span class="c1">#    Copyright (C) 2014 Yahoo! Inc. All Rights Reserved.</span>
+<span class="c1">#</span>
+<span class="c1">#    Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may</span>
+<span class="c1">#    not use this file except in compliance with the License. You may obtain</span>
+<span class="c1">#    a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#         http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1">#    Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1">#    distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="c1">#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="c1">#    License for the specific language governing permissions and limitations</span>
+<span class="c1">#    under the License.</span>
+
+<span class="kn">import</span> <span class="nn">abc</span>
+<span class="kn">import</span> <span class="nn">collections</span>
+<span class="kn">import</span> <span class="nn">threading</span>
+
+<span class="kn">from</span> <span class="nn">automaton</span> <span class="kn">import</span> <span class="n">exceptions</span> <span class="k">as</span> <span class="n">machine_excp</span>
+<span class="kn">from</span> <span class="nn">automaton</span> <span class="kn">import</span> <span class="n">machines</span>
+<span class="kn">import</span> <span class="nn">fasteners</span>
+<span class="kn">import</span> <span class="nn">futurist</span>
+<span class="kn">from</span> <span class="nn">oslo_serialization</span> <span class="kn">import</span> <span class="n">jsonutils</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">reflection</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">timeutils</span>
+<span class="kn">import</span> <span class="nn">six</span>
+
+<span class="kn">from</span> <span class="nn">taskflow.engines.action_engine</span> <span class="kn">import</span> <span class="n">executor</span>
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">exceptions</span> <span class="k">as</span> <span class="n">excp</span>
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">logging</span>
+<span class="kn">from</span> <span class="nn">taskflow.types</span> <span class="kn">import</span> <span class="n">failure</span> <span class="k">as</span> <span class="n">ft</span>
+<span class="kn">from</span> <span class="nn">taskflow.utils</span> <span class="kn">import</span> <span class="n">schema_utils</span> <span class="k">as</span> <span class="n">su</span>
+
+<span class="c1"># NOTE(skudriashev): This is protocol states and events, which are not</span>
+<span class="c1"># related to task states.</span>
+<span class="n">WAITING</span> <span class="o">=</span> <span class="s1">&#39;WAITING&#39;</span>
+<span class="n">PENDING</span> <span class="o">=</span> <span class="s1">&#39;PENDING&#39;</span>
+<span class="n">RUNNING</span> <span class="o">=</span> <span class="s1">&#39;RUNNING&#39;</span>
+<span class="n">SUCCESS</span> <span class="o">=</span> <span class="s1">&#39;SUCCESS&#39;</span>
+<span class="n">FAILURE</span> <span class="o">=</span> <span class="s1">&#39;FAILURE&#39;</span>
+<span class="n">EVENT</span> <span class="o">=</span> <span class="s1">&#39;EVENT&#39;</span>
+
+<span class="c1"># During these states the expiry is active (once out of these states the expiry</span>
+<span class="c1"># no longer matters, since we have no way of knowing how long a task will run</span>
+<span class="c1"># for).</span>
+<span class="n">WAITING_STATES</span> <span class="o">=</span> <span class="p">(</span><span class="n">WAITING</span><span class="p">,</span> <span class="n">PENDING</span><span class="p">)</span>
+
+<span class="c1"># Once these states have been entered a request can no longer be</span>
+<span class="c1"># automatically expired.</span>
+<span class="n">STOP_TIMER_STATES</span> <span class="o">=</span> <span class="p">(</span><span class="n">RUNNING</span><span class="p">,</span> <span class="n">SUCCESS</span><span class="p">,</span> <span class="n">FAILURE</span><span class="p">)</span>
+
+<span class="c1"># Remote task actions.</span>
+<span class="n">EXECUTE</span> <span class="o">=</span> <span class="s1">&#39;execute&#39;</span>
+<span class="n">REVERT</span> <span class="o">=</span> <span class="s1">&#39;revert&#39;</span>
+
+<span class="c1"># Remote task action to event map.</span>
+<span class="n">ACTION_TO_EVENT</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="n">EXECUTE</span><span class="p">:</span> <span class="n">executor</span><span class="o">.</span><span class="n">EXECUTED</span><span class="p">,</span>
+    <span class="n">REVERT</span><span class="p">:</span> <span class="n">executor</span><span class="o">.</span><span class="n">REVERTED</span>
+<span class="p">}</span>
+
+<span class="c1"># NOTE(skudriashev): A timeout which specifies request expiration period.</span>
+<span class="n">REQUEST_TIMEOUT</span> <span class="o">=</span> <span class="mi">60</span>
+
+<span class="c1"># NOTE(skudriashev): A timeout which controls for how long a queue can be</span>
+<span class="c1"># unused before it is automatically deleted. Unused means the queue has no</span>
+<span class="c1"># consumers, the queue has not been redeclared, the `queue.get` has not been</span>
+<span class="c1"># invoked for a duration of at least the expiration period. In our case this</span>
+<span class="c1"># period is equal to the request timeout, once request is expired - queue is</span>
+<span class="c1"># no longer needed.</span>
+<span class="n">QUEUE_EXPIRE_TIMEOUT</span> <span class="o">=</span> <span class="n">REQUEST_TIMEOUT</span>
+
+<span class="c1"># Workers notify period.</span>
+<span class="n">NOTIFY_PERIOD</span> <span class="o">=</span> <span class="mi">5</span>
+
+<span class="c1"># When a worker hasn&#39;t notified in this many seconds, it will get expired from</span>
+<span class="c1"># being used/targeted for further work.</span>
+<span class="n">EXPIRES_AFTER</span> <span class="o">=</span> <span class="mi">60</span>
+
+<span class="c1"># Message types.</span>
+<span class="n">NOTIFY</span> <span class="o">=</span> <span class="s1">&#39;NOTIFY&#39;</span>
+<span class="n">REQUEST</span> <span class="o">=</span> <span class="s1">&#39;REQUEST&#39;</span>
+<span class="n">RESPONSE</span> <span class="o">=</span> <span class="s1">&#39;RESPONSE&#39;</span>
+
+<span class="c1"># Object that denotes nothing (none can actually be valid).</span>
+<span class="n">NO_RESULT</span> <span class="o">=</span> <span class="nb">object</span><span class="p">()</span>
+
+<span class="n">LOG</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+
+<div class="viewcode-block" id="make_an_event"><a class="viewcode-back" href="../../../../workers.html#taskflow.engines.worker_based.protocol.make_an_event">[docs]</a><span class="k">def</span> <span class="nf">make_an_event</span><span class="p">(</span><span class="n">new_state</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Turns a new/target state into an event name.&quot;&quot;&quot;</span>
+    <span class="k">return</span> <span class="p">(</span><span class="s1">&#39;on_</span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="n">new_state</span><span class="p">)</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span></div>
+
+
+<div class="viewcode-block" id="build_a_machine"><a class="viewcode-back" href="../../../../workers.html#taskflow.engines.worker_based.protocol.build_a_machine">[docs]</a><span class="k">def</span> <span class="nf">build_a_machine</span><span class="p">(</span><span class="n">freeze</span><span class="o">=</span><span class="bp">True</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Builds a state machine that requests are allowed to go through.&quot;&quot;&quot;</span>
+
+    <span class="n">m</span> <span class="o">=</span> <span class="n">machines</span><span class="o">.</span><span class="n">FiniteMachine</span><span class="p">()</span>
+    <span class="k">for</span> <span class="n">st</span> <span class="ow">in</span> <span class="p">(</span><span class="n">WAITING</span><span class="p">,</span> <span class="n">PENDING</span><span class="p">,</span> <span class="n">RUNNING</span><span class="p">):</span>
+        <span class="n">m</span><span class="o">.</span><span class="n">add_state</span><span class="p">(</span><span class="n">st</span><span class="p">)</span>
+    <span class="k">for</span> <span class="n">st</span> <span class="ow">in</span> <span class="p">(</span><span class="n">SUCCESS</span><span class="p">,</span> <span class="n">FAILURE</span><span class="p">):</span>
+        <span class="n">m</span><span class="o">.</span><span class="n">add_state</span><span class="p">(</span><span class="n">st</span><span class="p">,</span> <span class="n">terminal</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+
+    <span class="c1"># When a executor starts to publish a request to a selected worker but the</span>
+    <span class="c1"># executor has not recved confirmation from that worker that anything has</span>
+    <span class="c1"># happened yet.</span>
+    <span class="n">m</span><span class="o">.</span><span class="n">default_start_state</span> <span class="o">=</span> <span class="n">WAITING</span>
+    <span class="n">m</span><span class="o">.</span><span class="n">add_transition</span><span class="p">(</span><span class="n">WAITING</span><span class="p">,</span> <span class="n">PENDING</span><span class="p">,</span> <span class="n">make_an_event</span><span class="p">(</span><span class="n">PENDING</span><span class="p">))</span>
+
+    <span class="c1"># When a request expires (isn&#39;t able to be processed by any worker).</span>
+    <span class="n">m</span><span class="o">.</span><span class="n">add_transition</span><span class="p">(</span><span class="n">WAITING</span><span class="p">,</span> <span class="n">FAILURE</span><span class="p">,</span> <span class="n">make_an_event</span><span class="p">(</span><span class="n">FAILURE</span><span class="p">))</span>
+
+    <span class="c1"># Worker has started executing a request.</span>
+    <span class="n">m</span><span class="o">.</span><span class="n">add_transition</span><span class="p">(</span><span class="n">PENDING</span><span class="p">,</span> <span class="n">RUNNING</span><span class="p">,</span> <span class="n">make_an_event</span><span class="p">(</span><span class="n">RUNNING</span><span class="p">))</span>
+
+    <span class="c1"># Worker failed to construct/process a request to run (either the worker</span>
+    <span class="c1"># did not transition to RUNNING in the given timeout or the worker itself</span>
+    <span class="c1"># had some type of failure before RUNNING started).</span>
+    <span class="c1">#</span>
+    <span class="c1"># Also used by the executor if the request was attempted to be published</span>
+    <span class="c1"># but that did publishing process did not work out.</span>
+    <span class="n">m</span><span class="o">.</span><span class="n">add_transition</span><span class="p">(</span><span class="n">PENDING</span><span class="p">,</span> <span class="n">FAILURE</span><span class="p">,</span> <span class="n">make_an_event</span><span class="p">(</span><span class="n">FAILURE</span><span class="p">))</span>
+
+    <span class="c1"># Execution failed due to some type of remote failure.</span>
+    <span class="n">m</span><span class="o">.</span><span class="n">add_transition</span><span class="p">(</span><span class="n">RUNNING</span><span class="p">,</span> <span class="n">FAILURE</span><span class="p">,</span> <span class="n">make_an_event</span><span class="p">(</span><span class="n">FAILURE</span><span class="p">))</span>
+
+    <span class="c1"># Execution succeeded &amp; has completed.</span>
+    <span class="n">m</span><span class="o">.</span><span class="n">add_transition</span><span class="p">(</span><span class="n">RUNNING</span><span class="p">,</span> <span class="n">SUCCESS</span><span class="p">,</span> <span class="n">make_an_event</span><span class="p">(</span><span class="n">SUCCESS</span><span class="p">))</span>
+
+    <span class="c1"># No further changes allowed.</span>
+    <span class="k">if</span> <span class="n">freeze</span><span class="p">:</span>
+        <span class="n">m</span><span class="o">.</span><span class="n">freeze</span><span class="p">()</span>
+    <span class="k">return</span> <span class="n">m</span></div>
+
+
+<div class="viewcode-block" id="failure_to_dict"><a class="viewcode-back" href="../../../../workers.html#taskflow.engines.worker_based.protocol.failure_to_dict">[docs]</a><span class="k">def</span> <span class="nf">failure_to_dict</span><span class="p">(</span><span class="n">failure</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Attempts to convert a failure object into a jsonifyable dictionary.&quot;&quot;&quot;</span>
+    <span class="n">failure_dict</span> <span class="o">=</span> <span class="n">failure</span><span class="o">.</span><span class="n">to_dict</span><span class="p">()</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="c1"># it&#39;s possible the exc_args can&#39;t be serialized as JSON</span>
+        <span class="c1"># if that&#39;s the case, just get the failure without them</span>
+        <span class="n">jsonutils</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span><span class="n">failure_dict</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">failure_dict</span>
+    <span class="k">except</span> <span class="p">(</span><span class="ne">TypeError</span><span class="p">,</span> <span class="ne">ValueError</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">failure</span><span class="o">.</span><span class="n">to_dict</span><span class="p">(</span><span class="n">include_args</span><span class="o">=</span><span class="bp">False</span><span class="p">)</span></div>
+
+
+<span class="nd">@six.add_metaclass</span><span class="p">(</span><span class="n">abc</span><span class="o">.</span><span class="n">ABCMeta</span><span class="p">)</span>
+<div class="viewcode-block" id="Message"><a class="viewcode-back" href="../../../../workers.html#taskflow.engines.worker_based.protocol.Message">[docs]</a><span class="k">class</span> <span class="nc">Message</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Base class for all message types.&quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__repr__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="p">(</span><span class="s2">&quot;&lt;</span><span class="si">%s</span><span class="s2"> object at 0x</span><span class="si">%x</span><span class="s2"> with contents </span><span class="si">%s</span><span class="s2">&gt;&quot;</span>
+                <span class="o">%</span> <span class="p">(</span><span class="n">reflection</span><span class="o">.</span><span class="n">get_class_name</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">fully_qualified</span><span class="o">=</span><span class="bp">False</span><span class="p">),</span>
+                   <span class="nb">id</span><span class="p">(</span><span class="bp">self</span><span class="p">),</span> <span class="bp">self</span><span class="o">.</span><span class="n">to_dict</span><span class="p">()))</span>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="Message.to_dict"><a class="viewcode-back" href="../../../../workers.html#taskflow.engines.worker_based.protocol.Message.to_dict">[docs]</a>    <span class="k">def</span> <span class="nf">to_dict</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Return json-serializable message representation.&quot;&quot;&quot;</span></div></div>
+
+
+<div class="viewcode-block" id="Notify"><a class="viewcode-back" href="../../../../workers.html#taskflow.engines.worker_based.protocol.Notify">[docs]</a><span class="k">class</span> <span class="nc">Notify</span><span class="p">(</span><span class="n">Message</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Represents notify message type.&quot;&quot;&quot;</span>
+
+    <span class="c1">#: String constant representing this message type.</span>
+    <span class="n">TYPE</span> <span class="o">=</span> <span class="n">NOTIFY</span>
+
+    <span class="c1"># NOTE(harlowja): the executor (the entity who initially requests a worker</span>
+    <span class="c1"># to send back a notification response) schema is different than the</span>
+    <span class="c1"># worker response schema (that&#39;s why there are two schemas here).</span>
+
+    <span class="c1">#: Expected notify *response* message schema (in json schema format).</span>
+    <span class="n">RESPONSE_SCHEMA</span> <span class="o">=</span> <span class="p">{</span>
+        <span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;object&quot;</span><span class="p">,</span>
+        <span class="s1">&#39;properties&#39;</span><span class="p">:</span> <span class="p">{</span>
+            <span class="s1">&#39;topic&#39;</span><span class="p">:</span> <span class="p">{</span>
+                <span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;string&quot;</span><span class="p">,</span>
+            <span class="p">},</span>
+            <span class="s1">&#39;tasks&#39;</span><span class="p">:</span> <span class="p">{</span>
+                <span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;array&quot;</span><span class="p">,</span>
+                <span class="s2">&quot;items&quot;</span><span class="p">:</span> <span class="p">{</span>
+                    <span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;string&quot;</span><span class="p">,</span>
+                <span class="p">},</span>
+            <span class="p">}</span>
+        <span class="p">},</span>
+        <span class="s2">&quot;required&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;topic&quot;</span><span class="p">,</span> <span class="s1">&#39;tasks&#39;</span><span class="p">],</span>
+        <span class="s2">&quot;additionalProperties&quot;</span><span class="p">:</span> <span class="bp">False</span><span class="p">,</span>
+    <span class="p">}</span>
+
+    <span class="c1">#: Expected *sender* request message schema (in json schema format).</span>
+    <span class="n">SENDER_SCHEMA</span> <span class="o">=</span> <span class="p">{</span>
+        <span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;object&quot;</span><span class="p">,</span>
+        <span class="s2">&quot;additionalProperties&quot;</span><span class="p">:</span> <span class="bp">False</span><span class="p">,</span>
+    <span class="p">}</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">**</span><span class="n">data</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_data</span> <span class="o">=</span> <span class="n">data</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">topic</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_data</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;topic&#39;</span><span class="p">)</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">tasks</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_data</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;tasks&#39;</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">to_dict</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_data</span>
+
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span> <span class="nf">validate</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">data</span><span class="p">,</span> <span class="n">response</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">response</span><span class="p">:</span>
+            <span class="n">schema</span> <span class="o">=</span> <span class="bp">cls</span><span class="o">.</span><span class="n">RESPONSE_SCHEMA</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">schema</span> <span class="o">=</span> <span class="bp">cls</span><span class="o">.</span><span class="n">SENDER_SCHEMA</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">su</span><span class="o">.</span><span class="n">schema_validate</span><span class="p">(</span><span class="n">data</span><span class="p">,</span> <span class="n">schema</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">su</span><span class="o">.</span><span class="n">ValidationError</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+            <span class="n">cls_name</span> <span class="o">=</span> <span class="n">reflection</span><span class="o">.</span><span class="n">get_class_name</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">fully_qualified</span><span class="o">=</span><span class="bp">False</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">response</span><span class="p">:</span>
+                <span class="n">excp</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">excp</span><span class="o">.</span><span class="n">InvalidFormat</span><span class="p">,</span>
+                                      <span class="s2">&quot;</span><span class="si">%s</span><span class="s2"> message response data not of the&quot;</span>
+                                      <span class="s2">&quot; expected format: </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">cls_name</span><span class="p">,</span>
+                                                                <span class="n">e</span><span class="o">.</span><span class="n">message</span><span class="p">),</span>
+                                      <span class="n">cause</span><span class="o">=</span><span class="n">e</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">excp</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">excp</span><span class="o">.</span><span class="n">InvalidFormat</span><span class="p">,</span>
+                                      <span class="s2">&quot;</span><span class="si">%s</span><span class="s2"> message sender data not of the&quot;</span>
+                                      <span class="s2">&quot; expected format: </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">cls_name</span><span class="p">,</span>
+                                                                <span class="n">e</span><span class="o">.</span><span class="n">message</span><span class="p">),</span>
+                                      <span class="n">cause</span><span class="o">=</span><span class="n">e</span><span class="p">)</span></div>
+
+
+<span class="n">_WorkUnit</span> <span class="o">=</span> <span class="n">collections</span><span class="o">.</span><span class="n">namedtuple</span><span class="p">(</span><span class="s1">&#39;_WorkUnit&#39;</span><span class="p">,</span> <span class="p">[</span><span class="s1">&#39;task_cls&#39;</span><span class="p">,</span> <span class="s1">&#39;task_name&#39;</span><span class="p">,</span>
+                                                 <span class="s1">&#39;action&#39;</span><span class="p">,</span> <span class="s1">&#39;arguments&#39;</span><span class="p">])</span>
+
+
+<div class="viewcode-block" id="Request"><a class="viewcode-back" href="../../../../workers.html#taskflow.engines.worker_based.protocol.Request">[docs]</a><span class="k">class</span> <span class="nc">Request</span><span class="p">(</span><span class="n">Message</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Represents request with execution results.</span>
+
+<span class="sd">    Every request is created in the WAITING state and is expired within the</span>
+<span class="sd">    given timeout if it does not transition out of the (WAITING, PENDING)</span>
+<span class="sd">    states.</span>
+
+<span class="sd">    State machine a request goes through as it progresses (or expires)::</span>
+
+<span class="sd">        +------------+------------+---------+----------+---------+</span>
+<span class="sd">        |   Start    |   Event    |   End   | On Enter | On Exit |</span>
+<span class="sd">        +------------+------------+---------+----------+---------+</span>
+<span class="sd">        | FAILURE[$] |     .      |    .    |    .     |    .    |</span>
+<span class="sd">        |  PENDING   | on_failure | FAILURE |    .     |    .    |</span>
+<span class="sd">        |  PENDING   | on_running | RUNNING |    .     |    .    |</span>
+<span class="sd">        |  RUNNING   | on_failure | FAILURE |    .     |    .    |</span>
+<span class="sd">        |  RUNNING   | on_success | SUCCESS |    .     |    .    |</span>
+<span class="sd">        | SUCCESS[$] |     .      |    .    |    .     |    .    |</span>
+<span class="sd">        | WAITING[^] | on_failure | FAILURE |    .     |    .    |</span>
+<span class="sd">        | WAITING[^] | on_pending | PENDING |    .     |    .    |</span>
+<span class="sd">        +------------+------------+---------+----------+---------+</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="c1">#: String constant representing this message type.</span>
+    <span class="n">TYPE</span> <span class="o">=</span> <span class="n">REQUEST</span>
+
+    <span class="c1">#: Expected message schema (in json schema format).</span>
+    <span class="n">SCHEMA</span> <span class="o">=</span> <span class="p">{</span>
+        <span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;object&quot;</span><span class="p">,</span>
+        <span class="s1">&#39;properties&#39;</span><span class="p">:</span> <span class="p">{</span>
+            <span class="c1"># These two are typically only sent on revert actions (that is</span>
+            <span class="c1"># why are are not including them in the required section).</span>
+            <span class="s1">&#39;result&#39;</span><span class="p">:</span> <span class="p">{},</span>
+            <span class="s1">&#39;failures&#39;</span><span class="p">:</span> <span class="p">{</span>
+                <span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;object&quot;</span><span class="p">,</span>
+            <span class="p">},</span>
+            <span class="s1">&#39;task_cls&#39;</span><span class="p">:</span> <span class="p">{</span>
+                <span class="s1">&#39;type&#39;</span><span class="p">:</span> <span class="s1">&#39;string&#39;</span><span class="p">,</span>
+            <span class="p">},</span>
+            <span class="s1">&#39;task_name&#39;</span><span class="p">:</span> <span class="p">{</span>
+                <span class="s1">&#39;type&#39;</span><span class="p">:</span> <span class="s1">&#39;string&#39;</span><span class="p">,</span>
+            <span class="p">},</span>
+            <span class="s1">&#39;task_version&#39;</span><span class="p">:</span> <span class="p">{</span>
+                <span class="s2">&quot;oneOf&quot;</span><span class="p">:</span> <span class="p">[</span>
+                    <span class="p">{</span>
+                        <span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;string&quot;</span><span class="p">,</span>
+                    <span class="p">},</span>
+                    <span class="p">{</span>
+                        <span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;array&quot;</span><span class="p">,</span>
+                    <span class="p">},</span>
+                <span class="p">],</span>
+            <span class="p">},</span>
+            <span class="s1">&#39;action&#39;</span><span class="p">:</span> <span class="p">{</span>
+                <span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;string&quot;</span><span class="p">,</span>
+                <span class="s2">&quot;enum&quot;</span><span class="p">:</span> <span class="nb">list</span><span class="p">(</span><span class="n">six</span><span class="o">.</span><span class="n">iterkeys</span><span class="p">(</span><span class="n">ACTION_TO_EVENT</span><span class="p">)),</span>
+            <span class="p">},</span>
+            <span class="c1"># Keyword arguments that end up in the revert() or execute()</span>
+            <span class="c1"># method of the remote task.</span>
+            <span class="s1">&#39;arguments&#39;</span><span class="p">:</span> <span class="p">{</span>
+                <span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;object&quot;</span><span class="p">,</span>
+            <span class="p">},</span>
+        <span class="p">},</span>
+        <span class="s1">&#39;required&#39;</span><span class="p">:</span> <span class="p">[</span><span class="s1">&#39;task_cls&#39;</span><span class="p">,</span> <span class="s1">&#39;task_name&#39;</span><span class="p">,</span> <span class="s1">&#39;task_version&#39;</span><span class="p">,</span> <span class="s1">&#39;action&#39;</span><span class="p">],</span>
+    <span class="p">}</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">,</span> <span class="n">uuid</span><span class="p">,</span> <span class="n">action</span><span class="p">,</span>
+                 <span class="n">arguments</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="n">REQUEST_TIMEOUT</span><span class="p">,</span> <span class="n">result</span><span class="o">=</span><span class="n">NO_RESULT</span><span class="p">,</span>
+                 <span class="n">failures</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_action</span> <span class="o">=</span> <span class="n">action</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_event</span> <span class="o">=</span> <span class="n">ACTION_TO_EVENT</span><span class="p">[</span><span class="n">action</span><span class="p">]</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_arguments</span> <span class="o">=</span> <span class="n">arguments</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_result</span> <span class="o">=</span> <span class="n">result</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_failures</span> <span class="o">=</span> <span class="n">failures</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_watch</span> <span class="o">=</span> <span class="n">timeutils</span><span class="o">.</span><span class="n">StopWatch</span><span class="p">(</span><span class="n">duration</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_lock</span> <span class="o">=</span> <span class="n">threading</span><span class="o">.</span><span class="n">Lock</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_machine</span> <span class="o">=</span> <span class="n">build_a_machine</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_machine</span><span class="o">.</span><span class="n">initialize</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">task</span> <span class="o">=</span> <span class="n">task</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">uuid</span> <span class="o">=</span> <span class="n">uuid</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">created_on</span> <span class="o">=</span> <span class="n">timeutils</span><span class="o">.</span><span class="n">now</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">future</span> <span class="o">=</span> <span class="n">futurist</span><span class="o">.</span><span class="n">Future</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">future</span><span class="o">.</span><span class="n">atom</span> <span class="o">=</span> <span class="n">task</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">current_state</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Current state the request is in.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_machine</span><span class="o">.</span><span class="n">current_state</span>
+
+<div class="viewcode-block" id="Request.set_result"><a class="viewcode-back" href="../../../../workers.html#taskflow.engines.worker_based.protocol.Request.set_result">[docs]</a>    <span class="k">def</span> <span class="nf">set_result</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">result</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Sets the responses futures result.&quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">future</span><span class="o">.</span><span class="n">set_result</span><span class="p">((</span><span class="bp">self</span><span class="o">.</span><span class="n">_event</span><span class="p">,</span> <span class="n">result</span><span class="p">))</span></div>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">expired</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Check if request has expired.</span>
+
+<span class="sd">        When new request is created its state is set to the WAITING, creation</span>
+<span class="sd">        time is stored and timeout is given via constructor arguments.</span>
+
+<span class="sd">        Request is considered to be expired when it is in the WAITING/PENDING</span>
+<span class="sd">        state for more then the given timeout (it is not considered to be</span>
+<span class="sd">        expired in any other state).</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_machine</span><span class="o">.</span><span class="n">current_state</span> <span class="ow">in</span> <span class="n">WAITING_STATES</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_watch</span><span class="o">.</span><span class="n">expired</span><span class="p">()</span>
+        <span class="k">return</span> <span class="bp">False</span>
+
+<div class="viewcode-block" id="Request.to_dict"><a class="viewcode-back" href="../../../../workers.html#taskflow.engines.worker_based.protocol.Request.to_dict">[docs]</a>    <span class="k">def</span> <span class="nf">to_dict</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Return json-serializable request.</span>
+
+<span class="sd">        To convert requests that have failed due to some exception this will</span>
+<span class="sd">        convert all `failure.Failure` objects into dictionaries (which will</span>
+<span class="sd">        then be reconstituted by the receiver).</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">request</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="s1">&#39;task_cls&#39;</span><span class="p">:</span> <span class="n">reflection</span><span class="o">.</span><span class="n">get_class_name</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">task</span><span class="p">),</span>
+            <span class="s1">&#39;task_name&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">task</span><span class="o">.</span><span class="n">name</span><span class="p">,</span>
+            <span class="s1">&#39;task_version&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">task</span><span class="o">.</span><span class="n">version</span><span class="p">,</span>
+            <span class="s1">&#39;action&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_action</span><span class="p">,</span>
+            <span class="s1">&#39;arguments&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_arguments</span><span class="p">,</span>
+        <span class="p">}</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_result</span> <span class="ow">is</span> <span class="ow">not</span> <span class="n">NO_RESULT</span><span class="p">:</span>
+            <span class="n">result</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_result</span>
+            <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="n">ft</span><span class="o">.</span><span class="n">Failure</span><span class="p">):</span>
+                <span class="n">request</span><span class="p">[</span><span class="s1">&#39;result&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span><span class="s1">&#39;failure&#39;</span><span class="p">,</span> <span class="n">failure_to_dict</span><span class="p">(</span><span class="n">result</span><span class="p">))</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">request</span><span class="p">[</span><span class="s1">&#39;result&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span><span class="s1">&#39;success&#39;</span><span class="p">,</span> <span class="n">result</span><span class="p">)</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_failures</span><span class="p">:</span>
+            <span class="n">request</span><span class="p">[</span><span class="s1">&#39;failures&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
+            <span class="k">for</span> <span class="n">atom_name</span><span class="p">,</span> <span class="n">failure</span> <span class="ow">in</span> <span class="n">six</span><span class="o">.</span><span class="n">iteritems</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_failures</span><span class="p">):</span>
+                <span class="n">request</span><span class="p">[</span><span class="s1">&#39;failures&#39;</span><span class="p">][</span><span class="n">atom_name</span><span class="p">]</span> <span class="o">=</span> <span class="n">failure_to_dict</span><span class="p">(</span><span class="n">failure</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">request</span></div>
+
+<div class="viewcode-block" id="Request.transition_and_log_error"><a class="viewcode-back" href="../../../../workers.html#taskflow.engines.worker_based.protocol.Request.transition_and_log_error">[docs]</a>    <span class="k">def</span> <span class="nf">transition_and_log_error</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">new_state</span><span class="p">,</span> <span class="n">logger</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Transitions *and* logs an error if that transitioning raises.</span>
+
+<span class="sd">        This overlays the transition function and performs nearly the same</span>
+<span class="sd">        functionality but instead of raising if the transition was not valid</span>
+<span class="sd">        it logs a warning to the provided logger and returns False to</span>
+<span class="sd">        indicate that the transition was not performed (note that this</span>
+<span class="sd">        is *different* from the transition function where False means</span>
+<span class="sd">        ignored).</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="n">logger</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">logger</span> <span class="o">=</span> <span class="n">LOG</span>
+        <span class="n">moved</span> <span class="o">=</span> <span class="bp">False</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">moved</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">transition</span><span class="p">(</span><span class="n">new_state</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">excp</span><span class="o">.</span><span class="n">InvalidState</span><span class="p">:</span>
+            <span class="n">logger</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span><span class="s2">&quot;Failed to transition &#39;</span><span class="si">%s</span><span class="s2">&#39; to </span><span class="si">%s</span><span class="s2"> state.&quot;</span><span class="p">,</span> <span class="bp">self</span><span class="p">,</span>
+                        <span class="n">new_state</span><span class="p">,</span> <span class="n">exc_info</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">moved</span></div>
+
+    <span class="nd">@fasteners.locked</span>
+<div class="viewcode-block" id="Request.transition"><a class="viewcode-back" href="../../../../workers.html#taskflow.engines.worker_based.protocol.Request.transition">[docs]</a>    <span class="k">def</span> <span class="nf">transition</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">new_state</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Transitions the request to a new state.</span>
+
+<span class="sd">        If transition was performed, it returns True. If transition</span>
+<span class="sd">        was ignored, it returns False. If transition was not</span>
+<span class="sd">        valid (and will not be performed), it raises an InvalidState</span>
+<span class="sd">        exception.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">old_state</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_machine</span><span class="o">.</span><span class="n">current_state</span>
+        <span class="k">if</span> <span class="n">old_state</span> <span class="o">==</span> <span class="n">new_state</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">False</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_machine</span><span class="o">.</span><span class="n">process_event</span><span class="p">(</span><span class="n">make_an_event</span><span class="p">(</span><span class="n">new_state</span><span class="p">))</span>
+        <span class="k">except</span> <span class="p">(</span><span class="n">machine_excp</span><span class="o">.</span><span class="n">NotFound</span><span class="p">,</span> <span class="n">machine_excp</span><span class="o">.</span><span class="n">InvalidState</span><span class="p">)</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">excp</span><span class="o">.</span><span class="n">InvalidState</span><span class="p">(</span><span class="s2">&quot;Request transition from </span><span class="si">%s</span><span class="s2"> to </span><span class="si">%s</span><span class="s2"> is&quot;</span>
+                                    <span class="s2">&quot; not allowed: </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">old_state</span><span class="p">,</span>
+                                                          <span class="n">new_state</span><span class="p">,</span> <span class="n">e</span><span class="p">))</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">new_state</span> <span class="ow">in</span> <span class="n">STOP_TIMER_STATES</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_watch</span><span class="o">.</span><span class="n">stop</span><span class="p">()</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Transitioned &#39;</span><span class="si">%s</span><span class="s2">&#39; from </span><span class="si">%s</span><span class="s2"> state to </span><span class="si">%s</span><span class="s2"> state&quot;</span><span class="p">,</span> <span class="bp">self</span><span class="p">,</span>
+                      <span class="n">old_state</span><span class="p">,</span> <span class="n">new_state</span><span class="p">)</span>
+            <span class="k">return</span> <span class="bp">True</span></div>
+
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span> <span class="nf">validate</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">data</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">su</span><span class="o">.</span><span class="n">schema_validate</span><span class="p">(</span><span class="n">data</span><span class="p">,</span> <span class="bp">cls</span><span class="o">.</span><span class="n">SCHEMA</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">su</span><span class="o">.</span><span class="n">ValidationError</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+            <span class="n">cls_name</span> <span class="o">=</span> <span class="n">reflection</span><span class="o">.</span><span class="n">get_class_name</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">fully_qualified</span><span class="o">=</span><span class="bp">False</span><span class="p">)</span>
+            <span class="n">excp</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">excp</span><span class="o">.</span><span class="n">InvalidFormat</span><span class="p">,</span>
+                                  <span class="s2">&quot;</span><span class="si">%s</span><span class="s2"> message response data not of the&quot;</span>
+                                  <span class="s2">&quot; expected format: </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">cls_name</span><span class="p">,</span>
+                                                            <span class="n">e</span><span class="o">.</span><span class="n">message</span><span class="p">),</span>
+                                  <span class="n">cause</span><span class="o">=</span><span class="n">e</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="c1"># Validate all failure dictionaries that *may* be present...</span>
+            <span class="n">failures</span> <span class="o">=</span> <span class="p">[]</span>
+            <span class="k">if</span> <span class="s1">&#39;failures&#39;</span> <span class="ow">in</span> <span class="n">data</span><span class="p">:</span>
+                <span class="n">failures</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span><span class="n">six</span><span class="o">.</span><span class="n">itervalues</span><span class="p">(</span><span class="n">data</span><span class="p">[</span><span class="s1">&#39;failures&#39;</span><span class="p">]))</span>
+            <span class="n">result</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;result&#39;</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">result</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="n">result_data_type</span><span class="p">,</span> <span class="n">result_data</span> <span class="o">=</span> <span class="n">result</span>
+                <span class="k">if</span> <span class="n">result_data_type</span> <span class="o">==</span> <span class="s1">&#39;failure&#39;</span><span class="p">:</span>
+                    <span class="n">failures</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">result_data</span><span class="p">)</span>
+            <span class="k">for</span> <span class="n">fail_data</span> <span class="ow">in</span> <span class="n">failures</span><span class="p">:</span>
+                <span class="n">ft</span><span class="o">.</span><span class="n">Failure</span><span class="o">.</span><span class="n">validate</span><span class="p">(</span><span class="n">fail_data</span><span class="p">)</span>
+
+    <span class="nd">@staticmethod</span>
+<div class="viewcode-block" id="Request.from_dict"><a class="viewcode-back" href="../../../../workers.html#taskflow.engines.worker_based.protocol.Request.from_dict">[docs]</a>    <span class="k">def</span> <span class="nf">from_dict</span><span class="p">(</span><span class="n">data</span><span class="p">,</span> <span class="n">task_uuid</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Parses **validated** data into a work unit.</span>
+
+<span class="sd">        All :py:class:`~taskflow.types.failure.Failure` objects that have been</span>
+<span class="sd">        converted to dict(s) on the remote side will now converted back</span>
+<span class="sd">        to py:class:`~taskflow.types.failure.Failure` objects.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">task_cls</span> <span class="o">=</span> <span class="n">data</span><span class="p">[</span><span class="s1">&#39;task_cls&#39;</span><span class="p">]</span>
+        <span class="n">task_name</span> <span class="o">=</span> <span class="n">data</span><span class="p">[</span><span class="s1">&#39;task_name&#39;</span><span class="p">]</span>
+        <span class="n">action</span> <span class="o">=</span> <span class="n">data</span><span class="p">[</span><span class="s1">&#39;action&#39;</span><span class="p">]</span>
+        <span class="n">arguments</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;arguments&#39;</span><span class="p">,</span> <span class="p">{})</span>
+        <span class="n">result</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;result&#39;</span><span class="p">)</span>
+        <span class="n">failures</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;failures&#39;</span><span class="p">)</span>
+        <span class="c1"># These arguments will eventually be given to the task executor</span>
+        <span class="c1"># so they need to be in a format it will accept (and using keyword</span>
+        <span class="c1"># argument names that it accepts)...</span>
+        <span class="n">arguments</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="s1">&#39;arguments&#39;</span><span class="p">:</span> <span class="n">arguments</span><span class="p">,</span>
+        <span class="p">}</span>
+        <span class="k">if</span> <span class="n">task_uuid</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">arguments</span><span class="p">[</span><span class="s1">&#39;task_uuid&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">task_uuid</span>
+        <span class="k">if</span> <span class="n">result</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">result_data_type</span><span class="p">,</span> <span class="n">result_data</span> <span class="o">=</span> <span class="n">result</span>
+            <span class="k">if</span> <span class="n">result_data_type</span> <span class="o">==</span> <span class="s1">&#39;failure&#39;</span><span class="p">:</span>
+                <span class="n">arguments</span><span class="p">[</span><span class="s1">&#39;result&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">ft</span><span class="o">.</span><span class="n">Failure</span><span class="o">.</span><span class="n">from_dict</span><span class="p">(</span><span class="n">result_data</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">arguments</span><span class="p">[</span><span class="s1">&#39;result&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">result_data</span>
+        <span class="k">if</span> <span class="n">failures</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">arguments</span><span class="p">[</span><span class="s1">&#39;failures&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
+            <span class="k">for</span> <span class="n">task</span><span class="p">,</span> <span class="n">fail_data</span> <span class="ow">in</span> <span class="n">six</span><span class="o">.</span><span class="n">iteritems</span><span class="p">(</span><span class="n">failures</span><span class="p">):</span>
+                <span class="n">arguments</span><span class="p">[</span><span class="s1">&#39;failures&#39;</span><span class="p">][</span><span class="n">task</span><span class="p">]</span> <span class="o">=</span> <span class="n">ft</span><span class="o">.</span><span class="n">Failure</span><span class="o">.</span><span class="n">from_dict</span><span class="p">(</span><span class="n">fail_data</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">_WorkUnit</span><span class="p">(</span><span class="n">task_cls</span><span class="p">,</span> <span class="n">task_name</span><span class="p">,</span> <span class="n">action</span><span class="p">,</span> <span class="n">arguments</span><span class="p">)</span></div></div>
+
+
+<div class="viewcode-block" id="Response"><a class="viewcode-back" href="../../../../workers.html#taskflow.engines.worker_based.protocol.Response">[docs]</a><span class="k">class</span> <span class="nc">Response</span><span class="p">(</span><span class="n">Message</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Represents response message type.&quot;&quot;&quot;</span>
+
+    <span class="c1">#: String constant representing this message type.</span>
+    <span class="n">TYPE</span> <span class="o">=</span> <span class="n">RESPONSE</span>
+
+    <span class="c1">#: Expected message schema (in json schema format).</span>
+    <span class="n">SCHEMA</span> <span class="o">=</span> <span class="p">{</span>
+        <span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;object&quot;</span><span class="p">,</span>
+        <span class="s1">&#39;properties&#39;</span><span class="p">:</span> <span class="p">{</span>
+            <span class="s1">&#39;state&#39;</span><span class="p">:</span> <span class="p">{</span>
+                <span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;string&quot;</span><span class="p">,</span>
+                <span class="s2">&quot;enum&quot;</span><span class="p">:</span> <span class="nb">list</span><span class="p">(</span><span class="n">build_a_machine</span><span class="p">()</span><span class="o">.</span><span class="n">states</span><span class="p">)</span> <span class="o">+</span> <span class="p">[</span><span class="n">EVENT</span><span class="p">],</span>
+            <span class="p">},</span>
+            <span class="s1">&#39;data&#39;</span><span class="p">:</span> <span class="p">{</span>
+                <span class="s2">&quot;anyOf&quot;</span><span class="p">:</span> <span class="p">[</span>
+                    <span class="p">{</span>
+                        <span class="s2">&quot;$ref&quot;</span><span class="p">:</span> <span class="s2">&quot;#/definitions/event&quot;</span><span class="p">,</span>
+                    <span class="p">},</span>
+                    <span class="p">{</span>
+                        <span class="s2">&quot;$ref&quot;</span><span class="p">:</span> <span class="s2">&quot;#/definitions/completion&quot;</span><span class="p">,</span>
+                    <span class="p">},</span>
+                    <span class="p">{</span>
+                        <span class="s2">&quot;$ref&quot;</span><span class="p">:</span> <span class="s2">&quot;#/definitions/empty&quot;</span><span class="p">,</span>
+                    <span class="p">},</span>
+                <span class="p">],</span>
+            <span class="p">},</span>
+        <span class="p">},</span>
+        <span class="s2">&quot;required&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;state&quot;</span><span class="p">,</span> <span class="s1">&#39;data&#39;</span><span class="p">],</span>
+        <span class="s2">&quot;additionalProperties&quot;</span><span class="p">:</span> <span class="bp">False</span><span class="p">,</span>
+        <span class="s2">&quot;definitions&quot;</span><span class="p">:</span> <span class="p">{</span>
+            <span class="s2">&quot;event&quot;</span><span class="p">:</span> <span class="p">{</span>
+                <span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;object&quot;</span><span class="p">,</span>
+                <span class="s2">&quot;properties&quot;</span><span class="p">:</span> <span class="p">{</span>
+                    <span class="s1">&#39;event_type&#39;</span><span class="p">:</span> <span class="p">{</span>
+                        <span class="s1">&#39;type&#39;</span><span class="p">:</span> <span class="s1">&#39;string&#39;</span><span class="p">,</span>
+                    <span class="p">},</span>
+                    <span class="s1">&#39;details&#39;</span><span class="p">:</span> <span class="p">{</span>
+                        <span class="s1">&#39;type&#39;</span><span class="p">:</span> <span class="s1">&#39;object&#39;</span><span class="p">,</span>
+                    <span class="p">},</span>
+                <span class="p">},</span>
+                <span class="s2">&quot;required&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;event_type&quot;</span><span class="p">,</span> <span class="s1">&#39;details&#39;</span><span class="p">],</span>
+                <span class="s2">&quot;additionalProperties&quot;</span><span class="p">:</span> <span class="bp">False</span><span class="p">,</span>
+            <span class="p">},</span>
+            <span class="c1"># Used when sending *only* request state changes (and no data is</span>
+            <span class="c1"># expected).</span>
+            <span class="s2">&quot;empty&quot;</span><span class="p">:</span> <span class="p">{</span>
+                <span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;object&quot;</span><span class="p">,</span>
+                <span class="s2">&quot;additionalProperties&quot;</span><span class="p">:</span> <span class="bp">False</span><span class="p">,</span>
+            <span class="p">},</span>
+            <span class="s2">&quot;completion&quot;</span><span class="p">:</span> <span class="p">{</span>
+                <span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;object&quot;</span><span class="p">,</span>
+                <span class="s2">&quot;properties&quot;</span><span class="p">:</span> <span class="p">{</span>
+                    <span class="c1"># This can be any arbitrary type that a task returns, so</span>
+                    <span class="c1"># thats why we can&#39;t be strict about what type it is since</span>
+                    <span class="c1"># any of the json serializable types are allowed.</span>
+                    <span class="s2">&quot;result&quot;</span><span class="p">:</span> <span class="p">{},</span>
+                <span class="p">},</span>
+                <span class="s2">&quot;required&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;result&quot;</span><span class="p">],</span>
+                <span class="s2">&quot;additionalProperties&quot;</span><span class="p">:</span> <span class="bp">False</span><span class="p">,</span>
+            <span class="p">},</span>
+        <span class="p">},</span>
+    <span class="p">}</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state</span><span class="p">,</span> <span class="o">**</span><span class="n">data</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">state</span> <span class="o">=</span> <span class="n">state</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">data</span> <span class="o">=</span> <span class="n">data</span>
+
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span> <span class="nf">from_dict</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">data</span><span class="p">):</span>
+        <span class="n">state</span> <span class="o">=</span> <span class="n">data</span><span class="p">[</span><span class="s1">&#39;state&#39;</span><span class="p">]</span>
+        <span class="n">data</span> <span class="o">=</span> <span class="n">data</span><span class="p">[</span><span class="s1">&#39;data&#39;</span><span class="p">]</span>
+        <span class="k">if</span> <span class="n">state</span> <span class="o">==</span> <span class="n">FAILURE</span> <span class="ow">and</span> <span class="s1">&#39;result&#39;</span> <span class="ow">in</span> <span class="n">data</span><span class="p">:</span>
+            <span class="n">data</span><span class="p">[</span><span class="s1">&#39;result&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">ft</span><span class="o">.</span><span class="n">Failure</span><span class="o">.</span><span class="n">from_dict</span><span class="p">(</span><span class="n">data</span><span class="p">[</span><span class="s1">&#39;result&#39;</span><span class="p">])</span>
+        <span class="k">return</span> <span class="bp">cls</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="o">**</span><span class="n">data</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">to_dict</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="nb">dict</span><span class="p">(</span><span class="n">state</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">state</span><span class="p">,</span> <span class="n">data</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">data</span><span class="p">)</span>
+
+    <span class="nd">@classmethod</span>
+    <span class="k">def</span> <span class="nf">validate</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">data</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">su</span><span class="o">.</span><span class="n">schema_validate</span><span class="p">(</span><span class="n">data</span><span class="p">,</span> <span class="bp">cls</span><span class="o">.</span><span class="n">SCHEMA</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">su</span><span class="o">.</span><span class="n">ValidationError</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+            <span class="n">cls_name</span> <span class="o">=</span> <span class="n">reflection</span><span class="o">.</span><span class="n">get_class_name</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">fully_qualified</span><span class="o">=</span><span class="bp">False</span><span class="p">)</span>
+            <span class="n">excp</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">excp</span><span class="o">.</span><span class="n">InvalidFormat</span><span class="p">,</span>
+                                  <span class="s2">&quot;</span><span class="si">%s</span><span class="s2"> message response data not of the&quot;</span>
+                                  <span class="s2">&quot; expected format: </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">cls_name</span><span class="p">,</span>
+                                                            <span class="n">e</span><span class="o">.</span><span class="n">message</span><span class="p">),</span>
+                                  <span class="n">cause</span><span class="o">=</span><span class="n">e</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">state</span> <span class="o">=</span> <span class="n">data</span><span class="p">[</span><span class="s1">&#39;state&#39;</span><span class="p">]</span>
+            <span class="k">if</span> <span class="n">state</span> <span class="o">==</span> <span class="n">FAILURE</span> <span class="ow">and</span> <span class="s1">&#39;result&#39;</span> <span class="ow">in</span> <span class="n">data</span><span class="p">:</span>
+                <span class="n">ft</span><span class="o">.</span><span class="n">Failure</span><span class="o">.</span><span class="n">validate</span><span class="p">(</span><span class="n">data</span><span class="p">[</span><span class="s1">&#39;result&#39;</span><span class="p">])</span></div>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+  <h3>Navigation</h3>
+  <ul>
+
+    <li><a href="../../../../index.html">Table Of Contents</a></li>
+
+
+
+  </ul>
+
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/taskflow
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../../../index.html">TaskFlow 2.9.1.dev9 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../../../index.html" accesskey="U">Module code</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2017, OpenStack Foundation.
+      Last updated on &#39;Fri Feb 10 20:11:17 2017, commit 643495f&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/TaskFlow");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

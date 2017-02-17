@@ -1,0 +1,496 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>taskflow.engines.action_engine.builder &mdash; TaskFlow 2.9.1.dev9 documentation</title>
+    
+    <link rel="stylesheet" href="../../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../../',
+        VERSION:     '2.9.1.dev9',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../../_static/doctools.js"></script>
+    <link rel="top" title="TaskFlow 2.9.1.dev9 documentation" href="../../../../index.html" />
+    <link rel="up" title="Module code" href="../../../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for taskflow.engines.action_engine.builder</h1><div class="highlight"><pre>
+<span></span><span class="c1"># -*- coding: utf-8 -*-</span>
+
+<span class="c1">#    Copyright (C) 2012 Yahoo! Inc. All Rights Reserved.</span>
+<span class="c1">#</span>
+<span class="c1">#    Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may</span>
+<span class="c1">#    not use this file except in compliance with the License. You may obtain</span>
+<span class="c1">#    a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#         http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1">#    Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1">#    distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="c1">#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="c1">#    License for the specific language governing permissions and limitations</span>
+<span class="c1">#    under the License.</span>
+
+<span class="kn">from</span> <span class="nn">concurrent</span> <span class="kn">import</span> <span class="n">futures</span>
+<span class="kn">import</span> <span class="nn">weakref</span>
+
+<span class="kn">from</span> <span class="nn">automaton</span> <span class="kn">import</span> <span class="n">machines</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">timeutils</span>
+
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">logging</span>
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">states</span> <span class="k">as</span> <span class="n">st</span>
+<span class="kn">from</span> <span class="nn">taskflow.types</span> <span class="kn">import</span> <span class="n">failure</span>
+<span class="kn">from</span> <span class="nn">taskflow.utils</span> <span class="kn">import</span> <span class="n">iter_utils</span>
+
+<span class="c1"># Default waiting state timeout (in seconds).</span>
+<span class="n">WAITING_TIMEOUT</span> <span class="o">=</span> <span class="mi">60</span>
+
+<span class="c1"># Meta states the state machine uses.</span>
+<span class="n">UNDEFINED</span> <span class="o">=</span> <span class="s1">&#39;UNDEFINED&#39;</span>
+<span class="n">GAME_OVER</span> <span class="o">=</span> <span class="s1">&#39;GAME_OVER&#39;</span>
+<span class="n">META_STATES</span> <span class="o">=</span> <span class="p">(</span><span class="n">GAME_OVER</span><span class="p">,</span> <span class="n">UNDEFINED</span><span class="p">)</span>
+
+<span class="c1"># Event name constants the state machine uses.</span>
+<span class="n">SCHEDULE</span> <span class="o">=</span> <span class="s1">&#39;schedule_next&#39;</span>
+<span class="n">WAIT</span> <span class="o">=</span> <span class="s1">&#39;wait_finished&#39;</span>
+<span class="n">ANALYZE</span> <span class="o">=</span> <span class="s1">&#39;examine_finished&#39;</span>
+<span class="n">FINISH</span> <span class="o">=</span> <span class="s1">&#39;completed&#39;</span>
+<span class="n">FAILED</span> <span class="o">=</span> <span class="s1">&#39;failed&#39;</span>
+<span class="n">SUSPENDED</span> <span class="o">=</span> <span class="s1">&#39;suspended&#39;</span>
+<span class="n">SUCCESS</span> <span class="o">=</span> <span class="s1">&#39;success&#39;</span>
+<span class="n">REVERTED</span> <span class="o">=</span> <span class="s1">&#39;reverted&#39;</span>
+<span class="n">START</span> <span class="o">=</span> <span class="s1">&#39;start&#39;</span>
+
+<span class="c1"># Internal enums used to denote how/if a atom was completed.&quot;&quot;&quot;</span>
+<span class="n">FAILED_COMPLETING</span> <span class="o">=</span> <span class="s1">&#39;failed_completing&#39;</span>
+<span class="n">WAS_CANCELLED</span> <span class="o">=</span> <span class="s1">&#39;was_cancelled&#39;</span>
+<span class="n">SUCCESSFULLY_COMPLETED</span> <span class="o">=</span> <span class="s1">&#39;successfully_completed&#39;</span>
+
+
+<span class="c1"># For these states we will gather how long (in seconds) the</span>
+<span class="c1"># state was in-progress (cumulatively if the state is entered multiple</span>
+<span class="c1"># times)</span>
+<span class="n">TIMED_STATES</span> <span class="o">=</span> <span class="p">(</span><span class="n">st</span><span class="o">.</span><span class="n">ANALYZING</span><span class="p">,</span> <span class="n">st</span><span class="o">.</span><span class="n">RESUMING</span><span class="p">,</span> <span class="n">st</span><span class="o">.</span><span class="n">SCHEDULING</span><span class="p">,</span> <span class="n">st</span><span class="o">.</span><span class="n">WAITING</span><span class="p">)</span>
+
+<span class="n">LOG</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+
+<div class="viewcode-block" id="MachineMemory"><a class="viewcode-back" href="../../../../engines.html#taskflow.engines.action_engine.builder.MachineMemory">[docs]</a><span class="k">class</span> <span class="nc">MachineMemory</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;State machine memory.&quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">next_up</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">not_done</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">failures</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">done</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+
+<div class="viewcode-block" id="MachineMemory.cancel_futures"><a class="viewcode-back" href="../../../../engines.html#taskflow.engines.action_engine.builder.MachineMemory.cancel_futures">[docs]</a>    <span class="k">def</span> <span class="nf">cancel_futures</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Attempts to cancel any not done futures.&quot;&quot;&quot;</span>
+        <span class="k">for</span> <span class="n">fut</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">not_done</span><span class="p">:</span>
+            <span class="n">fut</span><span class="o">.</span><span class="n">cancel</span><span class="p">()</span></div></div>
+
+
+<div class="viewcode-block" id="MachineBuilder"><a class="viewcode-back" href="../../../../engines.html#taskflow.engines.action_engine.builder.MachineBuilder">[docs]</a><span class="k">class</span> <span class="nc">MachineBuilder</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;State machine *builder* that powers the engine components.</span>
+
+<span class="sd">    NOTE(harlowja): the machine (states and events that will trigger</span>
+<span class="sd">    transitions) that this builds is represented by the following</span>
+<span class="sd">    table::</span>
+
+<span class="sd">        +--------------+------------------+------------+----------+---------+</span>
+<span class="sd">        |    Start     |      Event       |    End     | On Enter | On Exit |</span>
+<span class="sd">        +--------------+------------------+------------+----------+---------+</span>
+<span class="sd">        |  ANALYZING   |    completed     | GAME_OVER  |    .     |    .    |</span>
+<span class="sd">        |  ANALYZING   |  schedule_next   | SCHEDULING |    .     |    .    |</span>
+<span class="sd">        |  ANALYZING   |  wait_finished   |  WAITING   |    .     |    .    |</span>
+<span class="sd">        |  FAILURE[$]  |        .         |     .      |    .     |    .    |</span>
+<span class="sd">        |  GAME_OVER   |      failed      |  FAILURE   |    .     |    .    |</span>
+<span class="sd">        |  GAME_OVER   |     reverted     |  REVERTED  |    .     |    .    |</span>
+<span class="sd">        |  GAME_OVER   |     success      |  SUCCESS   |    .     |    .    |</span>
+<span class="sd">        |  GAME_OVER   |    suspended     | SUSPENDED  |    .     |    .    |</span>
+<span class="sd">        |   RESUMING   |  schedule_next   | SCHEDULING |    .     |    .    |</span>
+<span class="sd">        | REVERTED[$]  |        .         |     .      |    .     |    .    |</span>
+<span class="sd">        |  SCHEDULING  |  wait_finished   |  WAITING   |    .     |    .    |</span>
+<span class="sd">        |  SUCCESS[$]  |        .         |     .      |    .     |    .    |</span>
+<span class="sd">        | SUSPENDED[$] |        .         |     .      |    .     |    .    |</span>
+<span class="sd">        | UNDEFINED[^] |      start       |  RESUMING  |    .     |    .    |</span>
+<span class="sd">        |   WAITING    | examine_finished | ANALYZING  |    .     |    .    |</span>
+<span class="sd">        +--------------+------------------+------------+----------+---------+</span>
+
+<span class="sd">    Between any of these yielded states (minus ``GAME_OVER`` and ``UNDEFINED``)</span>
+<span class="sd">    if the engine has been suspended or the engine has failed (due to a</span>
+<span class="sd">    non-resolveable task failure or scheduling failure) the machine will stop</span>
+<span class="sd">    executing new tasks (currently running tasks will be allowed to complete)</span>
+<span class="sd">    and this machines run loop will be broken.</span>
+
+<span class="sd">    NOTE(harlowja): If the runtimes scheduler component is able to schedule</span>
+<span class="sd">    tasks in parallel, this enables parallel running and/or reversion.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">runtime</span><span class="p">,</span> <span class="n">waiter</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_runtime</span> <span class="o">=</span> <span class="n">weakref</span><span class="o">.</span><span class="n">proxy</span><span class="p">(</span><span class="n">runtime</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_selector</span> <span class="o">=</span> <span class="n">runtime</span><span class="o">.</span><span class="n">selector</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_completer</span> <span class="o">=</span> <span class="n">runtime</span><span class="o">.</span><span class="n">completer</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_scheduler</span> <span class="o">=</span> <span class="n">runtime</span><span class="o">.</span><span class="n">scheduler</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_storage</span> <span class="o">=</span> <span class="n">runtime</span><span class="o">.</span><span class="n">storage</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_waiter</span> <span class="o">=</span> <span class="n">waiter</span>
+
+<div class="viewcode-block" id="MachineBuilder.build"><a class="viewcode-back" href="../../../../engines.html#taskflow.engines.action_engine.builder.MachineBuilder.build">[docs]</a>    <span class="k">def</span> <span class="nf">build</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">statistics</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">gather_statistics</span><span class="o">=</span><span class="bp">True</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Builds a state-machine (that is used during running).&quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="n">gather_statistics</span><span class="p">:</span>
+            <span class="n">watches</span> <span class="o">=</span> <span class="p">{}</span>
+            <span class="n">state_statistics</span> <span class="o">=</span> <span class="p">{}</span>
+            <span class="n">statistics</span><span class="p">[</span><span class="s1">&#39;seconds_per_state&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">state_statistics</span>
+            <span class="n">watches</span> <span class="o">=</span> <span class="p">{}</span>
+            <span class="k">for</span> <span class="n">timed_state</span> <span class="ow">in</span> <span class="n">TIMED_STATES</span><span class="p">:</span>
+                <span class="n">state_statistics</span><span class="p">[</span><span class="n">timed_state</span><span class="o">.</span><span class="n">lower</span><span class="p">()]</span> <span class="o">=</span> <span class="mf">0.0</span>
+                <span class="n">watches</span><span class="p">[</span><span class="n">timed_state</span><span class="p">]</span> <span class="o">=</span> <span class="n">timeutils</span><span class="o">.</span><span class="n">StopWatch</span><span class="p">()</span>
+            <span class="n">statistics</span><span class="p">[</span><span class="s1">&#39;discarded_failures&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="mi">0</span>
+            <span class="n">statistics</span><span class="p">[</span><span class="s1">&#39;awaiting&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="mi">0</span>
+            <span class="n">statistics</span><span class="p">[</span><span class="s1">&#39;completed&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="mi">0</span>
+            <span class="n">statistics</span><span class="p">[</span><span class="s1">&#39;incomplete&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="mi">0</span>
+
+        <span class="n">memory</span> <span class="o">=</span> <span class="n">MachineMemory</span><span class="p">()</span>
+        <span class="k">if</span> <span class="n">timeout</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">timeout</span> <span class="o">=</span> <span class="n">WAITING_TIMEOUT</span>
+
+        <span class="c1"># Cache some local functions/methods...</span>
+        <span class="n">do_complete</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_completer</span><span class="o">.</span><span class="n">complete</span>
+        <span class="n">do_complete_failure</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_completer</span><span class="o">.</span><span class="n">complete_failure</span>
+        <span class="n">get_atom_intention</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_storage</span><span class="o">.</span><span class="n">get_atom_intention</span>
+
+        <span class="k">def</span> <span class="nf">do_schedule</span><span class="p">(</span><span class="n">next_nodes</span><span class="p">):</span>
+            <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_storage</span><span class="o">.</span><span class="n">lock</span><span class="o">.</span><span class="n">write_lock</span><span class="p">():</span>
+                <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_scheduler</span><span class="o">.</span><span class="n">schedule</span><span class="p">(</span>
+                    <span class="nb">sorted</span><span class="p">(</span><span class="n">next_nodes</span><span class="p">,</span>
+                           <span class="n">key</span><span class="o">=</span><span class="k">lambda</span> <span class="n">node</span><span class="p">:</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="s1">&#39;priority&#39;</span><span class="p">,</span> <span class="mi">0</span><span class="p">),</span>
+                           <span class="n">reverse</span><span class="o">=</span><span class="bp">True</span><span class="p">))</span>
+
+        <span class="k">def</span> <span class="nf">iter_next_atoms</span><span class="p">(</span><span class="n">atom</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">apply_deciders</span><span class="o">=</span><span class="bp">True</span><span class="p">):</span>
+            <span class="c1"># Yields and filters and tweaks the next atoms to run...</span>
+            <span class="n">maybe_atoms_it</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_selector</span><span class="o">.</span><span class="n">iter_next_atoms</span><span class="p">(</span><span class="n">atom</span><span class="o">=</span><span class="n">atom</span><span class="p">)</span>
+            <span class="k">for</span> <span class="n">atom</span><span class="p">,</span> <span class="n">late_decider</span> <span class="ow">in</span> <span class="n">maybe_atoms_it</span><span class="p">:</span>
+                <span class="k">if</span> <span class="n">apply_deciders</span><span class="p">:</span>
+                    <span class="n">proceed</span> <span class="o">=</span> <span class="n">late_decider</span><span class="o">.</span><span class="n">check_and_affect</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_runtime</span><span class="p">)</span>
+                    <span class="k">if</span> <span class="n">proceed</span><span class="p">:</span>
+                        <span class="k">yield</span> <span class="n">atom</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="k">yield</span> <span class="n">atom</span>
+
+        <span class="k">def</span> <span class="nf">resume</span><span class="p">(</span><span class="n">old_state</span><span class="p">,</span> <span class="n">new_state</span><span class="p">,</span> <span class="n">event</span><span class="p">):</span>
+            <span class="c1"># This reaction function just updates the state machines memory</span>
+            <span class="c1"># to include any nodes that need to be executed (from a previous</span>
+            <span class="c1"># attempt, which may be empty if never ran before) and any nodes</span>
+            <span class="c1"># that are now ready to be ran.</span>
+            <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_storage</span><span class="o">.</span><span class="n">lock</span><span class="o">.</span><span class="n">write_lock</span><span class="p">():</span>
+                <span class="n">memory</span><span class="o">.</span><span class="n">next_up</span><span class="o">.</span><span class="n">update</span><span class="p">(</span>
+                    <span class="n">iter_utils</span><span class="o">.</span><span class="n">unique_seen</span><span class="p">((</span><span class="bp">self</span><span class="o">.</span><span class="n">_completer</span><span class="o">.</span><span class="n">resume</span><span class="p">(),</span>
+                                            <span class="n">iter_next_atoms</span><span class="p">())))</span>
+            <span class="k">return</span> <span class="n">SCHEDULE</span>
+
+        <span class="k">def</span> <span class="nf">game_over</span><span class="p">(</span><span class="n">old_state</span><span class="p">,</span> <span class="n">new_state</span><span class="p">,</span> <span class="n">event</span><span class="p">):</span>
+            <span class="c1"># This reaction function is mainly a intermediary delegation</span>
+            <span class="c1"># function that analyzes the current memory and transitions to</span>
+            <span class="c1"># the appropriate handler that will deal with the memory values,</span>
+            <span class="c1"># it is *always* called before the final state is entered.</span>
+            <span class="k">if</span> <span class="n">memory</span><span class="o">.</span><span class="n">failures</span><span class="p">:</span>
+                <span class="k">return</span> <span class="n">FAILED</span>
+            <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_storage</span><span class="o">.</span><span class="n">lock</span><span class="o">.</span><span class="n">read_lock</span><span class="p">():</span>
+                <span class="n">leftover_atoms</span> <span class="o">=</span> <span class="n">iter_utils</span><span class="o">.</span><span class="n">count</span><span class="p">(</span>
+                    <span class="c1"># Avoid activating the deciders, since at this point</span>
+                    <span class="c1"># the engine is finishing and there will be no more further</span>
+                    <span class="c1"># work done anyway...</span>
+                    <span class="n">iter_next_atoms</span><span class="p">(</span><span class="n">apply_deciders</span><span class="o">=</span><span class="bp">False</span><span class="p">))</span>
+            <span class="k">if</span> <span class="n">leftover_atoms</span><span class="p">:</span>
+                <span class="c1"># Ok we didn&#39;t finish (either reverting or executing...) so</span>
+                <span class="c1"># that means we must of been stopped at some point...</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">trace</span><span class="p">(</span><span class="s2">&quot;Suspension determined to have been reacted to&quot;</span>
+                          <span class="s2">&quot; since (at least) </span><span class="si">%s</span><span class="s2"> atoms have been left in an&quot;</span>
+                          <span class="s2">&quot; unfinished state&quot;</span><span class="p">,</span> <span class="n">leftover_atoms</span><span class="p">)</span>
+                <span class="k">return</span> <span class="n">SUSPENDED</span>
+            <span class="k">elif</span> <span class="bp">self</span><span class="o">.</span><span class="n">_runtime</span><span class="o">.</span><span class="n">is_success</span><span class="p">():</span>
+                <span class="k">return</span> <span class="n">SUCCESS</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">return</span> <span class="n">REVERTED</span>
+
+        <span class="k">def</span> <span class="nf">schedule</span><span class="p">(</span><span class="n">old_state</span><span class="p">,</span> <span class="n">new_state</span><span class="p">,</span> <span class="n">event</span><span class="p">):</span>
+            <span class="c1"># This reaction function starts to schedule the memory&#39;s next</span>
+            <span class="c1"># nodes (iff the engine is still runnable, which it may not be</span>
+            <span class="c1"># if the user of this engine has requested the engine/storage</span>
+            <span class="c1"># that holds this information to stop or suspend); handles failures</span>
+            <span class="c1"># that occur during this process safely...</span>
+            <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_storage</span><span class="o">.</span><span class="n">lock</span><span class="o">.</span><span class="n">write_lock</span><span class="p">():</span>
+                <span class="n">current_flow_state</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_storage</span><span class="o">.</span><span class="n">get_flow_state</span><span class="p">()</span>
+                <span class="k">if</span> <span class="n">current_flow_state</span> <span class="o">==</span> <span class="n">st</span><span class="o">.</span><span class="n">RUNNING</span> <span class="ow">and</span> <span class="n">memory</span><span class="o">.</span><span class="n">next_up</span><span class="p">:</span>
+                    <span class="n">not_done</span><span class="p">,</span> <span class="n">failures</span> <span class="o">=</span> <span class="n">do_schedule</span><span class="p">(</span><span class="n">memory</span><span class="o">.</span><span class="n">next_up</span><span class="p">)</span>
+                    <span class="k">if</span> <span class="n">not_done</span><span class="p">:</span>
+                        <span class="n">memory</span><span class="o">.</span><span class="n">not_done</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">not_done</span><span class="p">)</span>
+                    <span class="k">if</span> <span class="n">failures</span><span class="p">:</span>
+                        <span class="n">memory</span><span class="o">.</span><span class="n">failures</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span><span class="n">failures</span><span class="p">)</span>
+                    <span class="n">memory</span><span class="o">.</span><span class="n">next_up</span><span class="o">.</span><span class="n">intersection_update</span><span class="p">(</span><span class="n">not_done</span><span class="p">)</span>
+                <span class="k">elif</span> <span class="n">current_flow_state</span> <span class="o">==</span> <span class="n">st</span><span class="o">.</span><span class="n">SUSPENDING</span> <span class="ow">and</span> <span class="n">memory</span><span class="o">.</span><span class="n">not_done</span><span class="p">:</span>
+                    <span class="c1"># Try to force anything not cancelled to now be cancelled</span>
+                    <span class="c1"># so that the executor that gets it does not continue to</span>
+                    <span class="c1"># try to work on it (if the future execution is still in</span>
+                    <span class="c1"># its backlog, if it&#39;s already being executed, this will</span>
+                    <span class="c1"># do nothing).</span>
+                    <span class="n">memory</span><span class="o">.</span><span class="n">cancel_futures</span><span class="p">()</span>
+            <span class="k">return</span> <span class="n">WAIT</span>
+
+        <span class="k">def</span> <span class="nf">complete_an_atom</span><span class="p">(</span><span class="n">fut</span><span class="p">):</span>
+            <span class="c1"># This completes a single atom saving its result in</span>
+            <span class="c1"># storage and preparing whatever predecessors or successors will</span>
+            <span class="c1"># now be ready to execute (or revert or retry...); it also</span>
+            <span class="c1"># handles failures that occur during this process safely...</span>
+            <span class="n">atom</span> <span class="o">=</span> <span class="n">fut</span><span class="o">.</span><span class="n">atom</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">outcome</span><span class="p">,</span> <span class="n">result</span> <span class="o">=</span> <span class="n">fut</span><span class="o">.</span><span class="n">result</span><span class="p">()</span>
+                <span class="n">do_complete</span><span class="p">(</span><span class="n">atom</span><span class="p">,</span> <span class="n">outcome</span><span class="p">,</span> <span class="n">result</span><span class="p">)</span>
+                <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="n">failure</span><span class="o">.</span><span class="n">Failure</span><span class="p">):</span>
+                    <span class="n">retain</span> <span class="o">=</span> <span class="n">do_complete_failure</span><span class="p">(</span><span class="n">atom</span><span class="p">,</span> <span class="n">outcome</span><span class="p">,</span> <span class="n">result</span><span class="p">)</span>
+                    <span class="k">if</span> <span class="n">retain</span><span class="p">:</span>
+                        <span class="n">memory</span><span class="o">.</span><span class="n">failures</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">result</span><span class="p">)</span>
+                    <span class="k">else</span><span class="p">:</span>
+                        <span class="c1"># NOTE(harlowja): avoid making any intention request</span>
+                        <span class="c1"># to storage unless we are sure we are in DEBUG</span>
+                        <span class="c1"># enabled logging (otherwise we will call this all</span>
+                        <span class="c1"># the time even when DEBUG is not enabled, which</span>
+                        <span class="c1"># would suck...)</span>
+                        <span class="k">if</span> <span class="n">LOG</span><span class="o">.</span><span class="n">isEnabledFor</span><span class="p">(</span><span class="n">logging</span><span class="o">.</span><span class="n">DEBUG</span><span class="p">):</span>
+                            <span class="n">intention</span> <span class="o">=</span> <span class="n">get_atom_intention</span><span class="p">(</span><span class="n">atom</span><span class="o">.</span><span class="n">name</span><span class="p">)</span>
+                            <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Discarding failure &#39;</span><span class="si">%s</span><span class="s2">&#39; (in response&quot;</span>
+                                      <span class="s2">&quot; to outcome &#39;</span><span class="si">%s</span><span class="s2">&#39;) under completion&quot;</span>
+                                      <span class="s2">&quot; units request during completion of&quot;</span>
+                                      <span class="s2">&quot; atom &#39;</span><span class="si">%s</span><span class="s2">&#39; (intention is to </span><span class="si">%s</span><span class="s2">)&quot;</span><span class="p">,</span>
+                                      <span class="n">result</span><span class="p">,</span> <span class="n">outcome</span><span class="p">,</span> <span class="n">atom</span><span class="p">,</span> <span class="n">intention</span><span class="p">)</span>
+                        <span class="k">if</span> <span class="n">gather_statistics</span><span class="p">:</span>
+                            <span class="n">statistics</span><span class="p">[</span><span class="s1">&#39;discarded_failures&#39;</span><span class="p">]</span> <span class="o">+=</span> <span class="mi">1</span>
+                <span class="k">if</span> <span class="n">gather_statistics</span><span class="p">:</span>
+                    <span class="n">statistics</span><span class="p">[</span><span class="s1">&#39;completed&#39;</span><span class="p">]</span> <span class="o">+=</span> <span class="mi">1</span>
+            <span class="k">except</span> <span class="n">futures</span><span class="o">.</span><span class="n">CancelledError</span><span class="p">:</span>
+                <span class="c1"># Well it got cancelled, skip doing anything</span>
+                <span class="c1"># and move on; at a further time it will be resumed</span>
+                <span class="c1"># and something should be done with it to get it</span>
+                <span class="c1"># going again.</span>
+                <span class="k">return</span> <span class="n">WAS_CANCELLED</span>
+            <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+                <span class="n">memory</span><span class="o">.</span><span class="n">failures</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">failure</span><span class="o">.</span><span class="n">Failure</span><span class="p">())</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">exception</span><span class="p">(</span><span class="s2">&quot;Engine &#39;</span><span class="si">%s</span><span class="s2">&#39; atom post-completion&quot;</span>
+                              <span class="s2">&quot; failed&quot;</span><span class="p">,</span> <span class="n">atom</span><span class="p">)</span>
+                <span class="k">return</span> <span class="n">FAILED_COMPLETING</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">return</span> <span class="n">SUCCESSFULLY_COMPLETED</span>
+
+        <span class="k">def</span> <span class="nf">wait</span><span class="p">(</span><span class="n">old_state</span><span class="p">,</span> <span class="n">new_state</span><span class="p">,</span> <span class="n">event</span><span class="p">):</span>
+            <span class="c1"># TODO(harlowja): maybe we should start doing &#39;yield from&#39; this</span>
+            <span class="c1"># call sometime in the future, or equivalent that will work in</span>
+            <span class="c1"># py2 and py3.</span>
+            <span class="k">if</span> <span class="n">memory</span><span class="o">.</span><span class="n">not_done</span><span class="p">:</span>
+                <span class="n">done</span><span class="p">,</span> <span class="n">not_done</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_waiter</span><span class="p">(</span><span class="n">memory</span><span class="o">.</span><span class="n">not_done</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span>
+                <span class="n">memory</span><span class="o">.</span><span class="n">done</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">done</span><span class="p">)</span>
+                <span class="n">memory</span><span class="o">.</span><span class="n">not_done</span> <span class="o">=</span> <span class="n">not_done</span>
+            <span class="k">return</span> <span class="n">ANALYZE</span>
+
+        <span class="k">def</span> <span class="nf">analyze</span><span class="p">(</span><span class="n">old_state</span><span class="p">,</span> <span class="n">new_state</span><span class="p">,</span> <span class="n">event</span><span class="p">):</span>
+            <span class="c1"># This reaction function is responsible for analyzing all nodes</span>
+            <span class="c1"># that have finished executing/reverting and figuring</span>
+            <span class="c1"># out what nodes are now ready to be ran (and then triggering those</span>
+            <span class="c1"># nodes to be scheduled in the future); handles failures that</span>
+            <span class="c1"># occur during this process safely...</span>
+            <span class="n">next_up</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+            <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_storage</span><span class="o">.</span><span class="n">lock</span><span class="o">.</span><span class="n">write_lock</span><span class="p">():</span>
+                <span class="k">while</span> <span class="n">memory</span><span class="o">.</span><span class="n">done</span><span class="p">:</span>
+                    <span class="n">fut</span> <span class="o">=</span> <span class="n">memory</span><span class="o">.</span><span class="n">done</span><span class="o">.</span><span class="n">pop</span><span class="p">()</span>
+                    <span class="c1"># Force it to be completed so that we can ensure that</span>
+                    <span class="c1"># before we iterate over any successors or predecessors</span>
+                    <span class="c1"># that we know it has been completed and saved and so on...</span>
+                    <span class="n">completion_status</span> <span class="o">=</span> <span class="n">complete_an_atom</span><span class="p">(</span><span class="n">fut</span><span class="p">)</span>
+                    <span class="k">if</span> <span class="p">(</span><span class="ow">not</span> <span class="n">memory</span><span class="o">.</span><span class="n">failures</span>
+                            <span class="ow">and</span> <span class="n">completion_status</span> <span class="o">!=</span> <span class="n">WAS_CANCELLED</span><span class="p">):</span>
+                        <span class="n">atom</span> <span class="o">=</span> <span class="n">fut</span><span class="o">.</span><span class="n">atom</span>
+                        <span class="k">try</span><span class="p">:</span>
+                            <span class="n">more_work</span> <span class="o">=</span> <span class="nb">set</span><span class="p">(</span><span class="n">iter_next_atoms</span><span class="p">(</span><span class="n">atom</span><span class="o">=</span><span class="n">atom</span><span class="p">))</span>
+                        <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+                            <span class="n">memory</span><span class="o">.</span><span class="n">failures</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">failure</span><span class="o">.</span><span class="n">Failure</span><span class="p">())</span>
+                            <span class="n">LOG</span><span class="o">.</span><span class="n">exception</span><span class="p">(</span>
+                                <span class="s2">&quot;Engine &#39;</span><span class="si">%s</span><span class="s2">&#39; atom post-completion&quot;</span>
+                                <span class="s2">&quot; next atom searching failed&quot;</span><span class="p">,</span> <span class="n">atom</span><span class="p">)</span>
+                        <span class="k">else</span><span class="p">:</span>
+                            <span class="n">next_up</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">more_work</span><span class="p">)</span>
+            <span class="n">current_flow_state</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_storage</span><span class="o">.</span><span class="n">get_flow_state</span><span class="p">()</span>
+            <span class="k">if</span> <span class="p">(</span><span class="n">current_flow_state</span> <span class="o">==</span> <span class="n">st</span><span class="o">.</span><span class="n">RUNNING</span>
+                    <span class="ow">and</span> <span class="n">next_up</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">memory</span><span class="o">.</span><span class="n">failures</span><span class="p">):</span>
+                <span class="n">memory</span><span class="o">.</span><span class="n">next_up</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">next_up</span><span class="p">)</span>
+                <span class="k">return</span> <span class="n">SCHEDULE</span>
+            <span class="k">elif</span> <span class="n">memory</span><span class="o">.</span><span class="n">not_done</span><span class="p">:</span>
+                <span class="k">if</span> <span class="n">current_flow_state</span> <span class="o">==</span> <span class="n">st</span><span class="o">.</span><span class="n">SUSPENDING</span><span class="p">:</span>
+                    <span class="n">memory</span><span class="o">.</span><span class="n">cancel_futures</span><span class="p">()</span>
+                <span class="k">return</span> <span class="n">WAIT</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">return</span> <span class="n">FINISH</span>
+
+        <span class="k">def</span> <span class="nf">on_exit</span><span class="p">(</span><span class="n">old_state</span><span class="p">,</span> <span class="n">event</span><span class="p">):</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">trace</span><span class="p">(</span><span class="s2">&quot;Exiting old state &#39;</span><span class="si">%s</span><span class="s2">&#39; in response to event &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span><span class="p">,</span>
+                      <span class="n">old_state</span><span class="p">,</span> <span class="n">event</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">gather_statistics</span><span class="p">:</span>
+                <span class="k">if</span> <span class="n">old_state</span> <span class="ow">in</span> <span class="n">watches</span><span class="p">:</span>
+                    <span class="n">w</span> <span class="o">=</span> <span class="n">watches</span><span class="p">[</span><span class="n">old_state</span><span class="p">]</span>
+                    <span class="n">w</span><span class="o">.</span><span class="n">stop</span><span class="p">()</span>
+                    <span class="n">state_statistics</span><span class="p">[</span><span class="n">old_state</span><span class="o">.</span><span class="n">lower</span><span class="p">()]</span> <span class="o">+=</span> <span class="n">w</span><span class="o">.</span><span class="n">elapsed</span><span class="p">()</span>
+                <span class="k">if</span> <span class="n">old_state</span> <span class="ow">in</span> <span class="p">(</span><span class="n">st</span><span class="o">.</span><span class="n">SCHEDULING</span><span class="p">,</span> <span class="n">st</span><span class="o">.</span><span class="n">WAITING</span><span class="p">):</span>
+                    <span class="n">statistics</span><span class="p">[</span><span class="s1">&#39;incomplete&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">memory</span><span class="o">.</span><span class="n">not_done</span><span class="p">)</span>
+                <span class="k">if</span> <span class="n">old_state</span> <span class="ow">in</span> <span class="p">(</span><span class="n">st</span><span class="o">.</span><span class="n">ANALYZING</span><span class="p">,</span> <span class="n">st</span><span class="o">.</span><span class="n">SCHEDULING</span><span class="p">):</span>
+                    <span class="n">statistics</span><span class="p">[</span><span class="s1">&#39;awaiting&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">memory</span><span class="o">.</span><span class="n">next_up</span><span class="p">)</span>
+
+        <span class="k">def</span> <span class="nf">on_enter</span><span class="p">(</span><span class="n">new_state</span><span class="p">,</span> <span class="n">event</span><span class="p">):</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">trace</span><span class="p">(</span><span class="s2">&quot;Entering new state &#39;</span><span class="si">%s</span><span class="s2">&#39; in response to event &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span><span class="p">,</span>
+                      <span class="n">new_state</span><span class="p">,</span> <span class="n">event</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">gather_statistics</span> <span class="ow">and</span> <span class="n">new_state</span> <span class="ow">in</span> <span class="n">watches</span><span class="p">:</span>
+                <span class="n">watches</span><span class="p">[</span><span class="n">new_state</span><span class="p">]</span><span class="o">.</span><span class="n">restart</span><span class="p">()</span>
+
+        <span class="n">state_kwargs</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="s1">&#39;on_exit&#39;</span><span class="p">:</span> <span class="n">on_exit</span><span class="p">,</span>
+            <span class="s1">&#39;on_enter&#39;</span><span class="p">:</span> <span class="n">on_enter</span><span class="p">,</span>
+        <span class="p">}</span>
+        <span class="n">m</span> <span class="o">=</span> <span class="n">machines</span><span class="o">.</span><span class="n">FiniteMachine</span><span class="p">()</span>
+        <span class="n">m</span><span class="o">.</span><span class="n">add_state</span><span class="p">(</span><span class="n">GAME_OVER</span><span class="p">,</span> <span class="o">**</span><span class="n">state_kwargs</span><span class="p">)</span>
+        <span class="n">m</span><span class="o">.</span><span class="n">add_state</span><span class="p">(</span><span class="n">UNDEFINED</span><span class="p">,</span> <span class="o">**</span><span class="n">state_kwargs</span><span class="p">)</span>
+        <span class="n">m</span><span class="o">.</span><span class="n">add_state</span><span class="p">(</span><span class="n">st</span><span class="o">.</span><span class="n">ANALYZING</span><span class="p">,</span> <span class="o">**</span><span class="n">state_kwargs</span><span class="p">)</span>
+        <span class="n">m</span><span class="o">.</span><span class="n">add_state</span><span class="p">(</span><span class="n">st</span><span class="o">.</span><span class="n">RESUMING</span><span class="p">,</span> <span class="o">**</span><span class="n">state_kwargs</span><span class="p">)</span>
+        <span class="n">m</span><span class="o">.</span><span class="n">add_state</span><span class="p">(</span><span class="n">st</span><span class="o">.</span><span class="n">REVERTED</span><span class="p">,</span> <span class="n">terminal</span><span class="o">=</span><span class="bp">True</span><span class="p">,</span> <span class="o">**</span><span class="n">state_kwargs</span><span class="p">)</span>
+        <span class="n">m</span><span class="o">.</span><span class="n">add_state</span><span class="p">(</span><span class="n">st</span><span class="o">.</span><span class="n">SCHEDULING</span><span class="p">,</span> <span class="o">**</span><span class="n">state_kwargs</span><span class="p">)</span>
+        <span class="n">m</span><span class="o">.</span><span class="n">add_state</span><span class="p">(</span><span class="n">st</span><span class="o">.</span><span class="n">SUCCESS</span><span class="p">,</span> <span class="n">terminal</span><span class="o">=</span><span class="bp">True</span><span class="p">,</span> <span class="o">**</span><span class="n">state_kwargs</span><span class="p">)</span>
+        <span class="n">m</span><span class="o">.</span><span class="n">add_state</span><span class="p">(</span><span class="n">st</span><span class="o">.</span><span class="n">SUSPENDED</span><span class="p">,</span> <span class="n">terminal</span><span class="o">=</span><span class="bp">True</span><span class="p">,</span> <span class="o">**</span><span class="n">state_kwargs</span><span class="p">)</span>
+        <span class="n">m</span><span class="o">.</span><span class="n">add_state</span><span class="p">(</span><span class="n">st</span><span class="o">.</span><span class="n">WAITING</span><span class="p">,</span> <span class="o">**</span><span class="n">state_kwargs</span><span class="p">)</span>
+        <span class="n">m</span><span class="o">.</span><span class="n">add_state</span><span class="p">(</span><span class="n">st</span><span class="o">.</span><span class="n">FAILURE</span><span class="p">,</span> <span class="n">terminal</span><span class="o">=</span><span class="bp">True</span><span class="p">,</span> <span class="o">**</span><span class="n">state_kwargs</span><span class="p">)</span>
+        <span class="n">m</span><span class="o">.</span><span class="n">default_start_state</span> <span class="o">=</span> <span class="n">UNDEFINED</span>
+
+        <span class="n">m</span><span class="o">.</span><span class="n">add_transition</span><span class="p">(</span><span class="n">GAME_OVER</span><span class="p">,</span> <span class="n">st</span><span class="o">.</span><span class="n">REVERTED</span><span class="p">,</span> <span class="n">REVERTED</span><span class="p">)</span>
+        <span class="n">m</span><span class="o">.</span><span class="n">add_transition</span><span class="p">(</span><span class="n">GAME_OVER</span><span class="p">,</span> <span class="n">st</span><span class="o">.</span><span class="n">SUCCESS</span><span class="p">,</span> <span class="n">SUCCESS</span><span class="p">)</span>
+        <span class="n">m</span><span class="o">.</span><span class="n">add_transition</span><span class="p">(</span><span class="n">GAME_OVER</span><span class="p">,</span> <span class="n">st</span><span class="o">.</span><span class="n">SUSPENDED</span><span class="p">,</span> <span class="n">SUSPENDED</span><span class="p">)</span>
+        <span class="n">m</span><span class="o">.</span><span class="n">add_transition</span><span class="p">(</span><span class="n">GAME_OVER</span><span class="p">,</span> <span class="n">st</span><span class="o">.</span><span class="n">FAILURE</span><span class="p">,</span> <span class="n">FAILED</span><span class="p">)</span>
+        <span class="n">m</span><span class="o">.</span><span class="n">add_transition</span><span class="p">(</span><span class="n">UNDEFINED</span><span class="p">,</span> <span class="n">st</span><span class="o">.</span><span class="n">RESUMING</span><span class="p">,</span> <span class="n">START</span><span class="p">)</span>
+        <span class="n">m</span><span class="o">.</span><span class="n">add_transition</span><span class="p">(</span><span class="n">st</span><span class="o">.</span><span class="n">ANALYZING</span><span class="p">,</span> <span class="n">GAME_OVER</span><span class="p">,</span> <span class="n">FINISH</span><span class="p">)</span>
+        <span class="n">m</span><span class="o">.</span><span class="n">add_transition</span><span class="p">(</span><span class="n">st</span><span class="o">.</span><span class="n">ANALYZING</span><span class="p">,</span> <span class="n">st</span><span class="o">.</span><span class="n">SCHEDULING</span><span class="p">,</span> <span class="n">SCHEDULE</span><span class="p">)</span>
+        <span class="n">m</span><span class="o">.</span><span class="n">add_transition</span><span class="p">(</span><span class="n">st</span><span class="o">.</span><span class="n">ANALYZING</span><span class="p">,</span> <span class="n">st</span><span class="o">.</span><span class="n">WAITING</span><span class="p">,</span> <span class="n">WAIT</span><span class="p">)</span>
+        <span class="n">m</span><span class="o">.</span><span class="n">add_transition</span><span class="p">(</span><span class="n">st</span><span class="o">.</span><span class="n">RESUMING</span><span class="p">,</span> <span class="n">st</span><span class="o">.</span><span class="n">SCHEDULING</span><span class="p">,</span> <span class="n">SCHEDULE</span><span class="p">)</span>
+        <span class="n">m</span><span class="o">.</span><span class="n">add_transition</span><span class="p">(</span><span class="n">st</span><span class="o">.</span><span class="n">SCHEDULING</span><span class="p">,</span> <span class="n">st</span><span class="o">.</span><span class="n">WAITING</span><span class="p">,</span> <span class="n">WAIT</span><span class="p">)</span>
+        <span class="n">m</span><span class="o">.</span><span class="n">add_transition</span><span class="p">(</span><span class="n">st</span><span class="o">.</span><span class="n">WAITING</span><span class="p">,</span> <span class="n">st</span><span class="o">.</span><span class="n">ANALYZING</span><span class="p">,</span> <span class="n">ANALYZE</span><span class="p">)</span>
+
+        <span class="n">m</span><span class="o">.</span><span class="n">add_reaction</span><span class="p">(</span><span class="n">GAME_OVER</span><span class="p">,</span> <span class="n">FINISH</span><span class="p">,</span> <span class="n">game_over</span><span class="p">)</span>
+        <span class="n">m</span><span class="o">.</span><span class="n">add_reaction</span><span class="p">(</span><span class="n">st</span><span class="o">.</span><span class="n">ANALYZING</span><span class="p">,</span> <span class="n">ANALYZE</span><span class="p">,</span> <span class="n">analyze</span><span class="p">)</span>
+        <span class="n">m</span><span class="o">.</span><span class="n">add_reaction</span><span class="p">(</span><span class="n">st</span><span class="o">.</span><span class="n">RESUMING</span><span class="p">,</span> <span class="n">START</span><span class="p">,</span> <span class="n">resume</span><span class="p">)</span>
+        <span class="n">m</span><span class="o">.</span><span class="n">add_reaction</span><span class="p">(</span><span class="n">st</span><span class="o">.</span><span class="n">SCHEDULING</span><span class="p">,</span> <span class="n">SCHEDULE</span><span class="p">,</span> <span class="n">schedule</span><span class="p">)</span>
+        <span class="n">m</span><span class="o">.</span><span class="n">add_reaction</span><span class="p">(</span><span class="n">st</span><span class="o">.</span><span class="n">WAITING</span><span class="p">,</span> <span class="n">WAIT</span><span class="p">,</span> <span class="n">wait</span><span class="p">)</span>
+
+        <span class="n">m</span><span class="o">.</span><span class="n">freeze</span><span class="p">()</span>
+        <span class="k">return</span> <span class="p">(</span><span class="n">m</span><span class="p">,</span> <span class="n">memory</span><span class="p">)</span></div></div>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+  <h3>Navigation</h3>
+  <ul>
+
+    <li><a href="../../../../index.html">Table Of Contents</a></li>
+
+
+
+  </ul>
+
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/taskflow
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../../../index.html">TaskFlow 2.9.1.dev9 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../../../index.html" accesskey="U">Module code</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2017, OpenStack Foundation.
+      Last updated on &#39;Fri Feb 10 20:11:17 2017, commit 643495f&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/TaskFlow");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

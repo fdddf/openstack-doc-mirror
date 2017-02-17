@@ -1,0 +1,232 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Route Advertisement &mdash; neutron-dynamic-routing 10.0.0.0rc2.dev3 documentation</title>
+    
+    <link rel="stylesheet" href="../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../',
+        VERSION:     '10.0.0.0rc2.dev3',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../_static/jquery.js"></script>
+    <script type="text/javascript" src="../_static/underscore.js"></script>
+    <script type="text/javascript" src="../_static/doctools.js"></script>
+    <link rel="top" title="neutron-dynamic-routing 10.0.0.0rc2.dev3 documentation" href="../index.html" />
+    <link rel="next" title="Testing" href="../others/testing.html" />
+    <link rel="prev" title="BGP Speaker" href="bgp-speaker.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="route-advertisement">
+<h1>Route Advertisement<a class="headerlink" href="#route-advertisement" title="Permalink to this headline">¶</a></h1>
+<div class="section" id="bgp">
+<h2>BGP<a class="headerlink" href="#bgp" title="Permalink to this headline">¶</a></h2>
+<p>This page discusses the behavior of BGP dynamic routing about how to advertise
+routes and show the routes details in the project.</p>
+<p>BGP dynamic routing could advertise 3 classes of routes:</p>
+<ul class="simple">
+<li>Host routes for floating IP addresses hosted on non-DVR routers, as floatingip
+address set on the router namespace, it knows how to route the message to the
+correct way, so the next-hop should be the IP address of router gateway port.</li>
+<li>Host routes for floating IP addresses hosted on DVR routers. With DVR-enabled
+routers, the floating IP can be reached directly on the compute node hosting
+a given instance. As such, host routes for the floating IP address should
+advertise the FIP agent gateway on the compute node as the next-hop instead of
+the centralized router. This will keep inbound floating IP traffic from
+encountering the bottleneck of the centralized router.</li>
+<li>Prefix routes for directly routable tenant networks with address scopes, the
+nexthop is the centralized router, the same for DVR and CVR. BGP dynamic
+routing could advertise tenant network prefixes to physical network
+devices(routers which support BGP protocol), called this
+<code class="docutils literal"><span class="pre">Prefixes</span> <span class="pre">advertisement</span></code>.</li>
+</ul>
+<p>When distributed virtual routing (DVR) is enabled on a router, next-hops for
+floating IP&#8217;s and fixed IP&#8217;s are not advertised as being at the centralized
+router. Host routes with the next-hop set to the appropriate compute node
+are advertised.</p>
+<div class="section" id="logical-model">
+<h3>Logical Model<a class="headerlink" href="#logical-model" title="Permalink to this headline">¶</a></h3>
+<div class="highlight-python"><div class="highlight"><pre><span></span>+--------+ 1     N +---------------------+
+| Router |---------|  BgpAdvertisedRoute |
++--------+         +---------------------+
+                             | N
+                             |
+                             | 1
++---------+ N       N +------------+ N       N +---------+
+| BgpPeer |-----------| BgpSpeaker |-----------| Network |
++---------+           +------------+           +---------+
+                             | N
+                             |
+                             | 1
+                      +--------------+
+                      | AddressScope |
+                      +--------------+
+</pre></div>
+</div>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">A BGP Speaker only supports one address family to speak BGP. A dual-stack IPv4
+and IPv6 network needs two BGP Speakers to advertise the routes with BGP, one
+for IPv4 and the other for IPv6. So A network can have N number of BGP
+Speakers bound to it.</p>
+</div>
+<p>BgpAdvertisedRoute represents derived data. As the number of
+BgpAdvertisedRoutes can be quite large, storing in a database table is not
+feasible. BgpAdvertisedRoute information can be derived by joining data
+already available in the Neutron database. And now BGP dynamic routing project
+process the Bgpadvertiseroutes which should be advertised to external Router is
+basing on the exist Neutron DB tables.
+Neutron looks on each of the gateway network for any routers with a gateway port
+on that network. For each router identified, Neutron locates each floating IP
+and tenant network accessible through the router gateway port. Neutron then
+advertises each floating IP and tenant network with the IP address of the router
+gateway port as the next hop.</p>
+<p>When BGP Plugin is started, it will register callbacks. All callbacks are used for
+processing Floating IP, Router Interface and Router Gateway creation or update, this
+functions listen the events of these resources for calling Dragent to change the
+advertisement routes.</p>
+<p>Now we just focus on the resources which may cause route change, the following
+callbacks does this work.</p>
+<ul class="simple">
+<li>floatingip_update_callback
+This function listens to the Floating IP&#8217;s AFTER_UPDATE event, it judges whether
+the associated router is changed, and changes the advertisement routes and nexthop
+based on that.</li>
+<li>router_interface_callback
+This function listens to the tenants&#8217; network routes change, it listens to AFTER_CREATE
+and AFTER_DELETE events of Router Interface resource. It calls Dragent to advertise
+or stop the prefix routes after a interface attach into a router.</li>
+<li>router_gateway_callback
+This function listens to the router gateway port creation or deletion. It also focuses
+on tenants&#8217; network routes change.</li>
+</ul>
+<dl class="docutils">
+<dt>You could get the advertisement routes of specific BGP Speaker like:</dt>
+<dd><code class="docutils literal"><span class="pre">neutron</span> <span class="pre">bgp-speaker-advertiseroute-list</span> <span class="pre">&lt;created-bgp-speaker&gt;</span></code></dd>
+</dl>
+<p>It does a complicated db query to generate the list of advertised routes.
+For more details refer to <a class="reference external" href="https://git.openstack.org/cgit/openstack/neutron-dynamic-routing/tree/neutron_dynamic_routing/db/bgp_db.py#n462">route advertisement db lookup</a></p>
+</div>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="../index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Route Advertisement</a><ul>
+<li><a class="reference internal" href="#bgp">BGP</a><ul>
+<li><a class="reference internal" href="#logical-model">Logical Model</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="bgp-speaker.html"
+                                  title="previous chapter">BGP Speaker</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="../others/testing.html"
+                                  title="next chapter">Testing</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/neutron-dynamic-routing
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="../_sources/functionality/route-advertisement.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../others/testing.html" title="Testing"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="bgp-speaker.html" title="BGP Speaker"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../index.html">neutron-dynamic-routing 10.0.0.0rc2.dev3 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2013, OpenStack Foundation.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/neutron-dynamic-routing");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

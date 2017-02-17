@@ -1,0 +1,911 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>heat.engine.clients.os.nova &mdash; heat 8.0.0.0rc2.dev38 documentation</title>
+    
+    <link rel="stylesheet" href="../../../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../../../',
+        VERSION:     '8.0.0.0rc2.dev38',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../../../_static/doctools.js"></script>
+    <link rel="top" title="heat 8.0.0.0rc2.dev38 documentation" href="../../../../../index.html" />
+    <link rel="up" title="Module code" href="../../../../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for heat.engine.clients.os.nova</h1><div class="highlight"><pre>
+<span></span><span class="c1">#</span>
+<span class="c1">#    Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may</span>
+<span class="c1">#    not use this file except in compliance with the License. You may obtain</span>
+<span class="c1">#    a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#         http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1">#    Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1">#    distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="c1">#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="c1">#    License for the specific language governing permissions and limitations</span>
+<span class="c1">#    under the License.</span>
+
+<span class="kn">import</span> <span class="nn">collections</span>
+<span class="kn">import</span> <span class="nn">email</span>
+<span class="kn">from</span> <span class="nn">email.mime</span> <span class="kn">import</span> <span class="n">multipart</span>
+<span class="kn">from</span> <span class="nn">email.mime</span> <span class="kn">import</span> <span class="n">text</span>
+<span class="kn">import</span> <span class="nn">os</span>
+<span class="kn">import</span> <span class="nn">pkgutil</span>
+<span class="kn">import</span> <span class="nn">string</span>
+
+<span class="kn">from</span> <span class="nn">novaclient</span> <span class="kn">import</span> <span class="n">client</span> <span class="k">as</span> <span class="n">nc</span>
+<span class="kn">from</span> <span class="nn">novaclient</span> <span class="kn">import</span> <span class="n">exceptions</span>
+<span class="kn">from</span> <span class="nn">oslo_config</span> <span class="kn">import</span> <span class="n">cfg</span>
+<span class="kn">from</span> <span class="nn">oslo_log</span> <span class="kn">import</span> <span class="n">log</span> <span class="k">as</span> <span class="n">logging</span>
+<span class="kn">from</span> <span class="nn">oslo_serialization</span> <span class="kn">import</span> <span class="n">jsonutils</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">uuidutils</span>
+<span class="kn">import</span> <span class="nn">six</span>
+<span class="kn">from</span> <span class="nn">six.moves.urllib</span> <span class="kn">import</span> <span class="n">parse</span> <span class="k">as</span> <span class="n">urlparse</span>
+<span class="kn">import</span> <span class="nn">tenacity</span>
+
+<span class="kn">from</span> <span class="nn">heat.common</span> <span class="kn">import</span> <span class="n">exception</span>
+<span class="kn">from</span> <span class="nn">heat.common.i18n</span> <span class="kn">import</span> <span class="n">_</span>
+<span class="kn">from</span> <span class="nn">heat.common.i18n</span> <span class="kn">import</span> <span class="n">_LI</span>
+<span class="kn">from</span> <span class="nn">heat.common.i18n</span> <span class="kn">import</span> <span class="n">_LW</span>
+<span class="kn">from</span> <span class="nn">heat.engine.clients</span> <span class="kn">import</span> <span class="n">client_plugin</span>
+<span class="kn">from</span> <span class="nn">heat.engine.clients</span> <span class="kn">import</span> <span class="n">os</span> <span class="k">as</span> <span class="n">os_client</span>
+<span class="kn">from</span> <span class="nn">heat.engine</span> <span class="kn">import</span> <span class="n">constraints</span>
+
+<span class="n">LOG</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+
+<span class="n">CLIENT_NAME</span> <span class="o">=</span> <span class="s1">&#39;nova&#39;</span>
+
+
+<div class="viewcode-block" id="NovaClientPlugin"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin">[docs]</a><span class="k">class</span> <span class="nc">NovaClientPlugin</span><span class="p">(</span><span class="n">client_plugin</span><span class="o">.</span><span class="n">ClientPlugin</span><span class="p">):</span>
+
+    <span class="n">deferred_server_statuses</span> <span class="o">=</span> <span class="p">[</span><span class="s1">&#39;BUILD&#39;</span><span class="p">,</span>
+                                <span class="s1">&#39;HARD_REBOOT&#39;</span><span class="p">,</span>
+                                <span class="s1">&#39;PASSWORD&#39;</span><span class="p">,</span>
+                                <span class="s1">&#39;REBOOT&#39;</span><span class="p">,</span>
+                                <span class="s1">&#39;RESCUE&#39;</span><span class="p">,</span>
+                                <span class="s1">&#39;RESIZE&#39;</span><span class="p">,</span>
+                                <span class="s1">&#39;REVERT_RESIZE&#39;</span><span class="p">,</span>
+                                <span class="s1">&#39;SHUTOFF&#39;</span><span class="p">,</span>
+                                <span class="s1">&#39;SUSPENDED&#39;</span><span class="p">,</span>
+                                <span class="s1">&#39;VERIFY_RESIZE&#39;</span><span class="p">]</span>
+
+    <span class="n">exceptions_module</span> <span class="o">=</span> <span class="n">exceptions</span>
+
+    <span class="n">supported_versions</span> <span class="o">=</span> <span class="p">[</span>
+        <span class="n">NOVA_API_VERSION</span><span class="p">,</span> <span class="n">V2_2</span><span class="p">,</span> <span class="n">V2_26</span>
+    <span class="p">]</span> <span class="o">=</span> <span class="p">[</span>
+        <span class="s1">&#39;2.1&#39;</span><span class="p">,</span> <span class="s1">&#39;2.2&#39;</span><span class="p">,</span> <span class="s1">&#39;2.26&#39;</span>
+    <span class="p">]</span>
+
+    <span class="n">service_types</span> <span class="o">=</span> <span class="p">[</span><span class="n">COMPUTE</span><span class="p">]</span> <span class="o">=</span> <span class="p">[</span><span class="s1">&#39;compute&#39;</span><span class="p">]</span>
+
+    <span class="k">def</span> <span class="nf">_get_service_name</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">COMPUTE</span>
+
+    <span class="k">def</span> <span class="nf">_create</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">version</span><span class="p">:</span>
+            <span class="c1"># TODO(prazumovsky): remove all unexpected calls from tests and</span>
+            <span class="c1"># add default_version after that.</span>
+            <span class="n">version</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">NOVA_API_VERSION</span>
+        <span class="n">endpoint_type</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_client_option</span><span class="p">(</span><span class="n">CLIENT_NAME</span><span class="p">,</span> <span class="s1">&#39;endpoint_type&#39;</span><span class="p">)</span>
+        <span class="n">extensions</span> <span class="o">=</span> <span class="n">nc</span><span class="o">.</span><span class="n">discover_extensions</span><span class="p">(</span><span class="n">version</span><span class="p">)</span>
+
+        <span class="n">args</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="s1">&#39;session&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">context</span><span class="o">.</span><span class="n">keystone_session</span><span class="p">,</span>
+            <span class="s1">&#39;extensions&#39;</span><span class="p">:</span> <span class="n">extensions</span><span class="p">,</span>
+            <span class="s1">&#39;endpoint_type&#39;</span><span class="p">:</span> <span class="n">endpoint_type</span><span class="p">,</span>
+            <span class="s1">&#39;service_type&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">COMPUTE</span><span class="p">,</span>
+            <span class="s1">&#39;region_name&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_region_name</span><span class="p">(),</span>
+            <span class="s1">&#39;http_log_debug&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_client_option</span><span class="p">(</span><span class="n">CLIENT_NAME</span><span class="p">,</span>
+                                                      <span class="s1">&#39;http_log_debug&#39;</span><span class="p">)</span>
+        <span class="p">}</span>
+
+        <span class="n">client</span> <span class="o">=</span> <span class="n">nc</span><span class="o">.</span><span class="n">Client</span><span class="p">(</span><span class="n">version</span><span class="p">,</span> <span class="o">**</span><span class="n">args</span><span class="p">)</span>
+        <span class="c1"># NOTE: check for microversion availability</span>
+        <span class="k">if</span> <span class="n">version</span> <span class="ow">in</span> <span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">V2_2</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">V2_26</span><span class="p">]:</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">client</span><span class="o">.</span><span class="n">versions</span><span class="o">.</span><span class="n">get_current</span><span class="p">()</span>
+            <span class="k">except</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">NotAcceptable</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">InvalidServiceVersion</span><span class="p">(</span><span class="n">service</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">COMPUTE</span><span class="p">,</span>
+                                                      <span class="n">version</span><span class="o">=</span><span class="n">version</span><span class="p">)</span>
+
+        <span class="k">return</span> <span class="n">client</span>
+
+<div class="viewcode-block" id="NovaClientPlugin.is_not_found"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.is_not_found">[docs]</a>    <span class="k">def</span> <span class="nf">is_not_found</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">ex</span><span class="p">):</span>
+        <span class="k">return</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">ex</span><span class="p">,</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">NotFound</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="NovaClientPlugin.is_over_limit"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.is_over_limit">[docs]</a>    <span class="k">def</span> <span class="nf">is_over_limit</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">ex</span><span class="p">):</span>
+        <span class="k">return</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">ex</span><span class="p">,</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">OverLimit</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="NovaClientPlugin.is_bad_request"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.is_bad_request">[docs]</a>    <span class="k">def</span> <span class="nf">is_bad_request</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">ex</span><span class="p">):</span>
+        <span class="k">return</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">ex</span><span class="p">,</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">BadRequest</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="NovaClientPlugin.is_conflict"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.is_conflict">[docs]</a>    <span class="k">def</span> <span class="nf">is_conflict</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">ex</span><span class="p">):</span>
+        <span class="k">return</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">ex</span><span class="p">,</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">Conflict</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="NovaClientPlugin.is_unprocessable_entity"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.is_unprocessable_entity">[docs]</a>    <span class="k">def</span> <span class="nf">is_unprocessable_entity</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">ex</span><span class="p">):</span>
+        <span class="n">http_status</span> <span class="o">=</span> <span class="p">(</span><span class="nb">getattr</span><span class="p">(</span><span class="n">ex</span><span class="p">,</span> <span class="s1">&#39;http_status&#39;</span><span class="p">,</span> <span class="bp">None</span><span class="p">)</span> <span class="ow">or</span>
+                       <span class="nb">getattr</span><span class="p">(</span><span class="n">ex</span><span class="p">,</span> <span class="s1">&#39;code&#39;</span><span class="p">,</span> <span class="bp">None</span><span class="p">))</span>
+        <span class="k">return</span> <span class="p">(</span><span class="nb">isinstance</span><span class="p">(</span><span class="n">ex</span><span class="p">,</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">ClientException</span><span class="p">)</span> <span class="ow">and</span>
+                <span class="n">http_status</span> <span class="o">==</span> <span class="mi">422</span><span class="p">)</span></div>
+
+    <span class="nd">@tenacity.retry</span><span class="p">(</span>
+        <span class="n">stop</span><span class="o">=</span><span class="n">tenacity</span><span class="o">.</span><span class="n">stop_after_attempt</span><span class="p">(</span>
+            <span class="nb">max</span><span class="p">(</span><span class="n">cfg</span><span class="o">.</span><span class="n">CONF</span><span class="o">.</span><span class="n">client_retry_limit</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="p">)),</span>
+        <span class="n">retry</span><span class="o">=</span><span class="n">tenacity</span><span class="o">.</span><span class="n">retry_if_exception</span><span class="p">(</span>
+            <span class="n">client_plugin</span><span class="o">.</span><span class="n">retry_if_connection_err</span><span class="p">),</span>
+        <span class="n">reraise</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+<div class="viewcode-block" id="NovaClientPlugin.get_server"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.get_server">[docs]</a>    <span class="k">def</span> <span class="nf">get_server</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">server</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Return fresh server object.</span>
+
+<span class="sd">        Substitutes Nova&#39;s NotFound for Heat&#39;s EntityNotFound,</span>
+<span class="sd">        to be returned to user as HTTP error.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="p">()</span><span class="o">.</span><span class="n">servers</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">server</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">NotFound</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">EntityNotFound</span><span class="p">(</span><span class="n">entity</span><span class="o">=</span><span class="s1">&#39;Server&#39;</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="n">server</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="NovaClientPlugin.fetch_server"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.fetch_server">[docs]</a>    <span class="k">def</span> <span class="nf">fetch_server</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">server_id</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Fetch fresh server object from Nova.</span>
+
+<span class="sd">        Log warnings and return None for non-critical API errors.</span>
+<span class="sd">        Use this method in various ``check_*_complete`` resource methods,</span>
+<span class="sd">        where intermittent errors can be tolerated.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">server</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">server</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="p">()</span><span class="o">.</span><span class="n">servers</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">server_id</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">OverLimit</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s2">&quot;Received an OverLimit response when &quot;</span>
+                            <span class="s2">&quot;fetching server (</span><span class="si">%(id)s</span><span class="s2">) : </span><span class="si">%(exception)s</span><span class="s2">&quot;</span><span class="p">),</span>
+                        <span class="p">{</span><span class="s1">&#39;id&#39;</span><span class="p">:</span> <span class="n">server_id</span><span class="p">,</span>
+                         <span class="s1">&#39;exception&#39;</span><span class="p">:</span> <span class="n">exc</span><span class="p">})</span>
+        <span class="k">except</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">ClientException</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+            <span class="k">if</span> <span class="p">((</span><span class="nb">getattr</span><span class="p">(</span><span class="n">exc</span><span class="p">,</span> <span class="s1">&#39;http_status&#39;</span><span class="p">,</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">exc</span><span class="p">,</span> <span class="s1">&#39;code&#39;</span><span class="p">,</span> <span class="bp">None</span><span class="p">))</span> <span class="ow">in</span>
+                 <span class="p">(</span><span class="mi">500</span><span class="p">,</span> <span class="mi">503</span><span class="p">))):</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s2">&quot;Received the following exception when &quot;</span>
+                            <span class="s2">&quot;fetching server (</span><span class="si">%(id)s</span><span class="s2">) : </span><span class="si">%(exception)s</span><span class="s2">&quot;</span><span class="p">),</span>
+                            <span class="p">{</span><span class="s1">&#39;id&#39;</span><span class="p">:</span> <span class="n">server_id</span><span class="p">,</span>
+                             <span class="s1">&#39;exception&#39;</span><span class="p">:</span> <span class="n">exc</span><span class="p">})</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">raise</span>
+        <span class="k">return</span> <span class="n">server</span></div>
+
+<div class="viewcode-block" id="NovaClientPlugin.refresh_server"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.refresh_server">[docs]</a>    <span class="k">def</span> <span class="nf">refresh_server</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">server</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Refresh server&#39;s attributes.</span>
+
+<span class="sd">        Also log warnings for non-critical API errors.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">server</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
+        <span class="k">except</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">OverLimit</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s2">&quot;Server </span><span class="si">%(name)s</span><span class="s2"> (</span><span class="si">%(id)s</span><span class="s2">) received an OverLimit &quot;</span>
+                            <span class="s2">&quot;response during server.get(): </span><span class="si">%(exception)s</span><span class="s2">&quot;</span><span class="p">),</span>
+                        <span class="p">{</span><span class="s1">&#39;name&#39;</span><span class="p">:</span> <span class="n">server</span><span class="o">.</span><span class="n">name</span><span class="p">,</span>
+                         <span class="s1">&#39;id&#39;</span><span class="p">:</span> <span class="n">server</span><span class="o">.</span><span class="n">id</span><span class="p">,</span>
+                         <span class="s1">&#39;exception&#39;</span><span class="p">:</span> <span class="n">exc</span><span class="p">})</span>
+        <span class="k">except</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">ClientException</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+            <span class="k">if</span> <span class="p">((</span><span class="nb">getattr</span><span class="p">(</span><span class="n">exc</span><span class="p">,</span> <span class="s1">&#39;http_status&#39;</span><span class="p">,</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">exc</span><span class="p">,</span> <span class="s1">&#39;code&#39;</span><span class="p">,</span> <span class="bp">None</span><span class="p">))</span> <span class="ow">in</span>
+                 <span class="p">(</span><span class="mi">500</span><span class="p">,</span> <span class="mi">503</span><span class="p">))):</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s1">&#39;Server &quot;</span><span class="si">%(name)s</span><span class="s1">&quot; (</span><span class="si">%(id)s</span><span class="s1">) received the &#39;</span>
+                                <span class="s1">&#39;following exception during server.get(): &#39;</span>
+                                <span class="s1">&#39;</span><span class="si">%(exception)s</span><span class="s1">&#39;</span><span class="p">),</span>
+                            <span class="p">{</span><span class="s1">&#39;name&#39;</span><span class="p">:</span> <span class="n">server</span><span class="o">.</span><span class="n">name</span><span class="p">,</span>
+                             <span class="s1">&#39;id&#39;</span><span class="p">:</span> <span class="n">server</span><span class="o">.</span><span class="n">id</span><span class="p">,</span>
+                             <span class="s1">&#39;exception&#39;</span><span class="p">:</span> <span class="n">exc</span><span class="p">})</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">raise</span></div>
+
+<div class="viewcode-block" id="NovaClientPlugin.get_ip"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.get_ip">[docs]</a>    <span class="k">def</span> <span class="nf">get_ip</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">server</span><span class="p">,</span> <span class="n">net_type</span><span class="p">,</span> <span class="n">ip_version</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Return the server&#39;s IP of the given type and version.&quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="n">net_type</span> <span class="ow">in</span> <span class="n">server</span><span class="o">.</span><span class="n">addresses</span><span class="p">:</span>
+            <span class="k">for</span> <span class="n">ip</span> <span class="ow">in</span> <span class="n">server</span><span class="o">.</span><span class="n">addresses</span><span class="p">[</span><span class="n">net_type</span><span class="p">]:</span>
+                <span class="k">if</span> <span class="n">ip</span><span class="p">[</span><span class="s1">&#39;version&#39;</span><span class="p">]</span> <span class="o">==</span> <span class="n">ip_version</span><span class="p">:</span>
+                    <span class="k">return</span> <span class="n">ip</span><span class="p">[</span><span class="s1">&#39;addr&#39;</span><span class="p">]</span></div>
+
+<div class="viewcode-block" id="NovaClientPlugin.get_status"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.get_status">[docs]</a>    <span class="k">def</span> <span class="nf">get_status</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">server</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Return the server&#39;s status.</span>
+
+<span class="sd">        :param server: server object</span>
+<span class="sd">        :returns: status as a string</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="c1"># Some clouds append extra (STATUS) strings to the status, strip it</span>
+        <span class="k">return</span> <span class="n">server</span><span class="o">.</span><span class="n">status</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s1">&#39;(&#39;</span><span class="p">)[</span><span class="mi">0</span><span class="p">]</span></div>
+
+    <span class="k">def</span> <span class="nf">_check_active</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">server</span><span class="p">,</span> <span class="n">res_name</span><span class="o">=</span><span class="s1">&#39;Server&#39;</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Check server status.</span>
+
+<span class="sd">        Accepts both server IDs and server objects.</span>
+<span class="sd">        Returns True if server is ACTIVE,</span>
+<span class="sd">        raises errors when server has an ERROR or unknown to Heat status,</span>
+<span class="sd">        returns False otherwise.</span>
+
+<span class="sd">        :param res_name: name of the resource to use in the exception message</span>
+
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="c1"># not checking with is_uuid_like as most tests use strings e.g. &#39;1234&#39;</span>
+        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">server</span><span class="p">,</span> <span class="n">six</span><span class="o">.</span><span class="n">string_types</span><span class="p">):</span>
+            <span class="n">server</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">fetch_server</span><span class="p">(</span><span class="n">server</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">server</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="k">return</span> <span class="bp">False</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">status</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_status</span><span class="p">(</span><span class="n">server</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">status</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_status</span><span class="p">(</span><span class="n">server</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">status</span> <span class="o">!=</span> <span class="s1">&#39;ACTIVE&#39;</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">refresh_server</span><span class="p">(</span><span class="n">server</span><span class="p">)</span>
+                <span class="n">status</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_status</span><span class="p">(</span><span class="n">server</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">status</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">deferred_server_statuses</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">False</span>
+        <span class="k">elif</span> <span class="n">status</span> <span class="o">==</span> <span class="s1">&#39;ACTIVE&#39;</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">True</span>
+        <span class="k">elif</span> <span class="n">status</span> <span class="o">==</span> <span class="s1">&#39;ERROR&#39;</span><span class="p">:</span>
+            <span class="n">fault</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">server</span><span class="p">,</span> <span class="s1">&#39;fault&#39;</span><span class="p">,</span> <span class="p">{})</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">ResourceInError</span><span class="p">(</span>
+                <span class="n">resource_status</span><span class="o">=</span><span class="n">status</span><span class="p">,</span>
+                <span class="n">status_reason</span><span class="o">=</span><span class="n">_</span><span class="p">(</span><span class="s2">&quot;Message: </span><span class="si">%(message)s</span><span class="s2">, Code: </span><span class="si">%(code)s</span><span class="s2">&quot;</span><span class="p">)</span> <span class="o">%</span> <span class="p">{</span>
+                    <span class="s1">&#39;message&#39;</span><span class="p">:</span> <span class="n">fault</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;message&#39;</span><span class="p">,</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;Unknown&#39;</span><span class="p">)),</span>
+                    <span class="s1">&#39;code&#39;</span><span class="p">:</span> <span class="n">fault</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;code&#39;</span><span class="p">,</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;Unknown&#39;</span><span class="p">))</span>
+                <span class="p">})</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">ResourceUnknownStatus</span><span class="p">(</span>
+                <span class="n">resource_status</span><span class="o">=</span><span class="n">server</span><span class="o">.</span><span class="n">status</span><span class="p">,</span>
+                <span class="n">result</span><span class="o">=</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;</span><span class="si">%s</span><span class="s1"> is not active&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="n">res_name</span><span class="p">)</span>
+
+<div class="viewcode-block" id="NovaClientPlugin.find_flavor_by_name_or_id"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.find_flavor_by_name_or_id">[docs]</a>    <span class="k">def</span> <span class="nf">find_flavor_by_name_or_id</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">flavor</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Find the specified flavor by name or id.</span>
+
+<span class="sd">        :param flavor: the name of the flavor to find</span>
+<span class="sd">        :returns: the id of :flavor:</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_find_flavor_id</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">context</span><span class="o">.</span><span class="n">tenant_id</span><span class="p">,</span>
+                                    <span class="n">flavor</span><span class="p">)</span></div>
+
+    <span class="nd">@os_client.MEMOIZE_FINDER</span>
+    <span class="k">def</span> <span class="nf">_find_flavor_id</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tenant_id</span><span class="p">,</span> <span class="n">flavor</span><span class="p">):</span>
+        <span class="c1"># tenant id in the signature is used for the memoization key,</span>
+        <span class="c1"># that would differentiate similar resource names across tenants.</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_flavor</span><span class="p">(</span><span class="n">flavor</span><span class="p">)</span><span class="o">.</span><span class="n">id</span>
+
+<div class="viewcode-block" id="NovaClientPlugin.get_flavor"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.get_flavor">[docs]</a>    <span class="k">def</span> <span class="nf">get_flavor</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">flavor_identifier</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get the flavor object for the specified flavor name or id.</span>
+
+<span class="sd">        :param flavor_identifier: the name or id of the flavor to find</span>
+<span class="sd">        :returns: a flavor object with name or id :flavor:</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">flavor</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="p">()</span><span class="o">.</span><span class="n">flavors</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">flavor_identifier</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">NotFound</span><span class="p">:</span>
+            <span class="n">flavor</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="p">()</span><span class="o">.</span><span class="n">flavors</span><span class="o">.</span><span class="n">find</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="n">flavor_identifier</span><span class="p">)</span>
+
+        <span class="k">return</span> <span class="n">flavor</span></div>
+
+<div class="viewcode-block" id="NovaClientPlugin.get_host"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.get_host">[docs]</a>    <span class="k">def</span> <span class="nf">get_host</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">host_name</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get the host id specified by name.</span>
+
+<span class="sd">        :param host_name: the name of host to find</span>
+<span class="sd">        :returns: the list of match hosts</span>
+<span class="sd">        :raises: exception.EntityNotFound</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+
+        <span class="n">host_list</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="p">()</span><span class="o">.</span><span class="n">hosts</span><span class="o">.</span><span class="n">list</span><span class="p">()</span>
+        <span class="k">for</span> <span class="n">host</span> <span class="ow">in</span> <span class="n">host_list</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">host</span><span class="o">.</span><span class="n">host_name</span> <span class="o">==</span> <span class="n">host_name</span> <span class="ow">and</span> <span class="n">host</span><span class="o">.</span><span class="n">service</span> <span class="o">==</span> <span class="bp">self</span><span class="o">.</span><span class="n">COMPUTE</span><span class="p">:</span>
+                <span class="k">return</span> <span class="n">host</span>
+
+        <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">EntityNotFound</span><span class="p">(</span><span class="n">entity</span><span class="o">=</span><span class="s1">&#39;Host&#39;</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="n">host_name</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="NovaClientPlugin.get_keypair"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.get_keypair">[docs]</a>    <span class="k">def</span> <span class="nf">get_keypair</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">key_name</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get the public key specified by :key_name:</span>
+
+<span class="sd">        :param key_name: the name of the key to look for</span>
+<span class="sd">        :returns: the keypair (name, public_key) for :key_name:</span>
+<span class="sd">        :raises: exception.EntityNotFound</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="p">()</span><span class="o">.</span><span class="n">keypairs</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">key_name</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">NotFound</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">EntityNotFound</span><span class="p">(</span><span class="n">entity</span><span class="o">=</span><span class="s1">&#39;Key&#39;</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="n">key_name</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="NovaClientPlugin.build_userdata"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.build_userdata">[docs]</a>    <span class="k">def</span> <span class="nf">build_userdata</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">metadata</span><span class="p">,</span> <span class="n">userdata</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">instance_user</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+                       <span class="n">user_data_format</span><span class="o">=</span><span class="s1">&#39;HEAT_CFNTOOLS&#39;</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Build multipart data blob for CloudInit.</span>
+
+<span class="sd">        Data blob includes user-supplied Metadata, user data, and the required</span>
+<span class="sd">        Heat in-instance configuration.</span>
+
+<span class="sd">        :param resource: the resource implementation</span>
+<span class="sd">        :type resource: heat.engine.Resource</span>
+<span class="sd">        :param userdata: user data string</span>
+<span class="sd">        :type userdata: str or None</span>
+<span class="sd">        :param instance_user: the user to create on the server</span>
+<span class="sd">        :type instance_user: string</span>
+<span class="sd">        :param user_data_format: Format of user data to return</span>
+<span class="sd">        :type user_data_format: string</span>
+<span class="sd">        :returns: multipart mime as a string</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+
+        <span class="k">if</span> <span class="n">user_data_format</span> <span class="o">==</span> <span class="s1">&#39;RAW&#39;</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">userdata</span>
+
+        <span class="n">is_cfntools</span> <span class="o">=</span> <span class="n">user_data_format</span> <span class="o">==</span> <span class="s1">&#39;HEAT_CFNTOOLS&#39;</span>
+        <span class="n">is_software_config</span> <span class="o">=</span> <span class="n">user_data_format</span> <span class="o">==</span> <span class="s1">&#39;SOFTWARE_CONFIG&#39;</span>
+
+        <span class="k">def</span> <span class="nf">make_subpart</span><span class="p">(</span><span class="n">content</span><span class="p">,</span> <span class="n">filename</span><span class="p">,</span> <span class="n">subtype</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+            <span class="k">if</span> <span class="n">subtype</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="n">subtype</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">splitext</span><span class="p">(</span><span class="n">filename</span><span class="p">)[</span><span class="mi">0</span><span class="p">]</span>
+            <span class="k">if</span> <span class="n">content</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="n">content</span> <span class="o">=</span> <span class="s1">&#39;&#39;</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">content</span><span class="o">.</span><span class="n">encode</span><span class="p">(</span><span class="s1">&#39;us-ascii&#39;</span><span class="p">)</span>
+                <span class="n">charset</span> <span class="o">=</span> <span class="s1">&#39;us-ascii&#39;</span>
+            <span class="k">except</span> <span class="ne">UnicodeEncodeError</span><span class="p">:</span>
+                <span class="n">charset</span> <span class="o">=</span> <span class="s1">&#39;utf-8&#39;</span>
+            <span class="n">msg</span> <span class="o">=</span> <span class="p">(</span><span class="n">text</span><span class="o">.</span><span class="n">MIMEText</span><span class="p">(</span><span class="n">content</span><span class="p">,</span> <span class="n">_subtype</span><span class="o">=</span><span class="n">subtype</span><span class="p">,</span> <span class="n">_charset</span><span class="o">=</span><span class="n">charset</span><span class="p">)</span>
+                   <span class="k">if</span> <span class="n">subtype</span> <span class="k">else</span> <span class="n">text</span><span class="o">.</span><span class="n">MIMEText</span><span class="p">(</span><span class="n">content</span><span class="p">,</span> <span class="n">_charset</span><span class="o">=</span><span class="n">charset</span><span class="p">))</span>
+
+            <span class="n">msg</span><span class="o">.</span><span class="n">add_header</span><span class="p">(</span><span class="s1">&#39;Content-Disposition&#39;</span><span class="p">,</span> <span class="s1">&#39;attachment&#39;</span><span class="p">,</span>
+                           <span class="n">filename</span><span class="o">=</span><span class="n">filename</span><span class="p">)</span>
+            <span class="k">return</span> <span class="n">msg</span>
+
+        <span class="k">def</span> <span class="nf">read_cloudinit_file</span><span class="p">(</span><span class="n">fn</span><span class="p">):</span>
+            <span class="k">return</span> <span class="n">pkgutil</span><span class="o">.</span><span class="n">get_data</span><span class="p">(</span>
+                <span class="s1">&#39;heat&#39;</span><span class="p">,</span> <span class="s1">&#39;cloudinit/</span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="n">fn</span><span class="p">)</span><span class="o">.</span><span class="n">decode</span><span class="p">(</span><span class="s1">&#39;utf-8&#39;</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">instance_user</span><span class="p">:</span>
+            <span class="n">config_custom_user</span> <span class="o">=</span> <span class="s1">&#39;user: </span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="n">instance_user</span>
+            <span class="c1"># FIXME(shadower): compatibility workaround for cloud-init 0.6.3.</span>
+            <span class="c1"># We can drop this once we stop supporting 0.6.3 (which ships</span>
+            <span class="c1"># with Ubuntu 12.04 LTS).</span>
+            <span class="c1">#</span>
+            <span class="c1"># See bug https://bugs.launchpad.net/heat/+bug/1257410</span>
+            <span class="n">boothook_custom_user</span> <span class="o">=</span> <span class="sa">r</span><span class="s2">&quot;&quot;&quot;useradd -m </span><span class="si">%s</span><span class="s2"></span>
+<span class="s2">echo -e &#39;</span><span class="si">%s</span><span class="s2">\tALL=(ALL)\tNOPASSWD: ALL&#39; &gt;&gt; /etc/sudoers</span>
+<span class="s2">&quot;&quot;&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">instance_user</span><span class="p">,</span> <span class="n">instance_user</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">config_custom_user</span> <span class="o">=</span> <span class="s1">&#39;&#39;</span>
+            <span class="n">boothook_custom_user</span> <span class="o">=</span> <span class="s1">&#39;&#39;</span>
+
+        <span class="n">cloudinit_config</span> <span class="o">=</span> <span class="n">string</span><span class="o">.</span><span class="n">Template</span><span class="p">(</span>
+            <span class="n">read_cloudinit_file</span><span class="p">(</span><span class="s1">&#39;config&#39;</span><span class="p">))</span><span class="o">.</span><span class="n">safe_substitute</span><span class="p">(</span>
+                <span class="n">add_custom_user</span><span class="o">=</span><span class="n">config_custom_user</span><span class="p">)</span>
+        <span class="n">cloudinit_boothook</span> <span class="o">=</span> <span class="n">string</span><span class="o">.</span><span class="n">Template</span><span class="p">(</span>
+            <span class="n">read_cloudinit_file</span><span class="p">(</span><span class="s1">&#39;boothook.sh&#39;</span><span class="p">))</span><span class="o">.</span><span class="n">safe_substitute</span><span class="p">(</span>
+                <span class="n">add_custom_user</span><span class="o">=</span><span class="n">boothook_custom_user</span><span class="p">)</span>
+
+        <span class="n">attachments</span> <span class="o">=</span> <span class="p">[(</span><span class="n">cloudinit_config</span><span class="p">,</span> <span class="s1">&#39;cloud-config&#39;</span><span class="p">),</span>
+                       <span class="p">(</span><span class="n">cloudinit_boothook</span><span class="p">,</span> <span class="s1">&#39;boothook.sh&#39;</span><span class="p">,</span> <span class="s1">&#39;cloud-boothook&#39;</span><span class="p">),</span>
+                       <span class="p">(</span><span class="n">read_cloudinit_file</span><span class="p">(</span><span class="s1">&#39;part_handler.py&#39;</span><span class="p">),</span>
+                        <span class="s1">&#39;part-handler.py&#39;</span><span class="p">)]</span>
+        <span class="k">if</span> <span class="n">is_cfntools</span><span class="p">:</span>
+            <span class="n">attachments</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">userdata</span><span class="p">,</span> <span class="s1">&#39;cfn-userdata&#39;</span><span class="p">,</span> <span class="s1">&#39;x-cfninitdata&#39;</span><span class="p">))</span>
+        <span class="k">elif</span> <span class="n">is_software_config</span><span class="p">:</span>
+            <span class="c1"># attempt to parse userdata as a multipart message, and if it</span>
+            <span class="c1"># is, add each part as an attachment</span>
+            <span class="n">userdata_parts</span> <span class="o">=</span> <span class="bp">None</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">userdata_parts</span> <span class="o">=</span> <span class="n">email</span><span class="o">.</span><span class="n">message_from_string</span><span class="p">(</span><span class="n">userdata</span><span class="p">)</span>
+            <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+                <span class="k">pass</span>
+            <span class="k">if</span> <span class="n">userdata_parts</span> <span class="ow">and</span> <span class="n">userdata_parts</span><span class="o">.</span><span class="n">is_multipart</span><span class="p">():</span>
+                <span class="k">for</span> <span class="n">part</span> <span class="ow">in</span> <span class="n">userdata_parts</span><span class="o">.</span><span class="n">get_payload</span><span class="p">():</span>
+                    <span class="n">attachments</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">part</span><span class="o">.</span><span class="n">get_payload</span><span class="p">(),</span>
+                                        <span class="n">part</span><span class="o">.</span><span class="n">get_filename</span><span class="p">(),</span>
+                                        <span class="n">part</span><span class="o">.</span><span class="n">get_content_subtype</span><span class="p">()))</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">attachments</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">userdata</span><span class="p">,</span> <span class="s1">&#39;&#39;</span><span class="p">))</span>
+
+        <span class="k">if</span> <span class="n">is_cfntools</span><span class="p">:</span>
+            <span class="n">attachments</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">read_cloudinit_file</span><span class="p">(</span><span class="s1">&#39;loguserdata.py&#39;</span><span class="p">),</span>
+                               <span class="s1">&#39;loguserdata.py&#39;</span><span class="p">,</span> <span class="s1">&#39;x-shellscript&#39;</span><span class="p">))</span>
+
+        <span class="k">if</span> <span class="n">metadata</span><span class="p">:</span>
+            <span class="n">attachments</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">jsonutils</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span><span class="n">metadata</span><span class="p">),</span>
+                                <span class="s1">&#39;cfn-init-data&#39;</span><span class="p">,</span> <span class="s1">&#39;x-cfninitdata&#39;</span><span class="p">))</span>
+
+        <span class="n">heat_client_plugin</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">context</span><span class="o">.</span><span class="n">clients</span><span class="o">.</span><span class="n">client_plugin</span><span class="p">(</span><span class="s1">&#39;heat&#39;</span><span class="p">)</span>
+        <span class="n">watch_url</span> <span class="o">=</span> <span class="n">cfg</span><span class="o">.</span><span class="n">CONF</span><span class="o">.</span><span class="n">heat_watch_server_url</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">watch_url</span><span class="p">:</span>
+            <span class="n">watch_url</span> <span class="o">=</span> <span class="n">heat_client_plugin</span><span class="o">.</span><span class="n">get_watch_server_url</span><span class="p">()</span>
+
+        <span class="n">attachments</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">watch_url</span><span class="p">,</span> <span class="s1">&#39;cfn-watch-server&#39;</span><span class="p">,</span> <span class="s1">&#39;x-cfninitdata&#39;</span><span class="p">))</span>
+
+        <span class="k">if</span> <span class="n">is_cfntools</span><span class="p">:</span>
+            <span class="n">cfn_md_url</span> <span class="o">=</span> <span class="n">heat_client_plugin</span><span class="o">.</span><span class="n">get_cfn_metadata_server_url</span><span class="p">()</span>
+            <span class="n">attachments</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">cfn_md_url</span><span class="p">,</span>
+                                <span class="s1">&#39;cfn-metadata-server&#39;</span><span class="p">,</span> <span class="s1">&#39;x-cfninitdata&#39;</span><span class="p">))</span>
+
+            <span class="c1"># Create a boto config which the cfntools on the host use to know</span>
+            <span class="c1"># where the cfn and cw API&#39;s are to be accessed</span>
+            <span class="n">cfn_url</span> <span class="o">=</span> <span class="n">urlparse</span><span class="o">.</span><span class="n">urlparse</span><span class="p">(</span><span class="n">cfn_md_url</span><span class="p">)</span>
+            <span class="n">cw_url</span> <span class="o">=</span> <span class="n">urlparse</span><span class="o">.</span><span class="n">urlparse</span><span class="p">(</span><span class="n">watch_url</span><span class="p">)</span>
+            <span class="n">is_secure</span> <span class="o">=</span> <span class="n">cfg</span><span class="o">.</span><span class="n">CONF</span><span class="o">.</span><span class="n">instance_connection_is_secure</span>
+            <span class="n">vcerts</span> <span class="o">=</span> <span class="n">cfg</span><span class="o">.</span><span class="n">CONF</span><span class="o">.</span><span class="n">instance_connection_https_validate_certificates</span>
+            <span class="n">boto_cfg</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="se">\n</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">join</span><span class="p">([</span><span class="s2">&quot;[Boto]&quot;</span><span class="p">,</span>
+                                  <span class="s2">&quot;debug = 0&quot;</span><span class="p">,</span>
+                                  <span class="s2">&quot;is_secure = </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="n">is_secure</span><span class="p">,</span>
+                                  <span class="s2">&quot;https_validate_certificates = </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="n">vcerts</span><span class="p">,</span>
+                                  <span class="s2">&quot;cfn_region_name = heat&quot;</span><span class="p">,</span>
+                                  <span class="s2">&quot;cfn_region_endpoint = </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span>
+                                  <span class="n">cfn_url</span><span class="o">.</span><span class="n">hostname</span><span class="p">,</span>
+                                  <span class="s2">&quot;cloudwatch_region_name = heat&quot;</span><span class="p">,</span>
+                                  <span class="s2">&quot;cloudwatch_region_endpoint = </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span>
+                                  <span class="n">cw_url</span><span class="o">.</span><span class="n">hostname</span><span class="p">])</span>
+            <span class="n">attachments</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">boto_cfg</span><span class="p">,</span>
+                                <span class="s1">&#39;cfn-boto-cfg&#39;</span><span class="p">,</span> <span class="s1">&#39;x-cfninitdata&#39;</span><span class="p">))</span>
+
+        <span class="n">subparts</span> <span class="o">=</span> <span class="p">[</span><span class="n">make_subpart</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">)</span> <span class="k">for</span> <span class="n">args</span> <span class="ow">in</span> <span class="n">attachments</span><span class="p">]</span>
+        <span class="n">mime_blob</span> <span class="o">=</span> <span class="n">multipart</span><span class="o">.</span><span class="n">MIMEMultipart</span><span class="p">(</span><span class="n">_subparts</span><span class="o">=</span><span class="n">subparts</span><span class="p">)</span>
+
+        <span class="k">return</span> <span class="n">mime_blob</span><span class="o">.</span><span class="n">as_string</span><span class="p">()</span></div>
+
+<div class="viewcode-block" id="NovaClientPlugin.check_delete_server_complete"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.check_delete_server_complete">[docs]</a>    <span class="k">def</span> <span class="nf">check_delete_server_complete</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">server_id</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Wait for server to disappear from Nova.&quot;&quot;&quot;</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">server</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">fetch_server</span><span class="p">(</span><span class="n">server_id</span><span class="p">)</span>
+        <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">ignore_not_found</span><span class="p">(</span><span class="n">exc</span><span class="p">)</span>
+            <span class="k">return</span> <span class="bp">True</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">server</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">False</span>
+        <span class="n">task_state_in_nova</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">server</span><span class="p">,</span> <span class="s1">&#39;OS-EXT-STS:task_state&#39;</span><span class="p">,</span> <span class="bp">None</span><span class="p">)</span>
+        <span class="c1"># the status of server won&#39;t change until the delete task has done</span>
+        <span class="k">if</span> <span class="n">task_state_in_nova</span> <span class="o">==</span> <span class="s1">&#39;deleting&#39;</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">False</span>
+
+        <span class="n">status</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_status</span><span class="p">(</span><span class="n">server</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">status</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">&quot;DELETED&quot;</span><span class="p">,</span> <span class="s2">&quot;SOFT_DELETED&quot;</span><span class="p">):</span>
+            <span class="k">return</span> <span class="bp">True</span>
+        <span class="k">if</span> <span class="n">status</span> <span class="o">==</span> <span class="s1">&#39;ERROR&#39;</span><span class="p">:</span>
+            <span class="n">fault</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">server</span><span class="p">,</span> <span class="s1">&#39;fault&#39;</span><span class="p">,</span> <span class="p">{})</span>
+            <span class="n">message</span> <span class="o">=</span> <span class="n">fault</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;message&#39;</span><span class="p">,</span> <span class="s1">&#39;Unknown&#39;</span><span class="p">)</span>
+            <span class="n">code</span> <span class="o">=</span> <span class="n">fault</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;code&#39;</span><span class="p">)</span>
+            <span class="n">errmsg</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Server </span><span class="si">%(name)s</span><span class="s2"> delete failed: (</span><span class="si">%(code)s</span><span class="s2">) &quot;</span>
+                       <span class="s2">&quot;</span><span class="si">%(message)s</span><span class="s2">&quot;</span><span class="p">)</span> <span class="o">%</span> <span class="nb">dict</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="n">server</span><span class="o">.</span><span class="n">name</span><span class="p">,</span>
+                                             <span class="n">code</span><span class="o">=</span><span class="n">code</span><span class="p">,</span>
+                                             <span class="n">message</span><span class="o">=</span><span class="n">message</span><span class="p">)</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">ResourceInError</span><span class="p">(</span><span class="n">resource_status</span><span class="o">=</span><span class="n">status</span><span class="p">,</span>
+                                            <span class="n">status_reason</span><span class="o">=</span><span class="n">errmsg</span><span class="p">)</span>
+        <span class="k">return</span> <span class="bp">False</span></div>
+
+<div class="viewcode-block" id="NovaClientPlugin.rename"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.rename">[docs]</a>    <span class="k">def</span> <span class="nf">rename</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">server</span><span class="p">,</span> <span class="n">name</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Update the name for a server.&quot;&quot;&quot;</span>
+        <span class="n">server</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">name</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="NovaClientPlugin.resize"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.resize">[docs]</a>    <span class="k">def</span> <span class="nf">resize</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">server_id</span><span class="p">,</span> <span class="n">flavor_id</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Resize the server.&quot;&quot;&quot;</span>
+        <span class="n">server</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">fetch_server</span><span class="p">(</span><span class="n">server_id</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">server</span><span class="p">:</span>
+            <span class="n">server</span><span class="o">.</span><span class="n">resize</span><span class="p">(</span><span class="n">flavor_id</span><span class="p">)</span>
+            <span class="k">return</span> <span class="bp">True</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">False</span></div>
+
+<div class="viewcode-block" id="NovaClientPlugin.check_resize"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.check_resize">[docs]</a>    <span class="k">def</span> <span class="nf">check_resize</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">server_id</span><span class="p">,</span> <span class="n">flavor</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Verify that a resizing server is properly resized.</span>
+
+<span class="sd">        If that&#39;s the case, confirm the resize, if not raise an error.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">server</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">fetch_server</span><span class="p">(</span><span class="n">server_id</span><span class="p">)</span>
+        <span class="c1"># resize operation is asynchronous so the server resize may not start</span>
+        <span class="c1"># when checking server status (the server may stay ACTIVE instead</span>
+        <span class="c1"># of RESIZE).</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">server</span> <span class="ow">or</span> <span class="n">server</span><span class="o">.</span><span class="n">status</span> <span class="ow">in</span> <span class="p">(</span><span class="s1">&#39;RESIZE&#39;</span><span class="p">,</span> <span class="s1">&#39;ACTIVE&#39;</span><span class="p">):</span>
+            <span class="k">return</span> <span class="bp">False</span>
+        <span class="k">if</span> <span class="n">server</span><span class="o">.</span><span class="n">status</span> <span class="o">==</span> <span class="s1">&#39;VERIFY_RESIZE&#39;</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">True</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">Error</span><span class="p">(</span>
+                <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Resizing to &#39;</span><span class="si">%(flavor)s</span><span class="s2">&#39; failed, status &#39;</span><span class="si">%(status)s</span><span class="s2">&#39;&quot;</span><span class="p">)</span> <span class="o">%</span>
+                <span class="nb">dict</span><span class="p">(</span><span class="n">flavor</span><span class="o">=</span><span class="n">flavor</span><span class="p">,</span> <span class="n">status</span><span class="o">=</span><span class="n">server</span><span class="o">.</span><span class="n">status</span><span class="p">))</span></div>
+
+<div class="viewcode-block" id="NovaClientPlugin.verify_resize"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.verify_resize">[docs]</a>    <span class="k">def</span> <span class="nf">verify_resize</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">server_id</span><span class="p">):</span>
+        <span class="n">server</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">fetch_server</span><span class="p">(</span><span class="n">server_id</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">server</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">False</span>
+        <span class="n">status</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_status</span><span class="p">(</span><span class="n">server</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">status</span> <span class="o">==</span> <span class="s1">&#39;VERIFY_RESIZE&#39;</span><span class="p">:</span>
+            <span class="n">server</span><span class="o">.</span><span class="n">confirm_resize</span><span class="p">()</span>
+            <span class="k">return</span> <span class="bp">True</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">msg</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Could not confirm resize of server </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">)</span> <span class="o">%</span> <span class="n">server_id</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">ResourceUnknownStatus</span><span class="p">(</span>
+                <span class="n">result</span><span class="o">=</span><span class="n">msg</span><span class="p">,</span> <span class="n">resource_status</span><span class="o">=</span><span class="n">status</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="NovaClientPlugin.check_verify_resize"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.check_verify_resize">[docs]</a>    <span class="k">def</span> <span class="nf">check_verify_resize</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">server_id</span><span class="p">):</span>
+        <span class="n">server</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">fetch_server</span><span class="p">(</span><span class="n">server_id</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">server</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">False</span>
+        <span class="n">status</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_status</span><span class="p">(</span><span class="n">server</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">status</span> <span class="o">==</span> <span class="s1">&#39;ACTIVE&#39;</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">True</span>
+        <span class="k">if</span> <span class="n">status</span> <span class="o">==</span> <span class="s1">&#39;VERIFY_RESIZE&#39;</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">False</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">msg</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Confirm resize for server </span><span class="si">%s</span><span class="s2"> failed&quot;</span><span class="p">)</span> <span class="o">%</span> <span class="n">server_id</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">ResourceUnknownStatus</span><span class="p">(</span>
+                <span class="n">result</span><span class="o">=</span><span class="n">msg</span><span class="p">,</span> <span class="n">resource_status</span><span class="o">=</span><span class="n">status</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="NovaClientPlugin.rebuild"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.rebuild">[docs]</a>    <span class="k">def</span> <span class="nf">rebuild</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">server_id</span><span class="p">,</span> <span class="n">image_id</span><span class="p">,</span> <span class="n">password</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+                <span class="n">preserve_ephemeral</span><span class="o">=</span><span class="bp">False</span><span class="p">,</span> <span class="n">meta</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">files</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Rebuild the server and call check_rebuild to verify.&quot;&quot;&quot;</span>
+        <span class="n">server</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">fetch_server</span><span class="p">(</span><span class="n">server_id</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">server</span><span class="p">:</span>
+            <span class="n">server</span><span class="o">.</span><span class="n">rebuild</span><span class="p">(</span><span class="n">image_id</span><span class="p">,</span> <span class="n">password</span><span class="o">=</span><span class="n">password</span><span class="p">,</span>
+                           <span class="n">preserve_ephemeral</span><span class="o">=</span><span class="n">preserve_ephemeral</span><span class="p">,</span>
+                           <span class="n">meta</span><span class="o">=</span><span class="n">meta</span><span class="p">,</span> <span class="n">files</span><span class="o">=</span><span class="n">files</span><span class="p">)</span>
+            <span class="k">return</span> <span class="bp">True</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">False</span></div>
+
+<div class="viewcode-block" id="NovaClientPlugin.check_rebuild"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.check_rebuild">[docs]</a>    <span class="k">def</span> <span class="nf">check_rebuild</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">server_id</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Verify that a rebuilding server is rebuilt.</span>
+
+<span class="sd">        Raise error if it ends up in an ERROR state.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">server</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">fetch_server</span><span class="p">(</span><span class="n">server_id</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">server</span> <span class="ow">is</span> <span class="bp">None</span> <span class="ow">or</span> <span class="n">server</span><span class="o">.</span><span class="n">status</span> <span class="o">==</span> <span class="s1">&#39;REBUILD&#39;</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">False</span>
+        <span class="k">if</span> <span class="n">server</span><span class="o">.</span><span class="n">status</span> <span class="o">==</span> <span class="s1">&#39;ERROR&#39;</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">Error</span><span class="p">(</span>
+                <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Rebuilding server failed, status &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span><span class="p">)</span> <span class="o">%</span> <span class="n">server</span><span class="o">.</span><span class="n">status</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">True</span></div>
+
+<div class="viewcode-block" id="NovaClientPlugin.meta_serialize"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.meta_serialize">[docs]</a>    <span class="k">def</span> <span class="nf">meta_serialize</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">metadata</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Serialize non-string metadata values before sending them to Nova.&quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">metadata</span><span class="p">,</span> <span class="n">collections</span><span class="o">.</span><span class="n">Mapping</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">StackValidationFailed</span><span class="p">(</span><span class="n">message</span><span class="o">=</span><span class="n">_</span><span class="p">(</span>
+                <span class="s2">&quot;nova server metadata needs to be a Map.&quot;</span><span class="p">))</span>
+
+        <span class="k">return</span> <span class="nb">dict</span><span class="p">((</span><span class="n">key</span><span class="p">,</span> <span class="p">(</span><span class="n">value</span> <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">value</span><span class="p">,</span>
+                                               <span class="n">six</span><span class="o">.</span><span class="n">string_types</span><span class="p">)</span>
+                           <span class="k">else</span> <span class="n">jsonutils</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span><span class="n">value</span><span class="p">))</span>
+                     <span class="p">)</span> <span class="k">for</span> <span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span> <span class="ow">in</span> <span class="n">metadata</span><span class="o">.</span><span class="n">items</span><span class="p">())</span></div>
+
+<div class="viewcode-block" id="NovaClientPlugin.meta_update"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.meta_update">[docs]</a>    <span class="k">def</span> <span class="nf">meta_update</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">server</span><span class="p">,</span> <span class="n">metadata</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Delete/Add the metadata in nova as needed.&quot;&quot;&quot;</span>
+        <span class="n">metadata</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">meta_serialize</span><span class="p">(</span><span class="n">metadata</span><span class="p">)</span>
+        <span class="n">current_md</span> <span class="o">=</span> <span class="n">server</span><span class="o">.</span><span class="n">metadata</span>
+        <span class="n">to_del</span> <span class="o">=</span> <span class="nb">sorted</span><span class="p">(</span><span class="nb">set</span><span class="p">(</span><span class="n">current_md</span><span class="p">)</span> <span class="o">-</span> <span class="nb">set</span><span class="p">(</span><span class="n">metadata</span><span class="p">))</span>
+        <span class="n">client</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="p">()</span>
+        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">to_del</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="n">client</span><span class="o">.</span><span class="n">servers</span><span class="o">.</span><span class="n">delete_meta</span><span class="p">(</span><span class="n">server</span><span class="p">,</span> <span class="n">to_del</span><span class="p">)</span>
+
+        <span class="n">client</span><span class="o">.</span><span class="n">servers</span><span class="o">.</span><span class="n">set_meta</span><span class="p">(</span><span class="n">server</span><span class="p">,</span> <span class="n">metadata</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="NovaClientPlugin.server_to_ipaddress"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.server_to_ipaddress">[docs]</a>    <span class="k">def</span> <span class="nf">server_to_ipaddress</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">server</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Return the server&#39;s IP address, fetching it from Nova.&quot;&quot;&quot;</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">server</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="p">()</span><span class="o">.</span><span class="n">servers</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">server</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">NotFound</span> <span class="k">as</span> <span class="n">ex</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s1">&#39;Instance (</span><span class="si">%(server)s</span><span class="s1">) not found: </span><span class="si">%(ex)s</span><span class="s1">&#39;</span><span class="p">),</span>
+                        <span class="p">{</span><span class="s1">&#39;server&#39;</span><span class="p">:</span> <span class="n">server</span><span class="p">,</span> <span class="s1">&#39;ex&#39;</span><span class="p">:</span> <span class="n">ex</span><span class="p">})</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">for</span> <span class="n">n</span> <span class="ow">in</span> <span class="nb">sorted</span><span class="p">(</span><span class="n">server</span><span class="o">.</span><span class="n">networks</span><span class="p">,</span> <span class="n">reverse</span><span class="o">=</span><span class="bp">True</span><span class="p">):</span>
+                <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">server</span><span class="o">.</span><span class="n">networks</span><span class="p">[</span><span class="n">n</span><span class="p">])</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+                    <span class="k">return</span> <span class="n">server</span><span class="o">.</span><span class="n">networks</span><span class="p">[</span><span class="n">n</span><span class="p">][</span><span class="mi">0</span><span class="p">]</span></div>
+
+    <span class="nd">@tenacity.retry</span><span class="p">(</span>
+        <span class="n">stop</span><span class="o">=</span><span class="n">tenacity</span><span class="o">.</span><span class="n">stop_after_attempt</span><span class="p">(</span>
+            <span class="nb">max</span><span class="p">(</span><span class="n">cfg</span><span class="o">.</span><span class="n">CONF</span><span class="o">.</span><span class="n">client_retry_limit</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="p">)),</span>
+        <span class="n">retry</span><span class="o">=</span><span class="n">tenacity</span><span class="o">.</span><span class="n">retry_if_exception</span><span class="p">(</span>
+            <span class="n">client_plugin</span><span class="o">.</span><span class="n">retry_if_connection_err</span><span class="p">),</span>
+        <span class="n">reraise</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+<div class="viewcode-block" id="NovaClientPlugin.absolute_limits"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.absolute_limits">[docs]</a>    <span class="k">def</span> <span class="nf">absolute_limits</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Return the absolute limits as a dictionary.&quot;&quot;&quot;</span>
+        <span class="n">limits</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="p">()</span><span class="o">.</span><span class="n">limits</span><span class="o">.</span><span class="n">get</span><span class="p">()</span>
+        <span class="k">return</span> <span class="nb">dict</span><span class="p">([(</span><span class="n">limit</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="n">limit</span><span class="o">.</span><span class="n">value</span><span class="p">)</span>
+                    <span class="k">for</span> <span class="n">limit</span> <span class="ow">in</span> <span class="nb">list</span><span class="p">(</span><span class="n">limits</span><span class="o">.</span><span class="n">absolute</span><span class="p">)])</span></div>
+
+<div class="viewcode-block" id="NovaClientPlugin.get_console_urls"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.get_console_urls">[docs]</a>    <span class="k">def</span> <span class="nf">get_console_urls</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">server</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Return dict-like structure of server&#39;s console urls.</span>
+
+<span class="sd">        The actual console url is lazily resolved on access.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+
+        <span class="k">class</span> <span class="nc">ConsoleUrls</span><span class="p">(</span><span class="n">collections</span><span class="o">.</span><span class="n">Mapping</span><span class="p">):</span>
+            <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">server</span><span class="p">):</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">console_methods</span> <span class="o">=</span> <span class="p">{</span>
+                    <span class="s1">&#39;novnc&#39;</span><span class="p">:</span> <span class="n">server</span><span class="o">.</span><span class="n">get_vnc_console</span><span class="p">,</span>
+                    <span class="s1">&#39;xvpvnc&#39;</span><span class="p">:</span> <span class="n">server</span><span class="o">.</span><span class="n">get_vnc_console</span><span class="p">,</span>
+                    <span class="s1">&#39;spice-html5&#39;</span><span class="p">:</span> <span class="n">server</span><span class="o">.</span><span class="n">get_spice_console</span><span class="p">,</span>
+                    <span class="s1">&#39;rdp-html5&#39;</span><span class="p">:</span> <span class="n">server</span><span class="o">.</span><span class="n">get_rdp_console</span><span class="p">,</span>
+                    <span class="s1">&#39;serial&#39;</span><span class="p">:</span> <span class="n">server</span><span class="o">.</span><span class="n">get_serial_console</span>
+                <span class="p">}</span>
+
+            <span class="k">def</span> <span class="fm">__getitem__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">key</span><span class="p">):</span>
+                <span class="k">try</span><span class="p">:</span>
+                    <span class="n">url</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">console_methods</span><span class="p">[</span><span class="n">key</span><span class="p">](</span><span class="n">key</span><span class="p">)[</span><span class="s1">&#39;console&#39;</span><span class="p">][</span><span class="s1">&#39;url&#39;</span><span class="p">]</span>
+                <span class="k">except</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">BadRequest</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+                    <span class="n">unavailable</span> <span class="o">=</span> <span class="s1">&#39;Unavailable console type&#39;</span>
+                    <span class="k">if</span> <span class="n">unavailable</span> <span class="ow">in</span> <span class="n">e</span><span class="o">.</span><span class="n">message</span><span class="p">:</span>
+                        <span class="n">url</span> <span class="o">=</span> <span class="n">e</span><span class="o">.</span><span class="n">message</span>
+                    <span class="k">else</span><span class="p">:</span>
+                        <span class="k">raise</span>
+                <span class="k">return</span> <span class="n">url</span>
+
+            <span class="k">def</span> <span class="fm">__len__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+                <span class="k">return</span> <span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">console_methods</span><span class="p">)</span>
+
+            <span class="k">def</span> <span class="fm">__iter__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+                <span class="k">return</span> <span class="p">(</span><span class="n">key</span> <span class="k">for</span> <span class="n">key</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">console_methods</span><span class="p">)</span>
+
+        <span class="k">return</span> <span class="n">ConsoleUrls</span><span class="p">(</span><span class="n">server</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="NovaClientPlugin.get_net_id_by_label"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.get_net_id_by_label">[docs]</a>    <span class="k">def</span> <span class="nf">get_net_id_by_label</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">label</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">net_id</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="p">()</span><span class="o">.</span><span class="n">networks</span><span class="o">.</span><span class="n">find</span><span class="p">(</span><span class="n">label</span><span class="o">=</span><span class="n">label</span><span class="p">)</span><span class="o">.</span><span class="n">id</span>
+        <span class="k">except</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">NotFound</span> <span class="k">as</span> <span class="n">ex</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;Nova network (</span><span class="si">%(net)s</span><span class="s1">) not found: </span><span class="si">%(ex)s</span><span class="s1">&#39;</span><span class="p">,</span>
+                      <span class="p">{</span><span class="s1">&#39;net&#39;</span><span class="p">:</span> <span class="n">label</span><span class="p">,</span> <span class="s1">&#39;ex&#39;</span><span class="p">:</span> <span class="n">ex</span><span class="p">})</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">EntityNotFound</span><span class="p">(</span><span class="n">entity</span><span class="o">=</span><span class="s1">&#39;Nova network&#39;</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="n">label</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">NoUniqueMatch</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;Nova network (</span><span class="si">%(net)s</span><span class="s1">) is not unique matched: </span><span class="si">%(exc)s</span><span class="s1">&#39;</span><span class="p">,</span>
+                      <span class="p">{</span><span class="s1">&#39;net&#39;</span><span class="p">:</span> <span class="n">label</span><span class="p">,</span> <span class="s1">&#39;exc&#39;</span><span class="p">:</span> <span class="n">exc</span><span class="p">})</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">PhysicalResourceNameAmbiguity</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="n">label</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">net_id</span></div>
+
+<div class="viewcode-block" id="NovaClientPlugin.get_nova_network_id"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.get_nova_network_id">[docs]</a>    <span class="k">def</span> <span class="nf">get_nova_network_id</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">net_identifier</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">uuidutils</span><span class="o">.</span><span class="n">is_uuid_like</span><span class="p">(</span><span class="n">net_identifier</span><span class="p">):</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">net_id</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="p">()</span><span class="o">.</span><span class="n">networks</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">net_identifier</span><span class="p">)</span><span class="o">.</span><span class="n">id</span>
+            <span class="k">except</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">NotFound</span><span class="p">:</span>
+                <span class="n">net_id</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_net_id_by_label</span><span class="p">(</span><span class="n">net_identifier</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">net_id</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_net_id_by_label</span><span class="p">(</span><span class="n">net_identifier</span><span class="p">)</span>
+
+        <span class="k">return</span> <span class="n">net_id</span></div>
+
+<div class="viewcode-block" id="NovaClientPlugin.attach_volume"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.attach_volume">[docs]</a>    <span class="k">def</span> <span class="nf">attach_volume</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">server_id</span><span class="p">,</span> <span class="n">volume_id</span><span class="p">,</span> <span class="n">device</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">va</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="p">()</span><span class="o">.</span><span class="n">volumes</span><span class="o">.</span><span class="n">create_server_volume</span><span class="p">(</span>
+                <span class="n">server_id</span><span class="o">=</span><span class="n">server_id</span><span class="p">,</span>
+                <span class="n">volume_id</span><span class="o">=</span><span class="n">volume_id</span><span class="p">,</span>
+                <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+        <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">ex</span><span class="p">:</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_client_exception</span><span class="p">(</span><span class="n">ex</span><span class="p">):</span>
+                <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">Error</span><span class="p">(</span><span class="n">_</span><span class="p">(</span>
+                    <span class="s2">&quot;Failed to attach volume </span><span class="si">%(vol)s</span><span class="s2"> to server </span><span class="si">%(srv)s</span><span class="s2"> &quot;</span>
+                    <span class="s2">&quot;- </span><span class="si">%(err)s</span><span class="s2">&quot;</span><span class="p">)</span> <span class="o">%</span> <span class="p">{</span><span class="s1">&#39;vol&#39;</span><span class="p">:</span> <span class="n">volume_id</span><span class="p">,</span>
+                                    <span class="s1">&#39;srv&#39;</span><span class="p">:</span> <span class="n">server_id</span><span class="p">,</span>
+                                    <span class="s1">&#39;err&#39;</span><span class="p">:</span> <span class="n">ex</span><span class="p">})</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">raise</span>
+        <span class="k">return</span> <span class="n">va</span><span class="o">.</span><span class="n">id</span></div>
+
+<div class="viewcode-block" id="NovaClientPlugin.detach_volume"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.detach_volume">[docs]</a>    <span class="k">def</span> <span class="nf">detach_volume</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">server_id</span><span class="p">,</span> <span class="n">attach_id</span><span class="p">):</span>
+        <span class="c1"># detach the volume using volume_attachment</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="p">()</span><span class="o">.</span><span class="n">volumes</span><span class="o">.</span><span class="n">delete_server_volume</span><span class="p">(</span><span class="n">server_id</span><span class="p">,</span> <span class="n">attach_id</span><span class="p">)</span>
+        <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">ex</span><span class="p">:</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">is_not_found</span><span class="p">(</span><span class="n">ex</span><span class="p">)</span>
+                    <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_bad_request</span><span class="p">(</span><span class="n">ex</span><span class="p">)):</span>
+                <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">Error</span><span class="p">(</span>
+                    <span class="n">_</span><span class="p">(</span><span class="s2">&quot;Could not detach attachment </span><span class="si">%(att)s</span><span class="s2"> &quot;</span>
+                      <span class="s2">&quot;from server </span><span class="si">%(srv)s</span><span class="s2">.&quot;</span><span class="p">)</span> <span class="o">%</span> <span class="p">{</span><span class="s1">&#39;srv&#39;</span><span class="p">:</span> <span class="n">server_id</span><span class="p">,</span>
+                                                 <span class="s1">&#39;att&#39;</span><span class="p">:</span> <span class="n">attach_id</span><span class="p">})</span></div>
+
+<div class="viewcode-block" id="NovaClientPlugin.check_detach_volume_complete"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.check_detach_volume_complete">[docs]</a>    <span class="k">def</span> <span class="nf">check_detach_volume_complete</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">server_id</span><span class="p">,</span> <span class="n">attach_id</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Check that nova server lost attachment.</span>
+
+<span class="sd">        This check is needed for immediate reattachment when updating:</span>
+<span class="sd">        there might be some time between cinder marking volume as &#39;available&#39;</span>
+<span class="sd">        and nova removing attachment from its own objects, so we</span>
+<span class="sd">        check that nova already knows that the volume is detached.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="p">()</span><span class="o">.</span><span class="n">volumes</span><span class="o">.</span><span class="n">get_server_volume</span><span class="p">(</span><span class="n">server_id</span><span class="p">,</span> <span class="n">attach_id</span><span class="p">)</span>
+        <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">ex</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">ignore_not_found</span><span class="p">(</span><span class="n">ex</span><span class="p">)</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">_LI</span><span class="p">(</span><span class="s2">&quot;Volume </span><span class="si">%(vol)s</span><span class="s2"> is detached from server </span><span class="si">%(srv)s</span><span class="s2">&quot;</span><span class="p">),</span>
+                     <span class="p">{</span><span class="s1">&#39;vol&#39;</span><span class="p">:</span> <span class="n">attach_id</span><span class="p">,</span> <span class="s1">&#39;srv&#39;</span><span class="p">:</span> <span class="n">server_id</span><span class="p">})</span>
+            <span class="k">return</span> <span class="bp">True</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Server </span><span class="si">%(srv)s</span><span class="s2"> still has attachment </span><span class="si">%(att)s</span><span class="s2">.&quot;</span> <span class="o">%</span> <span class="p">{</span>
+                <span class="s1">&#39;att&#39;</span><span class="p">:</span> <span class="n">attach_id</span><span class="p">,</span> <span class="s1">&#39;srv&#39;</span><span class="p">:</span> <span class="n">server_id</span><span class="p">})</span>
+            <span class="k">return</span> <span class="bp">False</span></div>
+
+<div class="viewcode-block" id="NovaClientPlugin.interface_detach"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.interface_detach">[docs]</a>    <span class="k">def</span> <span class="nf">interface_detach</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">server_id</span><span class="p">,</span> <span class="n">port_id</span><span class="p">):</span>
+        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">ignore_not_found</span><span class="p">:</span>
+            <span class="n">server</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">fetch_server</span><span class="p">(</span><span class="n">server_id</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">server</span><span class="p">:</span>
+                <span class="n">server</span><span class="o">.</span><span class="n">interface_detach</span><span class="p">(</span><span class="n">port_id</span><span class="p">)</span>
+                <span class="k">return</span> <span class="bp">True</span></div>
+
+<div class="viewcode-block" id="NovaClientPlugin.interface_attach"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.interface_attach">[docs]</a>    <span class="k">def</span> <span class="nf">interface_attach</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">server_id</span><span class="p">,</span> <span class="n">port_id</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">net_id</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">fip</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="n">server</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">fetch_server</span><span class="p">(</span><span class="n">server_id</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">server</span><span class="p">:</span>
+            <span class="n">server</span><span class="o">.</span><span class="n">interface_attach</span><span class="p">(</span><span class="n">port_id</span><span class="p">,</span> <span class="n">net_id</span><span class="p">,</span> <span class="n">fip</span><span class="p">)</span>
+            <span class="k">return</span> <span class="bp">True</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">False</span></div>
+
+    <span class="nd">@tenacity.retry</span><span class="p">(</span>
+        <span class="n">stop</span><span class="o">=</span><span class="n">tenacity</span><span class="o">.</span><span class="n">stop_after_attempt</span><span class="p">(</span>
+            <span class="n">cfg</span><span class="o">.</span><span class="n">CONF</span><span class="o">.</span><span class="n">max_interface_check_attempts</span><span class="p">),</span>
+        <span class="n">wait</span><span class="o">=</span><span class="n">tenacity</span><span class="o">.</span><span class="n">wait_fixed</span><span class="p">(</span><span class="mf">0.5</span><span class="p">),</span>
+        <span class="n">retry</span><span class="o">=</span><span class="n">tenacity</span><span class="o">.</span><span class="n">retry_if_result</span><span class="p">(</span><span class="n">client_plugin</span><span class="o">.</span><span class="n">retry_if_result_is_false</span><span class="p">))</span>
+<div class="viewcode-block" id="NovaClientPlugin.check_interface_detach"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.check_interface_detach">[docs]</a>    <span class="k">def</span> <span class="nf">check_interface_detach</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">server_id</span><span class="p">,</span> <span class="n">port_id</span><span class="p">):</span>
+        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">ignore_not_found</span><span class="p">:</span>
+            <span class="n">server</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">fetch_server</span><span class="p">(</span><span class="n">server_id</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">server</span><span class="p">:</span>
+                <span class="n">interfaces</span> <span class="o">=</span> <span class="n">server</span><span class="o">.</span><span class="n">interface_list</span><span class="p">()</span>
+                <span class="k">for</span> <span class="n">iface</span> <span class="ow">in</span> <span class="n">interfaces</span><span class="p">:</span>
+                    <span class="k">if</span> <span class="n">iface</span><span class="o">.</span><span class="n">port_id</span> <span class="o">==</span> <span class="n">port_id</span><span class="p">:</span>
+                        <span class="k">return</span> <span class="bp">False</span>
+        <span class="k">return</span> <span class="bp">True</span></div>
+
+    <span class="nd">@tenacity.retry</span><span class="p">(</span>
+        <span class="n">stop</span><span class="o">=</span><span class="n">tenacity</span><span class="o">.</span><span class="n">stop_after_attempt</span><span class="p">(</span>
+            <span class="n">cfg</span><span class="o">.</span><span class="n">CONF</span><span class="o">.</span><span class="n">max_interface_check_attempts</span><span class="p">),</span>
+        <span class="n">wait</span><span class="o">=</span><span class="n">tenacity</span><span class="o">.</span><span class="n">wait_fixed</span><span class="p">(</span><span class="mf">0.5</span><span class="p">),</span>
+        <span class="n">retry</span><span class="o">=</span><span class="n">tenacity</span><span class="o">.</span><span class="n">retry_if_result</span><span class="p">(</span><span class="n">client_plugin</span><span class="o">.</span><span class="n">retry_if_result_is_false</span><span class="p">))</span>
+<div class="viewcode-block" id="NovaClientPlugin.check_interface_attach"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.check_interface_attach">[docs]</a>    <span class="k">def</span> <span class="nf">check_interface_attach</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">server_id</span><span class="p">,</span> <span class="n">port_id</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">port_id</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">True</span>
+
+        <span class="n">server</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">fetch_server</span><span class="p">(</span><span class="n">server_id</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">server</span><span class="p">:</span>
+            <span class="n">interfaces</span> <span class="o">=</span> <span class="n">server</span><span class="o">.</span><span class="n">interface_list</span><span class="p">()</span>
+            <span class="k">for</span> <span class="n">iface</span> <span class="ow">in</span> <span class="n">interfaces</span><span class="p">:</span>
+                <span class="k">if</span> <span class="n">iface</span><span class="o">.</span><span class="n">port_id</span> <span class="o">==</span> <span class="n">port_id</span><span class="p">:</span>
+                    <span class="k">return</span> <span class="bp">True</span>
+        <span class="k">return</span> <span class="bp">False</span></div>
+
+    <span class="nd">@os_client.MEMOIZE_EXTENSIONS</span>
+    <span class="k">def</span> <span class="nf">_list_extensions</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">extensions</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">client</span><span class="p">()</span><span class="o">.</span><span class="n">list_extensions</span><span class="o">.</span><span class="n">show_all</span><span class="p">()</span>
+        <span class="k">return</span> <span class="nb">set</span><span class="p">(</span><span class="n">extension</span><span class="o">.</span><span class="n">alias</span> <span class="k">for</span> <span class="n">extension</span> <span class="ow">in</span> <span class="n">extensions</span><span class="p">)</span>
+
+<div class="viewcode-block" id="NovaClientPlugin.has_extension"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaClientPlugin.has_extension">[docs]</a>    <span class="k">def</span> <span class="nf">has_extension</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">alias</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Check if specific extension is present.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="n">alias</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_list_extensions</span><span class="p">()</span></div></div>
+
+
+<div class="viewcode-block" id="NovaBaseConstraint"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NovaBaseConstraint">[docs]</a><span class="k">class</span> <span class="nc">NovaBaseConstraint</span><span class="p">(</span><span class="n">constraints</span><span class="o">.</span><span class="n">BaseCustomConstraint</span><span class="p">):</span>
+
+    <span class="n">resource_client_name</span> <span class="o">=</span> <span class="n">CLIENT_NAME</span></div>
+
+
+<div class="viewcode-block" id="ServerConstraint"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.ServerConstraint">[docs]</a><span class="k">class</span> <span class="nc">ServerConstraint</span><span class="p">(</span><span class="n">NovaBaseConstraint</span><span class="p">):</span>
+
+    <span class="n">resource_getter_name</span> <span class="o">=</span> <span class="s1">&#39;get_server&#39;</span></div>
+
+
+<div class="viewcode-block" id="KeypairConstraint"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.KeypairConstraint">[docs]</a><span class="k">class</span> <span class="nc">KeypairConstraint</span><span class="p">(</span><span class="n">NovaBaseConstraint</span><span class="p">):</span>
+
+    <span class="n">resource_getter_name</span> <span class="o">=</span> <span class="s1">&#39;get_keypair&#39;</span>
+
+<div class="viewcode-block" id="KeypairConstraint.validate_with_client"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.KeypairConstraint.validate_with_client">[docs]</a>    <span class="k">def</span> <span class="nf">validate_with_client</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">client</span><span class="p">,</span> <span class="n">key_name</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">key_name</span><span class="p">:</span>
+            <span class="c1"># Don&#39;t validate empty key, which can happen when you</span>
+            <span class="c1"># use a KeyPair resource</span>
+            <span class="k">return</span> <span class="bp">True</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">KeypairConstraint</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">validate_with_client</span><span class="p">(</span><span class="n">client</span><span class="p">,</span> <span class="n">key_name</span><span class="p">)</span></div></div>
+
+
+<div class="viewcode-block" id="FlavorConstraint"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.FlavorConstraint">[docs]</a><span class="k">class</span> <span class="nc">FlavorConstraint</span><span class="p">(</span><span class="n">NovaBaseConstraint</span><span class="p">):</span>
+
+    <span class="n">expected_exceptions</span> <span class="o">=</span> <span class="p">(</span><span class="n">exceptions</span><span class="o">.</span><span class="n">NotFound</span><span class="p">,)</span>
+
+    <span class="n">resource_getter_name</span> <span class="o">=</span> <span class="s1">&#39;find_flavor_by_name_or_id&#39;</span></div>
+
+
+<div class="viewcode-block" id="NetworkConstraint"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.NetworkConstraint">[docs]</a><span class="k">class</span> <span class="nc">NetworkConstraint</span><span class="p">(</span><span class="n">NovaBaseConstraint</span><span class="p">):</span>
+
+    <span class="n">expected_exceptions</span> <span class="o">=</span> <span class="p">(</span><span class="n">exception</span><span class="o">.</span><span class="n">EntityNotFound</span><span class="p">,</span>
+                           <span class="n">exception</span><span class="o">.</span><span class="n">PhysicalResourceNameAmbiguity</span><span class="p">)</span>
+
+    <span class="n">resource_getter_name</span> <span class="o">=</span> <span class="s1">&#39;get_nova_network_id&#39;</span></div>
+
+
+<div class="viewcode-block" id="HostConstraint"><a class="viewcode-back" href="../../../../../api/heat.engine.clients.os.nova.html#heat.engine.clients.os.nova.HostConstraint">[docs]</a><span class="k">class</span> <span class="nc">HostConstraint</span><span class="p">(</span><span class="n">NovaBaseConstraint</span><span class="p">):</span>
+
+    <span class="n">resource_getter_name</span> <span class="o">=</span> <span class="s1">&#39;get_host&#39;</span></div>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/heat
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../../../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../../../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../../../../index.html">heat 8.0.0.0rc2.dev38 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../../../../index.html" accesskey="U">Module code</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2012,2013 Heat Developers.
+      Last updated on &#39;Tue Feb 14 11:42:51 2017, commit 3ffc97c&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/heat");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

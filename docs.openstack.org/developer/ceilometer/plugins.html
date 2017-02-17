@@ -1,0 +1,297 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Writing Agent Plugins &mdash; Ceilometer 8.0.1.dev11 documentation</title>
+    
+    <link rel="stylesheet" href="_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="_static/toggle.css" type="text/css" />
+    <link rel="stylesheet" href="_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '8.0.1.dev11',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <script type="text/javascript" src="_static/toggle.js"></script>
+    <link rel="top" title="Ceilometer 8.0.1.dev11 documentation" href="index.html" />
+    <link rel="next" title="New measurements" href="new_meters.html" />
+    <link rel="prev" title="Configuration Options" href="configuration.html" /> 
+  </head>
+  <body>
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body">
+            
+  <div class="section" id="writing-agent-plugins">
+<span id="plugins-and-containers"></span><h1>Writing Agent Plugins<a class="headerlink" href="#writing-agent-plugins" title="Permalink to this headline">¶</a></h1>
+<p>This documentation gives you some clues on how to write a new agent or
+plugin for Ceilometer if you wish to instrument a measurement which
+has not yet been covered by an existing plugin.</p>
+<div class="section" id="agents">
+<h2>Agents<a class="headerlink" href="#agents" title="Permalink to this headline">¶</a></h2>
+<p>Polling agent might be run either on central cloud management nodes or on the
+compute nodes (where direct hypervisor polling is quite logical).</p>
+<p>The agent running on each compute node polls for compute resources
+usage. Each meter collected is tagged with the resource ID (such as
+an instance) and the owner, including tenant and user IDs. The meters
+are then reported to the collector via the message bus. More detailed
+information follows.</p>
+<p>The agent running on the cloud central management node polls other types of
+resources from a management server (usually using OpenStack services API to
+collect this data).</p>
+<p>The polling agent is implemented in <tt class="file docutils literal"><span class="pre">ceilometer/agent/manager.py</span></tt>. As
+you will see in the manager, the agent loads all plugins defined in
+the namespace <tt class="docutils literal"><span class="pre">ceilometer.poll.agent</span></tt>, then periodically calls their
+<tt class="xref py py-func docutils literal"><span class="pre">get_samples()</span></tt> method.</p>
+</div>
+<div class="section" id="plugins">
+<h2>Plugins<a class="headerlink" href="#plugins" title="Permalink to this headline">¶</a></h2>
+<p>A polling agent can support multiple plugins to retrieve different
+information and send them to the collector. As stated above, an agent
+will automatically activate all possible plugins if no additional information
+about what to poll was passed. Previously we had separated compute and
+central agents with different namespaces with plugins (pollsters) defined
+within. Currently we keep separated namespaces - <tt class="docutils literal"><span class="pre">ceilometer.poll.compute</span></tt>
+and <tt class="docutils literal"><span class="pre">ceilometer.poll.central</span></tt> for quick separation of what to poll depending
+on where is polling agent running.  This will load, among others, the
+<a class="reference internal" href="api/ceilometer.compute.pollsters.cpu.html#ceilometer.compute.pollsters.cpu.CPUPollster" title="ceilometer.compute.pollsters.cpu.CPUPollster"><tt class="xref py py-class docutils literal"><span class="pre">ceilometer.compute.pollsters.cpu.CPUPollster</span></tt></a>, which is defined in
+the folder <tt class="docutils literal"><span class="pre">ceilometer/compute/pollsters</span></tt>.</p>
+<p>Notifications mechanism uses plugins as well, for instance
+<tt class="xref py py-class docutils literal"><span class="pre">ceilometer.telemetry.notifications.TelemetryApiPost</span></tt> plugin
+which is defined in the <tt class="docutils literal"><span class="pre">ceilometer/telemetry/notifications</span></tt> folder, Though
+in most cases, this is not needed. A meter definition can be directly added
+to <tt class="file docutils literal"><span class="pre">ceilometer/meter/data/meter.yaml</span></tt> to match the event type. For
+more information, see the <a class="reference internal" href="new_meters.html#add-new-meters"><em>New measurements</em></a> page.</p>
+<p>We are using these two existing plugins as examples as the first one provides
+an example of how to interact when you need to retrieve information from an
+external system (pollster) and the second one is an example of how to forward
+an existing event notification on the standard OpenStack queue to ceilometer.</p>
+<div class="section" id="pollster">
+<h3>Pollster<a class="headerlink" href="#pollster" title="Permalink to this headline">¶</a></h3>
+<p>Compute plugins are defined as subclasses of the
+<tt class="xref py py-class docutils literal"><span class="pre">ceilometer.compute.pollsters.BaseComputePollster</span></tt> class as defined in
+the <tt class="file docutils literal"><span class="pre">ceilometer/compute/pollsters/__init__.py</span></tt> file. Pollsters must
+implement one method: <tt class="docutils literal"><span class="pre">get_samples(self,</span> <span class="pre">manager,</span> <span class="pre">cache,</span> <span class="pre">resources)</span></tt>, which
+returns a sequence of <tt class="docutils literal"><span class="pre">Sample</span></tt> objects as defined in the
+<tt class="file docutils literal"><span class="pre">ceilometer/sample.py</span></tt> file.</p>
+<p>In the <tt class="docutils literal"><span class="pre">CPUPollster</span></tt> plugin, the <tt class="docutils literal"><span class="pre">get_samples</span></tt> method is implemented as a
+loop which, for each instances running on the local host, retrieves the
+cpu_time from the hypervisor and sends back two <tt class="docutils literal"><span class="pre">Sample</span></tt> objects.  The first
+one, named <tt class="docutils literal"><span class="pre">cpu</span></tt>, is of type &#8220;cumulative&#8221;, meaning that between two polls,
+its value is not reset while the instance remains active, or in other words
+that the CPU value is always provided as a duration that continuously increases
+since the creation of the instance. The second one, named <tt class="docutils literal"><span class="pre">cpu_util</span></tt>, is of
+type &#8220;gauge&#8221;, meaning that its value is the percentage of cpu utilization.</p>
+<p>Note that the <tt class="docutils literal"><span class="pre">LOG</span></tt> method is only used as a debugging tool and does not
+participate in the actual metering activity.</p>
+<p>There is the way to specify either namespace(s) with pollsters or just
+list of concrete pollsters to use, or even both of these parameters on the
+polling agent start via CLI parameter:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>ceilometer-polling --polling-namespaces central compute
+</pre></div>
+</div>
+<p>This command will basically make polling agent to load all plugins from the
+central and compute namespaces and poll everything it can. If you need to load
+only some of the pollsters, you can use <tt class="docutils literal"><span class="pre">pollster-list</span></tt> option:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>ceilometer-polling --pollster-list image image.size storage.*
+</pre></div>
+</div>
+<p>If both of these options are passed, the polling agent will load only those
+pollsters specified in the pollster list, that can be loaded from the selected
+namespaces.</p>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">Agents coordination cannot be used in case of pollster-list option usage.
+This allows to avoid both samples duplication and their lost.</p>
+</div>
+</div>
+<div class="section" id="notifications">
+<h3>Notifications<a class="headerlink" href="#notifications" title="Permalink to this headline">¶</a></h3>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">This should only be needed for cases where a complex arithmetic or
+non-primitive data types are used. In most cases, adding a meter
+definition to the <tt class="file docutils literal"><span class="pre">ceilometer/meter/data/meter.yaml</span></tt> should
+suffice.</p>
+</div>
+<p>Notifications are defined as subclass of the
+<a class="reference internal" href="api/ceilometer.agent.plugin_base.html#ceilometer.agent.plugin_base.NotificationBase" title="ceilometer.agent.plugin_base.NotificationBase"><tt class="xref py py-class docutils literal"><span class="pre">ceilometer.agent.plugin_base.NotificationBase</span></tt></a> meta class.
+Notifications must implement:</p>
+<blockquote>
+<div><dl class="docutils">
+<dt><tt class="docutils literal"><span class="pre">event_types</span></tt></dt>
+<dd>A sequence of strings defining the event types to be given to the plugin</dd>
+<dt><tt class="docutils literal"><span class="pre">process_notification(self,</span> <span class="pre">message)</span></tt></dt>
+<dd>Receives an event message from the list provided to <tt class="docutils literal"><span class="pre">event_types</span></tt> and
+returns a sequence of <tt class="docutils literal"><span class="pre">Sample</span></tt> objects as defined in the
+<tt class="file docutils literal"><span class="pre">ceilometer/sample.py</span></tt> file.</dd>
+</dl>
+</div></blockquote>
+<p>In the <tt class="docutils literal"><span class="pre">InstanceNotifications</span></tt> plugin, it listens to three events:</p>
+<ul class="simple">
+<li>compute.instance.create.end</li>
+<li>compute.instance.exists</li>
+<li>compute.instance.delete.start</li>
+</ul>
+<p>Using the <tt class="docutils literal"><span class="pre">get_event_type</span></tt> method and subsequently the method
+<tt class="docutils literal"><span class="pre">process_notification</span></tt> will be invoked each time such events are happening which
+generates the appropriate sample objects to be sent to the collector.</p>
+</div>
+<div class="section" id="adding-new-plugins">
+<h3>Adding new plugins<a class="headerlink" href="#adding-new-plugins" title="Permalink to this headline">¶</a></h3>
+<p>Although we have described a list of the meters Ceilometer should
+collect, we cannot predict all of the ways deployers will want to
+measure the resources their customers use. This means that Ceilometer
+needs to be easy to extend and configure so it can be tuned for each
+installation. A plugin system based on <a class="reference external" href="http://setuptools.readthedocs.io/en/latest/setuptools.html#dynamic-discovery-of-services-and-plugins">setuptools entry points</a>
+makes it easy to add new monitors in the agents.  In particular,
+Ceilometer now uses <a class="reference external" href="http://docs.openstack.org/developer/stevedore/">Stevedore</a>, and you should put your entry point
+definitions in the <tt class="file docutils literal"><span class="pre">entry_points.txt</span></tt> file of your Ceilometer egg.</p>
+<p>Installing a plugin automatically activates it the next time the
+ceilometer daemon starts. Rather than running and reporting errors or
+simply consuming cycles for no-ops, plugins may disable themselves at
+runtime based on configuration settings defined by other components (for
+example, the plugin for polling libvirt does not run if it sees that the system
+is configured using some other virtualization tool). Additionally, if no
+valid resources can be discovered the plugin will be disabled.</p>
+</div>
+</div>
+<div class="section" id="tests">
+<h2>Tests<a class="headerlink" href="#tests" title="Permalink to this headline">¶</a></h2>
+<p>Any new plugin or agent contribution will only be accepted into the project if
+provided together with unit tests.  Those are defined for the compute agent
+plugins in the directory <tt class="docutils literal"><span class="pre">tests/compute</span></tt> and for the agent itself in
+<tt class="docutils literal"><span class="pre">test/agent</span></tt>. Unit tests are run in a continuous integration process for
+each commit made to the project, thus ensuring as best as possible that a given
+patch has no side effect to the rest of the project.</p>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Writing Agent Plugins</a><ul>
+<li><a class="reference internal" href="#agents">Agents</a></li>
+<li><a class="reference internal" href="#plugins">Plugins</a><ul>
+<li><a class="reference internal" href="#pollster">Pollster</a></li>
+<li><a class="reference internal" href="#notifications">Notifications</a></li>
+<li><a class="reference internal" href="#adding-new-plugins">Adding new plugins</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#tests">Tests</a></li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="configuration.html"
+                                  title="previous chapter">Configuration Options</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="new_meters.html"
+                                  title="next chapter">New measurements</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/ceilometer
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="_sources/plugins.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="http-routingtable.html" title="HTTP Routing Table"
+             >routing table</a> |</li>
+        <li class="right" >
+          <a href="py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="right" >
+          <a href="new_meters.html" title="New measurements"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="configuration.html" title="Configuration Options"
+             accesskey="P">previous</a> |</li>
+        <li><a href="index.html">Ceilometer 8.0.1.dev11 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer">
+        &copy; Copyright 2012-2015, OpenStack Foundation.
+      Last updated on &#39;Mon Feb 13 17:56:46 2017, commit ec508a1&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.2.3.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/Ceilometer");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

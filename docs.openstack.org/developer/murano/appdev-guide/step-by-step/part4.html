@@ -1,0 +1,462 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Part 4: Refactoring code to use the Application Framework &mdash; Murano</title>
+    
+    <link rel="stylesheet" href="../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../',
+        VERSION:     '3.1.1.dev17',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../_static/doctools.js"></script>
+    <link rel="top" title="Murano" href="../../index.html" />
+    <link rel="up" title="Developing Murano Packages 101" href="step_by_step.html" />
+    <link rel="next" title="Execution plan template" href="../exec_plan.html" />
+    <link rel="prev" title="Part 3: Creating a Plone CMS application package" href="part3.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="part-4-refactoring-code-to-use-the-application-framework">
+<h1>Part 4: Refactoring code to use the Application Framework<a class="headerlink" href="#part-4-refactoring-code-to-use-the-application-framework" title="Permalink to this headline">¶</a></h1>
+<p>Up until this point we wrote the Plone application in a manner that was common
+to all applications that were written before the application framework was
+introduced.</p>
+<p>In this last tutorial step we are going to refactor the Plone code in order
+to take advantage of the framework.</p>
+<p>Application framework was written in order to simplify the application
+development and encapsulate common deployment workflows. This gives things
+primitives for application scaling and high availability without the need to
+develop them over and over again for each application.</p>
+<p>When using the frameworks, an application developer only has to inherit the
+class that best suits him and provide it only with the code that is specific
+to the application, while leaving the rest to the framework.
+This typically includes:</p>
+<ul class="simple">
+<li>instructions on how to provision the software on each node (server)</li>
+<li>instructions on how to configure the provisioned software</li>
+<li>server group onto which the software should be installed. This may be a
+fixed server list, a shared server pool, or a scalable server group that
+creates servers using the given instance template, or one of the several
+other implementations provided by the framework</li>
+</ul>
+<p>The framework is located in a separate library package
+<code class="docutils literal"><span class="pre">io.murano.applications</span></code> that is shipped with Murano. We are going to use
+the <code class="docutils literal"><span class="pre">apps</span></code> namespace prefix to refer to this namespace through the code.</p>
+<div class="section" id="step-1-add-dependency-on-the-app-framework">
+<h2>Step 1: Add dependency on the App Framework<a class="headerlink" href="#step-1-add-dependency-on-the-app-framework" title="Permalink to this headline">¶</a></h2>
+<p>In order to use one Murano Package from another, the former must be explicitly
+specified as a requirement for the latter. This is done by filling the
+<code class="docutils literal"><span class="pre">Require</span></code> section in the package&#8217;s manifest file.</p>
+<p>Open the Plone&#8217;s manifest.yaml file and append the following lines:</p>
+<div class="highlight-yaml"><div class="highlight"><pre><span></span><span class="l l-Scalar l-Scalar-Plain">Require</span><span class="p p-Indicator">:</span>
+  <span class="l l-Scalar l-Scalar-Plain">io.murano.applications</span><span class="p p-Indicator">:</span>
+</pre></div>
+</div>
+<p>Requirements are specified as a mapping from package name to the desired
+version of that package (or version range). The missing value indicates
+the dependency on the latest <code class="docutils literal"><span class="pre">0.*.*</span></code> version of the package which is exactly
+what we need since the current version of the app framework library is 0.</p>
+</div>
+<div class="section" id="step-2-get-rid-of-the-instance">
+<h2>Step 2: Get rid of the instance<a class="headerlink" href="#step-2-get-rid-of-the-instance" title="Permalink to this headline">¶</a></h2>
+<p>Since we are going to have a multi-sever Plone application there won&#8217;t be
+a single instance belonging to the application. Instead, we are going to
+provide it with the server group that abstracts the server management from
+the application.</p>
+<p>So instead of</p>
+<div class="highlight-yaml"><div class="highlight"><pre><span></span><span class="l l-Scalar l-Scalar-Plain">Properties</span><span class="p p-Indicator">:</span>
+  <span class="l l-Scalar l-Scalar-Plain">instance</span><span class="p p-Indicator">:</span>
+    <span class="l l-Scalar l-Scalar-Plain">Contract</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">$.class(res:Instance)</span>
+</pre></div>
+</div>
+<p>we are going to have</p>
+<div class="highlight-yaml"><div class="highlight"><pre><span></span><span class="l l-Scalar l-Scalar-Plain">Properties</span><span class="p p-Indicator">:</span>
+  <span class="l l-Scalar l-Scalar-Plain">servers</span><span class="p p-Indicator">:</span>
+    <span class="l l-Scalar l-Scalar-Plain">Contract</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">$.class(apps:ServerGroup).notNull()</span>
+</pre></div>
+</div>
+</div>
+<div class="section" id="step-3-change-the-base-classes">
+<h2>Step 3: Change the base classes<a class="headerlink" href="#step-3-change-the-base-classes" title="Permalink to this headline">¶</a></h2>
+<p>Another change that we are going to make to the main application class is
+to change its base classes. Regular applications inherit from the
+<code class="docutils literal"><span class="pre">std:Application</span></code> which only has the method <code class="docutils literal"><span class="pre">deploy</span></code> that does all the
+work.</p>
+<p>Application framework provides us with its own implementation of that class and
+method. Instead of one monolithic method that does everything, with the
+framework, the application provides only the code needed to provision and
+configure the software on each server.</p>
+<p>So instead of <code class="docutils literal"><span class="pre">std:Application</span></code> class we are going to inherit two of
+the framework classes:</p>
+<div class="highlight-yaml"><div class="highlight"><pre><span></span><span class="l l-Scalar l-Scalar-Plain">Extends</span><span class="p p-Indicator">:</span>
+  <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">apps:MultiServerApplicationWithScaling</span>
+  <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">apps:OpenStackSecurityConfigurable</span>
+</pre></div>
+</div>
+<p>The first class tells us that we are going to have an application that runs
+on multiple servers. In the following section we are going to split out
+<code class="docutils literal"><span class="pre">deploy</span></code> method into two smaller methods that are going to be invoked by
+the framework to install the software on each of the servers. By inheriting the
+<code class="docutils literal"><span class="pre">apps:MultiServerApplicationWithScaling</span></code>, the application automatically gets
+all the UI buttons to scale it out and in.</p>
+<p>The second class is a mix-in class that tells the framework that we are going
+to provide the OpenStack-specific security group configuration for the
+application.</p>
+</div>
+<div class="section" id="step-4-split-the-deployment-logic">
+<h2>Step 4: Split the deployment logic<a class="headerlink" href="#step-4-split-the-deployment-logic" title="Permalink to this headline">¶</a></h2>
+<p>In this step we are going to split the installation into two phases:
+provisioning and configuration.</p>
+<p>Provisioning is implemented by overriding the <code class="docutils literal"><span class="pre">onInstallServer</span></code> method,
+which is called every time a new server is added to the server group. In this
+method we are going to install the Plone software bits onto the server
+(which is provided as a method parameter).</p>
+<p>Configuration is done through the <code class="docutils literal"><span class="pre">onConfigureServer</span></code>, which is called
+upon the first installation on the server, and every time any of the
+application settings change, and <code class="docutils literal"><span class="pre">onCompleteConfiguration</span></code> which is
+executed on each server after everything was configured so that we can
+perform post-configuration steps like starting application daemons and
+reporting messages to the user.</p>
+<p>Thus we are going to split the <code class="docutils literal"><span class="pre">install-plone.sh</span></code> script into two scripts:
+<code class="docutils literal"><span class="pre">installPlone.sh</span></code> and <code class="docutils literal"><span class="pre">configureServer.sh</span></code> and execute each one in their
+corresponding methods:</p>
+<div class="highlight-yaml"><div class="highlight"><pre><span></span><span class="l l-Scalar l-Scalar-Plain">onInstallServer</span><span class="p p-Indicator">:</span>
+  <span class="l l-Scalar l-Scalar-Plain">Arguments</span><span class="p p-Indicator">:</span>
+    <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">server</span><span class="p p-Indicator">:</span>
+        <span class="l l-Scalar l-Scalar-Plain">Contract</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">$.class(res:Instance).notNull()</span>
+    <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">serverGroup</span><span class="p p-Indicator">:</span>
+        <span class="l l-Scalar l-Scalar-Plain">Contract</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">$.class(apps:ServerGroup).notNull()</span>
+  <span class="l l-Scalar l-Scalar-Plain">Body</span><span class="p p-Indicator">:</span>
+    <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">$file</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">sys:Resources.string(&#39;installPlone.sh&#39;).replace({</span>
+          <span class="l l-Scalar l-Scalar-Plain">&quot;$1&quot; =&gt; $this.deploymentPath,</span>
+          <span class="l l-Scalar l-Scalar-Plain">&quot;$2&quot; =&gt; $this.adminPassword</span>
+        <span class="l l-Scalar l-Scalar-Plain">})</span>
+    <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">conf:Linux.runCommand($server.agent, $file)</span>
+
+<span class="l l-Scalar l-Scalar-Plain">onConfigureServer</span><span class="p p-Indicator">:</span>
+  <span class="l l-Scalar l-Scalar-Plain">Arguments</span><span class="p p-Indicator">:</span>
+    <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">server</span><span class="p p-Indicator">:</span>
+        <span class="l l-Scalar l-Scalar-Plain">Contract</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">$.class(res:Instance).notNull()</span>
+    <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">serverGroup</span><span class="p p-Indicator">:</span>
+        <span class="l l-Scalar l-Scalar-Plain">Contract</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">$.class(apps:ServerGroup).notNull()</span>
+  <span class="l l-Scalar l-Scalar-Plain">Body</span><span class="p p-Indicator">:</span>
+    <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">$primaryServer</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">$serverGroup.getServers().first()</span>
+    <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">If</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">$server = $primaryServer</span>
+      <span class="l l-Scalar l-Scalar-Plain">Then</span><span class="p p-Indicator">:</span>
+        <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">$file</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">sys:Resources.string(&#39;configureServer.sh&#39;).replace({</span>
+              <span class="l l-Scalar l-Scalar-Plain">&quot;$1&quot; =&gt; $this.deploymentPath,</span>
+              <span class="l l-Scalar l-Scalar-Plain">&quot;$2&quot; =&gt; $primaryServer.ipAddresses[0]</span>
+            <span class="l l-Scalar l-Scalar-Plain">})</span>
+      <span class="l l-Scalar l-Scalar-Plain">Else</span><span class="p p-Indicator">:</span>
+        <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">$file</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">sys:Resources.string(&#39;configureClient.sh&#39;).replace({</span>
+            <span class="l l-Scalar l-Scalar-Plain">&quot;$1&quot; =&gt; $this.deploymentPath,</span>
+            <span class="l l-Scalar l-Scalar-Plain">&quot;$2&quot; =&gt; $this.servers.primaryServer.ipAddresses[0],</span>
+            <span class="l l-Scalar l-Scalar-Plain">&quot;$3&quot; =&gt; $this.listeningPort})</span>
+    <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">conf:Linux.runCommand($server.agent, $file)</span>
+
+
+  <span class="l l-Scalar l-Scalar-Plain">onCompleteConfiguration</span><span class="p p-Indicator">:</span>
+    <span class="l l-Scalar l-Scalar-Plain">Arguments</span><span class="p p-Indicator">:</span>
+      <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">servers</span><span class="p p-Indicator">:</span>
+          <span class="l l-Scalar l-Scalar-Plain">Contract</span><span class="p p-Indicator">:</span>
+            <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">$.class(res:Instance).notNull()</span>
+      <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">serverGroup</span><span class="p p-Indicator">:</span>
+          <span class="l l-Scalar l-Scalar-Plain">Contract</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">$.class(apps:ServerGroup).notNull()</span>
+      <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">failedServers</span><span class="p p-Indicator">:</span>
+          <span class="l l-Scalar l-Scalar-Plain">Contract</span><span class="p p-Indicator">:</span>
+            <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">$.class(res:Instance).notNull()</span>
+    <span class="l l-Scalar l-Scalar-Plain">Body</span><span class="p p-Indicator">:</span>
+      <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">$startCommand</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">format(&#39;{0}/zeocluster/bin/plonectl start&#39;, $this.deploymentPath)</span>
+      <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">$primaryServer</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">$serverGroup.getServers().first()</span>
+      <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">If</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">$primaryServer in $servers</span>
+        <span class="l l-Scalar l-Scalar-Plain">Then</span><span class="p p-Indicator">:</span>
+          <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">$this.report(&#39;Starting DB node&#39;)</span>
+          <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">conf:Linux.runCommand($primaryServer.agent, $startCommand)</span>
+          <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">conf:Linux.runCommand($primaryServer.agent, &#39;sleep 10&#39;)</span>
+
+      <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">$otherServers</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">$servers.where($ != $primaryServer)</span>
+      <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">If</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">$otherServers.any()</span>
+        <span class="l l-Scalar l-Scalar-Plain">Then</span><span class="p p-Indicator">:</span>
+          <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">$this.report(&#39;Starting Client nodes&#39;)</span>
+          <span class="c1"># run command on all other nodes in parallel with pselect</span>
+          <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">$otherServers.pselect(conf:Linux.runCommand($.agent, $startCommand))</span>
+
+      <span class="c1"># build an address string with IPs of all our servers</span>
+      <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">$addresses</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">$serverGroup.getServers().</span>
+          <span class="l l-Scalar l-Scalar-Plain">select(</span>
+            <span class="l l-Scalar l-Scalar-Plain">switch($.assignFloatingIp =&gt; $.floatingIpAddress,</span>
+                   <span class="l l-Scalar l-Scalar-Plain">true =&gt; $.ipAddresses[0])</span>
+            <span class="l l-Scalar l-Scalar-Plain">+ &#39;:&#39; + str($this.listeningPort)</span>
+          <span class="l l-Scalar l-Scalar-Plain">).join(&#39;, &#39;)</span>
+      <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">$this.report(&#39;Plone listeners are running at &#39; + str($addresses))</span>
+</pre></div>
+</div>
+<p>During configuration phase we distinguish the first server in the server group
+from the rest of the servers. The first server is going to be the primary
+node and treated differently from the others.</p>
+</div>
+<div class="section" id="step-5-configuring-openstack-security-group">
+<h2>Step 5: Configuring OpenStack security group<a class="headerlink" href="#step-5-configuring-openstack-security-group" title="Permalink to this headline">¶</a></h2>
+<p>The last change to the main class is to set up the security group rules.
+We are going to do this by overriding the <code class="docutils literal"><span class="pre">getSecurityRules</span></code> method
+that we inherited from the <code class="docutils literal"><span class="pre">apps:OpenStackSecurityConfigurable</span></code> class:</p>
+<div class="highlight-yaml"><div class="highlight"><pre><span></span><span class="l l-Scalar l-Scalar-Plain">getSecurityRules</span><span class="p p-Indicator">:</span>
+  <span class="l l-Scalar l-Scalar-Plain">Body</span><span class="p p-Indicator">:</span>
+    <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">Return</span><span class="p p-Indicator">:</span>
+        <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">FromPort</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">$this.listeningPort</span>
+          <span class="l l-Scalar l-Scalar-Plain">ToPort</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">$this.listeningPort</span>
+          <span class="l l-Scalar l-Scalar-Plain">IpProtocol</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">tcp</span>
+          <span class="l l-Scalar l-Scalar-Plain">External</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">true</span>
+        <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">FromPort</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">8100</span>
+          <span class="l l-Scalar l-Scalar-Plain">ToPort</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">8100</span>
+          <span class="l l-Scalar l-Scalar-Plain">IpProtocol</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">tcp</span>
+          <span class="l l-Scalar l-Scalar-Plain">External</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">false</span>
+</pre></div>
+</div>
+<p>The code is very similar to that of the old <code class="docutils literal"><span class="pre">deploy</span></code> method with the only
+difference being that it returns the rules rather than sets them on its own.</p>
+</div>
+<div class="section" id="step-6-provide-the-server-group-instance">
+<h2>Step 6: Provide the server group instance<a class="headerlink" href="#step-6-provide-the-server-group-instance" title="Permalink to this headline">¶</a></h2>
+<p>Do you remember, that previously we replaced the <code class="docutils literal"><span class="pre">instance</span></code> property with
+<code class="docutils literal"><span class="pre">servers</span></code> of type <code class="docutils literal"><span class="pre">apps:ServerGroup</span></code>? Since the object is coming from the
+UI definition, we must change the latter in order to provide
+the class with the <code class="docutils literal"><span class="pre">apps:ServerReplicationGroup</span></code> instance rather than
+<code class="docutils literal"><span class="pre">resources:Instance</span></code>.</p>
+<p>To do this we are going to replace the <code class="docutils literal"><span class="pre">instance</span></code> property in the
+Application template with the following snippet:</p>
+<div class="highlight-yaml"><div class="highlight"><pre><span></span><span class="l l-Scalar l-Scalar-Plain">servers</span><span class="p p-Indicator">:</span>
+  <span class="l l-Scalar l-Scalar-Plain">?</span><span class="p p-Indicator">:</span>
+    <span class="l l-Scalar l-Scalar-Plain">type</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">io.murano.applications.ServerReplicationGroup</span>
+  <span class="l l-Scalar l-Scalar-Plain">numItems</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">$.ploneConfiguration.numNodes</span>
+  <span class="l l-Scalar l-Scalar-Plain">provider</span><span class="p p-Indicator">:</span>
+    <span class="l l-Scalar l-Scalar-Plain">?</span><span class="p p-Indicator">:</span>
+      <span class="l l-Scalar l-Scalar-Plain">type</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">io.murano.applications.TemplateServerProvider</span>
+    <span class="l l-Scalar l-Scalar-Plain">template</span><span class="p p-Indicator">:</span>
+      <span class="l l-Scalar l-Scalar-Plain">?</span><span class="p p-Indicator">:</span>
+        <span class="l l-Scalar l-Scalar-Plain">type</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">io.murano.resources.LinuxMuranoInstance</span>
+      <span class="l l-Scalar l-Scalar-Plain">flavor</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">$.instanceConfiguration.flavor</span>
+      <span class="l l-Scalar l-Scalar-Plain">image</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">$.instanceConfiguration.osImage</span>
+      <span class="l l-Scalar l-Scalar-Plain">assignFloatingIp</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">$.instanceConfiguration.assignFloatingIP</span>
+    <span class="l l-Scalar l-Scalar-Plain">serverNamePattern</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">$.instanceConfiguration.unitNamingPattern</span>
+</pre></div>
+</div>
+<p>If you take a closer look at the code above you will find out that the
+new declaration is very similar to the old one. But now instead of providing
+the <code class="docutils literal"><span class="pre">Instance</span></code> property values directly, we are providing them as a template
+for the <code class="docutils literal"><span class="pre">TemplateServerProvider</span></code> server provider. <code class="docutils literal"><span class="pre">ServerReplicationGroup</span></code>
+is going to use the provider each time it requires another server. In turn,
+the provider is going to use the familiar template for the new instances.</p>
+<p>Besides the instance template we also specify the initial number of Plone
+nodes using the <code class="docutils literal"><span class="pre">numItems</span></code> property and the name pattern for the servers.
+Thus we must also add it to the list of our controls:</p>
+<div class="highlight-yaml"><div class="highlight"><pre><span></span><span class="l l-Scalar l-Scalar-Plain">Forms</span><span class="p p-Indicator">:</span>
+  <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">instanceConfiguration</span><span class="p p-Indicator">:</span>
+      <span class="l l-Scalar l-Scalar-Plain">fields</span><span class="p p-Indicator">:</span>
+        <span class="l l-Scalar l-Scalar-Plain">...</span>
+        <span class="l l-Scalar l-Scalar-Plain">- name</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">unitNamingPattern</span>
+          <span class="l l-Scalar l-Scalar-Plain">type</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">string</span>
+          <span class="l l-Scalar l-Scalar-Plain">label</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">Instance Naming Pattern</span>
+          <span class="l l-Scalar l-Scalar-Plain">required</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">false</span>
+          <span class="l l-Scalar l-Scalar-Plain">maxLength</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">64</span>
+          <span class="l l-Scalar l-Scalar-Plain">initial</span><span class="p p-Indicator">:</span> <span class="s">&#39;plone-{0}&#39;</span>
+          <span class="l l-Scalar l-Scalar-Plain">description</span><span class="p p-Indicator">:</span> <span class="p p-Indicator">&gt;-</span>
+            <span class="no">Specify a string, that will be used in instance hostname.</span>
+            <span class="no">Just A-Z, a-z, 0-9, dash and underline are allowed.</span>
+
+  <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">ploneConfiguration</span><span class="p p-Indicator">:</span>
+      <span class="l l-Scalar l-Scalar-Plain">fields</span><span class="p p-Indicator">:</span>
+        <span class="l l-Scalar l-Scalar-Plain">...</span>
+        <span class="l l-Scalar l-Scalar-Plain">- name</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">numNodes</span>
+          <span class="l l-Scalar l-Scalar-Plain">type</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">integer</span>
+          <span class="l l-Scalar l-Scalar-Plain">label</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">Initial number of Client Nodes</span>
+          <span class="l l-Scalar l-Scalar-Plain">initial</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">1</span>
+          <span class="l l-Scalar l-Scalar-Plain">minValue</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">1</span>
+          <span class="l l-Scalar l-Scalar-Plain">required</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">true</span>
+          <span class="l l-Scalar l-Scalar-Plain">description</span><span class="p p-Indicator">:</span> <span class="p p-Indicator">&gt;-</span>
+            <span class="no">Select the initial number of Plone Client Nodes</span>
+</pre></div>
+</div>
+</div>
+<div class="section" id="step-6-using-server-group-composition">
+<h2>Step 6: Using server group composition<a class="headerlink" href="#step-6-using-server-group-composition" title="Permalink to this headline">¶</a></h2>
+<p>By this step we should already have a working Plone application. But let&#8217;s
+go one step further and enhance our sample application.</p>
+<p>Since we are running the database on the first server group server only,
+we might want it to have different properties. For example we might want
+to give it a bigger flavor or just a special name. This is a perfect
+opportunity for us to demonstrate how to construct complex server groups.
+All we need to do is to just use another implementation of
+<code class="docutils literal"><span class="pre">apps:ServerGroup</span></code>. Instead of <code class="docutils literal"><span class="pre">apps:ServerReplicationGroup</span></code> we are going
+to use the <code class="docutils literal"><span class="pre">apps:CompositeServerGroup</span></code> class, which allows us to compose
+several server groups together. One of them is going to be a single-server
+server group consisting of our primary server, and the second is going to be
+the scalable server group that we used to create in the previous step.</p>
+<p>So again, we change the <code class="docutils literal"><span class="pre">Application</span></code> section of our UI definition file
+with even a more advanced <code class="docutils literal"><span class="pre">servers</span></code> property definition:</p>
+<div class="highlight-yaml"><div class="highlight"><pre><span></span><span class="l l-Scalar l-Scalar-Plain">servers</span><span class="p p-Indicator">:</span>
+  <span class="l l-Scalar l-Scalar-Plain">?</span><span class="p p-Indicator">:</span>
+    <span class="l l-Scalar l-Scalar-Plain">type</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">io.murano.applications.CompositeServerGroup</span>
+  <span class="l l-Scalar l-Scalar-Plain">serverGroups</span><span class="p p-Indicator">:</span>
+    <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">?</span><span class="p p-Indicator">:</span>
+        <span class="l l-Scalar l-Scalar-Plain">type</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">io.murano.applications.SingleServerGroup</span>
+      <span class="l l-Scalar l-Scalar-Plain">server</span><span class="p p-Indicator">:</span>
+        <span class="l l-Scalar l-Scalar-Plain">?</span><span class="p p-Indicator">:</span>
+          <span class="l l-Scalar l-Scalar-Plain">type</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">io.murano.resources.LinuxMuranoInstance</span>
+        <span class="l l-Scalar l-Scalar-Plain">name</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">format($.instanceConfiguration.unitNamingPattern, &#39;db&#39;)</span>
+        <span class="l l-Scalar l-Scalar-Plain">image</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">$.instanceConfiguration.image</span>
+        <span class="l l-Scalar l-Scalar-Plain">flavor</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">$.instanceConfiguration.flavor</span>
+        <span class="l l-Scalar l-Scalar-Plain">assignFloatingIp</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">$.instanceConfiguration.assignFloatingIp</span>
+    <span class="p p-Indicator">-</span> <span class="l l-Scalar l-Scalar-Plain">?</span><span class="p p-Indicator">:</span>
+        <span class="l l-Scalar l-Scalar-Plain">type</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">io.murano.applications.ServerReplicationGroup</span>
+      <span class="l l-Scalar l-Scalar-Plain">numItems</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">$.ploneConfiguration.numNodes</span>
+      <span class="l l-Scalar l-Scalar-Plain">provider</span><span class="p p-Indicator">:</span>
+        <span class="l l-Scalar l-Scalar-Plain">?</span><span class="p p-Indicator">:</span>
+          <span class="l l-Scalar l-Scalar-Plain">type</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">io.murano.applications.TemplateServerProvider</span>
+        <span class="l l-Scalar l-Scalar-Plain">template</span><span class="p p-Indicator">:</span>
+          <span class="l l-Scalar l-Scalar-Plain">?</span><span class="p p-Indicator">:</span>
+            <span class="l l-Scalar l-Scalar-Plain">type</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">io.murano.resources.LinuxMuranoInstance</span>
+          <span class="l l-Scalar l-Scalar-Plain">flavor</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">$.instanceConfiguration.flavor</span>
+          <span class="l l-Scalar l-Scalar-Plain">image</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">$.instanceConfiguration.osImage</span>
+          <span class="l l-Scalar l-Scalar-Plain">assignFloatingIp</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">$.instanceConfiguration.assignFloatingIP</span>
+        <span class="l l-Scalar l-Scalar-Plain">serverNamePattern</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">$.instanceConfiguration.unitNamingPattern</span>
+</pre></div>
+</div>
+<p>Here the instance definition for the <code class="docutils literal"><span class="pre">SingleServerGroup</span></code> (our primary
+server) differs from the servers in the <code class="docutils literal"><span class="pre">ServerReplicationGroup</span></code> by its name
+only. However the same technique might be used to customize other properties
+as well as to create even more sophisticated server group topologies. For
+example, we could implement region bursting by composing several scalable
+server groups that allocate servers in different regions. And all of that
+without making any changes to the application code itself!</p>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="../../index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Part 4: Refactoring code to use the Application Framework</a><ul>
+<li><a class="reference internal" href="#step-1-add-dependency-on-the-app-framework">Step 1: Add dependency on the App Framework</a></li>
+<li><a class="reference internal" href="#step-2-get-rid-of-the-instance">Step 2: Get rid of the instance</a></li>
+<li><a class="reference internal" href="#step-3-change-the-base-classes">Step 3: Change the base classes</a></li>
+<li><a class="reference internal" href="#step-4-split-the-deployment-logic">Step 4: Split the deployment logic</a></li>
+<li><a class="reference internal" href="#step-5-configuring-openstack-security-group">Step 5: Configuring OpenStack security group</a></li>
+<li><a class="reference internal" href="#step-6-provide-the-server-group-instance">Step 6: Provide the server group instance</a></li>
+<li><a class="reference internal" href="#step-6-using-server-group-composition">Step 6: Using server group composition</a></li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="part3.html"
+                                  title="previous chapter">Part 3: Creating a Plone CMS application package</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="../exec_plan.html"
+                                  title="next chapter">Execution plan template</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/murano
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="../../_sources/appdev-guide/step-by-step/part4.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../exec_plan.html" title="Execution plan template"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="part3.html" title="Part 3: Creating a Plone CMS application package"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../index.html">Murano</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../developer_index.html" >Application Developer Guide</a> &raquo;</li>
+          <li class="nav-item nav-item-2"><a href="step_by_step.html" accesskey="U">Developing Murano Packages 101</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright .
+      Last updated on &#39;Fri Feb 10 03:18:12 2017, commit fbee404&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/Murano");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

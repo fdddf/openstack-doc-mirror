@@ -1,0 +1,219 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>ODL Drivers Architecture &mdash; networking-odl 3.1.1.dev185 documentation</title>
+    
+    <link rel="stylesheet" href="../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../',
+        VERSION:     '3.1.1.dev185',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../_static/jquery.js"></script>
+    <script type="text/javascript" src="../_static/underscore.js"></script>
+    <script type="text/javascript" src="../_static/doctools.js"></script>
+    <link rel="top" title="networking-odl 3.1.1.dev185 documentation" href="../index.html" />
+    <link rel="up" title="Developer Guide" href="index.html" />
+    <link rel="next" title="Host Configuration" href="hostconfig.html" />
+    <link rel="prev" title="Developer Guide" href="index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="odl-drivers-architecture">
+<h1>ODL Drivers Architecture<a class="headerlink" href="#odl-drivers-architecture" title="Permalink to this headline">¶</a></h1>
+<p>This document covers architectural concepts of the ODL drivers. Although
+&#8216;driver&#8217; is an ML2 term, it&#8217;s used widely in ODL to refer to any
+implementation of APIs. Any mention of ML2 in this document is solely for
+reference purposes.</p>
+<div class="section" id="v1-driver-overview">
+<h2>V1 Driver Overview<a class="headerlink" href="#v1-driver-overview" title="Permalink to this headline">¶</a></h2>
+<p>The first driver version was a naive implementation which synchronously
+mirrored all calls to the ODL controller. For example, a create network request
+would first get written to the DB by Neutron&#8217;s ML2 plugin, and then the ODL
+driver would send the request to POST the network to the ODL controller.</p>
+<p>Although this implementation is simple, it has a few problems:</p>
+<ul class="simple">
+<li>ODL is not really synchronous, so if the REST call succeeds it doesn&#8217;t mean
+the action really happened on ODL.</li>
+<li>The &#8220;synchronous&#8221; call can be a bottleneck under load.</li>
+<li>Upon failure the V1 driver would try to &#8220;full sync&#8221; the entire Neutron DB
+over on the next call, so the next call could take a very long time.</li>
+<li>It doesn&#8217;t really handle race conditions:<ul>
+<li>For example, create subnet and then create port could be sent in parallel
+by the driver in an HA Neutron environment, causing the port creation to
+fail.</li>
+<li>Full-sync could possibly recreate deleted resources if the deletion happens
+in parallel.</li>
+</ul>
+</li>
+</ul>
+</div>
+<div class="section" id="v2-driver-design">
+<span id="v2-design"></span><h2>V2 Driver Design<a class="headerlink" href="#v2-driver-design" title="Permalink to this headline">¶</a></h2>
+<p>The V2 driver set upon to tackle problems encountered in the V1 driver while
+maintaining feature parity.
+The major design concept of the V2 driver is <em>journaling</em> - instead of passing
+the calls directly to the ODL controller, they get registered
+in the journal table which keeps a sort of queue of the various operations that
+occurred on Neutron and should be mirrored to the controller.</p>
+<p>The journal is processed mainly by a journaling thread which runs periodically
+and checks if the journal table has any entries in need of processing.
+Additionally the thread is triggered in the postcommit hook of the operation
+(where applicable).</p>
+<p>If we take the example of create network again, after it gets stored in the
+Neutron DB by the ML2 plugin, the ODL driver stores a &#8220;journal entry&#8221;
+representing that operation and triggers the journalling thread to take care of
+the entry.</p>
+<p>The journal entry is recorded in the pre-commit phase (whenever applicable) so
+that in case of a commit failure the journal entry gets aborted along with the
+original operation, and there&#8217;s nothing extra needed.</p>
+</div>
+<div class="section" id="journal-entry-lifecycle">
+<h2>Journal Entry Lifecycle<a class="headerlink" href="#journal-entry-lifecycle" title="Permalink to this headline">¶</a></h2>
+<p>The first state in which a journal entry is created is the &#8216;pending&#8217; state. In
+this state, the entry is awaiting a thread to pick it up and process it.
+Multiple threads can try to grab the same journal entry, but only one will
+succeed since the &#8220;selection&#8221; is done inside a &#8216;select for update&#8217; clause.
+Special care is taken for GaleraDB since it reports a deadlock if more than
+one thread selects the same row simultaneously.</p>
+<p>Once an entry has been selected it will be put into the &#8216;processing&#8217; state
+which acts as a lock. This is done in the same transaction so that in case
+multiple threads try to &#8220;lock&#8221; the same entry only one of them will succeed.
+When the winning thread succeeds it will continue with processing the entry.</p>
+<p>The first thing the thread does is check for dependencies - if the entry
+depends on another one to complete. If a dependency is found, the entry is put
+back into the queue and the thread moves on to the next entry.</p>
+<p>When there are no dependencies for the entry, the thread analyzes the operation
+that occurred and performs the appropriate call to the ODL controller. The call
+is made to the correct resource or collection and the type of call (PUT, POST,
+DELETE) is determined by the operation type. At this point if the call was
+successful (i.e. got a 200 class HTTP code) the entry is marked &#8216;completed&#8217;.</p>
+<p>In case of a failure the thread determines if this is an expected failure (e.g.
+network connectivity issue) or an unexpected failure. For unexpected failures
+a counter is raised, so that a given entry won&#8217;t be retried more than a given
+amount of times. Expected failures don&#8217;t change the counter. If the counter
+exceeds the configured amount of retries, the entry is marked as &#8216;failed&#8217;.
+Otherwise, the entry is marked back as &#8216;pending&#8217; so that it can later be
+retried.</p>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="../index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">ODL Drivers Architecture</a><ul>
+<li><a class="reference internal" href="#v1-driver-overview">V1 Driver Overview</a></li>
+<li><a class="reference internal" href="#v2-driver-design">V2 Driver Design</a></li>
+<li><a class="reference internal" href="#journal-entry-lifecycle">Journal Entry Lifecycle</a></li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="index.html"
+                                  title="previous chapter">Developer Guide</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="hostconfig.html"
+                                  title="next chapter">Host Configuration</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/networking-odl
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="../_sources/devref/drivers_architecture.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="hostconfig.html" title="Host Configuration"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="index.html" title="Developer Guide"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../index.html">networking-odl 3.1.1.dev185 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="index.html" accesskey="U">Developer Guide</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2013, OpenStack Foundation.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/networking-odl");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

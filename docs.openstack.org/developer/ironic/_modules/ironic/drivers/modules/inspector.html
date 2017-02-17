@@ -1,0 +1,315 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>ironic.drivers.modules.inspector &mdash; Ironic 7.0.1.dev7 documentation</title>
+    
+    <link rel="stylesheet" href="../../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/toggle.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../../',
+        VERSION:     '7.0.1.dev7',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../../_static/doctools.js"></script>
+    <script type="text/javascript" src="../../../../_static/toggle.js"></script>
+    <link rel="top" title="Ironic 7.0.1.dev7 documentation" href="../../../../index.html" />
+    <link rel="up" title="Module code" href="../../../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for ironic.drivers.modules.inspector</h1><div class="highlight"><pre>
+<span></span><span class="c1"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may</span>
+<span class="c1"># not use this file except in compliance with the License. You may obtain</span>
+<span class="c1"># a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#      http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1"># Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="c1"># WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="c1"># License for the specific language governing permissions and limitations</span>
+<span class="c1"># under the License.</span>
+
+<span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">Modules required to work with ironic_inspector:</span>
+<span class="sd">    https://pypi.python.org/pypi/ironic-inspector</span>
+<span class="sd">&quot;&quot;&quot;</span>
+
+<span class="kn">import</span> <span class="nn">eventlet</span>
+<span class="kn">from</span> <span class="nn">futurist</span> <span class="kn">import</span> <span class="n">periodics</span>
+<span class="kn">from</span> <span class="nn">oslo_log</span> <span class="kn">import</span> <span class="n">log</span> <span class="k">as</span> <span class="n">logging</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">importutils</span>
+
+<span class="kn">from</span> <span class="nn">ironic.common</span> <span class="kn">import</span> <span class="n">exception</span>
+<span class="kn">from</span> <span class="nn">ironic.common.i18n</span> <span class="kn">import</span> <span class="n">_</span><span class="p">,</span> <span class="n">_LE</span><span class="p">,</span> <span class="n">_LI</span>
+<span class="kn">from</span> <span class="nn">ironic.common</span> <span class="kn">import</span> <span class="n">keystone</span>
+<span class="kn">from</span> <span class="nn">ironic.common</span> <span class="kn">import</span> <span class="n">states</span>
+<span class="kn">from</span> <span class="nn">ironic.conductor</span> <span class="kn">import</span> <span class="n">task_manager</span>
+<span class="kn">from</span> <span class="nn">ironic.conf</span> <span class="kn">import</span> <span class="n">CONF</span>
+<span class="kn">from</span> <span class="nn">ironic.drivers</span> <span class="kn">import</span> <span class="n">base</span>
+
+
+<span class="n">LOG</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+<span class="n">client</span> <span class="o">=</span> <span class="n">importutils</span><span class="o">.</span><span class="n">try_import</span><span class="p">(</span><span class="s1">&#39;ironic_inspector_client&#39;</span><span class="p">)</span>
+
+
+<span class="n">INSPECTOR_API_VERSION</span> <span class="o">=</span> <span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span>
+
+<span class="n">_INSPECTOR_SESSION</span> <span class="o">=</span> <span class="bp">None</span>
+
+
+<span class="k">def</span> <span class="nf">_get_inspector_session</span><span class="p">():</span>
+    <span class="k">if</span> <span class="n">CONF</span><span class="o">.</span><span class="n">auth_strategy</span> <span class="o">!=</span> <span class="s1">&#39;keystone&#39;</span><span class="p">:</span>
+        <span class="k">return</span>
+
+    <span class="k">global</span> <span class="n">_INSPECTOR_SESSION</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">_INSPECTOR_SESSION</span><span class="p">:</span>
+        <span class="n">_INSPECTOR_SESSION</span> <span class="o">=</span> <span class="n">keystone</span><span class="o">.</span><span class="n">get_session</span><span class="p">(</span><span class="s1">&#39;inspector&#39;</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">_INSPECTOR_SESSION</span>
+
+
+<span class="k">def</span> <span class="nf">_get_client</span><span class="p">():</span>
+    <span class="sd">&quot;&quot;&quot;Helper to get inspector client instance.&quot;&quot;&quot;</span>
+    <span class="k">return</span> <span class="n">client</span><span class="o">.</span><span class="n">ClientV1</span><span class="p">(</span><span class="n">api_version</span><span class="o">=</span><span class="n">INSPECTOR_API_VERSION</span><span class="p">,</span>
+                           <span class="n">inspector_url</span><span class="o">=</span><span class="n">CONF</span><span class="o">.</span><span class="n">inspector</span><span class="o">.</span><span class="n">service_url</span><span class="p">,</span>
+                           <span class="n">session</span><span class="o">=</span><span class="n">_get_inspector_session</span><span class="p">())</span>
+
+
+<div class="viewcode-block" id="Inspector"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.inspector.html#ironic.drivers.modules.inspector.Inspector">[docs]</a><span class="k">class</span> <span class="nc">Inspector</span><span class="p">(</span><span class="n">base</span><span class="o">.</span><span class="n">InspectInterface</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;In-band inspection via ironic-inspector project.&quot;&quot;&quot;</span>
+
+    <span class="nd">@classmethod</span>
+<div class="viewcode-block" id="Inspector.create_if_enabled"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.inspector.html#ironic.drivers.modules.inspector.Inspector.create_if_enabled">[docs]</a>    <span class="k">def</span> <span class="nf">create_if_enabled</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">driver_name</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Create instance of Inspector if it&#39;s enabled.</span>
+
+<span class="sd">        Reports log warning with given driver_name if it&#39;s not.</span>
+
+<span class="sd">        :return: Inspector instance or None</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="n">CONF</span><span class="o">.</span><span class="n">inspector</span><span class="o">.</span><span class="n">enabled</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">cls</span><span class="p">()</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">_LI</span><span class="p">(</span><span class="s2">&quot;Inspection via ironic-inspector is disabled in &quot;</span>
+                         <span class="s2">&quot;configuration for driver </span><span class="si">%s</span><span class="s2">. To enable, change &quot;</span>
+                         <span class="s2">&quot;[inspector] enabled = True.&quot;</span><span class="p">),</span> <span class="n">driver_name</span><span class="p">)</span></div>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">client</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">DriverLoadError</span><span class="p">(</span>
+                <span class="n">_</span><span class="p">(</span><span class="s1">&#39;python-ironic-inspector-client Python module not found&#39;</span><span class="p">))</span>
+
+<div class="viewcode-block" id="Inspector.get_properties"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.inspector.html#ironic.drivers.modules.inspector.Inspector.get_properties">[docs]</a>    <span class="k">def</span> <span class="nf">get_properties</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Return the properties of the interface.</span>
+
+<span class="sd">        :returns: dictionary of &lt;property name&gt;:&lt;property description&gt; entries.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="p">{}</span>  <span class="c1"># no properties</span></div>
+
+<div class="viewcode-block" id="Inspector.validate"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.inspector.html#ironic.drivers.modules.inspector.Inspector.validate">[docs]</a>    <span class="k">def</span> <span class="nf">validate</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Validate the driver-specific inspection information.</span>
+
+<span class="sd">        If invalid, raises an exception; otherwise returns None.</span>
+
+<span class="sd">        :param task: a task from TaskManager.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="c1"># NOTE(deva): this is not callable if inspector is disabled</span>
+        <span class="c1">#             so don&#39;t raise an exception -- just pass.</span>
+        <span class="k">pass</span></div>
+
+<div class="viewcode-block" id="Inspector.inspect_hardware"><a class="viewcode-back" href="../../../../api/ironic.drivers.modules.inspector.html#ironic.drivers.modules.inspector.Inspector.inspect_hardware">[docs]</a>    <span class="k">def</span> <span class="nf">inspect_hardware</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Inspect hardware to obtain the hardware properties.</span>
+
+<span class="sd">        This particular implementation only starts inspection using</span>
+<span class="sd">        ironic-inspector. Results will be checked in a periodic task.</span>
+
+<span class="sd">        :param task: a task from TaskManager.</span>
+<span class="sd">        :returns: states.INSPECTING</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;Starting inspection for node </span><span class="si">%(uuid)s</span><span class="s1"> using &#39;</span>
+                  <span class="s1">&#39;ironic-inspector&#39;</span><span class="p">,</span> <span class="p">{</span><span class="s1">&#39;uuid&#39;</span><span class="p">:</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">})</span>
+
+        <span class="c1"># NOTE(dtantsur): we&#39;re spawning a short-living green thread so that</span>
+        <span class="c1"># we can release a lock as soon as possible and allow ironic-inspector</span>
+        <span class="c1"># to operate on a node.</span>
+        <span class="n">eventlet</span><span class="o">.</span><span class="n">spawn_n</span><span class="p">(</span><span class="n">_start_inspection</span><span class="p">,</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="n">task</span><span class="o">.</span><span class="n">context</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">states</span><span class="o">.</span><span class="n">INSPECTING</span></div>
+
+    <span class="nd">@periodics.periodic</span><span class="p">(</span><span class="n">spacing</span><span class="o">=</span><span class="n">CONF</span><span class="o">.</span><span class="n">inspector</span><span class="o">.</span><span class="n">status_check_period</span><span class="p">,</span>
+                        <span class="n">enabled</span><span class="o">=</span><span class="n">CONF</span><span class="o">.</span><span class="n">inspector</span><span class="o">.</span><span class="n">enabled</span><span class="p">)</span>
+    <span class="k">def</span> <span class="nf">_periodic_check_result</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">manager</span><span class="p">,</span> <span class="n">context</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Periodic task checking results of inspection.&quot;&quot;&quot;</span>
+        <span class="n">filters</span> <span class="o">=</span> <span class="p">{</span><span class="s1">&#39;provision_state&#39;</span><span class="p">:</span> <span class="n">states</span><span class="o">.</span><span class="n">INSPECTING</span><span class="p">}</span>
+        <span class="n">node_iter</span> <span class="o">=</span> <span class="n">manager</span><span class="o">.</span><span class="n">iter_nodes</span><span class="p">(</span><span class="n">filters</span><span class="o">=</span><span class="n">filters</span><span class="p">)</span>
+
+        <span class="k">for</span> <span class="n">node_uuid</span><span class="p">,</span> <span class="n">driver</span> <span class="ow">in</span> <span class="n">node_iter</span><span class="p">:</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">lock_purpose</span> <span class="o">=</span> <span class="s1">&#39;checking hardware inspection status&#39;</span>
+                <span class="k">with</span> <span class="n">task_manager</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="n">node_uuid</span><span class="p">,</span>
+                                          <span class="n">shared</span><span class="o">=</span><span class="bp">True</span><span class="p">,</span>
+                                          <span class="n">purpose</span><span class="o">=</span><span class="n">lock_purpose</span><span class="p">)</span> <span class="k">as</span> <span class="n">task</span><span class="p">:</span>
+                    <span class="n">_check_status</span><span class="p">(</span><span class="n">task</span><span class="p">)</span>
+            <span class="k">except</span> <span class="p">(</span><span class="n">exception</span><span class="o">.</span><span class="n">NodeLocked</span><span class="p">,</span> <span class="n">exception</span><span class="o">.</span><span class="n">NodeNotFound</span><span class="p">):</span>
+                <span class="k">continue</span></div>
+
+
+<span class="k">def</span> <span class="nf">_start_inspection</span><span class="p">(</span><span class="n">node_uuid</span><span class="p">,</span> <span class="n">context</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Call to inspector to start inspection.&quot;&quot;&quot;</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">_get_client</span><span class="p">()</span><span class="o">.</span><span class="n">introspect</span><span class="p">(</span><span class="n">node_uuid</span><span class="p">)</span>
+    <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">exception</span><span class="p">(</span><span class="n">_LE</span><span class="p">(</span><span class="s1">&#39;Exception during contacting ironic-inspector &#39;</span>
+                          <span class="s1">&#39;for inspection of node </span><span class="si">%(node)s</span><span class="s1">: </span><span class="si">%(err)s</span><span class="s1">&#39;</span><span class="p">),</span>
+                      <span class="p">{</span><span class="s1">&#39;node&#39;</span><span class="p">:</span> <span class="n">node_uuid</span><span class="p">,</span> <span class="s1">&#39;err&#39;</span><span class="p">:</span> <span class="n">exc</span><span class="p">})</span>
+        <span class="c1"># NOTE(dtantsur): if acquire fails our last option is to rely on</span>
+        <span class="c1"># timeout</span>
+        <span class="n">lock_purpose</span> <span class="o">=</span> <span class="s1">&#39;recording hardware inspection error&#39;</span>
+        <span class="k">with</span> <span class="n">task_manager</span><span class="o">.</span><span class="n">acquire</span><span class="p">(</span><span class="n">context</span><span class="p">,</span> <span class="n">node_uuid</span><span class="p">,</span>
+                                  <span class="n">purpose</span><span class="o">=</span><span class="n">lock_purpose</span><span class="p">)</span> <span class="k">as</span> <span class="n">task</span><span class="p">:</span>
+            <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">last_error</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;Failed to start inspection: </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="n">exc</span>
+            <span class="n">task</span><span class="o">.</span><span class="n">process_event</span><span class="p">(</span><span class="s1">&#39;fail&#39;</span><span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">_LI</span><span class="p">(</span><span class="s1">&#39;Node </span><span class="si">%s</span><span class="s1"> was sent to inspection to ironic-inspector&#39;</span><span class="p">),</span>
+                 <span class="n">node_uuid</span><span class="p">)</span>
+
+
+<span class="k">def</span> <span class="nf">_check_status</span><span class="p">(</span><span class="n">task</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Check inspection status for node given by a task.&quot;&quot;&quot;</span>
+    <span class="n">node</span> <span class="o">=</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span>
+    <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">provision_state</span> <span class="o">!=</span> <span class="n">states</span><span class="o">.</span><span class="n">INSPECTING</span><span class="p">:</span>
+        <span class="k">return</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">driver</span><span class="o">.</span><span class="n">inspect</span><span class="p">,</span> <span class="n">Inspector</span><span class="p">):</span>
+        <span class="k">return</span>
+
+    <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;Calling to inspector to check status of node </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">,</span>
+              <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">status</span> <span class="o">=</span> <span class="n">_get_client</span><span class="p">()</span><span class="o">.</span><span class="n">get_status</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+    <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+        <span class="c1"># NOTE(dtantsur): get_status should not normally raise</span>
+        <span class="c1"># let&#39;s assume it&#39;s a transient failure and retry later</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">exception</span><span class="p">(</span><span class="n">_LE</span><span class="p">(</span><span class="s1">&#39;Unexpected exception while getting &#39;</span>
+                          <span class="s1">&#39;inspection status for node </span><span class="si">%s</span><span class="s1">, will retry later&#39;</span><span class="p">),</span>
+                      <span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+        <span class="k">return</span>
+
+    <span class="n">error</span> <span class="o">=</span> <span class="n">status</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;error&#39;</span><span class="p">)</span>
+    <span class="n">finished</span> <span class="o">=</span> <span class="n">status</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;finished&#39;</span><span class="p">)</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">error</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">finished</span><span class="p">:</span>
+        <span class="k">return</span>
+
+    <span class="c1"># If the inspection has finished or failed, we need to update the node, so</span>
+    <span class="c1"># upgrade our lock to an exclusive one.</span>
+    <span class="n">task</span><span class="o">.</span><span class="n">upgrade_lock</span><span class="p">()</span>
+    <span class="n">node</span> <span class="o">=</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span>
+
+    <span class="k">if</span> <span class="n">error</span><span class="p">:</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">_LE</span><span class="p">(</span><span class="s1">&#39;Inspection failed for node </span><span class="si">%(uuid)s</span><span class="s1"> &#39;</span>
+                      <span class="s1">&#39;with error: </span><span class="si">%(err)s</span><span class="s1">&#39;</span><span class="p">),</span>
+                  <span class="p">{</span><span class="s1">&#39;uuid&#39;</span><span class="p">:</span> <span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="s1">&#39;err&#39;</span><span class="p">:</span> <span class="n">error</span><span class="p">})</span>
+        <span class="n">node</span><span class="o">.</span><span class="n">last_error</span> <span class="o">=</span> <span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;ironic-inspector inspection failed: </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">)</span>
+                           <span class="o">%</span> <span class="n">error</span><span class="p">)</span>
+        <span class="n">task</span><span class="o">.</span><span class="n">process_event</span><span class="p">(</span><span class="s1">&#39;fail&#39;</span><span class="p">)</span>
+    <span class="k">elif</span> <span class="n">finished</span><span class="p">:</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">_LI</span><span class="p">(</span><span class="s1">&#39;Inspection finished successfully for node </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">),</span>
+                 <span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+        <span class="n">task</span><span class="o">.</span><span class="n">process_event</span><span class="p">(</span><span class="s1">&#39;done&#39;</span><span class="p">)</span>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/ironic
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../../../index.html">Ironic 7.0.1.dev7 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../../../index.html" accesskey="U">Module code</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright OpenStack Foundation.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/Ironic");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

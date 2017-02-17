@@ -1,0 +1,1099 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>API Model &mdash; networking-sfc 3.0.1.dev96 documentation</title>
+    
+    <link rel="stylesheet" href="_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '3.0.1.dev96',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <link rel="top" title="networking-sfc 3.0.1.dev96 documentation" href="index.html" />
+    <link rel="next" title="System Design and Workflow" href="system_design and_workflow.html" />
+    <link rel="prev" title="Contribution" href="contribution.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="api-model">
+<h1>API Model<a class="headerlink" href="#api-model" title="Permalink to this headline">¶</a></h1>
+<div class="section" id="problem-description">
+<h2>Problem Description<a class="headerlink" href="#problem-description" title="Permalink to this headline">¶</a></h2>
+<p>Currently Neutron does not support service function chaining. To support
+service function chaining, Service VMs must be attached at points in the
+network and then traffic must be steered between these attachment
+points. Please refer to <a class="reference external" href="https://blueprints.launchpad.net/neutron/+spec/neutron-api-extension-for-service-chaining">Neutron Service Chain blue-print</a> and Bugs <a class="reference external" href="https://bugs.launchpad.net/neutron/+bug/1450617">[1]</a> <a class="reference external" href="https://bugs.launchpad.net/neutron/+bug/1450625">[2]</a>
+related to this specification for more information.</p>
+</div>
+<div class="section" id="proposed-change">
+<h2>Proposed Change<a class="headerlink" href="#proposed-change" title="Permalink to this headline">¶</a></h2>
+<p>All Neutron network services and VMs are connected to a Neutron network
+via Neutron ports. This makes it possible to create a traffic steering model
+for service chaining that uses only Neutron ports. This traffic steering
+model has no notion of the actual services attached to these Neutron
+ports.</p>
+<p>The service VM hosting the service functions is instantiated and configured,
+then VNICs are added to the VM and then these VNICs are attached to the
+network by Neutron ports. Once the service function is attached to Neutron
+ports, the ports may be included in a &#8220;port chain&#8221; to allow the service
+function to provide treatment to the user&#8217;s traffic.</p>
+<p>A Port Chain (Service Function Path) consists of:</p>
+<ul class="simple">
+<li>a set of Neutron ports, to define the sequence of service functions</li>
+<li>a set of flow classifiers, to specify the classified traffic flows to
+enter the chain</li>
+</ul>
+<p>If a service function has a pair of ports, the first port in
+the port-pair is the ingress port of the service function, and the second
+port is the egress port of the service function.
+If a service function has one bidirectional port, then both ports in
+the port-pair have the same value.
+A Port Chain is a directional service chain. The first port of the first port-pair
+is the head of the service chain. The second port of the last port-pair is the tail
+of the service chain. A bidirectional service chain would be composed of two unidirectional Port Chains.</p>
+<p>For example, [{&#8216;p1&#8217;: &#8216;p2&#8217;}, {&#8216;p3&#8217;: &#8216;p4&#8217;}, {&#8216;p5&#8217;: &#8216;p6&#8217;}] represents:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>   +------+     +------+     +------+
+   | SF1  |     | SF2  |     | SF3  |
+   +------+     +------+     +------+
+   p1|  |p2     p3|  |p4      p5| |p6
+     |  |         |  |          | |
+-&gt;---+  +---------+  +----------+ +----&gt;
+</pre></div>
+</div>
+<p>where p1 is the head of the Port Chain and p6 is the tail of the Port Chain, and
+SF1 has ports p1 and p2, SF2 has ports p3 and p4, and SF3 has ports p5 and p6.</p>
+<p>In order to create a chain, the user needs to have the actual port objects.
+The work flow would typically be:</p>
+<ol class="arabic simple">
+<li>create the ports</li>
+<li>create the chain</li>
+<li>boot the vm&#8217;s passing the ports as nic&#8217;s parameters</li>
+</ol>
+<p>The sequence of 2. and 3. can be switched.</p>
+<p>A SF&#8217;s Neutron port may be associated with more than one Port Chain to allow
+a service function to be shared by multiple chains.</p>
+<p>If there is more than one service function instance of a specific type
+available to meet the user&#8217;s service requirement, their Neutron ports are
+included in the port chain as a sub-list. For example, if {p3, p4}, {p7, p8}
+are the port-pairs of two FW instances, they
+both may be included in a port chain for load distribution as shown below.</p>
+<blockquote>
+<div>[{&#8216;p1&#8217;: &#8216;p2&#8217;}, [{&#8216;p3&#8217;: &#8216;p4&#8217;},{&#8216;p7&#8217;: &#8216;p8&#8217;}], {&#8216;p5&#8217;: &#8216;p6&#8217;}]</div></blockquote>
+<p>Flow classifiers are used to select the traffic that can
+access the chain. Traffic that matches any flow classifier will be
+directed to the first port in the chain. The flow classifier will be a generic
+independent module and may be used by other projects like FW, QOS, etc.</p>
+<p>A flow classifier cannot be part of two different port-chains otherwise ambiguity
+will arise as to which chain path that flow&#8217;s packets should go. A check will be
+made to ensure no ambiguity. But multiple flow classifiers can be associated with
+a port chain since multiple different types of flows can request the same service
+treatment path.</p>
+<p>CLI Commands</p>
+<p>Syntax:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>neutron port-pair-create [-h]
+        [--description &lt;description&gt;]
+        --ingress &lt;port-id&gt;
+        --egress &lt;port-id&gt;
+        [--service-function-parameters &lt;parameter&gt;] PORT-PAIR-NAME
+
+neutron port-pair-group-create [-h]
+        [--description &lt;description&gt;]
+        --port-pairs &lt;port-pair-id&gt;
+        [--port-pair-group-parameters &lt;parameter&gt;] PORT-PAIR-GROUP-NAME
+
+neutron flow-classifier-create [-h]
+        [--description &lt;description&gt;]
+        [--protocol &lt;protocol&gt;]
+        [--ethertype &lt;Ethertype&gt;]
+        [--source-port &lt;Minimum source protocol port&gt;:&lt;Maximum source protocol port&gt;]
+        [--destination-port &lt;Minimum destination protocol port&gt;:&lt;Maximum destination protocol port&gt;]
+        [--source-ip-prefix &lt;Source IP prefix&gt;]
+        [--destination-ip-prefix &lt;Destination IP prefix&gt;]
+        [--logical-source-port &lt;Neutron source port&gt;]
+        [--logical-destination-port &lt;Neutron destination port&gt;]
+        [--l7-parameters &lt;L7 parameter&gt;] FLOW-CLASSIFIER-NAME
+
+neutron port-chain-create [-h]
+        [--description &lt;description&gt;]
+         --port-pair-group &lt;port-pair-group-id&gt;
+        [--flow-classifier &lt;classifier-id&gt;]
+        [--chain-parameters &lt;chain-parameter&gt;] PORT-CHAIN-NAME
+</pre></div>
+</div>
+<p>1. neutron port-chain-create
+The port-chain-create returns the ID of the Port Chain.</p>
+<p>Each &#8220;port-pair-group&#8221; option specifies a type of SF. If a chain consists of a sequence
+of different types of SFs, then the chain will have multiple &#8220;port-pair-group&#8221;s.
+There must be at least one &#8220;port-pair-group&#8221; in the Port Chain.</p>
+<p>The &#8220;flow-classifier&#8221; option may be repeated to associate multiple flow classifiers
+with a port chain, with each classifier identifying a flow. If the flow-classifier is not
+specified, then no traffic will be steered through the chain.</p>
+<p>One chain parameter option is currently defined. More parameter options can be added
+in future extensions to accommodate new requirements.
+The &#8220;correlation&#8221; parameter is used to specify the type of chain correlation mechanism.
+This parameter allows different correlation mechanisms to be selected.
+This will be set to &#8220;mpls&#8221; for now to be consistent with current OVS capability.
+If this parameter is not specified, it will default to &#8220;mpls&#8221;.</p>
+<p>The port-chain-create command returns the ID of a Port chain.</p>
+<p>A port chain can be created, read, updated and deleted, and when a chain is
+created/read/updated/deleted, the options that are involved would be based on
+the CRUD in the &#8220;Port Chain&#8221; resource table below.</p>
+<p>2. neutron port-pair-group-create
+Inside each &#8220;port-pair-group&#8221;, there could be one or more port-pairs.
+Multiple port-pairs may be included in a &#8220;port-pair-group&#8221; to allow the specification of
+a set of functionally equivalent SFs that can be be used for load distribution,
+i.e., the &#8220;port-pair&#8221; option may be repeated for multiple port-pairs of
+functionally equivalent SFs.</p>
+<p>The port-pair-group-create command returns the ID of a Port Pair group.</p>
+<p>3. neutron port-pair-create
+A Port Pair represents a service function instance. The ingress port and the
+egress port of the service function may be specified.  If a service function
+has one bidirectional port, the ingress port has the same value as the egress port.
+The &#8220;service-function-parameter&#8221; option allows the passing of SF specific parameter
+information to the data path. These include:</p>
+<blockquote>
+<div><ul class="simple">
+<li>The &#8220;correlation&#8221; parameter is used to specify the type of chain correlation
+mechanism supported by a specific SF. This is needed by the data plane
+switch to determine how to associate a packet with a chain. This will be set
+to &#8220;none&#8221; for now since there is no correlation mechanism supported by the
+SF. In the future, it can be extended to include &#8220;mpls&#8221;, &#8220;nsh&#8221;, etc.. If
+this parameter is not specified, it will default to &#8220;none&#8221;.</li>
+<li>The &#8220;weight&#8221; parameter is used to specify the weight for each SF for
+load distribution in a port pair group. This represents a percentage of the
+traffic to be sent to each SF.</li>
+</ul>
+</div></blockquote>
+<p>The port-pair-create command returns the ID of a Port Pair.</p>
+<p>4. neutron flow-classifier-create
+A combination of the &#8220;source&#8221; options defines the source of the flow.
+A combination of the &#8220;destination&#8221; options defines the destination of the flow.
+The l7_parameter is a place-holder that may be used to support flow classification
+using L7 fields, such as URL. If an option is not specified, it will default to wildcard value
+except for ethertype which defaults to &#8216;IPv4&#8217;, for logical-source-port and
+logical-destination-port which defaults to none.</p>
+<p>The flow-classifier-create command returns the ID of a flow classifier.</p>
+<div class="section" id="data-model-impact">
+<h3>Data Model Impact<a class="headerlink" href="#data-model-impact" title="Permalink to this headline">¶</a></h3>
+<p>Data model:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span> +-------+        +----------+        +------------+
+ | Port  |--------| Port Pair|--------| Port Pairs |
+ | Chain |*      *| Groups   | 1     *|            |
+ +-------+        +----------+        +------------+
+   |1
+   |
+   |*
++--------------+
+| Flow         |
+| Classifiers  |
++--------------+
+</pre></div>
+</div>
+<p>New objects:</p>
+<dl class="docutils">
+<dt>Port Chain</dt>
+<dd><ul class="first last simple">
+<li>id - Port chain ID.</li>
+<li>tenant_id - Tenant ID.</li>
+<li>name - Readable name.</li>
+<li>description - Readable description.</li>
+<li>port_pair_groups - List of port-pair-group IDs.</li>
+<li>flow_classifiers - List of flow-classifier IDs.</li>
+<li>chain_parameters - Dict. of chain parameters.</li>
+<li>chain_id - Data-plane chain path ID.</li>
+</ul>
+</dd>
+<dt>Port Pair Group</dt>
+<dd><ul class="first last simple">
+<li>id - Port pair group ID.</li>
+<li>tenant_id - Tenant ID.</li>
+<li>name - Readable name.</li>
+<li>description - Readable description.</li>
+<li>port_pairs - List of service function (Neutron) port-pairs.</li>
+<li>port_pair_group_parameters - Dict. of port pair group parameters.</li>
+</ul>
+</dd>
+<dt>Port Pair</dt>
+<dd><ul class="first last simple">
+<li>id - Port pair ID.</li>
+<li>tenant_id - Tenant ID.</li>
+<li>name - Readable name.</li>
+<li>description - Readable description.</li>
+<li>ingress - Ingress port.</li>
+<li>egress - Egress port.</li>
+<li>service_function_parameters - Dict. of service function parameters</li>
+</ul>
+</dd>
+<dt>Flow Classifier</dt>
+<dd><ul class="first last simple">
+<li>id - Flow classifier ID.</li>
+<li>tenant_id - Tenant ID.</li>
+<li>name - Readable name.</li>
+<li>description - Readable description.</li>
+<li>ethertype - Ethertype (&#8216;IPv4&#8217;/&#8217;IPv6&#8217;).</li>
+<li>protocol - IP protocol.</li>
+<li>source_port_range_min - Minimum source protocol port.</li>
+<li>source_port_range_max - Maximum source protocol port.</li>
+<li>destination_port_range_min - Minimum destination protocol port.</li>
+<li>destination_port_range_max - Maximum destination protocol port.</li>
+<li>source_ip_prefix - Source IP address or prefix.</li>
+<li>destination_ip_prefix - Destination IP address or prefix.</li>
+<li>logical_source_port - Neutron source port.</li>
+<li>logical_destination_port - Neutron destination port.</li>
+<li>l7_parameters - Dictionary of L7 parameters.</li>
+</ul>
+</dd>
+</dl>
+</div>
+<div class="section" id="rest-api">
+<h3>REST API<a class="headerlink" href="#rest-api" title="Permalink to this headline">¶</a></h3>
+<p>Port Chain Operations:</p>
+<table border="1" class="docutils">
+<colgroup>
+<col width="15%" />
+<col width="33%" />
+<col width="52%" />
+</colgroup>
+<thead valign="bottom">
+<tr class="row-odd"><th class="head">Operation</th>
+<th class="head">URL</th>
+<th class="head">Description</th>
+</tr>
+</thead>
+<tbody valign="top">
+<tr class="row-even"><td>POST</td>
+<td>/sfc/port_chains</td>
+<td>Create a Port Chain</td>
+</tr>
+<tr class="row-odd"><td>PUT</td>
+<td>/sfc/port_chains/{chain_id}</td>
+<td>Update a specific Port Chain</td>
+</tr>
+<tr class="row-even"><td>DELETE</td>
+<td>/sfc/port_chains/{chain_id}</td>
+<td>Delete a specific Port Chain</td>
+</tr>
+<tr class="row-odd"><td>GET</td>
+<td>/sfc/port_chains</td>
+<td>List all Port Chains for specified tenant</td>
+</tr>
+<tr class="row-even"><td>GET</td>
+<td>/sfc/port_chains/{chain_id}</td>
+<td>Show information for a specific Port Chain</td>
+</tr>
+</tbody>
+</table>
+<p>Port Pair Group Operations:</p>
+<table border="1" class="docutils">
+<colgroup>
+<col width="13%" />
+<col width="35%" />
+<col width="52%" />
+</colgroup>
+<thead valign="bottom">
+<tr class="row-odd"><th class="head">Operation</th>
+<th class="head">URL</th>
+<th class="head">Description</th>
+</tr>
+</thead>
+<tbody valign="top">
+<tr class="row-even"><td>POST</td>
+<td>/sfc/port_pair_groups</td>
+<td>Create a Port Pair Group</td>
+</tr>
+<tr class="row-odd"><td>PUT</td>
+<td>/sfc/port_pair_groups/{group_id}</td>
+<td>Update a specific Port Pair Group</td>
+</tr>
+<tr class="row-even"><td>DELETE</td>
+<td>/sfc/port_pair_groups/{group_id}</td>
+<td>Delete a specific Port Pair Group</td>
+</tr>
+<tr class="row-odd"><td>GET</td>
+<td>/sfc/port_pair_groups</td>
+<td>List all Port Pair Groups for specified tenant</td>
+</tr>
+<tr class="row-even"><td>GET</td>
+<td>/sfc/port_pair_groups/{group_id}</td>
+<td>Show information for a specific Port Pair</td>
+</tr>
+</tbody>
+</table>
+<p>Port Pair Operations:</p>
+<table border="1" class="docutils">
+<colgroup>
+<col width="15%" />
+<col width="32%" />
+<col width="53%" />
+</colgroup>
+<thead valign="bottom">
+<tr class="row-odd"><th class="head">Operation</th>
+<th class="head">URL</th>
+<th class="head">Description</th>
+</tr>
+</thead>
+<tbody valign="top">
+<tr class="row-even"><td>POST</td>
+<td>/sfc/port_pairs</td>
+<td>Create a Port Pair</td>
+</tr>
+<tr class="row-odd"><td>PUT</td>
+<td>/sfc/port_pairs/{pair_id}</td>
+<td>Update a specific Port Pair</td>
+</tr>
+<tr class="row-even"><td>DELETE</td>
+<td>/sfc/port_pairs/{pair_id}</td>
+<td>Delete a specific Port Pair</td>
+</tr>
+<tr class="row-odd"><td>GET</td>
+<td>/sfc/port_pairs</td>
+<td>List all Port Pairs for specified tenant</td>
+</tr>
+<tr class="row-even"><td>GET</td>
+<td>/sfc/port_pairs/{pair_id}</td>
+<td>Show information for a specific Port Pair</td>
+</tr>
+</tbody>
+</table>
+<p>Flow Classifier Operations:</p>
+<table border="1" class="docutils">
+<colgroup>
+<col width="13%" />
+<col width="34%" />
+<col width="53%" />
+</colgroup>
+<thead valign="bottom">
+<tr class="row-odd"><th class="head">Operation</th>
+<th class="head">URL</th>
+<th class="head">Description</th>
+</tr>
+</thead>
+<tbody valign="top">
+<tr class="row-even"><td>POST</td>
+<td>/sfc/flow_classifiers</td>
+<td>Create a Flow-classifier</td>
+</tr>
+<tr class="row-odd"><td>PUT</td>
+<td>/sfc/flow_classifiers/{flow_id}</td>
+<td>Update a specific Flow-classifier</td>
+</tr>
+<tr class="row-even"><td>DELETE</td>
+<td>/sfc/flow_classifiers/{flow_id}</td>
+<td>Delete a specific Flow-classifier</td>
+</tr>
+<tr class="row-odd"><td>GET</td>
+<td>/sfc/flow_classifiers</td>
+<td>List all Flow-classifiers for specified tenant</td>
+</tr>
+<tr class="row-even"><td>GET</td>
+<td>/sfc/flow_classifiers/{flow_id}</td>
+<td>Show information for a specific Flow-classifier</td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="section" id="rest-api-impact">
+<h3>REST API Impact<a class="headerlink" href="#rest-api-impact" title="Permalink to this headline">¶</a></h3>
+<p>The following new resources will be created as a result of the API handling.</p>
+<p>Port Chain resource:</p>
+<table border="1" class="docutils">
+<colgroup>
+<col width="22%" />
+<col width="14%" />
+<col width="11%" />
+<col width="13%" />
+<col width="6%" />
+<col width="35%" />
+</colgroup>
+<thead valign="bottom">
+<tr class="row-odd"><th class="head">Attribute
+Name</th>
+<th class="head">Type</th>
+<th class="head">Access</th>
+<th class="head">Default
+Value</th>
+<th class="head">CRUD</th>
+<th class="head">Description</th>
+</tr>
+</thead>
+<tbody valign="top">
+<tr class="row-even"><td>id</td>
+<td>uuid</td>
+<td>RO, all</td>
+<td>generated</td>
+<td>R</td>
+<td>Port Chain ID.</td>
+</tr>
+<tr class="row-odd"><td>tenant_id</td>
+<td>uuid</td>
+<td>RO, all</td>
+<td>from auth
+token</td>
+<td>CR</td>
+<td>Tenant ID.</td>
+</tr>
+<tr class="row-even"><td>name</td>
+<td>string</td>
+<td>RW, all</td>
+<td>&#8216;&#8217;</td>
+<td>CRU</td>
+<td>Port Chain name.</td>
+</tr>
+<tr class="row-odd"><td>description</td>
+<td>string</td>
+<td>RW, all</td>
+<td>&#8216;&#8217;</td>
+<td>CRU</td>
+<td>Port Chain description.</td>
+</tr>
+<tr class="row-even"><td>port_pair_groups</td>
+<td>list(uuid)</td>
+<td>RW, all</td>
+<td>N/A</td>
+<td>CRU</td>
+<td>List of port-pair-groups.</td>
+</tr>
+<tr class="row-odd"><td>flow_classifiers</td>
+<td>list(uuid)</td>
+<td>RW, all</td>
+<td>[]</td>
+<td>CRU</td>
+<td>List of flow-classifiers.</td>
+</tr>
+<tr class="row-even"><td>chain_parameters</td>
+<td>dict</td>
+<td>RW, all</td>
+<td>mpls</td>
+<td>CR</td>
+<td>Dict. of parameters:
+&#8216;correlation&#8217;:String</td>
+</tr>
+<tr class="row-odd"><td>chain_id</td>
+<td>integer</td>
+<td>RW, all</td>
+<td>Any</td>
+<td>CR</td>
+<td>Data-plane Chain Path ID.</td>
+</tr>
+</tbody>
+</table>
+<p>The data-plane chain path ID is normally generated by the data-plane
+implementation. However, an application may optionally generate its own
+data-plane chain path ID and apply it to the Port Chain using the chain_id
+attribute.</p>
+<p>Port Pair Group resource:</p>
+<table border="1" class="docutils">
+<colgroup>
+<col width="22%" />
+<col width="14%" />
+<col width="11%" />
+<col width="13%" />
+<col width="6%" />
+<col width="35%" />
+</colgroup>
+<thead valign="bottom">
+<tr class="row-odd"><th class="head">Attribute
+Name</th>
+<th class="head">Type</th>
+<th class="head">Access</th>
+<th class="head">Default
+Value</th>
+<th class="head">CRUD</th>
+<th class="head">Description</th>
+</tr>
+</thead>
+<tbody valign="top">
+<tr class="row-even"><td>id</td>
+<td>uuid</td>
+<td>RO, all</td>
+<td>generated</td>
+<td>R</td>
+<td>Port pair group ID.</td>
+</tr>
+<tr class="row-odd"><td>tenant_id</td>
+<td>uuid</td>
+<td>RO, all</td>
+<td>from auth
+token</td>
+<td>CR</td>
+<td>Tenant ID.</td>
+</tr>
+<tr class="row-even"><td>name</td>
+<td>string</td>
+<td>RW, all</td>
+<td>&#8216;&#8217;</td>
+<td>CRU</td>
+<td>Port pair group name.</td>
+</tr>
+<tr class="row-odd"><td>description</td>
+<td>string</td>
+<td>RW, all</td>
+<td>&#8216;&#8217;</td>
+<td>CRU</td>
+<td>Port pair group
+description.</td>
+</tr>
+<tr class="row-even"><td>port_pairs</td>
+<td>list</td>
+<td>RW, all</td>
+<td>N/A</td>
+<td>CRU</td>
+<td>List of port-pairs.</td>
+</tr>
+<tr class="row-odd"><td>port_pair_group
+_parameters</td>
+<td>dict</td>
+<td>RW, all</td>
+<td>&#8216;&#8217;</td>
+<td>CR</td>
+<td>Dict. of parameters:
+&#8216;lb_fields&#8217;:String
+&#8216;service_type&#8217;:String</td>
+</tr>
+</tbody>
+</table>
+<p>Port Pair resource:</p>
+<table border="1" class="docutils">
+<colgroup>
+<col width="34%" />
+<col width="10%" />
+<col width="11%" />
+<col width="11%" />
+<col width="5%" />
+<col width="28%" />
+</colgroup>
+<thead valign="bottom">
+<tr class="row-odd"><th class="head">Attribute Name</th>
+<th class="head">Type</th>
+<th class="head">Access</th>
+<th class="head">Default</th>
+<th class="head">CRUD</th>
+<th class="head">Description</th>
+</tr>
+</thead>
+<tbody valign="top">
+<tr class="row-even"><td>id</td>
+<td>uuid</td>
+<td>RO, all</td>
+<td>generated</td>
+<td>R</td>
+<td>Port pair ID.</td>
+</tr>
+<tr class="row-odd"><td>tenant_id</td>
+<td>uuid</td>
+<td>RO, all</td>
+<td>from auth
+token</td>
+<td>CR</td>
+<td>Tenant ID.</td>
+</tr>
+<tr class="row-even"><td>name</td>
+<td>string</td>
+<td>RW, all</td>
+<td>&#8216;&#8217;</td>
+<td>CRU</td>
+<td>Port pair name.</td>
+</tr>
+<tr class="row-odd"><td>description</td>
+<td>string</td>
+<td>RW, all</td>
+<td>&#8216;&#8217;</td>
+<td>CRU</td>
+<td>Port pair description.</td>
+</tr>
+<tr class="row-even"><td>ingress</td>
+<td>uuid</td>
+<td>RW, all</td>
+<td>N/A</td>
+<td>CR</td>
+<td>Ingress port ID.</td>
+</tr>
+<tr class="row-odd"><td>egress</td>
+<td>uuid</td>
+<td>RW, all</td>
+<td>N/A</td>
+<td>CR</td>
+<td>Egress port ID.</td>
+</tr>
+<tr class="row-even"><td>service_function_parameters</td>
+<td>dict</td>
+<td>RW, all</td>
+<td>None</td>
+<td>CR</td>
+<td>Dict. of parameters:
+&#8216;correlation&#8217;:String
+&#8216;weight&#8217;:Integer</td>
+</tr>
+</tbody>
+</table>
+<p>Flow Classifier resource:</p>
+<table border="1" class="docutils">
+<colgroup>
+<col width="33%" />
+<col width="10%" />
+<col width="11%" />
+<col width="11%" />
+<col width="5%" />
+<col width="29%" />
+</colgroup>
+<thead valign="bottom">
+<tr class="row-odd"><th class="head">Attribute Name</th>
+<th class="head">Type</th>
+<th class="head">Access</th>
+<th class="head">Default
+Value</th>
+<th class="head">CRUD</th>
+<th class="head">Description</th>
+</tr>
+</thead>
+<tbody valign="top">
+<tr class="row-even"><td>id</td>
+<td>uuid</td>
+<td>RO, all</td>
+<td>generated</td>
+<td>R</td>
+<td>Flow-classifier ID.</td>
+</tr>
+<tr class="row-odd"><td>tenant_id</td>
+<td>uuid</td>
+<td>RO, all</td>
+<td>from auth
+token</td>
+<td>CR</td>
+<td>Tenant ID.</td>
+</tr>
+<tr class="row-even"><td>name</td>
+<td>string</td>
+<td>RW, all</td>
+<td>&#8216;&#8217;</td>
+<td>CRU</td>
+<td>Flow-classifier name.</td>
+</tr>
+<tr class="row-odd"><td>description</td>
+<td>string</td>
+<td>RW, all</td>
+<td>&#8216;&#8217;</td>
+<td>CRU</td>
+<td>Flow-classifier
+description.</td>
+</tr>
+<tr class="row-even"><td>ethertype</td>
+<td>string</td>
+<td>RW, all</td>
+<td>&#8216;IPv4&#8217;</td>
+<td>CR</td>
+<td>L2 ethertype. Can be
+&#8216;IPv4&#8217; or &#8216;IPv6&#8217; only.</td>
+</tr>
+<tr class="row-odd"><td>protocol</td>
+<td>string</td>
+<td>RW, all</td>
+<td>Any</td>
+<td>CR</td>
+<td>IP protocol name.</td>
+</tr>
+<tr class="row-even"><td>source_port_range_min</td>
+<td>integer</td>
+<td>RW, all</td>
+<td>Any</td>
+<td>CR</td>
+<td>Minimum source
+protocol port.</td>
+</tr>
+<tr class="row-odd"><td>source_port_range_max</td>
+<td>integer</td>
+<td>RW, all</td>
+<td>Any</td>
+<td>CR</td>
+<td>Maximum source
+protocol port.</td>
+</tr>
+<tr class="row-even"><td>destination_port_range_min</td>
+<td>integer</td>
+<td>RW, all</td>
+<td>Any</td>
+<td>CR</td>
+<td>Minimum destination
+protocol port.</td>
+</tr>
+<tr class="row-odd"><td>destination_port_range_max</td>
+<td>integer</td>
+<td>RW, all</td>
+<td>Any</td>
+<td>CR</td>
+<td>Maximum destination
+protocol port.</td>
+</tr>
+<tr class="row-even"><td>source_ip_prefix</td>
+<td>CIDR</td>
+<td>RW, all</td>
+<td>Any</td>
+<td>CR</td>
+<td>Source IPv4 or IPv6
+prefix.</td>
+</tr>
+<tr class="row-odd"><td>destination_ip_prefix</td>
+<td>CIDR</td>
+<td>RW, all</td>
+<td>Any</td>
+<td>CR</td>
+<td>Destination IPv4 or
+IPv6 prefix.</td>
+</tr>
+<tr class="row-even"><td>logical_source_port</td>
+<td>uuid</td>
+<td>RW, all</td>
+<td>None</td>
+<td>CR</td>
+<td>Neutron source port.</td>
+</tr>
+<tr class="row-odd"><td>logical_destination_port</td>
+<td>uuid</td>
+<td>RW, all</td>
+<td>None</td>
+<td>CR</td>
+<td>Neutron destination
+port.</td>
+</tr>
+<tr class="row-even"><td>l7_parameters</td>
+<td>dict</td>
+<td>RW, all</td>
+<td>Any</td>
+<td>CR</td>
+<td>Dict. of L7 parameters.</td>
+</tr>
+</tbody>
+</table>
+<p>Json Port-pair create request example:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="p">{</span><span class="s2">&quot;port_pair&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;SF1&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;tenant_id&quot;</span><span class="p">:</span> <span class="s2">&quot;d382007aa9904763a801f68ecf065cf5&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;description&quot;</span><span class="p">:</span> <span class="s2">&quot;Firewall SF instance&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;ingress&quot;</span><span class="p">:</span> <span class="s2">&quot;dace4513-24fc-4fae-af4b-321c5e2eb3d1&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;egress&quot;</span><span class="p">:</span> <span class="s2">&quot;aef3478a-4a56-2a6e-cd3a-9dee4e2ec345&quot;</span><span class="p">,</span>
+   <span class="p">}</span>
+<span class="p">}</span>
+
+<span class="p">{</span><span class="s2">&quot;port_pair&quot;</span><span class="p">:</span>  <span class="p">{</span><span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;SF2&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;tenant_id&quot;</span><span class="p">:</span> <span class="s2">&quot;d382007aa9904763a801f68ecf065cf5&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;description&quot;</span><span class="p">:</span> <span class="s2">&quot;Loadbalancer SF instance&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;ingress&quot;</span><span class="p">:</span> <span class="s2">&quot;797f899e-73d4-11e5-b392-2c27d72acb4c&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;egress&quot;</span><span class="p">:</span> <span class="s2">&quot;797f899e-73d4-11e5-b392-2c27d72acb4c&quot;</span><span class="p">,</span>
+   <span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>Json Port-pair create response example:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="p">{</span><span class="s2">&quot;port_pair&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;SF1&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;tenant_id&quot;</span><span class="p">:</span> <span class="s2">&quot;d382007aa9904763a801f68ecf065cf5&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;description&quot;</span><span class="p">:</span> <span class="s2">&quot;Firewall SF instance&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;ingress&quot;</span><span class="p">:</span> <span class="s2">&quot;dace4513-24fc-4fae-af4b-321c5e2eb3d1&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;egress&quot;</span><span class="p">:</span> <span class="s2">&quot;aef3478a-4a56-2a6e-cd3a-9dee4e2ec345&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="s2">&quot;78dcd363-fc23-aeb6-f44b-56dc5e2fb3ae&quot;</span><span class="p">,</span>
+   <span class="p">}</span>
+ <span class="p">}</span>
+
+<span class="p">{</span><span class="s2">&quot;port_pair&quot;</span><span class="p">:</span>  <span class="p">{</span><span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;SF2&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;tenant_id&quot;</span><span class="p">:</span> <span class="s2">&quot;d382007aa9904763a801f68ecf065cf5&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;description&quot;</span><span class="p">:</span> <span class="s2">&quot;Loadbalancer SF instance&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;ingress&quot;</span><span class="p">:</span> <span class="s2">&quot;797f899e-73d4-11e5-b392-2c27d72acb4c&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;egress&quot;</span><span class="p">:</span> <span class="s2">&quot;797f899e-73d4-11e5-b392-2c27d72acb4c&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="s2">&quot;d11e9190-73d4-11e5-b392-2c27d72acb4c&quot;</span>
+   <span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>Json Port Pair Group create request example:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>{&quot;port_pair_group&quot;: {&quot;name&quot;: &quot;Firewall_PortPairGroup&quot;,
+       &quot;tenant_id&quot;: &quot;d382007aa9904763a801f68ecf065cf5&quot;,
+       &quot;description&quot;: &quot;Grouping Firewall SF instances&quot;,
+       &quot;port_pairs&quot;: [
+           &quot;78dcd363-fc23-aeb6-f44b-56dc5e2fb3ae&quot;
+       ],
+       &quot;port_pair_group_parameters&quot;: [
+           &quot;lb_fields: ip_src&quot;
+       ]
+   }
+ }
+
+{&quot;port_pair_group&quot;: {&quot;name&quot;: &quot;Loadbalancer_PortPairGroup&quot;,
+       &quot;tenant_id&quot;: &quot;d382007aa9904763a801f68ecf065cf5&quot;,
+       &quot;description&quot;: &quot;Grouping Loadbalancer SF instances&quot;,
+       &quot;port_pairs&quot;: [
+           &quot;d11e9190-73d4-11e5-b392-2c27d72acb4c&quot;
+       ]
+       &quot;port_pair_group_parameters&quot;: [
+           &quot;lb_fields: ip_src&quot;
+       ]
+   }
+}
+</pre></div>
+</div>
+<p>Json Port Pair Group create response example:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>{&quot;port_pair_group&quot;: {&quot;name&quot;: &quot;Firewall_PortPairGroup&quot;,
+       &quot;tenant_id&quot;: &quot;d382007aa9904763a801f68ecf065cf5&quot;,
+       &quot;description&quot;: &quot;Grouping Firewall SF instances&quot;,
+       &quot;port_pairs&quot;: [
+           &quot;78dcd363-fc23-aeb6-f44b-56dc5e2fb3ae
+       ],
+       &quot;port_pair_group_parameters&quot;: [
+           &quot;lb_fields: ip_src&quot;
+       ]
+       &quot;id&quot;: &quot;4512d643-24fc-4fae-af4b-321c5e2eb3d1&quot;,
+   }
+}
+
+{&quot;port_pair_group&quot;:  {&quot;name&quot;: &quot;Loadbalancer_PortPairGroup&quot;,
+       &quot;tenant_id&quot;: &quot;d382007aa9904763a801f68ecf065cf5&quot;,
+       &quot;description&quot;: &quot;Grouping Loadbalancer SF instances&quot;,
+       &quot;port_pairs&quot;: [
+           &quot;d11e9190-73d4-11e5-b392-2c27d72acb4c&quot;
+       ],
+       &quot;port_pair_group_parameters&quot;: [
+           &quot;lb_fields: ip_src&quot;
+       ]
+       &quot;id&quot;: &quot;4a634d49-76dc-4fae-af4b-321c5e23d651&quot;,
+   }
+}
+</pre></div>
+</div>
+<p>Json Flow Classifier create request example:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="p">{</span><span class="s2">&quot;flow_classifier&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;FC1&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;tenant_id&quot;</span><span class="p">:</span> <span class="s2">&quot;1814726e2d22407b8ca76db5e567dcf1&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;description&quot;</span><span class="p">:</span> <span class="s2">&quot;Flow rule for classifying TCP traffic&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;protocol&quot;</span><span class="p">:</span> <span class="s2">&quot;TCP&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;source_port_range_min&quot;</span><span class="p">:</span> <span class="mi">22</span><span class="p">,</span> <span class="s2">&quot;source_port_range_max&quot;</span><span class="p">:</span> <span class="mi">4000</span><span class="p">,</span>
+       <span class="s2">&quot;destination_port_range_min&quot;</span><span class="p">:</span> <span class="mi">80</span><span class="p">,</span> <span class="s2">&quot;destination_port_range_max&quot;</span><span class="p">:</span> <span class="mi">80</span><span class="p">,</span>
+       <span class="s2">&quot;source_ip_prefix&quot;</span><span class="p">:</span> <span class="n">null</span><span class="p">,</span> <span class="s2">&quot;destination_ip_prefix&quot;</span><span class="p">:</span> <span class="s2">&quot;22.12.34.45&quot;</span>
+   <span class="p">}</span>
+<span class="p">}</span>
+
+<span class="p">{</span><span class="s2">&quot;flow_classifier&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;FC2&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;tenant_id&quot;</span><span class="p">:</span> <span class="s2">&quot;1814726e2d22407b8ca76db5e567dcf1&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;description&quot;</span><span class="p">:</span> <span class="s2">&quot;Flow rule for classifying UDP traffic&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;protocol&quot;</span><span class="p">:</span> <span class="s2">&quot;UDP&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;source_port_range_min&quot;</span><span class="p">:</span> <span class="mi">22</span><span class="p">,</span> <span class="s2">&quot;source_port_range_max&quot;</span><span class="p">:</span> <span class="mi">22</span><span class="p">,</span>
+       <span class="s2">&quot;destination_port_range_min&quot;</span><span class="p">:</span> <span class="mi">80</span><span class="p">,</span> <span class="s2">&quot;destination_port_range_max&quot;</span><span class="p">:</span> <span class="mi">80</span><span class="p">,</span>
+       <span class="s2">&quot;source_ip_prefix&quot;</span><span class="p">:</span> <span class="n">null</span><span class="p">,</span> <span class="s2">&quot;destination_ip_prefix&quot;</span><span class="p">:</span> <span class="s2">&quot;22.12.34.45&quot;</span>
+   <span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>Json Flow Classifier create response example:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="p">{</span><span class="s2">&quot;flow_classifier&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;FC1&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;tenant_id&quot;</span><span class="p">:</span> <span class="s2">&quot;1814726e2d22407b8ca76db5e567dcf1&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;description&quot;</span><span class="p">:</span> <span class="s2">&quot;Flow rule for classifying TCP traffic&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;protocol&quot;</span><span class="p">:</span> <span class="s2">&quot;TCP&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;source_port_range_min&quot;</span><span class="p">:</span> <span class="mi">22</span><span class="p">,</span> <span class="s2">&quot;source_port_range_max&quot;</span><span class="p">:</span> <span class="mi">4000</span><span class="p">,</span>
+       <span class="s2">&quot;destination_port_range_min&quot;</span><span class="p">:</span> <span class="mi">80</span><span class="p">,</span> <span class="s2">&quot;destination_port_range_max&quot;</span><span class="p">:</span> <span class="mi">80</span><span class="p">,</span>
+       <span class="s2">&quot;source_ip_prefix&quot;</span><span class="p">:</span> <span class="n">null</span> <span class="p">,</span> <span class="s2">&quot;destination_ip_prefix&quot;</span><span class="p">:</span> <span class="s2">&quot;22.12.34.45&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="s2">&quot;4a334cd4-fe9c-4fae-af4b-321c5e2eb051&quot;</span>
+   <span class="p">}</span>
+<span class="p">}</span>
+
+<span class="p">{</span><span class="s2">&quot;flow_classifier&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;FC2&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;tenant_id&quot;</span><span class="p">:</span> <span class="s2">&quot;1814726e2d22407b8ca76db5e567dcf1&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;description&quot;</span><span class="p">:</span> <span class="s2">&quot;Flow rule for classifying UDP traffic&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;protocol&quot;</span><span class="p">:</span> <span class="s2">&quot;UDP&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;source_port_range_min&quot;</span><span class="p">:</span> <span class="mi">22</span><span class="p">,</span> <span class="s2">&quot;source_port_range_max&quot;</span><span class="p">:</span> <span class="mi">22</span><span class="p">,</span>
+       <span class="s2">&quot;destination_port_range_min&quot;</span><span class="p">:</span> <span class="mi">80</span><span class="p">,</span> <span class="s2">&quot;destination_port_range_max&quot;</span><span class="p">:</span> <span class="mi">80</span><span class="p">,</span>
+       <span class="s2">&quot;source_ip_prefix&quot;</span><span class="p">:</span> <span class="n">null</span> <span class="p">,</span> <span class="s2">&quot;destination_ip_prefix&quot;</span><span class="p">:</span> <span class="s2">&quot;22.12.34.45&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="s2">&quot;105a4b0a-73d6-11e5-b392-2c27d72acb4c&quot;</span>
+   <span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>Json Port Chain create request example:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="p">{</span><span class="s2">&quot;port_chain&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;PC1&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;tenant_id&quot;</span><span class="p">:</span> <span class="s2">&quot;d382007aa9904763a801f68ecf065cf5&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;description&quot;</span><span class="p">:</span> <span class="s2">&quot;Steering TCP and UDP traffic first to Firewall and then to Loadbalancer&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;flow_classifiers&quot;</span><span class="p">:</span> <span class="p">[</span>
+           <span class="s2">&quot;4a334cd4-fe9c-4fae-af4b-321c5e2eb051&quot;</span><span class="p">,</span>
+           <span class="s2">&quot;105a4b0a-73d6-11e5-b392-2c27d72acb4c&quot;</span>
+       <span class="p">],</span>
+       <span class="s2">&quot;port_pair_groups&quot;</span><span class="p">:</span> <span class="p">[</span>
+           <span class="s2">&quot;4512d643-24fc-4fae-af4b-321c5e2eb3d1&quot;</span><span class="p">,</span>
+           <span class="s2">&quot;4a634d49-76dc-4fae-af4b-321c5e23d651&quot;</span>
+       <span class="p">],</span>
+       <span class="s2">&quot;chain_id&quot;</span><span class="p">:</span> <span class="s2">&quot;10034&quot;</span>
+   <span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+<p>Json Port Chain create response example:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="p">{</span><span class="s2">&quot;port_chain&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;PC1&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;tenant_id&quot;</span><span class="p">:</span> <span class="s2">&quot;d382007aa9904763a801f68ecf065cf5&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;description&quot;</span><span class="p">:</span> <span class="s2">&quot;Steering TCP and UDP traffic first to Firewall and then to Loadbalancer&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;flow_classifiers&quot;</span><span class="p">:</span> <span class="p">[</span>
+           <span class="s2">&quot;4a334cd4-fe9c-4fae-af4b-321c5e2eb051&quot;</span><span class="p">,</span>
+           <span class="s2">&quot;105a4b0a-73d6-11e5-b392-2c27d72acb4c&quot;</span>
+       <span class="p">],</span>
+       <span class="s2">&quot;port_pair_groups&quot;</span><span class="p">:</span> <span class="p">[</span>
+           <span class="s2">&quot;4512d643-24fc-4fae-af4b-321c5e2eb3d1&quot;</span><span class="p">,</span>
+           <span class="s2">&quot;4a634d49-76dc-4fae-af4b-321c5e23d651&quot;</span>
+       <span class="p">],</span>
+       <span class="s2">&quot;chain_id&quot;</span><span class="p">:</span> <span class="s2">&quot;10034&quot;</span><span class="p">,</span>
+       <span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="s2">&quot;1278dcd4-459f-62ed-754b-87fc5e4a6751&quot;</span>
+   <span class="p">}</span>
+<span class="p">}</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="section" id="implementation">
+<h2>Implementation<a class="headerlink" href="#implementation" title="Permalink to this headline">¶</a></h2>
+<div class="section" id="assignee-s">
+<h3>Assignee(s)<a class="headerlink" href="#assignee-s" title="Permalink to this headline">¶</a></h3>
+<dl class="docutils">
+<dt>Authors of the Specification and Primary contributors:</dt>
+<dd><ul class="first last simple">
+<li>Cathy Zhang (<a class="reference external" href="mailto:cathy&#46;h&#46;zhang&#37;&#52;&#48;huawei&#46;com">cathy<span>&#46;</span>h<span>&#46;</span>zhang<span>&#64;</span>huawei<span>&#46;</span>com</a>)</li>
+<li>Louis Fourie (<a class="reference external" href="mailto:louis&#46;fourie&#37;&#52;&#48;huawei&#46;com">louis<span>&#46;</span>fourie<span>&#64;</span>huawei<span>&#46;</span>com</a>)</li>
+</ul>
+</dd>
+<dt>Other contributors:</dt>
+<dd><ul class="first last simple">
+<li>Vikram Choudhary (<a class="reference external" href="mailto:vikram&#46;choudhary&#37;&#52;&#48;huawei&#46;com">vikram<span>&#46;</span>choudhary<span>&#64;</span>huawei<span>&#46;</span>com</a>)</li>
+<li>Swaminathan Vasudevan (<a class="reference external" href="mailto:swaminathan&#46;vasudevan&#37;&#52;&#48;hp&#46;com">swaminathan<span>&#46;</span>vasudevan<span>&#64;</span>hp<span>&#46;</span>com</a>)</li>
+<li>Yuji Azama (<a class="reference external" href="mailto:yuj-azama&#37;&#52;&#48;rc&#46;jp&#46;nec&#46;com">yuj-azama<span>&#64;</span>rc<span>&#46;</span>jp<span>&#46;</span>nec<span>&#46;</span>com</a>)</li>
+<li>Mohan Kumar (<a class="reference external" href="mailto:nmohankumar1011&#37;&#52;&#48;gmail&#46;com">nmohankumar1011<span>&#64;</span>gmail<span>&#46;</span>com</a>)</li>
+<li>Ramanjaneya (<a class="reference external" href="mailto:ramanjieee&#37;&#52;&#48;gmail&#46;com">ramanjieee<span>&#64;</span>gmail<span>&#46;</span>com</a>)</li>
+<li>Stephen Wong (<a class="reference external" href="mailto:stephen&#46;kf&#46;wong&#37;&#52;&#48;gmail&#46;com">stephen<span>&#46;</span>kf<span>&#46;</span>wong<span>&#64;</span>gmail<span>&#46;</span>com</a>)</li>
+<li>Nicolas Bouthors (<a class="reference external" href="mailto:Nicolas&#46;BOUTHORS&#37;&#52;&#48;qosmos&#46;com">Nicolas<span>&#46;</span>BOUTHORS<span>&#64;</span>qosmos<span>&#46;</span>com</a>)</li>
+<li>Akihiro Motoki &lt;<a class="reference external" href="mailto:amotoki&#37;&#52;&#48;gmail&#46;com">amotoki<span>&#64;</span>gmail<span>&#46;</span>com</a>&gt;</li>
+<li>Paul Carver &lt;<a class="reference external" href="mailto:pcarver&#37;&#52;&#48;att&#46;com">pcarver<span>&#64;</span>att<span>&#46;</span>com</a>&gt;</li>
+</ul>
+</dd>
+</dl>
+</div>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">API Model</a><ul>
+<li><a class="reference internal" href="#problem-description">Problem Description</a></li>
+<li><a class="reference internal" href="#proposed-change">Proposed Change</a><ul>
+<li><a class="reference internal" href="#data-model-impact">Data Model Impact</a></li>
+<li><a class="reference internal" href="#rest-api">REST API</a></li>
+<li><a class="reference internal" href="#rest-api-impact">REST API Impact</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#implementation">Implementation</a><ul>
+<li><a class="reference internal" href="#assignee-s">Assignee(s)</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="contribution.html"
+                                  title="previous chapter">Contribution</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="system_design and_workflow.html"
+                                  title="next chapter">System Design and Workflow</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/networking-sfc
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="_sources/api.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="system_design and_workflow.html" title="System Design and Workflow"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="contribution.html" title="Contribution"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="index.html">networking-sfc 3.0.1.dev96 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2013, OpenStack Foundation.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/networking-sfc");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

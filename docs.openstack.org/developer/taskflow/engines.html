@@ -1,0 +1,2022 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Engines &mdash; TaskFlow 2.9.1.dev5 documentation</title>
+    
+    <link rel="stylesheet" href="_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '2.9.1.dev5',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <link rel="top" title="TaskFlow 2.9.1.dev5 documentation" href="index.html" />
+    <link rel="next" title="Notifications and listeners" href="notifications.html" />
+    <link rel="prev" title="Patterns" href="patterns.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="engines">
+<h1>Engines<a class="headerlink" href="#engines" title="Permalink to this headline">¶</a></h1>
+<div class="section" id="overview">
+<h2>Overview<a class="headerlink" href="#overview" title="Permalink to this headline">¶</a></h2>
+<p>Engines are what <strong>really</strong> runs your atoms.</p>
+<p>An <em>engine</em> takes a flow structure (described by <a class="reference internal" href="patterns.html"><em>patterns</em></a>)
+and uses it to decide which <a class="reference internal" href="atoms.html"><em>atom</em></a> to run and when.</p>
+<p>TaskFlow provides different implementations of engines. Some may be easier to
+use (ie, require no additional infrastructure setup) and understand; others
+might require more complicated setup but provide better scalability. The idea
+and <em>ideal</em> is that deployers or developers of a service that use TaskFlow can
+select an engine that suites their setup best without modifying the code of
+said service.</p>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">Engines usually have different capabilities and configuration, but all of
+them <strong>must</strong> implement the same interface and preserve the semantics of
+patterns (e.g. parts of a <a class="reference internal" href="patterns.html#taskflow.patterns.linear_flow.Flow" title="taskflow.patterns.linear_flow.Flow"><code class="xref py py-class docutils literal"><span class="pre">linear_flow.Flow</span></code></a>
+are run one after another, in order, even if the selected
+engine is <em>capable</em> of running tasks in parallel).</p>
+</div>
+<div class="section" id="why-they-exist">
+<h3>Why they exist<a class="headerlink" href="#why-they-exist" title="Permalink to this headline">¶</a></h3>
+<p>An engine being <em>the</em> core component which actually makes your flows progress
+is likely a new concept for many programmers so let&#8217;s describe how it operates
+in more depth and some of the reasoning behind why it exists. This will
+hopefully make it more clear on their value add to the TaskFlow library user.</p>
+<p>First though let us discuss something most are familiar already with; the
+difference between <a class="reference external" href="http://en.wikipedia.org/wiki/Declarative_programming">declarative</a> and <a class="reference external" href="http://en.wikipedia.org/wiki/Imperative_programming">imperative</a> programming models. The
+imperative model involves establishing statements that accomplish a programs
+action (likely using conditionals and such other language features to do this).
+This kind of program embeds the <em>how</em> to accomplish a goal while also defining
+<em>what</em> the goal actually is (and the state of this is maintained in memory or
+on the stack while these statements execute). In contrast there is the
+declarative model which instead of combining the <em>how</em> to accomplish a goal
+along side the <em>what</em> is to be accomplished splits these two into only
+declaring what the intended goal is and not the <em>how</em>. In TaskFlow terminology
+the <em>what</em> is the structure of your flows and the tasks and other atoms you
+have inside those flows, but the <em>how</em> is not defined (the line becomes blurred
+since tasks themselves contain imperative code, but for now consider a task as
+more of a <em>pure</em> function that executes, reverts and may require inputs and
+provide outputs). This is where engines get involved; they do the execution of
+the <em>what</em> defined via <a class="reference internal" href="atoms.html"><em>atoms</em></a>, tasks, flows and the relationships
+defined there-in and execute these in a well-defined manner (and the engine is
+responsible for any state manipulation instead).</p>
+<p>This mix of imperative and declarative (with a stronger emphasis on the
+declarative model) allows for the following functionality to become possible:</p>
+<ul class="simple">
+<li>Enhancing reliability: Decoupling of state alterations from what should be
+accomplished allows for a <em>natural</em> way of resuming by allowing the engine to
+track the current state and know at which point a workflow is in and how to
+get back into that state when resumption occurs.</li>
+<li>Enhancing scalability: When an engine is responsible for executing your
+desired work it becomes possible to alter the <em>how</em> in the future by creating
+new types of execution backends (for example the <a class="reference internal" href="#worker">worker</a> model which does
+not execute locally). Without the decoupling of the <em>what</em> and the <em>how</em> it
+is not possible to provide such a feature (since by the very nature of that
+coupling this kind of functionality is inherently very hard to provide).</li>
+<li>Enhancing consistency: Since the engine is responsible for executing atoms
+and the associated workflow, it can be one (if not the only) of the primary
+entities that is working to keep the execution model in a consistent state.
+Coupled with atoms which <em>should</em> be immutable and have have limited (if any)
+internal state the ability to reason about and obtain consistency can be
+vastly improved.<ul>
+<li>With future features around locking (using <a class="reference external" href="https://github.com/openstack/tooz">tooz</a> to help) engines can
+also help ensure that resources being accessed by tasks are reliably
+obtained and mutated on. This will help ensure that other processes,
+threads, or other types of entities are also not executing tasks that
+manipulate those same resources (further increasing consistency).</li>
+</ul>
+</li>
+</ul>
+<p>Of course these kind of features can come with some drawbacks:</p>
+<ul class="simple">
+<li>The downside of decoupling the <em>how</em> and the <em>what</em> is that the imperative
+model where functions control &amp; manipulate state must start to be shifted
+away from (and this is likely a mindset change for programmers used to the
+imperative model). We have worked to make this less of a concern by creating
+and encouraging the usage of <a class="reference internal" href="persistence.html"><em>persistence</em></a>, to help make
+it possible to have state and transfer that state via a argument input and
+output mechanism.</li>
+<li>Depending on how much imperative code exists (and state inside that code)
+there <em>may</em> be <em>significant</em> rework of that code and converting or
+refactoring it to these new concepts. We have tried to help here by allowing
+you to have tasks that internally use regular python code (and internally can
+be written in an imperative style) as well as by providing
+<a class="reference internal" href="examples.html"><em>examples</em></a> that show how to use these concepts.</li>
+<li>Another one of the downsides of decoupling the <em>what</em> from the <em>how</em>  is that
+it may become harder to use traditional techniques to debug failures
+(especially if remote workers are involved). We try to help here by making it
+easy to track, monitor and introspect the actions &amp; state changes that are
+occurring inside an engine (see <a class="reference internal" href="notifications.html"><em>notifications</em></a> for how
+to use some of these capabilities).</li>
+</ul>
+</div>
+</div>
+<div class="section" id="creating">
+<h2>Creating<a class="headerlink" href="#creating" title="Permalink to this headline">¶</a></h2>
+<p id="creating-engines">All engines are mere classes that implement the same interface, and of course
+it is possible to import them and create instances just like with any classes
+in Python. But the easier (and recommended) way for creating an engine is using
+the engine helper functions. All of these functions are imported into the
+<code class="docutils literal"><span class="pre">taskflow.engines</span></code> module namespace, so the typical usage of these functions
+might look like:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">engines</span>
+
+<span class="o">...</span>
+<span class="n">flow</span> <span class="o">=</span> <span class="n">make_flow</span><span class="p">()</span>
+<span class="n">eng</span> <span class="o">=</span> <span class="n">engines</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">flow</span><span class="p">,</span> <span class="n">engine</span><span class="o">=</span><span class="s1">&#39;serial&#39;</span><span class="p">,</span> <span class="n">backend</span><span class="o">=</span><span class="n">my_persistence_conf</span><span class="p">)</span>
+<span class="n">eng</span><span class="o">.</span><span class="n">run</span><span class="p">()</span>
+<span class="o">...</span>
+</pre></div>
+</div>
+<span class="target" id="module-taskflow.engines.helpers"></span><dl class="function">
+<dt id="taskflow.engines.helpers.load">
+<code class="descclassname">taskflow.engines.helpers.</code><code class="descname">load</code><span class="sig-paren">(</span><em>flow</em>, <em>store=None</em>, <em>flow_detail=None</em>, <em>book=None</em>, <em>backend=None</em>, <em>namespace='taskflow.engines'</em>, <em>engine='default'</em>, <em>**kwargs</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/helpers.html#load"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.helpers.load" title="Permalink to this definition">¶</a></dt>
+<dd><p>Load a flow into an engine.</p>
+<p>This function creates and prepares an engine to run the provided flow. All
+that is left after this returns is to run the engine with the
+engines <a class="reference internal" href="#taskflow.engines.base.Engine.run" title="taskflow.engines.base.Engine.run"><code class="xref py py-meth docutils literal"><span class="pre">run()</span></code></a> method.</p>
+<p>Which engine to load is specified via the <code class="docutils literal"><span class="pre">engine</span></code> parameter. It
+can be a string that names the engine type to use, or a string that
+is a URI with a scheme that names the engine type to use and further
+options contained in the URI&#8217;s host, port, and query parameters...</p>
+<p>Which storage backend to use is defined by the backend parameter. It
+can be backend itself, or a dictionary that is passed to
+<a class="reference internal" href="persistence.html#taskflow.persistence.backends.fetch" title="taskflow.persistence.backends.fetch"><code class="xref py py-func docutils literal"><span class="pre">fetch()</span></code></a> to obtain a
+viable backend.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><ul class="first simple">
+<li><strong>flow</strong> &#8211; flow to load</li>
+<li><strong>store</strong> &#8211; dict &#8211; data to put to storage to satisfy flow requirements</li>
+<li><strong>flow_detail</strong> &#8211; FlowDetail that holds the state of the flow (if one is
+not provided then one will be created for you in the provided backend)</li>
+<li><strong>book</strong> &#8211; LogBook to create flow detail in if flow_detail is None</li>
+<li><strong>backend</strong> &#8211; storage backend to use or configuration that defines it</li>
+<li><strong>namespace</strong> &#8211; driver namespace for stevedore (or empty for default)</li>
+<li><strong>engine</strong> &#8211; string engine type or URI string with scheme that contains
+the engine type and any URI specific components that will
+become part of the engine options.</li>
+<li><strong>kwargs</strong> &#8211; arbitrary keyword arguments passed as options (merged with
+any extracted <code class="docutils literal"><span class="pre">engine</span></code>), typically used for any engine
+specific options that do not fit as any of the
+existing arguments.</li>
+</ul>
+</td>
+</tr>
+<tr class="field-even field"><th class="field-name">Returns:</th><td class="field-body"><p class="first last">engine</p>
+</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="function">
+<dt id="taskflow.engines.helpers.run">
+<code class="descclassname">taskflow.engines.helpers.</code><code class="descname">run</code><span class="sig-paren">(</span><em>flow</em>, <em>store=None</em>, <em>flow_detail=None</em>, <em>book=None</em>, <em>backend=None</em>, <em>namespace='taskflow.engines'</em>, <em>engine='default'</em>, <em>**kwargs</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/helpers.html#run"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.helpers.run" title="Permalink to this definition">¶</a></dt>
+<dd><p>Run the flow.</p>
+<p>This function loads the flow into an engine (with the <a class="reference internal" href="#taskflow.engines.helpers.load" title="taskflow.engines.helpers.load"><code class="xref py py-func docutils literal"><span class="pre">load()</span></code></a>
+function) and runs the engine.</p>
+<p>The arguments are interpreted as for <a class="reference internal" href="#taskflow.engines.helpers.load" title="taskflow.engines.helpers.load"><code class="xref py py-func docutils literal"><span class="pre">load()</span></code></a>.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Returns:</th><td class="field-body">dictionary of all named
+results (see <a class="reference internal" href="persistence.html#taskflow.storage.Storage.fetch_all" title="taskflow.storage.Storage.fetch_all"><code class="xref py py-meth docutils literal"><span class="pre">fetch_all()</span></code></a>)</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="function">
+<dt id="taskflow.engines.helpers.save_factory_details">
+<code class="descclassname">taskflow.engines.helpers.</code><code class="descname">save_factory_details</code><span class="sig-paren">(</span><em>flow_detail</em>, <em>flow_factory</em>, <em>factory_args</em>, <em>factory_kwargs</em>, <em>backend=None</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/helpers.html#save_factory_details"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.helpers.save_factory_details" title="Permalink to this definition">¶</a></dt>
+<dd><p>Saves the given factories reimportable attributes into the flow detail.</p>
+<p>This function saves the factory name, arguments, and keyword arguments
+into the given flow details object  and if a backend is provided it will
+also ensure that the backend saves the flow details after being updated.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><ul class="first last simple">
+<li><strong>flow_detail</strong> &#8211; FlowDetail that holds state of the flow to load</li>
+<li><strong>flow_factory</strong> &#8211; function or string: function that creates the flow</li>
+<li><strong>factory_args</strong> &#8211; list or tuple of factory positional arguments</li>
+<li><strong>factory_kwargs</strong> &#8211; dict of factory keyword arguments</li>
+<li><strong>backend</strong> &#8211; storage backend to use or configuration</li>
+</ul>
+</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="function">
+<dt id="taskflow.engines.helpers.load_from_factory">
+<code class="descclassname">taskflow.engines.helpers.</code><code class="descname">load_from_factory</code><span class="sig-paren">(</span><em>flow_factory</em>, <em>factory_args=None</em>, <em>factory_kwargs=None</em>, <em>store=None</em>, <em>book=None</em>, <em>backend=None</em>, <em>namespace='taskflow.engines'</em>, <em>engine='default'</em>, <em>**kwargs</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/helpers.html#load_from_factory"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.helpers.load_from_factory" title="Permalink to this definition">¶</a></dt>
+<dd><p>Loads a flow from a factory function into an engine.</p>
+<p>Gets flow factory function (or name of it) and creates flow with
+it. Then, the flow is loaded into an engine with the <a class="reference internal" href="#taskflow.engines.helpers.load" title="taskflow.engines.helpers.load"><code class="xref py py-func docutils literal"><span class="pre">load()</span></code></a>
+function, and the factory function fully qualified name is saved to flow
+metadata so that it can be later resumed.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><ul class="first last simple">
+<li><strong>flow_factory</strong> &#8211; function or string: function that creates the flow</li>
+<li><strong>factory_args</strong> &#8211; list or tuple of factory positional arguments</li>
+<li><strong>factory_kwargs</strong> &#8211; dict of factory keyword arguments</li>
+</ul>
+</td>
+</tr>
+</tbody>
+</table>
+<p>Further arguments are interpreted as for <a class="reference internal" href="#taskflow.engines.helpers.load" title="taskflow.engines.helpers.load"><code class="xref py py-func docutils literal"><span class="pre">load()</span></code></a>.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Returns:</th><td class="field-body">engine</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="function">
+<dt id="taskflow.engines.helpers.flow_from_detail">
+<code class="descclassname">taskflow.engines.helpers.</code><code class="descname">flow_from_detail</code><span class="sig-paren">(</span><em>flow_detail</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/helpers.html#flow_from_detail"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.helpers.flow_from_detail" title="Permalink to this definition">¶</a></dt>
+<dd><p>Reloads a flow previously saved.</p>
+<p>Gets the flow factories name and any arguments and keyword arguments from
+the flow details metadata, and then calls that factory to recreate the
+flow.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><strong>flow_detail</strong> &#8211; FlowDetail that holds state of the flow to load</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="function">
+<dt id="taskflow.engines.helpers.load_from_detail">
+<code class="descclassname">taskflow.engines.helpers.</code><code class="descname">load_from_detail</code><span class="sig-paren">(</span><em>flow_detail</em>, <em>store=None</em>, <em>backend=None</em>, <em>namespace='taskflow.engines'</em>, <em>engine='default'</em>, <em>**kwargs</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/helpers.html#load_from_detail"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.helpers.load_from_detail" title="Permalink to this definition">¶</a></dt>
+<dd><p>Reloads an engine previously saved.</p>
+<p>This reloads the flow using the
+<a class="reference internal" href="#taskflow.engines.helpers.flow_from_detail" title="taskflow.engines.helpers.flow_from_detail"><code class="xref py py-func docutils literal"><span class="pre">flow_from_detail()</span></code></a> function and then calls
+into the <a class="reference internal" href="#taskflow.engines.helpers.load" title="taskflow.engines.helpers.load"><code class="xref py py-func docutils literal"><span class="pre">load()</span></code></a> function to create an engine from that flow.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><strong>flow_detail</strong> &#8211; FlowDetail that holds state of the flow to load</td>
+</tr>
+</tbody>
+</table>
+<p>Further arguments are interpreted as for <a class="reference internal" href="#taskflow.engines.helpers.load" title="taskflow.engines.helpers.load"><code class="xref py py-func docutils literal"><span class="pre">load()</span></code></a>.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Returns:</th><td class="field-body">engine</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+</div>
+<div class="section" id="usage">
+<h2>Usage<a class="headerlink" href="#usage" title="Permalink to this headline">¶</a></h2>
+<p>To select which engine to use and pass parameters to an engine you should use
+the <code class="docutils literal"><span class="pre">engine</span></code> parameter any engine helper function accepts and for any engine
+specific options use the <code class="docutils literal"><span class="pre">kwargs</span></code> parameter.</p>
+</div>
+<div class="section" id="types">
+<h2>Types<a class="headerlink" href="#types" title="Permalink to this headline">¶</a></h2>
+<div class="section" id="serial">
+<h3>Serial<a class="headerlink" href="#serial" title="Permalink to this headline">¶</a></h3>
+<p><strong>Engine type</strong>: <code class="docutils literal"><span class="pre">'serial'</span></code></p>
+<p>Runs all tasks on a single thread &#8211; the same thread
+<a class="reference internal" href="#taskflow.engines.base.Engine.run" title="taskflow.engines.base.Engine.run"><code class="xref py py-meth docutils literal"><span class="pre">run()</span></code></a> is called from.</p>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">This engine is used by <strong>default</strong>.</p>
+</div>
+<div class="admonition tip">
+<p class="first admonition-title">Tip</p>
+<p class="last">If eventlet is used then this engine will not block other threads
+from running as eventlet automatically creates a implicit co-routine
+system (using greenthreads and monkey patching). See
+<a class="reference external" href="http://eventlet.net/">eventlet</a> and
+<a class="reference external" href="http://greenlet.readthedocs.org/">greenlet</a> for more details.</p>
+</div>
+</div>
+<div class="section" id="parallel">
+<h3>Parallel<a class="headerlink" href="#parallel" title="Permalink to this headline">¶</a></h3>
+<p><strong>Engine type</strong>: <code class="docutils literal"><span class="pre">'parallel'</span></code></p>
+<p>A parallel engine schedules tasks onto different threads/processes to allow for
+running non-dependent tasks simultaneously. See the documentation of
+<a class="reference internal" href="#taskflow.engines.action_engine.engine.ParallelActionEngine" title="taskflow.engines.action_engine.engine.ParallelActionEngine"><code class="xref py py-class docutils literal"><span class="pre">ParallelActionEngine</span></code></a> for
+supported arguments that can be used to construct a parallel engine that runs
+using your desired execution model.</p>
+<div class="admonition tip">
+<p class="first admonition-title">Tip</p>
+<p class="last">Sharing an executor between engine instances provides better
+scalability by reducing thread/process creation and teardown as well as by
+reusing existing pools (which is a good practice in general).</p>
+</div>
+<div class="admonition warning">
+<p class="first admonition-title">Warning</p>
+<p class="last">Running tasks with a <a class="reference external" href="https://docs.python.org/dev/library/concurrent.futures.html#processpoolexecutor">process pool executor</a> is <strong>experimentally</strong>
+supported. This is mainly due to the <a class="reference external" href="https://pypi.python.org/pypi/futures">futures backport</a> and
+the <a class="reference external" href="https://docs.python.org/2/library/multiprocessing.html">multiprocessing</a> module that exist in older versions of python not
+being as up to date (with important fixes such as <a class="reference external" href="http://bugs.python.org/issue4892">4892</a>,
+<a class="reference external" href="http://bugs.python.org/issue6721">6721</a>, <a class="reference external" href="http://bugs.python.org/issue9205">9205</a>, <a class="reference external" href="http://bugs.python.org/issue16284">16284</a>,
+<a class="reference external" href="http://bugs.python.org/issue22393">22393</a> and others...) as the most recent python version (which
+themselves have a variety of ongoing/recent bugs).</p>
+</div>
+</div>
+<div class="section" id="workers">
+<h3>Workers<a class="headerlink" href="#workers" title="Permalink to this headline">¶</a></h3>
+<p id="worker"><strong>Engine type</strong>: <code class="docutils literal"><span class="pre">'worker-based'</span></code> or <code class="docutils literal"><span class="pre">'workers'</span></code></p>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">Since this engine is significantly more complicated (and
+different) then the others we thought it appropriate to devote a
+whole documentation <a class="reference internal" href="workers.html"><em>section</em></a> to it.</p>
+</div>
+</div>
+</div>
+<div class="section" id="how-they-run">
+<h2>How they run<a class="headerlink" href="#how-they-run" title="Permalink to this headline">¶</a></h2>
+<p>To provide a peek into the general process that an engine goes through when
+running lets break it apart a little and describe what one of the engine types
+does while executing (for this we will look into the
+<a class="reference internal" href="#taskflow.engines.action_engine.engine.ActionEngine" title="taskflow.engines.action_engine.engine.ActionEngine"><code class="xref py py-class docutils literal"><span class="pre">ActionEngine</span></code></a> engine type).</p>
+<div class="section" id="creation">
+<h3>Creation<a class="headerlink" href="#creation" title="Permalink to this headline">¶</a></h3>
+<p>The first thing that occurs is that the user creates an engine for a given
+flow, providing a flow detail (where results will be saved into a provided
+<a class="reference internal" href="persistence.html"><em>persistence</em></a> backend). This is typically accomplished via
+the methods described above in <a class="reference internal" href="#creating-engines">creating engines</a>. The engine at this point
+now will have references to your flow and backends and other internal variables
+are setup.</p>
+</div>
+<div class="section" id="compiling">
+<h3>Compiling<a class="headerlink" href="#compiling" title="Permalink to this headline">¶</a></h3>
+<p>During this stage (see <a class="reference internal" href="#taskflow.engines.base.Engine.compile" title="taskflow.engines.base.Engine.compile"><code class="xref py py-func docutils literal"><span class="pre">compile()</span></code></a>) the
+flow will be converted into an internal graph representation using a
+compiler (the default implementation for patterns is the
+<a class="reference internal" href="#taskflow.engines.action_engine.compiler.PatternCompiler" title="taskflow.engines.action_engine.compiler.PatternCompiler"><code class="xref py py-class docutils literal"><span class="pre">PatternCompiler</span></code></a>). This
+class compiles/converts the flow objects and contained atoms into a
+<a class="reference external" href="https://networkx.github.io/">networkx</a> directed graph (and tree structure) that contains the equivalent
+atoms defined in the flow and any nested flows &amp; atoms as well as the
+constraints that are created by the application of the different flow
+patterns. This graph (and tree) are what will be analyzed &amp; traversed during
+the engines execution. At this point a few helper object are also created and
+saved to internal engine variables (these object help in execution of
+atoms, analyzing the graph and performing other internal engine
+activities). At the finishing of this stage a
+<a class="reference internal" href="#taskflow.engines.action_engine.runtime.Runtime" title="taskflow.engines.action_engine.runtime.Runtime"><code class="xref py py-class docutils literal"><span class="pre">Runtime</span></code></a> object is created
+which contains references to all needed runtime components and its
+<a class="reference internal" href="#taskflow.engines.action_engine.runtime.Runtime.compile" title="taskflow.engines.action_engine.runtime.Runtime.compile"><code class="xref py py-func docutils literal"><span class="pre">compile()</span></code></a> is called
+to compile a cache of frequently used execution helper objects.</p>
+</div>
+<div class="section" id="preparation">
+<h3>Preparation<a class="headerlink" href="#preparation" title="Permalink to this headline">¶</a></h3>
+<p>This stage (see <a class="reference internal" href="#taskflow.engines.base.Engine.prepare" title="taskflow.engines.base.Engine.prepare"><code class="xref py py-func docutils literal"><span class="pre">prepare()</span></code></a>) starts by
+setting up the storage needed for all atoms in the compiled graph, ensuring
+that corresponding <a class="reference internal" href="persistence.html#taskflow.persistence.models.AtomDetail" title="taskflow.persistence.models.AtomDetail"><code class="xref py py-class docutils literal"><span class="pre">AtomDetail</span></code></a> (or
+subclass of) objects are created for each node in the graph.</p>
+</div>
+<div class="section" id="validation">
+<h3>Validation<a class="headerlink" href="#validation" title="Permalink to this headline">¶</a></h3>
+<p>This stage (see <a class="reference internal" href="#taskflow.engines.base.Engine.validate" title="taskflow.engines.base.Engine.validate"><code class="xref py py-func docutils literal"><span class="pre">validate()</span></code></a>) performs
+any final validation of the compiled (and now storage prepared) engine. It
+compares the requirements that are needed to start execution and
+what is currently provided or will be produced in the future. If there are
+<em>any</em> atom requirements that are not satisfied (no known current provider or
+future producer is found) then execution will <strong>not</strong> be allowed to continue.</p>
+</div>
+<div class="section" id="execution">
+<h3>Execution<a class="headerlink" href="#execution" title="Permalink to this headline">¶</a></h3>
+<p>The graph (and helper objects) previously created are now used for guiding
+further execution (see <a class="reference internal" href="#taskflow.engines.base.Engine.run" title="taskflow.engines.base.Engine.run"><code class="xref py py-func docutils literal"><span class="pre">run()</span></code></a>). The
+flow is put into the <code class="docutils literal"><span class="pre">RUNNING</span></code> <a class="reference internal" href="states.html"><em>state</em></a> and a
+<a class="reference internal" href="#taskflow.engines.action_engine.builder.MachineBuilder" title="taskflow.engines.action_engine.builder.MachineBuilder"><code class="xref py py-class docutils literal"><span class="pre">MachineBuilder</span></code></a> state
+machine object and runner object are built (using the <a class="reference external" href="http://docs.openstack.org/developer/automaton/">automaton</a> library).
+That machine and associated runner then starts to take over and begins going
+through the stages listed below (for a more visual diagram/representation see
+the <a class="reference internal" href="states.html#engine-states"><span>engine state diagram</span></a>).</p>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">The engine will respect the constraints imposed by the flow. For example,
+if an engine is executing a <a class="reference internal" href="patterns.html#taskflow.patterns.linear_flow.Flow" title="taskflow.patterns.linear_flow.Flow"><code class="xref py py-class docutils literal"><span class="pre">Flow</span></code></a>
+then it is constrained by the dependency graph which is linear in this
+case, and hence using a parallel engine may not yield any benefits if one
+is looking for concurrency.</p>
+</div>
+<div class="section" id="resumption">
+<h4>Resumption<a class="headerlink" href="#resumption" title="Permalink to this headline">¶</a></h4>
+<p>One of the first stages is to analyze the <a class="reference internal" href="states.html"><em>state</em></a> of the tasks in
+the graph, determining which ones have failed, which one were previously
+running and determining what the intention of that task should now be
+(typically an intention can be that it should <code class="docutils literal"><span class="pre">REVERT</span></code>, or that it should
+<code class="docutils literal"><span class="pre">EXECUTE</span></code> or that it should be <code class="docutils literal"><span class="pre">IGNORED</span></code>). This intention is determined by
+analyzing the current state of the task; which is determined by looking at the
+state in the task detail object for that task and analyzing edges of the graph
+for things like retry atom which can influence what a tasks intention should be
+(this is aided by the usage of the
+<a class="reference internal" href="#taskflow.engines.action_engine.selector.Selector" title="taskflow.engines.action_engine.selector.Selector"><code class="xref py py-class docutils literal"><span class="pre">Selector</span></code></a> helper
+object which was designed to provide helper methods for this analysis). Once
+these intentions are determined and associated with each task (the intention is
+also stored in the <a class="reference internal" href="persistence.html#taskflow.persistence.models.AtomDetail" title="taskflow.persistence.models.AtomDetail"><code class="xref py py-class docutils literal"><span class="pre">AtomDetail</span></code></a> object)
+the <a class="reference internal" href="#scheduling"><span>scheduling</span></a> stage starts.</p>
+</div>
+<div class="section" id="scheduling">
+<span id="id1"></span><h4>Scheduling<a class="headerlink" href="#scheduling" title="Permalink to this headline">¶</a></h4>
+<p>This stage selects which atoms are eligible to run by using a
+<a class="reference internal" href="#taskflow.engines.action_engine.scheduler.Scheduler" title="taskflow.engines.action_engine.scheduler.Scheduler"><code class="xref py py-class docutils literal"><span class="pre">Scheduler</span></code></a> implementation
+(the default implementation looks at their intention, checking if predecessor
+atoms have ran and so-on, using a
+<a class="reference internal" href="#taskflow.engines.action_engine.selector.Selector" title="taskflow.engines.action_engine.selector.Selector"><code class="xref py py-class docutils literal"><span class="pre">Selector</span></code></a> helper
+object as needed) and submits those atoms to a previously provided compatible
+<a class="reference external" href="https://docs.python.org/dev/library/concurrent.futures.html#concurrent.futures.Executor">executor</a> for asynchronous execution. This
+<a class="reference internal" href="#taskflow.engines.action_engine.scheduler.Scheduler" title="taskflow.engines.action_engine.scheduler.Scheduler"><code class="xref py py-class docutils literal"><span class="pre">Scheduler</span></code></a> will return a
+<a class="reference external" href="https://docs.python.org/dev/library/concurrent.futures.html#future-objects">future</a> object for each atom scheduled; all of which are collected into a
+list of not done futures. This will end the initial round of scheduling and at
+this point the engine enters the <a class="reference internal" href="#waiting"><span>waiting</span></a> stage.</p>
+</div>
+<div class="section" id="waiting">
+<span id="id2"></span><h4>Waiting<a class="headerlink" href="#waiting" title="Permalink to this headline">¶</a></h4>
+<p>In this stage the engine waits for any of the future objects previously
+submitted to complete. Once one of the future objects completes (or fails) that
+atoms result will be examined and finalized using a
+<a class="reference internal" href="#taskflow.engines.action_engine.completer.Completer" title="taskflow.engines.action_engine.completer.Completer"><code class="xref py py-class docutils literal"><span class="pre">Completer</span></code></a> implementation.
+It typically will persist results to a provided persistence backend (saved
+into the corresponding <a class="reference internal" href="persistence.html#taskflow.persistence.models.AtomDetail" title="taskflow.persistence.models.AtomDetail"><code class="xref py py-class docutils literal"><span class="pre">AtomDetail</span></code></a>
+and <a class="reference internal" href="persistence.html#taskflow.persistence.models.FlowDetail" title="taskflow.persistence.models.FlowDetail"><code class="xref py py-class docutils literal"><span class="pre">FlowDetail</span></code></a> objects via the
+<a class="reference internal" href="persistence.html#taskflow.storage.Storage" title="taskflow.storage.Storage"><code class="xref py py-class docutils literal"><span class="pre">Storage</span></code></a> helper) and reflect
+the new state of the atom. At this point what typically happens falls into two
+categories, one for if that atom failed and one for if it did not. If the atom
+failed it may be set to a new intention such as <code class="docutils literal"><span class="pre">RETRY</span></code> or
+<code class="docutils literal"><span class="pre">REVERT</span></code> (other atoms that were predecessors of this failing atom may also
+have there intention altered). Once this intention adjustment has happened a
+new round of <a class="reference internal" href="#scheduling"><span>scheduling</span></a> occurs and this process repeats
+until the engine succeeds or fails (if the process running the engine dies the
+above stages will be restarted and resuming will occur).</p>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">If the engine is suspended while the engine is going through the above
+stages this will stop any further scheduling stages from occurring and
+all currently executing work will be allowed to finish (see
+<a class="reference internal" href="#suspension"><span>suspension</span></a>).</p>
+</div>
+</div>
+</div>
+<div class="section" id="finishing">
+<h3>Finishing<a class="headerlink" href="#finishing" title="Permalink to this headline">¶</a></h3>
+<p>At this point the machine (and runner) that was built using the
+<a class="reference internal" href="#taskflow.engines.action_engine.builder.MachineBuilder" title="taskflow.engines.action_engine.builder.MachineBuilder"><code class="xref py py-class docutils literal"><span class="pre">MachineBuilder</span></code></a> class has
+now finished successfully, failed, or the execution was suspended. Depending on
+which one of these occurs will cause the flow to enter a new state (typically
+one of <code class="docutils literal"><span class="pre">FAILURE</span></code>, <code class="docutils literal"><span class="pre">SUSPENDED</span></code>, <code class="docutils literal"><span class="pre">SUCCESS</span></code> or <code class="docutils literal"><span class="pre">REVERTED</span></code>).
+<a class="reference internal" href="notifications.html"><em>Notifications</em></a> will be sent out about this final state
+change (other state changes also send out notifications) and any failures that
+occurred will be reraised (the failure objects are wrapped exceptions). If no
+failures have occurred then the engine will have finished and if so desired the
+<a class="reference internal" href="persistence.html"><em>persistence</em></a> can be used to cleanup any details that were
+saved for this execution.</p>
+</div>
+</div>
+<div class="section" id="special-cases">
+<h2>Special cases<a class="headerlink" href="#special-cases" title="Permalink to this headline">¶</a></h2>
+<div class="section" id="suspension">
+<span id="id3"></span><h3>Suspension<a class="headerlink" href="#suspension" title="Permalink to this headline">¶</a></h3>
+<p>Each engine implements a <a class="reference internal" href="#taskflow.engines.base.Engine.suspend" title="taskflow.engines.base.Engine.suspend"><code class="xref py py-func docutils literal"><span class="pre">suspend()</span></code></a>
+method that can be used to <em>externally</em> (or in the future <em>internally</em>) request
+that the engine stop <a class="reference internal" href="#scheduling"><span>scheduling</span></a> new work. By default what
+this performs is a transition of the flow state from <code class="docutils literal"><span class="pre">RUNNING</span></code> into a
+<code class="docutils literal"><span class="pre">SUSPENDING</span></code> state (which will later transition into a <code class="docutils literal"><span class="pre">SUSPENDED</span></code> state).
+Since an engine may be remotely executing atoms (or locally executing them)
+and there is currently no preemption what occurs is that the engines
+<a class="reference internal" href="#taskflow.engines.action_engine.builder.MachineBuilder" title="taskflow.engines.action_engine.builder.MachineBuilder"><code class="xref py py-class docutils literal"><span class="pre">MachineBuilder</span></code></a> state
+machine will detect this transition into <code class="docutils literal"><span class="pre">SUSPENDING</span></code> has occurred and the
+state machine will avoid scheduling new work (it will though let active work
+continue). After the current work has finished the engine will
+transition from <code class="docutils literal"><span class="pre">SUSPENDING</span></code> into <code class="docutils literal"><span class="pre">SUSPENDED</span></code> and return from its
+<a class="reference internal" href="#taskflow.engines.base.Engine.run" title="taskflow.engines.base.Engine.run"><code class="xref py py-func docutils literal"><span class="pre">run()</span></code></a> method.</p>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">When <a class="reference internal" href="#taskflow.engines.base.Engine.run" title="taskflow.engines.base.Engine.run"><code class="xref py py-func docutils literal"><span class="pre">run()</span></code></a>  is returned from at that
+point there <em>may</em> (but does not have to be, depending on what was active
+when <a class="reference internal" href="#taskflow.engines.base.Engine.suspend" title="taskflow.engines.base.Engine.suspend"><code class="xref py py-func docutils literal"><span class="pre">suspend()</span></code></a> was called) be
+unfinished work in the flow that was not finished (but which can be
+resumed at a later point in time).</p>
+</div>
+</div>
+</div>
+<div class="section" id="scoping">
+<h2>Scoping<a class="headerlink" href="#scoping" title="Permalink to this headline">¶</a></h2>
+<p>During creation of flows it is also important to understand the lookup
+strategy (also typically known as <a class="reference external" href="http://en.wikipedia.org/wiki/Scope_%28computer_science%29">scope</a> resolution) that the engine you
+are using will internally use. For example when a task <code class="docutils literal"><span class="pre">A</span></code> provides
+result &#8216;a&#8217; and a task <code class="docutils literal"><span class="pre">B</span></code> after <code class="docutils literal"><span class="pre">A</span></code> provides a different result &#8216;a&#8217; and a
+task <code class="docutils literal"><span class="pre">C</span></code> after <code class="docutils literal"><span class="pre">A</span></code> and after <code class="docutils literal"><span class="pre">B</span></code> requires &#8216;a&#8217; to run, which one will
+be selected?</p>
+<div class="section" id="default-strategy">
+<h3>Default strategy<a class="headerlink" href="#default-strategy" title="Permalink to this headline">¶</a></h3>
+<p>When an engine is executing it internally interacts with the
+<a class="reference internal" href="persistence.html#taskflow.storage.Storage" title="taskflow.storage.Storage"><code class="xref py py-class docutils literal"><span class="pre">Storage</span></code></a> class
+and that class interacts with the a
+<a class="reference internal" href="#taskflow.engines.action_engine.scopes.ScopeWalker" title="taskflow.engines.action_engine.scopes.ScopeWalker"><code class="xref py py-class docutils literal"><span class="pre">ScopeWalker</span></code></a> instance
+and the <a class="reference internal" href="persistence.html#taskflow.storage.Storage" title="taskflow.storage.Storage"><code class="xref py py-class docutils literal"><span class="pre">Storage</span></code></a> class uses the following
+lookup order to find (or fail) a atoms requirement lookup/request:</p>
+<ol class="arabic simple">
+<li>Transient injected atom specific arguments.</li>
+<li>Non-transient injected atom specific arguments.</li>
+<li>Transient injected arguments (flow specific).</li>
+<li>Non-transient injected arguments (flow specific).</li>
+<li>First scope visited provider that produces the named result; note that
+if multiple providers are found in the same scope the <em>first</em> (the scope
+walkers yielded ordering defines what <em>first</em> means) that produced that
+result <em>and</em> can be extracted without raising an error is selected as the
+provider of the requested requirement.</li>
+<li>Fails with <a class="reference internal" href="exceptions.html#taskflow.exceptions.NotFound" title="taskflow.exceptions.NotFound"><code class="xref py py-class docutils literal"><span class="pre">NotFound</span></code></a> if unresolved at this
+point (the <code class="docutils literal"><span class="pre">cause</span></code> attribute of this exception may have more details on
+why the lookup failed).</li>
+</ol>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">To examine this information when debugging it is recommended to
+enable the <code class="docutils literal"><span class="pre">BLATHER</span></code> logging level (level 5). At this level the storage
+and scope code/layers will log what is being searched for and what is
+being found.</p>
+</div>
+</div>
+</div>
+<div class="section" id="module-taskflow.engines.base">
+<span id="interfaces"></span><h2>Interfaces<a class="headerlink" href="#module-taskflow.engines.base" title="Permalink to this headline">¶</a></h2>
+<dl class="class">
+<dt id="taskflow.engines.base.Engine">
+<em class="property">class </em><code class="descclassname">taskflow.engines.base.</code><code class="descname">Engine</code><span class="sig-paren">(</span><em>flow</em>, <em>flow_detail</em>, <em>backend</em>, <em>options</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/base.html#Engine"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.base.Engine" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>Base for all engines implementations.</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Variables:</th><td class="field-body"><ul class="first last simple">
+<li><a class="reference internal" href="#taskflow.engines.base.Engine.notifier" title="taskflow.engines.base.Engine.notifier"><strong>notifier</strong></a> &#8211; A notification object that will dispatch events that
+occur related to the flow the engine contains.</li>
+<li><a class="reference internal" href="#taskflow.engines.base.Engine.atom_notifier" title="taskflow.engines.base.Engine.atom_notifier"><strong>atom_notifier</strong></a> &#8211; A notification object that will dispatch events that
+occur related to the atoms the engine contains.</li>
+</ul>
+</td>
+</tr>
+</tbody>
+</table>
+<dl class="attribute">
+<dt id="taskflow.engines.base.Engine.notifier">
+<code class="descname">notifier</code><a class="headerlink" href="#taskflow.engines.base.Engine.notifier" title="Permalink to this definition">¶</a></dt>
+<dd><p>The flow notifier.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.engines.base.Engine.atom_notifier">
+<code class="descname">atom_notifier</code><a class="headerlink" href="#taskflow.engines.base.Engine.atom_notifier" title="Permalink to this definition">¶</a></dt>
+<dd><p>The atom notifier.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.engines.base.Engine.options">
+<code class="descname">options</code><a class="headerlink" href="#taskflow.engines.base.Engine.options" title="Permalink to this definition">¶</a></dt>
+<dd><p>The options that were passed to this engine on construction.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.engines.base.Engine.storage">
+<code class="descname">storage</code><a class="headerlink" href="#taskflow.engines.base.Engine.storage" title="Permalink to this definition">¶</a></dt>
+<dd><p>The storage unit for this engine.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.engines.base.Engine.statistics">
+<code class="descname">statistics</code><a class="headerlink" href="#taskflow.engines.base.Engine.statistics" title="Permalink to this definition">¶</a></dt>
+<dd><p>A dictionary of runtime statistics this engine has gathered.</p>
+<p>This dictionary will be empty when the engine has never been
+ran. When it is running or has ran previously it should have (but
+may not) have useful and/or informational keys and values when
+running is underway and/or completed.</p>
+<div class="admonition warning">
+<p class="first admonition-title">Warning</p>
+<p class="last">The keys in this dictionary <strong>should</strong> be some what
+stable (not changing), but there existence <strong>may</strong>
+change between major releases as new statistics are
+gathered or removed so before accessing keys ensure that
+they actually exist and handle when they do not.</p>
+</div>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.base.Engine.compile">
+<code class="descname">compile</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/base.html#Engine.compile"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.base.Engine.compile" title="Permalink to this definition">¶</a></dt>
+<dd><p>Compiles the contained flow into a internal representation.</p>
+<p>This internal representation is what the engine will <em>actually</em> use to
+run. If this compilation can not be accomplished then an exception
+is expected to be thrown with a message indicating why the compilation
+could not be achieved.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.base.Engine.reset">
+<code class="descname">reset</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/base.html#Engine.reset"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.base.Engine.reset" title="Permalink to this definition">¶</a></dt>
+<dd><p>Reset back to the <code class="docutils literal"><span class="pre">PENDING</span></code> state.</p>
+<p>If a flow had previously ended up (from a prior engine
+<a class="reference internal" href="#taskflow.engines.helpers.run" title="taskflow.engines.helpers.run"><code class="xref py py-func docutils literal"><span class="pre">run()</span></code></a>) in the <code class="docutils literal"><span class="pre">FAILURE</span></code>, <code class="docutils literal"><span class="pre">SUCCESS</span></code> or <code class="docutils literal"><span class="pre">REVERTED</span></code>
+states (or for some reason it ended up in an intermediary state) it
+can be desirable to make it possible to run it again. Calling this
+method enables that to occur (without causing a state transition
+failure, which would typically occur if <a class="reference internal" href="#taskflow.engines.base.Engine.run" title="taskflow.engines.base.Engine.run"><code class="xref py py-meth docutils literal"><span class="pre">run()</span></code></a> is called
+directly without doing a reset).</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.base.Engine.prepare">
+<code class="descname">prepare</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/base.html#Engine.prepare"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.base.Engine.prepare" title="Permalink to this definition">¶</a></dt>
+<dd><p>Performs any pre-run, but post-compilation actions.</p>
+<p>NOTE(harlowja): During preparation it is currently assumed that the
+underlying storage will be initialized, the atoms will be reset and
+the engine will enter the <code class="docutils literal"><span class="pre">PENDING</span></code> state.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.base.Engine.validate">
+<code class="descname">validate</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/base.html#Engine.validate"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.base.Engine.validate" title="Permalink to this definition">¶</a></dt>
+<dd><p>Performs any pre-run, post-prepare validation actions.</p>
+<p>NOTE(harlowja): During validation all final dependencies
+will be verified and ensured. This will by default check that all
+atoms have satisfiable requirements (satisfied by some other
+provider).</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.base.Engine.run">
+<code class="descname">run</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/base.html#Engine.run"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.base.Engine.run" title="Permalink to this definition">¶</a></dt>
+<dd><p>Runs the flow in the engine to completion (or die trying).</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.base.Engine.suspend">
+<code class="descname">suspend</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/base.html#Engine.suspend"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.base.Engine.suspend" title="Permalink to this definition">¶</a></dt>
+<dd><p>Attempts to suspend the engine.</p>
+<p>If the engine is currently running atoms then this will attempt to
+suspend future work from being started (currently active atoms can
+not currently be preempted) and move the engine into a suspend state
+which can then later be resumed from.</p>
+</dd></dl>
+
+</dd></dl>
+
+</div>
+<div class="section" id="module-taskflow.engines.action_engine.engine">
+<span id="implementations"></span><h2>Implementations<a class="headerlink" href="#module-taskflow.engines.action_engine.engine" title="Permalink to this headline">¶</a></h2>
+<dl class="class">
+<dt id="taskflow.engines.action_engine.engine.ActionEngine">
+<em class="property">class </em><code class="descclassname">taskflow.engines.action_engine.engine.</code><code class="descname">ActionEngine</code><span class="sig-paren">(</span><em>flow</em>, <em>flow_detail</em>, <em>backend</em>, <em>options</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/engine.html#ActionEngine"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.engine.ActionEngine" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <a class="reference internal" href="#taskflow.engines.base.Engine" title="taskflow.engines.base.Engine"><code class="xref py py-class docutils literal"><span class="pre">taskflow.engines.base.Engine</span></code></a></p>
+<p>Generic action-based engine.</p>
+<p>This engine compiles the flow (and any subflows) into a compilation unit
+which contains the full runtime definition to be executed and then uses
+this compilation unit in combination with the executor, runtime, machine
+builder and storage classes to attempt to run your flow (and any
+subflows &amp; contained atoms) to completion.</p>
+<p>NOTE(harlowja): during this process it is permissible and valid to have a
+task or multiple tasks in the execution graph fail (at the same time even),
+which will cause the process of reversion or retrying to commence. See the
+valid states in the states module to learn more about what other states
+the tasks and flow being ran can go through.</p>
+<p><strong>Engine options:</strong></p>
+<table border="1" class="docutils">
+<colgroup>
+<col width="35%" />
+<col width="37%" />
+<col width="10%" />
+<col width="19%" />
+</colgroup>
+<thead valign="bottom">
+<tr class="row-odd"><th class="head">Name/key</th>
+<th class="head">Description</th>
+<th class="head">Type</th>
+<th class="head">Default</th>
+</tr>
+</thead>
+<tbody valign="top">
+<tr class="row-even"><td><code class="docutils literal"><span class="pre">defer_reverts</span></code></td>
+<td>This option lets you
+safely nest flows
+with retries inside
+flows without retries
+and it still behaves
+as a user would
+expect (for example
+if the retry gets
+exhausted it reverts
+the outer flow unless
+the outer flow has a
+has a separate retry
+behavior).</td>
+<td>bool</td>
+<td><code class="docutils literal"><span class="pre">False</span></code></td>
+</tr>
+<tr class="row-odd"><td><code class="docutils literal"><span class="pre">never_resolve</span></code></td>
+<td>When true, instead
+of reverting
+and trying to resolve
+a atom failure the
+engine will skip
+reverting and abort
+instead of reverting
+and/or retrying.</td>
+<td>bool</td>
+<td><code class="docutils literal"><span class="pre">False</span></code></td>
+</tr>
+<tr class="row-even"><td><code class="docutils literal"><span class="pre">inject_transient</span></code></td>
+<td>When true, values
+that are local to
+each atoms scope
+are injected into
+storage into a
+transient location
+(typically a local
+dictionary), when
+false those values
+are instead persisted
+into atom details
+(and saved in a non-
+transient manner).</td>
+<td>bool</td>
+<td><code class="docutils literal"><span class="pre">True</span></code></td>
+</tr>
+</tbody>
+</table>
+<dl class="attribute">
+<dt id="taskflow.engines.action_engine.engine.ActionEngine.NO_RERAISING_STATES">
+<code class="descname">NO_RERAISING_STATES</code><em class="property"> = frozenset(['SUCCESS', 'SUSPENDED'])</em><a class="headerlink" href="#taskflow.engines.action_engine.engine.ActionEngine.NO_RERAISING_STATES" title="Permalink to this definition">¶</a></dt>
+<dd><p>States that if the engine stops in will <strong>not</strong> cause any potential
+failures to be reraised. States <strong>not</strong> in this list will cause any
+failure/s that were captured (if any) to get reraised.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.engines.action_engine.engine.ActionEngine.IGNORABLE_STATES">
+<code class="descname">IGNORABLE_STATES</code><em class="property"> = frozenset(['WAITING', 'RESUMING', 'SCHEDULING', 'GAME_OVER', 'UNDEFINED', 'ANALYZING'])</em><a class="headerlink" href="#taskflow.engines.action_engine.engine.ActionEngine.IGNORABLE_STATES" title="Permalink to this definition">¶</a></dt>
+<dd><p>Informational states this engines internal machine yields back while
+running, not useful to have the engine record but useful to provide to
+end-users when doing execution iterations via <a class="reference internal" href="#taskflow.engines.action_engine.engine.ActionEngine.run_iter" title="taskflow.engines.action_engine.engine.ActionEngine.run_iter"><code class="xref py py-meth docutils literal"><span class="pre">run_iter()</span></code></a>.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.engines.action_engine.engine.ActionEngine.MAX_MACHINE_STATES_RETAINED">
+<code class="descname">MAX_MACHINE_STATES_RETAINED</code><em class="property"> = 10</em><a class="headerlink" href="#taskflow.engines.action_engine.engine.ActionEngine.MAX_MACHINE_STATES_RETAINED" title="Permalink to this definition">¶</a></dt>
+<dd><p>During <a class="reference internal" href="#taskflow.engines.action_engine.engine.ActionEngine.run_iter" title="taskflow.engines.action_engine.engine.ActionEngine.run_iter"><code class="xref py py-meth docutils literal"><span class="pre">run_iter()</span></code></a> the last X state machine transitions will
+be recorded (typically only useful on failure).</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.engines.action_engine.engine.ActionEngine.compilation">
+<code class="descname">compilation</code><a class="headerlink" href="#taskflow.engines.action_engine.engine.ActionEngine.compilation" title="Permalink to this definition">¶</a></dt>
+<dd><p>The compilation result.</p>
+<p>NOTE(harlowja): Only accessible after compilation has completed (None
+will be returned when this property is accessed before compilation has
+completed successfully).</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.engines.action_engine.engine.ActionEngine.storage">
+<code class="descname">storage</code><a class="headerlink" href="#taskflow.engines.action_engine.engine.ActionEngine.storage" title="Permalink to this definition">¶</a></dt>
+<dd><p>The storage unit for this engine.</p>
+<p>NOTE(harlowja): the atom argument lookup strategy will change for
+this storage unit after
+<a class="reference internal" href="#taskflow.engines.base.Engine.compile" title="taskflow.engines.base.Engine.compile"><code class="xref py py-func docutils literal"><span class="pre">compile()</span></code></a> has
+completed (since <strong>only</strong> after compilation is the actual structure
+known). Before <a class="reference internal" href="#taskflow.engines.base.Engine.compile" title="taskflow.engines.base.Engine.compile"><code class="xref py py-func docutils literal"><span class="pre">compile()</span></code></a>
+has completed the atom argument lookup strategy lookup will be
+restricted to injected arguments <strong>only</strong> (this will <strong>not</strong> reflect
+the actual runtime lookup strategy, which typically will be, but is
+not always different).</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.action_engine.engine.ActionEngine.run">
+<code class="descname">run</code><span class="sig-paren">(</span><em>timeout=None</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/engine.html#ActionEngine.run"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.engine.ActionEngine.run" title="Permalink to this definition">¶</a></dt>
+<dd><p>Runs the engine (or die trying).</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><strong>timeout</strong> &#8211; timeout to wait for any atoms to complete (this timeout
+will be used during the waiting period that occurs when
+unfinished atoms are being waited on).</td>
+</tr>
+</tbody>
+</table>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.action_engine.engine.ActionEngine.run_iter">
+<code class="descname">run_iter</code><span class="sig-paren">(</span><em>timeout=None</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/engine.html#ActionEngine.run_iter"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.engine.ActionEngine.run_iter" title="Permalink to this definition">¶</a></dt>
+<dd><p>Runs the engine using iteration (or die trying).</p>
+<table class="docutils field-list" frame="void" rules="none">
+<col class="field-name" />
+<col class="field-body" />
+<tbody valign="top">
+<tr class="field-odd field"><th class="field-name">Parameters:</th><td class="field-body"><strong>timeout</strong> &#8211; timeout to wait for any atoms to complete (this timeout
+will be used during the waiting period that occurs after the
+waiting state is yielded when unfinished atoms are being waited
+on).</td>
+</tr>
+</tbody>
+</table>
+<p>Instead of running to completion in a blocking manner, this will
+return a generator which will yield back the various states that the
+engine is going through (and can be used to run multiple engines at
+once using a generator per engine). The iterator returned also
+responds to the <code class="docutils literal"><span class="pre">send()</span></code> method from <span class="target" id="index-0"></span><a class="pep reference external" href="https://www.python.org/dev/peps/pep-0342"><strong>PEP 0342</strong></a> and will attempt to
+suspend itself if a truthy value is sent in (the suspend may be
+delayed until all active atoms have finished).</p>
+<p>NOTE(harlowja): using the <code class="docutils literal"><span class="pre">run_iter</span></code> method will <strong>not</strong> retain the
+engine lock while executing so the user should ensure that there is
+only one entity using a returned engine iterator (one per engine) at a
+given time.</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.engines.action_engine.engine.SerialActionEngine">
+<em class="property">class </em><code class="descclassname">taskflow.engines.action_engine.engine.</code><code class="descname">SerialActionEngine</code><span class="sig-paren">(</span><em>flow</em>, <em>flow_detail</em>, <em>backend</em>, <em>options</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/engine.html#SerialActionEngine"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.engine.SerialActionEngine" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <a class="reference internal" href="#taskflow.engines.action_engine.engine.ActionEngine" title="taskflow.engines.action_engine.engine.ActionEngine"><code class="xref py py-class docutils literal"><span class="pre">taskflow.engines.action_engine.engine.ActionEngine</span></code></a></p>
+<p>Engine that runs tasks in serial manner.</p>
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.engines.action_engine.engine.ParallelActionEngine">
+<em class="property">class </em><code class="descclassname">taskflow.engines.action_engine.engine.</code><code class="descname">ParallelActionEngine</code><span class="sig-paren">(</span><em>flow</em>, <em>flow_detail</em>, <em>backend</em>, <em>options</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/engine.html#ParallelActionEngine"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.engine.ParallelActionEngine" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <a class="reference internal" href="#taskflow.engines.action_engine.engine.ActionEngine" title="taskflow.engines.action_engine.engine.ActionEngine"><code class="xref py py-class docutils literal"><span class="pre">taskflow.engines.action_engine.engine.ActionEngine</span></code></a></p>
+<p>Engine that runs tasks in parallel manner.</p>
+<blockquote>
+<div><p><strong>Additional engine options:</strong></p>
+<ul class="simple">
+<li><code class="docutils literal"><span class="pre">executor</span></code>: a object that implements a <span class="target" id="index-1"></span><a class="pep reference external" href="https://www.python.org/dev/peps/pep-3148"><strong>PEP 3148</strong></a> compatible executor
+interface; it will be used for scheduling tasks. The following
+type are applicable (other unknown types passed will cause a type
+error to be raised).</li>
+</ul>
+</div></blockquote>
+<table border="1" class="docutils">
+<colgroup>
+<col width="35%" />
+<col width="65%" />
+</colgroup>
+<thead valign="bottom">
+<tr class="row-odd"><th class="head">Type provided</th>
+<th class="head">Executor used</th>
+</tr>
+</thead>
+<tbody valign="top">
+<tr class="row-even"><td>concurrent.futures.thread.ThreadPoolExecutor</td>
+<td><a class="reference internal" href="#taskflow.engines.action_engine.executor.ParallelThreadTaskExecutor" title="taskflow.engines.action_engine.executor.ParallelThreadTaskExecutor"><code class="xref py py-class docutils literal"><span class="pre">ParallelThreadTaskExecutor</span></code></a></td>
+</tr>
+<tr class="row-odd"><td>concurrent.futures.process.ProcessPoolExecutor</td>
+<td><code class="xref py py-class docutils literal"><span class="pre">ParallelProcessTaskExecutor</span></code></td>
+</tr>
+<tr class="row-even"><td>concurrent.futures._base.Executor</td>
+<td><a class="reference internal" href="#taskflow.engines.action_engine.executor.ParallelThreadTaskExecutor" title="taskflow.engines.action_engine.executor.ParallelThreadTaskExecutor"><code class="xref py py-class docutils literal"><span class="pre">ParallelThreadTaskExecutor</span></code></a></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<div><ul class="simple">
+<li><code class="docutils literal"><span class="pre">executor</span></code>: a string that will be used to select a <span class="target" id="index-2"></span><a class="pep reference external" href="https://www.python.org/dev/peps/pep-3148"><strong>PEP 3148</strong></a>
+compatible executor; it will be used for scheduling tasks. The following
+string are applicable (other unknown strings passed will cause a value
+error to be raised).</li>
+</ul>
+</div></blockquote>
+<table border="1" class="docutils">
+<colgroup>
+<col width="36%" />
+<col width="64%" />
+</colgroup>
+<thead valign="bottom">
+<tr class="row-odd"><th class="head">String (case insensitive)</th>
+<th class="head">Executor used</th>
+</tr>
+</thead>
+<tbody valign="top">
+<tr class="row-even"><td><code class="docutils literal"><span class="pre">process</span></code></td>
+<td><code class="xref py py-class docutils literal"><span class="pre">ParallelProcessTaskExecutor</span></code></td>
+</tr>
+<tr class="row-odd"><td><code class="docutils literal"><span class="pre">processes</span></code></td>
+<td><code class="xref py py-class docutils literal"><span class="pre">ParallelProcessTaskExecutor</span></code></td>
+</tr>
+<tr class="row-even"><td><code class="docutils literal"><span class="pre">thread</span></code></td>
+<td><a class="reference internal" href="#taskflow.engines.action_engine.executor.ParallelThreadTaskExecutor" title="taskflow.engines.action_engine.executor.ParallelThreadTaskExecutor"><code class="xref py py-class docutils literal"><span class="pre">ParallelThreadTaskExecutor</span></code></a></td>
+</tr>
+<tr class="row-odd"><td><code class="docutils literal"><span class="pre">threaded</span></code></td>
+<td><a class="reference internal" href="#taskflow.engines.action_engine.executor.ParallelThreadTaskExecutor" title="taskflow.engines.action_engine.executor.ParallelThreadTaskExecutor"><code class="xref py py-class docutils literal"><span class="pre">ParallelThreadTaskExecutor</span></code></a></td>
+</tr>
+<tr class="row-even"><td><code class="docutils literal"><span class="pre">threads</span></code></td>
+<td><a class="reference internal" href="#taskflow.engines.action_engine.executor.ParallelThreadTaskExecutor" title="taskflow.engines.action_engine.executor.ParallelThreadTaskExecutor"><code class="xref py py-class docutils literal"><span class="pre">ParallelThreadTaskExecutor</span></code></a></td>
+</tr>
+<tr class="row-odd"><td><code class="docutils literal"><span class="pre">greenthread</span></code></td>
+<td><dl class="first last docutils">
+<dt><a class="reference internal" href="#taskflow.engines.action_engine.executor.ParallelThreadTaskExecutor" title="taskflow.engines.action_engine.executor.ParallelThreadTaskExecutor"><code class="xref py py-class docutils literal"><span class="pre">ParallelThreadTaskExecutor</span></code></a></dt>
+<dd>(greened version)</dd>
+</dl>
+</td>
+</tr>
+<tr class="row-even"><td><code class="docutils literal"><span class="pre">greedthreaded</span></code></td>
+<td><dl class="first last docutils">
+<dt><a class="reference internal" href="#taskflow.engines.action_engine.executor.ParallelThreadTaskExecutor" title="taskflow.engines.action_engine.executor.ParallelThreadTaskExecutor"><code class="xref py py-class docutils literal"><span class="pre">ParallelThreadTaskExecutor</span></code></a></dt>
+<dd>(greened version)</dd>
+</dl>
+</td>
+</tr>
+<tr class="row-odd"><td><code class="docutils literal"><span class="pre">greenthreads</span></code></td>
+<td><dl class="first last docutils">
+<dt><a class="reference internal" href="#taskflow.engines.action_engine.executor.ParallelThreadTaskExecutor" title="taskflow.engines.action_engine.executor.ParallelThreadTaskExecutor"><code class="xref py py-class docutils literal"><span class="pre">ParallelThreadTaskExecutor</span></code></a></dt>
+<dd>(greened version)</dd>
+</dl>
+</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<div><ul class="simple">
+<li><code class="docutils literal"><span class="pre">max_workers</span></code>: a integer that will affect the number of parallel
+workers that are used to dispatch tasks into (this number is bounded
+by the maximum parallelization your workflow can support).</li>
+<li><code class="docutils literal"><span class="pre">wait_timeout</span></code>: a float (in seconds) that will affect the
+parallel process task executor (and therefore is <strong>only</strong> applicable when
+the executor provided above is of the process variant). This number
+affects how much time the process task executor waits for messages from
+child processes (typically indicating they have finished or failed). A
+lower number will have high granularity but <em>currently</em> involves more
+polling while a higher number will involve less polling but a slower time
+for an engine to notice a task has completed.</li>
+</ul>
+</div></blockquote>
+</dd></dl>
+
+<div class="section" id="components">
+<h3>Components<a class="headerlink" href="#components" title="Permalink to this headline">¶</a></h3>
+<div class="admonition warning">
+<p class="first admonition-title">Warning</p>
+<p class="last">External usage of internal engine functions, components and modules should
+be kept to a <strong>minimum</strong> as they may be altered, refactored or moved to
+other locations <strong>without</strong> notice (and without the typical deprecation
+cycle).</p>
+</div>
+<span class="target" id="module-taskflow.engines.action_engine.builder"></span><dl class="class">
+<dt id="taskflow.engines.action_engine.builder.MachineMemory">
+<em class="property">class </em><code class="descclassname">taskflow.engines.action_engine.builder.</code><code class="descname">MachineMemory</code><a class="reference internal" href="_modules/taskflow/engines/action_engine/builder.html#MachineMemory"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.builder.MachineMemory" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>State machine memory.</p>
+<dl class="method">
+<dt id="taskflow.engines.action_engine.builder.MachineMemory.cancel_futures">
+<code class="descname">cancel_futures</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/builder.html#MachineMemory.cancel_futures"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.builder.MachineMemory.cancel_futures" title="Permalink to this definition">¶</a></dt>
+<dd><p>Attempts to cancel any not done futures.</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.engines.action_engine.builder.MachineBuilder">
+<em class="property">class </em><code class="descclassname">taskflow.engines.action_engine.builder.</code><code class="descname">MachineBuilder</code><span class="sig-paren">(</span><em>runtime</em>, <em>waiter</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/builder.html#MachineBuilder"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.builder.MachineBuilder" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>State machine <em>builder</em> that powers the engine components.</p>
+<p>NOTE(harlowja): the machine (states and events that will trigger
+transitions) that this builds is represented by the following
+table:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>+--------------+------------------+------------+----------+---------+
+|    Start     |      Event       |    End     | On Enter | On Exit |
++--------------+------------------+------------+----------+---------+
+|  ANALYZING   |    completed     | GAME_OVER  |    .     |    .    |
+|  ANALYZING   |  schedule_next   | SCHEDULING |    .     |    .    |
+|  ANALYZING   |  wait_finished   |  WAITING   |    .     |    .    |
+|  FAILURE[$]  |        .         |     .      |    .     |    .    |
+|  GAME_OVER   |      failed      |  FAILURE   |    .     |    .    |
+|  GAME_OVER   |     reverted     |  REVERTED  |    .     |    .    |
+|  GAME_OVER   |     success      |  SUCCESS   |    .     |    .    |
+|  GAME_OVER   |    suspended     | SUSPENDED  |    .     |    .    |
+|   RESUMING   |  schedule_next   | SCHEDULING |    .     |    .    |
+| REVERTED[$]  |        .         |     .      |    .     |    .    |
+|  SCHEDULING  |  wait_finished   |  WAITING   |    .     |    .    |
+|  SUCCESS[$]  |        .         |     .      |    .     |    .    |
+| SUSPENDED[$] |        .         |     .      |    .     |    .    |
+| UNDEFINED[^] |      start       |  RESUMING  |    .     |    .    |
+|   WAITING    | examine_finished | ANALYZING  |    .     |    .    |
++--------------+------------------+------------+----------+---------+
+</pre></div>
+</div>
+<p>Between any of these yielded states (minus <code class="docutils literal"><span class="pre">GAME_OVER</span></code> and <code class="docutils literal"><span class="pre">UNDEFINED</span></code>)
+if the engine has been suspended or the engine has failed (due to a
+non-resolveable task failure or scheduling failure) the machine will stop
+executing new tasks (currently running tasks will be allowed to complete)
+and this machines run loop will be broken.</p>
+<p>NOTE(harlowja): If the runtimes scheduler component is able to schedule
+tasks in parallel, this enables parallel running and/or reversion.</p>
+<dl class="method">
+<dt id="taskflow.engines.action_engine.builder.MachineBuilder.build">
+<code class="descname">build</code><span class="sig-paren">(</span><em>statistics</em>, <em>timeout=None</em>, <em>gather_statistics=True</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/builder.html#MachineBuilder.build"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.builder.MachineBuilder.build" title="Permalink to this definition">¶</a></dt>
+<dd><p>Builds a state-machine (that is used during running).</p>
+</dd></dl>
+
+</dd></dl>
+
+<span class="target" id="module-taskflow.engines.action_engine.compiler"></span><dl class="class">
+<dt id="taskflow.engines.action_engine.compiler.Terminator">
+<em class="property">class </em><code class="descclassname">taskflow.engines.action_engine.compiler.</code><code class="descname">Terminator</code><span class="sig-paren">(</span><em>flow</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/compiler.html#Terminator"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.compiler.Terminator" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>Flow terminator class.</p>
+<dl class="attribute">
+<dt id="taskflow.engines.action_engine.compiler.Terminator.flow">
+<code class="descname">flow</code><a class="headerlink" href="#taskflow.engines.action_engine.compiler.Terminator.flow" title="Permalink to this definition">¶</a></dt>
+<dd><p>The flow which this terminator signifies/marks the end of.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.engines.action_engine.compiler.Terminator.name">
+<code class="descname">name</code><a class="headerlink" href="#taskflow.engines.action_engine.compiler.Terminator.name" title="Permalink to this definition">¶</a></dt>
+<dd><p>Useful name this end terminator has (derived from flow name).</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.engines.action_engine.compiler.Compilation">
+<em class="property">class </em><code class="descclassname">taskflow.engines.action_engine.compiler.</code><code class="descname">Compilation</code><span class="sig-paren">(</span><em>execution_graph</em>, <em>hierarchy</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/compiler.html#Compilation"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.compiler.Compilation" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>The result of a compilers <code class="docutils literal"><span class="pre">compile()</span></code> is this <em>immutable</em> object.</p>
+<dl class="attribute">
+<dt id="taskflow.engines.action_engine.compiler.Compilation.TASK">
+<code class="descname">TASK</code><em class="property"> = 'task'</em><a class="headerlink" href="#taskflow.engines.action_engine.compiler.Compilation.TASK" title="Permalink to this definition">¶</a></dt>
+<dd><p>Task nodes will have a <code class="docutils literal"><span class="pre">kind</span></code> metadata key with this value.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.engines.action_engine.compiler.Compilation.RETRY">
+<code class="descname">RETRY</code><em class="property"> = 'retry'</em><a class="headerlink" href="#taskflow.engines.action_engine.compiler.Compilation.RETRY" title="Permalink to this definition">¶</a></dt>
+<dd><p>Retry nodes will have a <code class="docutils literal"><span class="pre">kind</span></code> metadata key with this value.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.engines.action_engine.compiler.Compilation.FLOW">
+<code class="descname">FLOW</code><em class="property"> = 'flow'</em><a class="headerlink" href="#taskflow.engines.action_engine.compiler.Compilation.FLOW" title="Permalink to this definition">¶</a></dt>
+<dd><p>Flow <strong>entry</strong> nodes will have a <code class="docutils literal"><span class="pre">kind</span></code> metadata key with
+this value.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.engines.action_engine.compiler.Compilation.FLOW_END">
+<code class="descname">FLOW_END</code><em class="property"> = 'flow_end'</em><a class="headerlink" href="#taskflow.engines.action_engine.compiler.Compilation.FLOW_END" title="Permalink to this definition">¶</a></dt>
+<dd><p>Flow <strong>exit</strong> nodes will have a <code class="docutils literal"><span class="pre">kind</span></code> metadata key with
+this value (only applicable for compilation execution graph, not currently
+used in tree hierarchy).</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.engines.action_engine.compiler.Compilation.execution_graph">
+<code class="descname">execution_graph</code><a class="headerlink" href="#taskflow.engines.action_engine.compiler.Compilation.execution_graph" title="Permalink to this definition">¶</a></dt>
+<dd><p>The execution ordering of atoms (as a graph structure).</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.engines.action_engine.compiler.Compilation.hierarchy">
+<code class="descname">hierarchy</code><a class="headerlink" href="#taskflow.engines.action_engine.compiler.Compilation.hierarchy" title="Permalink to this definition">¶</a></dt>
+<dd><p>The hierarchy of patterns (as a tree structure).</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.engines.action_engine.compiler.TaskCompiler">
+<em class="property">class </em><code class="descclassname">taskflow.engines.action_engine.compiler.</code><code class="descname">TaskCompiler</code><a class="reference internal" href="_modules/taskflow/engines/action_engine/compiler.html#TaskCompiler"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.compiler.TaskCompiler" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>Non-recursive compiler of tasks.</p>
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.engines.action_engine.compiler.FlowCompiler">
+<em class="property">class </em><code class="descclassname">taskflow.engines.action_engine.compiler.</code><code class="descname">FlowCompiler</code><span class="sig-paren">(</span><em>deep_compiler_func</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/compiler.html#FlowCompiler"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.compiler.FlowCompiler" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>Recursive compiler of flows.</p>
+<dl class="method">
+<dt id="taskflow.engines.action_engine.compiler.FlowCompiler.compile">
+<code class="descname">compile</code><span class="sig-paren">(</span><em>flow</em>, <em>parent=None</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/compiler.html#FlowCompiler.compile"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.compiler.FlowCompiler.compile" title="Permalink to this definition">¶</a></dt>
+<dd><p>Decomposes a flow into a graph and scope tree hierarchy.</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.engines.action_engine.compiler.PatternCompiler">
+<em class="property">class </em><code class="descclassname">taskflow.engines.action_engine.compiler.</code><code class="descname">PatternCompiler</code><span class="sig-paren">(</span><em>root</em>, <em>freeze=True</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/compiler.html#PatternCompiler"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.compiler.PatternCompiler" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>Compiles a flow pattern (or task) into a compilation unit.</p>
+<p>Let&#8217;s dive into the basic idea for how this works:</p>
+<p>The compiler here is provided a &#8216;root&#8217; object via its __init__ method,
+this object could be a task, or a flow (one of the supported patterns),
+the end-goal is to produce a <a class="reference internal" href="#taskflow.engines.action_engine.compiler.Compilation" title="taskflow.engines.action_engine.compiler.Compilation"><code class="xref py py-class docutils literal"><span class="pre">Compilation</span></code></a> object as the result
+with the needed components. If this is not possible a
+<a class="reference internal" href="exceptions.html#taskflow.exceptions.CompilationFailure" title="taskflow.exceptions.CompilationFailure"><code class="xref py py-class docutils literal"><span class="pre">CompilationFailure</span></code></a> will be raised.
+In the case where a <strong>unknown</strong> type is being requested to compile
+a <code class="docutils literal"><span class="pre">TypeError</span></code> will be raised and when a duplicate object (one that
+has <strong>already</strong> been compiled) is encountered a <code class="docutils literal"><span class="pre">ValueError</span></code> is raised.</p>
+<p>The complexity of this comes into play when the &#8216;root&#8217; is a flow that
+contains itself other nested flows (and so-on); to compile this object and
+its contained objects into a graph that <em>preserves</em> the constraints the
+pattern mandates we have to go through a recursive algorithm that creates
+subgraphs for each nesting level, and then on the way back up through
+the recursion (now with a decomposed mapping from contained patterns or
+atoms to there corresponding subgraph) we have to then connect the
+subgraphs (and the atom(s) there-in) that were decomposed for a pattern
+correctly into a new graph and then ensure the pattern mandated
+constraints are retained. Finally we then return to the
+caller (and they will do the same thing up until the root node, which by
+that point one graph is created with all contained atoms in the
+pattern/nested patterns mandated ordering).</p>
+<p>Also maintained in the <a class="reference internal" href="#taskflow.engines.action_engine.compiler.Compilation" title="taskflow.engines.action_engine.compiler.Compilation"><code class="xref py py-class docutils literal"><span class="pre">Compilation</span></code></a> object is a hierarchy of
+the nesting of items (which is also built up during the above mentioned
+recusion, via a much simpler algorithm); this is typically used later to
+determine the prior atoms of a given atom when looking up values that can
+be provided to that atom for execution (see the scopes.py file for how this
+works). Note that although you <em>could</em> think that the graph itself could be
+used for this, which in some ways it can (for limited usage) the hierarchy
+retains the nested structure (which is useful for scoping analysis/lookup)
+to be able to provide back a iterator that gives back the scopes visible
+at each level (the graph does not have this information once flattened).</p>
+<p>Let&#8217;s take an example:</p>
+<p>Given the pattern <code class="docutils literal"><span class="pre">f(a(b,</span> <span class="pre">c),</span> <span class="pre">d)</span></code> where <code class="docutils literal"><span class="pre">f</span></code> is a
+<a class="reference internal" href="patterns.html#taskflow.patterns.linear_flow.Flow" title="taskflow.patterns.linear_flow.Flow"><code class="xref py py-class docutils literal"><span class="pre">Flow</span></code></a> with items <code class="docutils literal"><span class="pre">a(b,</span> <span class="pre">c)</span></code>
+where <code class="docutils literal"><span class="pre">a</span></code> is a <a class="reference internal" href="patterns.html#taskflow.patterns.linear_flow.Flow" title="taskflow.patterns.linear_flow.Flow"><code class="xref py py-class docutils literal"><span class="pre">Flow</span></code></a> composed
+of tasks <code class="docutils literal"><span class="pre">(b,</span> <span class="pre">c)</span></code> and task <code class="docutils literal"><span class="pre">d</span></code>.</p>
+<p>The algorithm that will be performed (mirroring the above described logic)
+will go through the following steps (the tree hierarchy building is left
+out as that is more obvious):</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>Compiling f
+  - Decomposing flow f with no parent (must be the root)
+  - Compiling a
+      - Decomposing flow a with parent f
+      - Compiling b
+          - Decomposing task b with parent a
+          - Decomposed b into:
+            Name: b
+            Nodes: 1
+              - b
+            Edges: 0
+      - Compiling c
+          - Decomposing task c with parent a
+          - Decomposed c into:
+            Name: c
+            Nodes: 1
+              - c
+            Edges: 0
+      - Relinking decomposed b -&gt; decomposed c
+      - Decomposed a into:
+        Name: a
+        Nodes: 2
+          - b
+          - c
+        Edges: 1
+          b -&gt; c ({&#39;invariant&#39;: True})
+  - Compiling d
+      - Decomposing task d with parent f
+      - Decomposed d into:
+        Name: d
+        Nodes: 1
+          - d
+        Edges: 0
+  - Relinking decomposed a -&gt; decomposed d
+  - Decomposed f into:
+    Name: f
+    Nodes: 3
+      - c
+      - b
+      - d
+    Edges: 2
+      c -&gt; d ({&#39;invariant&#39;: True})
+      b -&gt; c ({&#39;invariant&#39;: True})
+</pre></div>
+</div>
+<dl class="method">
+<dt id="taskflow.engines.action_engine.compiler.PatternCompiler.compile">
+<code class="descname">compile</code><span class="sig-paren">(</span><em>*args</em>, <em>**kwargs</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/compiler.html#PatternCompiler.compile"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.compiler.PatternCompiler.compile" title="Permalink to this definition">¶</a></dt>
+<dd><p>Compiles the contained item into a compiled equivalent.</p>
+</dd></dl>
+
+</dd></dl>
+
+<span class="target" id="module-taskflow.engines.action_engine.completer"></span><dl class="class">
+<dt id="taskflow.engines.action_engine.completer.Strategy">
+<em class="property">class </em><code class="descclassname">taskflow.engines.action_engine.completer.</code><code class="descname">Strategy</code><span class="sig-paren">(</span><em>runtime</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/completer.html#Strategy"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.completer.Strategy" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>Failure resolution strategy base class.</p>
+<dl class="method">
+<dt id="taskflow.engines.action_engine.completer.Strategy.apply">
+<code class="descname">apply</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/completer.html#Strategy.apply"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.completer.Strategy.apply" title="Permalink to this definition">¶</a></dt>
+<dd><p>Applies some algorithm to resolve some detected failure.</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.engines.action_engine.completer.RevertAndRetry">
+<em class="property">class </em><code class="descclassname">taskflow.engines.action_engine.completer.</code><code class="descname">RevertAndRetry</code><span class="sig-paren">(</span><em>runtime</em>, <em>retry</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/completer.html#RevertAndRetry"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.completer.RevertAndRetry" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <a class="reference internal" href="#taskflow.engines.action_engine.completer.Strategy" title="taskflow.engines.action_engine.completer.Strategy"><code class="xref py py-class docutils literal"><span class="pre">taskflow.engines.action_engine.completer.Strategy</span></code></a></p>
+<p>Sets the <em>associated</em> subflow for revert to be later retried.</p>
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.engines.action_engine.completer.RevertAll">
+<em class="property">class </em><code class="descclassname">taskflow.engines.action_engine.completer.</code><code class="descname">RevertAll</code><span class="sig-paren">(</span><em>runtime</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/completer.html#RevertAll"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.completer.RevertAll" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <a class="reference internal" href="#taskflow.engines.action_engine.completer.Strategy" title="taskflow.engines.action_engine.completer.Strategy"><code class="xref py py-class docutils literal"><span class="pre">taskflow.engines.action_engine.completer.Strategy</span></code></a></p>
+<p>Sets <em>all</em> nodes/atoms to the <code class="docutils literal"><span class="pre">REVERT</span></code> intention.</p>
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.engines.action_engine.completer.Revert">
+<em class="property">class </em><code class="descclassname">taskflow.engines.action_engine.completer.</code><code class="descname">Revert</code><span class="sig-paren">(</span><em>runtime</em>, <em>atom</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/completer.html#Revert"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.completer.Revert" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <a class="reference internal" href="#taskflow.engines.action_engine.completer.Strategy" title="taskflow.engines.action_engine.completer.Strategy"><code class="xref py py-class docutils literal"><span class="pre">taskflow.engines.action_engine.completer.Strategy</span></code></a></p>
+<p>Sets atom and <em>associated</em> nodes to the <code class="docutils literal"><span class="pre">REVERT</span></code> intention.</p>
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.engines.action_engine.completer.Completer">
+<em class="property">class </em><code class="descclassname">taskflow.engines.action_engine.completer.</code><code class="descname">Completer</code><span class="sig-paren">(</span><em>runtime</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/completer.html#Completer"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.completer.Completer" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>Completes atoms using actions to complete them.</p>
+<dl class="method">
+<dt id="taskflow.engines.action_engine.completer.Completer.resume">
+<code class="descname">resume</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/completer.html#Completer.resume"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.completer.Completer.resume" title="Permalink to this definition">¶</a></dt>
+<dd><p>Resumes atoms in the contained graph.</p>
+<p>This is done to allow any previously completed or failed atoms to
+be analyzed, there results processed and any potential atoms affected
+to be adjusted as needed.</p>
+<p>This should return a set of atoms which should be the initial set of
+atoms that were previously not finished (due to a RUNNING or REVERTING
+attempt not previously finishing).</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.action_engine.completer.Completer.complete_failure">
+<code class="descname">complete_failure</code><span class="sig-paren">(</span><em>node</em>, <em>outcome</em>, <em>failure</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/completer.html#Completer.complete_failure"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.completer.Completer.complete_failure" title="Permalink to this definition">¶</a></dt>
+<dd><p>Performs post-execution completion of a nodes failure.</p>
+<p>Returns whether the result should be saved into an accumulator of
+failures or whether this should not be done.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.action_engine.completer.Completer.complete">
+<code class="descname">complete</code><span class="sig-paren">(</span><em>node</em>, <em>outcome</em>, <em>result</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/completer.html#Completer.complete"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.completer.Completer.complete" title="Permalink to this definition">¶</a></dt>
+<dd><p>Performs post-execution completion of a node result.</p>
+</dd></dl>
+
+</dd></dl>
+
+<span class="target" id="module-taskflow.engines.action_engine.deciders"></span><dl class="class">
+<dt id="taskflow.engines.action_engine.deciders.Decider">
+<em class="property">class </em><code class="descclassname">taskflow.engines.action_engine.deciders.</code><code class="descname">Decider</code><a class="reference internal" href="_modules/taskflow/engines/action_engine/deciders.html#Decider"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.deciders.Decider" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>Base class for deciders.</p>
+<p>Provides interface to be implemented by sub-classes.</p>
+<p>Deciders check whether next atom in flow should be executed or not.</p>
+<dl class="method">
+<dt id="taskflow.engines.action_engine.deciders.Decider.tally">
+<code class="descname">tally</code><span class="sig-paren">(</span><em>runtime</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/deciders.html#Decider.tally"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.deciders.Decider.tally" title="Permalink to this definition">¶</a></dt>
+<dd><p>Tally edge deciders on whether this decider should allow running.</p>
+<p>The returned value is a list of edge deciders that voted
+&#8216;nay&#8217; (do not allow running).</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.action_engine.deciders.Decider.affect">
+<code class="descname">affect</code><span class="sig-paren">(</span><em>runtime</em>, <em>nay_voters</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/deciders.html#Decider.affect"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.deciders.Decider.affect" title="Permalink to this definition">¶</a></dt>
+<dd><p>Affects associated atoms due to at least one &#8216;nay&#8217; edge decider.</p>
+<p>This will alter the associated atom + some set of successor atoms by
+setting there state and intention to <code class="docutils literal"><span class="pre">IGNORE</span></code> so that they are
+ignored in future runtime activities.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.action_engine.deciders.Decider.check_and_affect">
+<code class="descname">check_and_affect</code><span class="sig-paren">(</span><em>runtime</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/deciders.html#Decider.check_and_affect"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.deciders.Decider.check_and_affect" title="Permalink to this definition">¶</a></dt>
+<dd><p>Handles <code class="xref py py-func docutils literal"><span class="pre">tally()</span></code> + <code class="xref py py-func docutils literal"><span class="pre">affect()</span></code> in right order.</p>
+<p>NOTE(harlowja):  If there are zero &#8216;nay&#8217; edge deciders then it is
+assumed this decider should allow running.</p>
+<p>Returns boolean of whether this decider allows for running (or not).</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.engines.action_engine.deciders.IgnoreDecider">
+<em class="property">class </em><code class="descclassname">taskflow.engines.action_engine.deciders.</code><code class="descname">IgnoreDecider</code><span class="sig-paren">(</span><em>atom</em>, <em>edge_deciders</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/deciders.html#IgnoreDecider"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.deciders.IgnoreDecider" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <a class="reference internal" href="#taskflow.engines.action_engine.deciders.Decider" title="taskflow.engines.action_engine.deciders.Decider"><code class="xref py py-class docutils literal"><span class="pre">taskflow.engines.action_engine.deciders.Decider</span></code></a></p>
+<p>Checks any provided edge-deciders and determines if ok to run.</p>
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.engines.action_engine.deciders.NoOpDecider">
+<em class="property">class </em><code class="descclassname">taskflow.engines.action_engine.deciders.</code><code class="descname">NoOpDecider</code><a class="reference internal" href="_modules/taskflow/engines/action_engine/deciders.html#NoOpDecider"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.deciders.NoOpDecider" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <a class="reference internal" href="#taskflow.engines.action_engine.deciders.Decider" title="taskflow.engines.action_engine.deciders.Decider"><code class="xref py py-class docutils literal"><span class="pre">taskflow.engines.action_engine.deciders.Decider</span></code></a></p>
+<p>No-op decider that says it is always ok to run &amp; has no effect(s).</p>
+<dl class="method">
+<dt id="taskflow.engines.action_engine.deciders.NoOpDecider.tally">
+<code class="descname">tally</code><span class="sig-paren">(</span><em>runtime</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/deciders.html#NoOpDecider.tally"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.deciders.NoOpDecider.tally" title="Permalink to this definition">¶</a></dt>
+<dd><p>Always good to go.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.action_engine.deciders.NoOpDecider.affect">
+<code class="descname">affect</code><span class="sig-paren">(</span><em>runtime</em>, <em>nay_voters</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/deciders.html#NoOpDecider.affect"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.deciders.NoOpDecider.affect" title="Permalink to this definition">¶</a></dt>
+<dd><p>Does nothing.</p>
+</dd></dl>
+
+</dd></dl>
+
+<span class="target" id="module-taskflow.engines.action_engine.executor"></span><dl class="class">
+<dt id="taskflow.engines.action_engine.executor.SerialRetryExecutor">
+<em class="property">class </em><code class="descclassname">taskflow.engines.action_engine.executor.</code><code class="descname">SerialRetryExecutor</code><a class="reference internal" href="_modules/taskflow/engines/action_engine/executor.html#SerialRetryExecutor"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.executor.SerialRetryExecutor" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>Executes and reverts retries.</p>
+<dl class="method">
+<dt id="taskflow.engines.action_engine.executor.SerialRetryExecutor.start">
+<code class="descname">start</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/executor.html#SerialRetryExecutor.start"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.executor.SerialRetryExecutor.start" title="Permalink to this definition">¶</a></dt>
+<dd><p>Prepare to execute retries.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.action_engine.executor.SerialRetryExecutor.stop">
+<code class="descname">stop</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/executor.html#SerialRetryExecutor.stop"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.executor.SerialRetryExecutor.stop" title="Permalink to this definition">¶</a></dt>
+<dd><p>Finalize retry executor.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.action_engine.executor.SerialRetryExecutor.execute_retry">
+<code class="descname">execute_retry</code><span class="sig-paren">(</span><em>retry</em>, <em>arguments</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/executor.html#SerialRetryExecutor.execute_retry"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.executor.SerialRetryExecutor.execute_retry" title="Permalink to this definition">¶</a></dt>
+<dd><p>Schedules retry execution.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.action_engine.executor.SerialRetryExecutor.revert_retry">
+<code class="descname">revert_retry</code><span class="sig-paren">(</span><em>retry</em>, <em>arguments</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/executor.html#SerialRetryExecutor.revert_retry"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.executor.SerialRetryExecutor.revert_retry" title="Permalink to this definition">¶</a></dt>
+<dd><p>Schedules retry reversion.</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.engines.action_engine.executor.TaskExecutor">
+<em class="property">class </em><code class="descclassname">taskflow.engines.action_engine.executor.</code><code class="descname">TaskExecutor</code><a class="reference internal" href="_modules/taskflow/engines/action_engine/executor.html#TaskExecutor"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.executor.TaskExecutor" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>Executes and reverts tasks.</p>
+<p>This class takes task and its arguments and executes or reverts it.
+It encapsulates knowledge on how task should be executed or reverted:
+right now, on separate thread, on another machine, etc.</p>
+<dl class="method">
+<dt id="taskflow.engines.action_engine.executor.TaskExecutor.execute_task">
+<code class="descname">execute_task</code><span class="sig-paren">(</span><em>task</em>, <em>task_uuid</em>, <em>arguments</em>, <em>progress_callback=None</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/executor.html#TaskExecutor.execute_task"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.executor.TaskExecutor.execute_task" title="Permalink to this definition">¶</a></dt>
+<dd><p>Schedules task execution.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.action_engine.executor.TaskExecutor.revert_task">
+<code class="descname">revert_task</code><span class="sig-paren">(</span><em>task</em>, <em>task_uuid</em>, <em>arguments</em>, <em>result</em>, <em>failures</em>, <em>progress_callback=None</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/executor.html#TaskExecutor.revert_task"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.executor.TaskExecutor.revert_task" title="Permalink to this definition">¶</a></dt>
+<dd><p>Schedules task reversion.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.action_engine.executor.TaskExecutor.start">
+<code class="descname">start</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/executor.html#TaskExecutor.start"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.executor.TaskExecutor.start" title="Permalink to this definition">¶</a></dt>
+<dd><p>Prepare to execute tasks.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.action_engine.executor.TaskExecutor.stop">
+<code class="descname">stop</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/executor.html#TaskExecutor.stop"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.executor.TaskExecutor.stop" title="Permalink to this definition">¶</a></dt>
+<dd><p>Finalize task executor.</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.engines.action_engine.executor.SerialTaskExecutor">
+<em class="property">class </em><code class="descclassname">taskflow.engines.action_engine.executor.</code><code class="descname">SerialTaskExecutor</code><a class="reference internal" href="_modules/taskflow/engines/action_engine/executor.html#SerialTaskExecutor"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.executor.SerialTaskExecutor" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <a class="reference internal" href="#taskflow.engines.action_engine.executor.TaskExecutor" title="taskflow.engines.action_engine.executor.TaskExecutor"><code class="xref py py-class docutils literal"><span class="pre">taskflow.engines.action_engine.executor.TaskExecutor</span></code></a></p>
+<p>Executes tasks one after another.</p>
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.engines.action_engine.executor.ParallelTaskExecutor">
+<em class="property">class </em><code class="descclassname">taskflow.engines.action_engine.executor.</code><code class="descname">ParallelTaskExecutor</code><span class="sig-paren">(</span><em>executor=None</em>, <em>max_workers=None</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/executor.html#ParallelTaskExecutor"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.executor.ParallelTaskExecutor" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <a class="reference internal" href="#taskflow.engines.action_engine.executor.TaskExecutor" title="taskflow.engines.action_engine.executor.TaskExecutor"><code class="xref py py-class docutils literal"><span class="pre">taskflow.engines.action_engine.executor.TaskExecutor</span></code></a></p>
+<p>Executes tasks in parallel.</p>
+<p>Submits tasks to an executor which should provide an interface similar
+to concurrent.Futures.Executor.</p>
+<dl class="attribute">
+<dt id="taskflow.engines.action_engine.executor.ParallelTaskExecutor.constructor_options">
+<code class="descname">constructor_options</code><em class="property"> = [('max_workers', &lt;function &lt;lambda&gt; at 0x7f265c070f50&gt;)]</em><a class="headerlink" href="#taskflow.engines.action_engine.executor.ParallelTaskExecutor.constructor_options" title="Permalink to this definition">¶</a></dt>
+<dd><p>Optional constructor keyword arguments this executor supports. These will
+typically be passed via engine options (by a engine user) and converted
+into the correct type before being sent into this
+classes <code class="docutils literal"><span class="pre">__init__</span></code> method.</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.engines.action_engine.executor.ParallelThreadTaskExecutor">
+<em class="property">class </em><code class="descclassname">taskflow.engines.action_engine.executor.</code><code class="descname">ParallelThreadTaskExecutor</code><span class="sig-paren">(</span><em>executor=None</em>, <em>max_workers=None</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/executor.html#ParallelThreadTaskExecutor"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.executor.ParallelThreadTaskExecutor" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <a class="reference internal" href="#taskflow.engines.action_engine.executor.ParallelTaskExecutor" title="taskflow.engines.action_engine.executor.ParallelTaskExecutor"><code class="xref py py-class docutils literal"><span class="pre">taskflow.engines.action_engine.executor.ParallelTaskExecutor</span></code></a></p>
+<p>Executes tasks in parallel using a thread pool executor.</p>
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.engines.action_engine.executor.ParallelGreenThreadTaskExecutor">
+<em class="property">class </em><code class="descclassname">taskflow.engines.action_engine.executor.</code><code class="descname">ParallelGreenThreadTaskExecutor</code><span class="sig-paren">(</span><em>executor=None</em>, <em>max_workers=None</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/executor.html#ParallelGreenThreadTaskExecutor"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.executor.ParallelGreenThreadTaskExecutor" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <a class="reference internal" href="#taskflow.engines.action_engine.executor.ParallelThreadTaskExecutor" title="taskflow.engines.action_engine.executor.ParallelThreadTaskExecutor"><code class="xref py py-class docutils literal"><span class="pre">taskflow.engines.action_engine.executor.ParallelThreadTaskExecutor</span></code></a></p>
+<p>Executes tasks in parallel using a greenthread pool executor.</p>
+<dl class="attribute">
+<dt id="taskflow.engines.action_engine.executor.ParallelGreenThreadTaskExecutor.DEFAULT_WORKERS">
+<code class="descname">DEFAULT_WORKERS</code><em class="property"> = 1000</em><a class="headerlink" href="#taskflow.engines.action_engine.executor.ParallelGreenThreadTaskExecutor.DEFAULT_WORKERS" title="Permalink to this definition">¶</a></dt>
+<dd><p>Default number of workers when <code class="docutils literal"><span class="pre">None</span></code> is passed; being that
+greenthreads don&#8217;t map to native threads or processors very well this
+is more of a guess/somewhat arbitrary, but it does match what the eventlet
+greenpool default size is (so at least it&#8217;s consistent with what eventlet
+does).</p>
+</dd></dl>
+
+</dd></dl>
+
+<span class="target" id="module-taskflow.engines.action_engine.process_executor"></span><dl class="exception">
+<dt id="taskflow.engines.action_engine.process_executor.UnknownSender">
+<em class="property">exception </em><code class="descclassname">taskflow.engines.action_engine.process_executor.</code><code class="descname">UnknownSender</code><a class="reference internal" href="_modules/taskflow/engines/action_engine/process_executor.html#UnknownSender"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.process_executor.UnknownSender" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">exceptions.Exception</span></code></p>
+<p>Exception raised when message from unknown sender is recvd.</p>
+</dd></dl>
+
+<dl class="exception">
+<dt id="taskflow.engines.action_engine.process_executor.ChallengeIgnored">
+<em class="property">exception </em><code class="descclassname">taskflow.engines.action_engine.process_executor.</code><code class="descname">ChallengeIgnored</code><a class="reference internal" href="_modules/taskflow/engines/action_engine/process_executor.html#ChallengeIgnored"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.process_executor.ChallengeIgnored" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">exceptions.Exception</span></code></p>
+<p>Exception raised when challenge has not been responded to.</p>
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.engines.action_engine.process_executor.Reader">
+<em class="property">class </em><code class="descclassname">taskflow.engines.action_engine.process_executor.</code><code class="descname">Reader</code><span class="sig-paren">(</span><em>auth_key</em>, <em>dispatch_func</em>, <em>msg_limit=-1</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/process_executor.html#Reader"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.process_executor.Reader" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>Reader machine that streams &amp; parses messages that it then dispatches.</p>
+<p>TODO(harlowja): Use python-suitcase in the future when the following
+are addressed/resolved and released:</p>
+<ul class="simple">
+<li><a class="reference external" href="https://github.com/digidotcom/python-suitcase/issues/28">https://github.com/digidotcom/python-suitcase/issues/28</a></li>
+<li><a class="reference external" href="https://github.com/digidotcom/python-suitcase/issues/29">https://github.com/digidotcom/python-suitcase/issues/29</a></li>
+</ul>
+<p>Binary format format is the following (no newlines in actual format):</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>&lt;magic-header&gt; (4 bytes)
+&lt;mac-header-length&gt; (4 bytes)
+&lt;mac&gt; (1 or more variable bytes)
+&lt;identity-header-length&gt; (4 bytes)
+&lt;identity&gt; (1 or more variable bytes)
+&lt;msg-header-length&gt; (4 bytes)
+&lt;msg&gt; (1 or more variable bytes)
+</pre></div>
+</div>
+</dd></dl>
+
+<dl class="exception">
+<dt id="taskflow.engines.action_engine.process_executor.BadHmacValueError">
+<em class="property">exception </em><code class="descclassname">taskflow.engines.action_engine.process_executor.</code><code class="descname">BadHmacValueError</code><a class="reference internal" href="_modules/taskflow/engines/action_engine/process_executor.html#BadHmacValueError"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.process_executor.BadHmacValueError" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">exceptions.ValueError</span></code></p>
+<p>Value error raised when an invalid hmac is discovered.</p>
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.engines.action_engine.process_executor.Channel">
+<em class="property">class </em><code class="descclassname">taskflow.engines.action_engine.process_executor.</code><code class="descname">Channel</code><span class="sig-paren">(</span><em>port</em>, <em>identity</em>, <em>auth_key</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/process_executor.html#Channel"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.process_executor.Channel" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>Object that workers use to communicate back to their creator.</p>
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.engines.action_engine.process_executor.EventSender">
+<em class="property">class </em><code class="descclassname">taskflow.engines.action_engine.process_executor.</code><code class="descname">EventSender</code><span class="sig-paren">(</span><em>channel</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/process_executor.html#EventSender"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.process_executor.EventSender" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>Sends event information from a child worker process to its creator.</p>
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.engines.action_engine.process_executor.DispatcherHandler">
+<em class="property">class </em><code class="descclassname">taskflow.engines.action_engine.process_executor.</code><code class="descname">DispatcherHandler</code><span class="sig-paren">(</span><em>sock</em>, <em>addr</em>, <em>dispatcher</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/process_executor.html#DispatcherHandler"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.process_executor.DispatcherHandler" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">asyncore.dispatcher</span></code></p>
+<p>Dispatches from a single connection into a target.</p>
+<dl class="attribute">
+<dt id="taskflow.engines.action_engine.process_executor.DispatcherHandler.CHUNK_SIZE">
+<code class="descname">CHUNK_SIZE</code><em class="property"> = 8192</em><a class="headerlink" href="#taskflow.engines.action_engine.process_executor.DispatcherHandler.CHUNK_SIZE" title="Permalink to this definition">¶</a></dt>
+<dd><p>Read/write chunk size.</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.engines.action_engine.process_executor.Dispatcher">
+<em class="property">class </em><code class="descclassname">taskflow.engines.action_engine.process_executor.</code><code class="descname">Dispatcher</code><span class="sig-paren">(</span><em>map</em>, <em>auth_key</em>, <em>identity</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/process_executor.html#Dispatcher"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.process_executor.Dispatcher" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">asyncore.dispatcher</span></code></p>
+<p>Accepts messages received from child worker processes.</p>
+<dl class="attribute">
+<dt id="taskflow.engines.action_engine.process_executor.Dispatcher.MAX_BACKLOG">
+<code class="descname">MAX_BACKLOG</code><em class="property"> = 5</em><a class="headerlink" href="#taskflow.engines.action_engine.process_executor.Dispatcher.MAX_BACKLOG" title="Permalink to this definition">¶</a></dt>
+<dd><p>See <a class="reference external" href="https://docs.python.org/2/library/socket.html#socket.socket.listen">https://docs.python.org/2/library/socket.html#socket.socket.listen</a></p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.engines.action_engine.process_executor.ParallelProcessTaskExecutor">
+<em class="property">class </em><code class="descclassname">taskflow.engines.action_engine.process_executor.</code><code class="descname">ParallelProcessTaskExecutor</code><span class="sig-paren">(</span><em>executor=None</em>, <em>max_workers=None</em>, <em>wait_timeout=None</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/process_executor.html#ParallelProcessTaskExecutor"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.process_executor.ParallelProcessTaskExecutor" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <a class="reference internal" href="#taskflow.engines.action_engine.executor.ParallelTaskExecutor" title="taskflow.engines.action_engine.executor.ParallelTaskExecutor"><code class="xref py py-class docutils literal"><span class="pre">taskflow.engines.action_engine.executor.ParallelTaskExecutor</span></code></a></p>
+<p>Executes tasks in parallel using a process pool executor.</p>
+<p>NOTE(harlowja): this executor executes tasks in external processes, so that
+implies that tasks that are sent to that external process are pickleable
+since this is how the multiprocessing works (sending pickled objects back
+and forth) and that the bound handlers (for progress updating in
+particular) are proxied correctly from that external process to the one
+that is alive in the parent process to ensure that callbacks registered in
+the parent are executed on events in the child.</p>
+<dl class="attribute">
+<dt id="taskflow.engines.action_engine.process_executor.ParallelProcessTaskExecutor.WAIT_TIMEOUT">
+<code class="descname">WAIT_TIMEOUT</code><em class="property"> = 0.01</em><a class="headerlink" href="#taskflow.engines.action_engine.process_executor.ParallelProcessTaskExecutor.WAIT_TIMEOUT" title="Permalink to this definition">¶</a></dt>
+<dd><p>Default timeout used by asyncore io loop (and eventually select/poll).</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.engines.action_engine.process_executor.ParallelProcessTaskExecutor.constructor_options">
+<code class="descname">constructor_options</code><em class="property"> = [('max_workers', &lt;function &lt;lambda&gt; at 0x7f265bf35aa0&gt;), ('wait_timeout', &lt;function &lt;lambda&gt; at 0x7f265bf35b18&gt;)]</em><a class="headerlink" href="#taskflow.engines.action_engine.process_executor.ParallelProcessTaskExecutor.constructor_options" title="Permalink to this definition">¶</a></dt>
+<dd><p>Optional constructor keyword arguments this executor supports. These will
+typically be passed via engine options (by a engine user) and converted
+into the correct type before being sent into this
+classes <code class="docutils literal"><span class="pre">__init__</span></code> method.</p>
+</dd></dl>
+
+</dd></dl>
+
+<span class="target" id="module-taskflow.engines.action_engine.runtime"></span><dl class="class">
+<dt id="taskflow.engines.action_engine.runtime.Runtime">
+<em class="property">class </em><code class="descclassname">taskflow.engines.action_engine.runtime.</code><code class="descname">Runtime</code><span class="sig-paren">(</span><em>compilation</em>, <em>storage</em>, <em>atom_notifier</em>, <em>task_executor</em>, <em>retry_executor</em>, <em>options=None</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/runtime.html#Runtime"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.runtime.Runtime" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>A aggregate of runtime objects, properties, ... used during execution.</p>
+<p>This object contains various utility methods and properties that represent
+the collection of runtime components and functionality needed for an
+action engine to run to completion.</p>
+<dl class="method">
+<dt id="taskflow.engines.action_engine.runtime.Runtime.compile">
+<code class="descname">compile</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/runtime.html#Runtime.compile"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.runtime.Runtime.compile" title="Permalink to this definition">¶</a></dt>
+<dd><p>Compiles &amp; caches frequently used execution helper objects.</p>
+<p>Build out a cache of commonly used item that are associated
+with the contained atoms (by name), and are useful to have for
+quick lookup on (for example, the change state handler function for
+each atom, the scope walker object for each atom, the task or retry
+specific scheduler and so-on).</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.action_engine.runtime.Runtime.check_atom_transition">
+<code class="descname">check_atom_transition</code><span class="sig-paren">(</span><em>atom</em>, <em>current_state</em>, <em>target_state</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/runtime.html#Runtime.check_atom_transition"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.runtime.Runtime.check_atom_transition" title="Permalink to this definition">¶</a></dt>
+<dd><p>Checks if the atom can transition to the provided target state.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.action_engine.runtime.Runtime.fetch_edge_deciders">
+<code class="descname">fetch_edge_deciders</code><span class="sig-paren">(</span><em>atom</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/runtime.html#Runtime.fetch_edge_deciders"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.runtime.Runtime.fetch_edge_deciders" title="Permalink to this definition">¶</a></dt>
+<dd><p>Fetches the edge deciders for the given atom.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.action_engine.runtime.Runtime.fetch_scheduler">
+<code class="descname">fetch_scheduler</code><span class="sig-paren">(</span><em>atom</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/runtime.html#Runtime.fetch_scheduler"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.runtime.Runtime.fetch_scheduler" title="Permalink to this definition">¶</a></dt>
+<dd><p>Fetches the cached specific scheduler for the given atom.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.action_engine.runtime.Runtime.fetch_action">
+<code class="descname">fetch_action</code><span class="sig-paren">(</span><em>atom</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/runtime.html#Runtime.fetch_action"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.runtime.Runtime.fetch_action" title="Permalink to this definition">¶</a></dt>
+<dd><p>Fetches the cached action handler for the given atom.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.action_engine.runtime.Runtime.fetch_scopes_for">
+<code class="descname">fetch_scopes_for</code><span class="sig-paren">(</span><em>atom_name</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/runtime.html#Runtime.fetch_scopes_for"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.runtime.Runtime.fetch_scopes_for" title="Permalink to this definition">¶</a></dt>
+<dd><p>Fetches a walker of the visible scopes for the given atom.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.action_engine.runtime.Runtime.iterate_retries">
+<code class="descname">iterate_retries</code><span class="sig-paren">(</span><em>state=None</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/runtime.html#Runtime.iterate_retries"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.runtime.Runtime.iterate_retries" title="Permalink to this definition">¶</a></dt>
+<dd><p>Iterates retry atoms that match the provided state.</p>
+<p>If no state is provided it will yield back all retry atoms.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.action_engine.runtime.Runtime.iterate_nodes">
+<code class="descname">iterate_nodes</code><span class="sig-paren">(</span><em>allowed_kinds</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/runtime.html#Runtime.iterate_nodes"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.runtime.Runtime.iterate_nodes" title="Permalink to this definition">¶</a></dt>
+<dd><p>Yields back all nodes of specified kinds in the execution graph.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.action_engine.runtime.Runtime.is_success">
+<code class="descname">is_success</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/runtime.html#Runtime.is_success"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.runtime.Runtime.is_success" title="Permalink to this definition">¶</a></dt>
+<dd><p>Checks if all atoms in the execution graph are in &#8216;happy&#8217; state.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.action_engine.runtime.Runtime.find_retry">
+<code class="descname">find_retry</code><span class="sig-paren">(</span><em>node</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/runtime.html#Runtime.find_retry"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.runtime.Runtime.find_retry" title="Permalink to this definition">¶</a></dt>
+<dd><p>Returns the retry atom associated to the given node (or none).</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.action_engine.runtime.Runtime.reset_atoms">
+<code class="descname">reset_atoms</code><span class="sig-paren">(</span><em>atoms</em>, <em>state='PENDING'</em>, <em>intention='EXECUTE'</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/runtime.html#Runtime.reset_atoms"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.runtime.Runtime.reset_atoms" title="Permalink to this definition">¶</a></dt>
+<dd><p>Resets all the provided atoms to the given state and intention.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.action_engine.runtime.Runtime.reset_all">
+<code class="descname">reset_all</code><span class="sig-paren">(</span><em>state='PENDING'</em>, <em>intention='EXECUTE'</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/runtime.html#Runtime.reset_all"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.runtime.Runtime.reset_all" title="Permalink to this definition">¶</a></dt>
+<dd><p>Resets all atoms to the given state and intention.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.action_engine.runtime.Runtime.reset_subgraph">
+<code class="descname">reset_subgraph</code><span class="sig-paren">(</span><em>atom</em>, <em>state='PENDING'</em>, <em>intention='EXECUTE'</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/runtime.html#Runtime.reset_subgraph"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.runtime.Runtime.reset_subgraph" title="Permalink to this definition">¶</a></dt>
+<dd><p>Resets a atoms subgraph to the given state and intention.</p>
+<p>The subgraph is contained of <strong>all</strong> of the atoms successors.</p>
+</dd></dl>
+
+<dl class="method">
+<dt id="taskflow.engines.action_engine.runtime.Runtime.retry_subflow">
+<code class="descname">retry_subflow</code><span class="sig-paren">(</span><em>retry</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/runtime.html#Runtime.retry_subflow"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.runtime.Runtime.retry_subflow" title="Permalink to this definition">¶</a></dt>
+<dd><p>Prepares a retrys + its subgraph for execution.</p>
+<p>This sets the retrys intention to <code class="docutils literal"><span class="pre">EXECUTE</span></code> and resets all of its
+subgraph (its successors) to the <code class="docutils literal"><span class="pre">PENDING</span></code> state with an <code class="docutils literal"><span class="pre">EXECUTE</span></code>
+intention.</p>
+</dd></dl>
+
+</dd></dl>
+
+<span class="target" id="module-taskflow.engines.action_engine.scheduler"></span><dl class="class">
+<dt id="taskflow.engines.action_engine.scheduler.RetryScheduler">
+<em class="property">class </em><code class="descclassname">taskflow.engines.action_engine.scheduler.</code><code class="descname">RetryScheduler</code><span class="sig-paren">(</span><em>runtime</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/scheduler.html#RetryScheduler"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.scheduler.RetryScheduler" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>Schedules retry atoms.</p>
+<dl class="method">
+<dt id="taskflow.engines.action_engine.scheduler.RetryScheduler.schedule">
+<code class="descname">schedule</code><span class="sig-paren">(</span><em>retry</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/scheduler.html#RetryScheduler.schedule"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.scheduler.RetryScheduler.schedule" title="Permalink to this definition">¶</a></dt>
+<dd><p>Schedules the given retry atom for <em>future</em> completion.</p>
+<p>Depending on the atoms stored intention this may schedule the retry
+atom for reversion or execution.</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.engines.action_engine.scheduler.TaskScheduler">
+<em class="property">class </em><code class="descclassname">taskflow.engines.action_engine.scheduler.</code><code class="descname">TaskScheduler</code><span class="sig-paren">(</span><em>runtime</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/scheduler.html#TaskScheduler"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.scheduler.TaskScheduler" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>Schedules task atoms.</p>
+<dl class="method">
+<dt id="taskflow.engines.action_engine.scheduler.TaskScheduler.schedule">
+<code class="descname">schedule</code><span class="sig-paren">(</span><em>task</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/scheduler.html#TaskScheduler.schedule"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.scheduler.TaskScheduler.schedule" title="Permalink to this definition">¶</a></dt>
+<dd><p>Schedules the given task atom for <em>future</em> completion.</p>
+<p>Depending on the atoms stored intention this may schedule the task
+atom for reversion or execution.</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.engines.action_engine.scheduler.Scheduler">
+<em class="property">class </em><code class="descclassname">taskflow.engines.action_engine.scheduler.</code><code class="descname">Scheduler</code><span class="sig-paren">(</span><em>runtime</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/scheduler.html#Scheduler"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.scheduler.Scheduler" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>Safely schedules atoms using a runtime <code class="docutils literal"><span class="pre">fetch_scheduler</span></code> routine.</p>
+<dl class="method">
+<dt id="taskflow.engines.action_engine.scheduler.Scheduler.schedule">
+<code class="descname">schedule</code><span class="sig-paren">(</span><em>atoms</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/scheduler.html#Scheduler.schedule"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.scheduler.Scheduler.schedule" title="Permalink to this definition">¶</a></dt>
+<dd><p>Schedules the provided atoms for <em>future</em> completion.</p>
+<p>This method should schedule a future for each atom provided and return
+a set of those futures to be waited on (or used for other similar
+purposes). It should also return any failure objects that represented
+scheduling failures that may have occurred during this scheduling
+process.</p>
+</dd></dl>
+
+</dd></dl>
+
+<span class="target" id="module-taskflow.engines.action_engine.selector"></span><dl class="class">
+<dt id="taskflow.engines.action_engine.selector.Selector">
+<em class="property">class </em><code class="descclassname">taskflow.engines.action_engine.selector.</code><code class="descname">Selector</code><span class="sig-paren">(</span><em>runtime</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/selector.html#Selector"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.selector.Selector" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>Selector that uses a compilation and aids in execution processes.</p>
+<p>Its primary purpose is to get the next atoms for execution or reversion
+by utilizing the compilations underlying structures (graphs, nodes and
+edge relations...) and using this information along with the atom
+state/states stored in storage to provide other useful functionality to
+the rest of the runtime system.</p>
+<dl class="method">
+<dt id="taskflow.engines.action_engine.selector.Selector.iter_next_atoms">
+<code class="descname">iter_next_atoms</code><span class="sig-paren">(</span><em>atom=None</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/selector.html#Selector.iter_next_atoms"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.selector.Selector.iter_next_atoms" title="Permalink to this definition">¶</a></dt>
+<dd><p>Iterate next atoms to run (originating from atom or all atoms).</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="class">
+<dt id="taskflow.engines.action_engine.scopes.ScopeWalker">
+<em class="property">class </em><code class="descclassname">taskflow.engines.action_engine.scopes.</code><code class="descname">ScopeWalker</code><span class="sig-paren">(</span><em>compilation</em>, <em>atom</em>, <em>names_only=False</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/scopes.html#ScopeWalker"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.scopes.ScopeWalker" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">object</span></code></p>
+<p>Walks through the scopes of a atom using a engines compilation.</p>
+<p>NOTE(harlowja): for internal usage only.</p>
+<p>This will walk the visible scopes that are accessible for the given
+atom, which can be used by some external entity in some meaningful way,
+for example to find dependent values...</p>
+<dl class="method">
+<dt id="taskflow.engines.action_engine.scopes.ScopeWalker.__iter__">
+<code class="descname">__iter__</code><span class="sig-paren">(</span><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/scopes.html#ScopeWalker.__iter__"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.scopes.ScopeWalker.__iter__" title="Permalink to this definition">¶</a></dt>
+<dd><p>Iterates over the visible scopes.</p>
+<p>How this works is the following:</p>
+<p>We first grab all the predecessors of the given atom (lets call it
+<code class="docutils literal"><span class="pre">Y</span></code>) by using the <a class="reference internal" href="#taskflow.engines.action_engine.compiler.Compilation" title="taskflow.engines.action_engine.compiler.Compilation"><code class="xref py py-class docutils literal"><span class="pre">Compilation</span></code></a> execution
+graph (and doing a reverse breadth-first expansion to gather its
+predecessors), this is useful since we know they <em>always</em> will
+exist (and execute) before this atom but it does not tell us the
+corresponding scope <em>level</em> (flow, nested flow...) that each
+predecessor was created in, so we need to find this information.</p>
+<p>For that information we consult the location of the atom <code class="docutils literal"><span class="pre">Y</span></code> in the
+<a class="reference internal" href="#taskflow.engines.action_engine.compiler.Compilation" title="taskflow.engines.action_engine.compiler.Compilation"><code class="xref py py-class docutils literal"><span class="pre">Compilation</span></code></a> hierarchy/tree. We lookup in a
+reverse order the parent <code class="docutils literal"><span class="pre">X</span></code> of <code class="docutils literal"><span class="pre">Y</span></code> and traverse backwards from
+the index in the parent where <code class="docutils literal"><span class="pre">Y</span></code> exists to all siblings (and
+children of those siblings) in <code class="docutils literal"><span class="pre">X</span></code> that we encounter in this
+backwards search (if a sibling is a flow itself, its atom(s)
+will be recursively expanded and included). This collection will
+then be assumed to be at the same scope. This is what is called
+a <em>potential</em> single scope, to make an <em>actual</em> scope we remove the
+items from the <em>potential</em> scope that are <strong>not</strong> predecessors
+of <code class="docutils literal"><span class="pre">Y</span></code> to form the <em>actual</em> scope which we then yield back.</p>
+<p>Then for additional scopes we continue up the tree, by finding the
+parent of <code class="docutils literal"><span class="pre">X</span></code> (lets call it <code class="docutils literal"><span class="pre">Z</span></code>) and perform the same operation,
+going through the children in a reverse manner from the index in
+parent <code class="docutils literal"><span class="pre">Z</span></code> where <code class="docutils literal"><span class="pre">X</span></code> was located. This forms another <em>potential</em>
+scope which we provide back as an <em>actual</em> scope after reducing the
+potential set to only include predecessors previously gathered. We
+then repeat this process until we no longer have any parent
+nodes (aka we have reached the top of the tree) or we run out of
+predecessors.</p>
+</dd></dl>
+
+</dd></dl>
+
+<span class="target" id="module-taskflow.engines.action_engine.traversal"></span><dl class="class">
+<dt id="taskflow.engines.action_engine.traversal.Direction">
+<em class="property">class </em><code class="descclassname">taskflow.engines.action_engine.traversal.</code><code class="descname">Direction</code><a class="reference internal" href="_modules/taskflow/engines/action_engine/traversal.html#Direction"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.traversal.Direction" title="Permalink to this definition">¶</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal"><span class="pre">enum.Enum</span></code></p>
+<p>Traversal direction enum.</p>
+<dl class="attribute">
+<dt id="taskflow.engines.action_engine.traversal.Direction.FORWARD">
+<code class="descname">FORWARD</code><em class="property"> = &lt;Direction.FORWARD: 1&gt;</em><a class="headerlink" href="#taskflow.engines.action_engine.traversal.Direction.FORWARD" title="Permalink to this definition">¶</a></dt>
+<dd><p>Go through successors.</p>
+</dd></dl>
+
+<dl class="attribute">
+<dt id="taskflow.engines.action_engine.traversal.Direction.BACKWARD">
+<code class="descname">BACKWARD</code><em class="property"> = &lt;Direction.BACKWARD: 2&gt;</em><a class="headerlink" href="#taskflow.engines.action_engine.traversal.Direction.BACKWARD" title="Permalink to this definition">¶</a></dt>
+<dd><p>Go through predecessors.</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="function">
+<dt id="taskflow.engines.action_engine.traversal.breadth_first_iterate">
+<code class="descclassname">taskflow.engines.action_engine.traversal.</code><code class="descname">breadth_first_iterate</code><span class="sig-paren">(</span><em>execution_graph</em>, <em>starting_node</em>, <em>direction</em>, <em>through_flows=True</em>, <em>through_retries=True</em>, <em>through_tasks=True</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/traversal.html#breadth_first_iterate"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.traversal.breadth_first_iterate" title="Permalink to this definition">¶</a></dt>
+<dd><p>Iterates connected nodes in execution graph (from starting node).</p>
+<p>Does so in a breadth first manner.</p>
+<p>Jumps over nodes with <code class="docutils literal"><span class="pre">noop</span></code> attribute (does not yield them back).</p>
+</dd></dl>
+
+<dl class="function">
+<dt id="taskflow.engines.action_engine.traversal.depth_first_iterate">
+<code class="descclassname">taskflow.engines.action_engine.traversal.</code><code class="descname">depth_first_iterate</code><span class="sig-paren">(</span><em>execution_graph</em>, <em>starting_node</em>, <em>direction</em>, <em>through_flows=True</em>, <em>through_retries=True</em>, <em>through_tasks=True</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/traversal.html#depth_first_iterate"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.traversal.depth_first_iterate" title="Permalink to this definition">¶</a></dt>
+<dd><p>Iterates connected nodes in execution graph (from starting node).</p>
+<p>Does so in a depth first manner.</p>
+<p>Jumps over nodes with <code class="docutils literal"><span class="pre">noop</span></code> attribute (does not yield them back).</p>
+</dd></dl>
+
+<dl class="function">
+<dt id="taskflow.engines.action_engine.traversal.depth_first_reverse_iterate">
+<code class="descclassname">taskflow.engines.action_engine.traversal.</code><code class="descname">depth_first_reverse_iterate</code><span class="sig-paren">(</span><em>node</em>, <em>start_from_idx=-1</em><span class="sig-paren">)</span><a class="reference internal" href="_modules/taskflow/engines/action_engine/traversal.html#depth_first_reverse_iterate"><span class="viewcode-link">[source]</span></a><a class="headerlink" href="#taskflow.engines.action_engine.traversal.depth_first_reverse_iterate" title="Permalink to this definition">¶</a></dt>
+<dd><p>Iterates connected (in reverse) <strong>tree</strong> nodes (from starting node).</p>
+<p>Jumps through nodes with <code class="docutils literal"><span class="pre">noop</span></code> attribute (does not yield them back).</p>
+</dd></dl>
+
+</div>
+</div>
+<div class="section" id="hierarchy">
+<h2>Hierarchy<a class="headerlink" href="#hierarchy" title="Permalink to this headline">¶</a></h2>
+<p class="graphviz">
+<img src="_images/inheritance-f6464b1b49e1ec02b065dce774d53d0e44340434.png" alt="Inheritance diagram of taskflow.engines.action_engine.engine.ActionEngine, taskflow.engines.base.Engine, taskflow.engines.worker_based.engine.WorkerBasedActionEngine" usemap="#inheritance093a6c0e6d" class="inheritance"/>
+<map id="inheritance093a6c0e6d" name="inheritance093a6c0e6d">
+<area shape="rect" id="node1" href="#taskflow.engines.action_engine.engine.ActionEngine" target="_top" title="Generic action&#45;based engine." alt="" coords="125,5,231,31"/>
+<area shape="rect" id="node3" href="workers.html#taskflow.engines.worker_based.engine.WorkerBasedActionEngine" target="_top" title="Worker based action engine." alt="" coords="279,5,467,31"/>
+<area shape="rect" id="node2" href="#taskflow.engines.base.Engine" target="_top" title="Base for all engines implementations." alt="" coords="5,5,77,31"/>
+</map>
+</p>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Engines</a><ul>
+<li><a class="reference internal" href="#overview">Overview</a><ul>
+<li><a class="reference internal" href="#why-they-exist">Why they exist</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#creating">Creating</a></li>
+<li><a class="reference internal" href="#usage">Usage</a></li>
+<li><a class="reference internal" href="#types">Types</a><ul>
+<li><a class="reference internal" href="#serial">Serial</a></li>
+<li><a class="reference internal" href="#parallel">Parallel</a></li>
+<li><a class="reference internal" href="#workers">Workers</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#how-they-run">How they run</a><ul>
+<li><a class="reference internal" href="#creation">Creation</a></li>
+<li><a class="reference internal" href="#compiling">Compiling</a></li>
+<li><a class="reference internal" href="#preparation">Preparation</a></li>
+<li><a class="reference internal" href="#validation">Validation</a></li>
+<li><a class="reference internal" href="#execution">Execution</a><ul>
+<li><a class="reference internal" href="#resumption">Resumption</a></li>
+<li><a class="reference internal" href="#scheduling">Scheduling</a></li>
+<li><a class="reference internal" href="#waiting">Waiting</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#finishing">Finishing</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#special-cases">Special cases</a><ul>
+<li><a class="reference internal" href="#suspension">Suspension</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#scoping">Scoping</a><ul>
+<li><a class="reference internal" href="#default-strategy">Default strategy</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#module-taskflow.engines.base">Interfaces</a></li>
+<li><a class="reference internal" href="#module-taskflow.engines.action_engine.engine">Implementations</a><ul>
+<li><a class="reference internal" href="#components">Components</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#hierarchy">Hierarchy</a></li>
+</ul>
+</li>
+</ul>
+
+  <h3>Navigation</h3>
+  <ul>
+
+    <li><a href="index.html">Table Of Contents</a></li>
+
+
+    <li><a href="notifications.html" title="next chapter">Next topic: Notifications and listeners</a></li>
+
+
+    <li><a href="patterns.html" title="previous chapter">Previous topic: Patterns</a></li>
+
+  </ul>
+
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/taskflow
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="_sources/engines.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="right" >
+          <a href="notifications.html" title="Notifications and listeners"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="patterns.html" title="Patterns"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="index.html">TaskFlow 2.9.1.dev5 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2017, OpenStack Foundation.
+      Last updated on &#39;Fri Feb 10 20:11:01 2017, commit b7e2fcd&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/TaskFlow");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

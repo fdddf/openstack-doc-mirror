@@ -1,0 +1,354 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Ceph in Kolla &mdash; kolla-ansible 4.0.0.0b4.dev153 documentation</title>
+    
+    <link rel="stylesheet" href="_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '4.0.0.0b4.dev153',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <link rel="top" title="kolla-ansible 4.0.0.0b4.dev153 documentation" href="index.html" />
+    <link rel="next" title="External Ceph" href="external-ceph-guide.html" />
+    <link rel="prev" title="Troubleshooting Guide" href="troubleshooting.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="ceph-in-kolla">
+<span id="ceph-guide"></span><h1>Ceph in Kolla<a class="headerlink" href="#ceph-in-kolla" title="Permalink to this headline">¶</a></h1>
+<p>The out-of-the-box Ceph deployment requires 3 hosts with at least one block
+device on each host that can be dedicated for sole use by Ceph. However, with
+tweaks to the Ceph cluster you can deploy a <strong>healthy</strong> cluster with a single
+host and a single block device.</p>
+<div class="section" id="requirements">
+<h2>Requirements<a class="headerlink" href="#requirements" title="Permalink to this headline">¶</a></h2>
+<ul class="simple">
+<li>A minimum of 3 hosts for a vanilla deploy</li>
+<li>A minimum of 1 block device per host</li>
+</ul>
+</div>
+<div class="section" id="preparation">
+<h2>Preparation<a class="headerlink" href="#preparation" title="Permalink to this headline">¶</a></h2>
+<p>To prepare a disk for use as a
+<a class="reference external" href="http://docs.ceph.com/docs/master/man/8/ceph-osd/">Ceph OSD</a> you must add a
+special partition label to the disk. This partition label is how Kolla detects
+the disks to format and bootstrap. Any disk with a matching partition label
+will be reformatted so use caution.</p>
+<p>To prepare an OSD as a storage drive, execute the following operations:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span># &lt;WARNING ALL DATA ON $DISK will be LOST!&gt;
+# where $DISK is /dev/sdb or something similar
+parted $DISK -s -- mklabel gpt mkpart KOLLA_CEPH_OSD_BOOTSTRAP 1 -1
+</pre></div>
+</div>
+<p>The following shows an example of using parted to configure <code class="docutils literal"><span class="pre">/dev/sdb</span></code> for
+usage with Kolla.</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>parted /dev/sdb -s -- mklabel gpt mkpart KOLLA_CEPH_OSD_BOOTSTRAP 1 -1
+parted /dev/sdb print
+Model: VMware, VMware Virtual S (scsi)
+Disk /dev/sdb: 10.7GB
+Sector size (logical/physical): 512B/512B
+Partition Table: gpt
+Number  Start   End     Size    File system  Name                      Flags
+     1      1049kB  10.7GB  10.7GB               KOLLA_CEPH_OSD_BOOTSTRAP
+</pre></div>
+</div>
+<div class="section" id="using-an-external-journal-drive">
+<h3>Using an external journal drive<a class="headerlink" href="#using-an-external-journal-drive" title="Permalink to this headline">¶</a></h3>
+<p>The steps documented above created a journal partition of 5 GByte
+and a data partition with the remaining storage capacity on the same tagged
+drive.</p>
+<p>It is a common practice to place the journal of an OSD on a separate
+journal drive. This section documents how to use an external journal drive.</p>
+<p>Prepare the storage drive in the same way as documented above:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span># &lt;WARNING ALL DATA ON $DISK will be LOST!&gt;
+# where $DISK is /dev/sdb or something similar
+parted $DISK -s -- mklabel gpt mkpart KOLLA_CEPH_OSD_BOOTSTRAP_FOO 1 -1
+</pre></div>
+</div>
+<p>To prepare the journal external drive execute the following command:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span># &lt;WARNING ALL DATA ON $DISK will be LOST!&gt;
+# where $DISK is /dev/sdc or something similar
+parted $DISK -s -- mklabel gpt mkpart KOLLA_CEPH_OSD_BOOTSTRAP_FOO_J 1 -1
+</pre></div>
+</div>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">Use different suffixes (<code class="docutils literal"><span class="pre">_42</span></code>, <code class="docutils literal"><span class="pre">_FOO</span></code>, <code class="docutils literal"><span class="pre">_FOO42</span></code>, ..) to use different external
+journal drives for different storage drives. One external journal drive can only
+be used for one storage drive.</p>
+</div>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">The partition labels <code class="docutils literal"><span class="pre">KOLLA_CEPH_OSD_BOOTSTRAP</span></code> and <code class="docutils literal"><span class="pre">KOLLA_CEPH_OSD_BOOTSTRAP_J</span></code>
+are not working when using external journal drives. It is required to use
+suffixes (<code class="docutils literal"><span class="pre">_42</span></code>, <code class="docutils literal"><span class="pre">_FOO</span></code>, <code class="docutils literal"><span class="pre">_FOO42</span></code>, ..). If you want to setup only one
+storage drive with one external journal drive it is also necessary to use a suffix.</p>
+</div>
+</div>
+</div>
+<div class="section" id="configuration">
+<h2>Configuration<a class="headerlink" href="#configuration" title="Permalink to this headline">¶</a></h2>
+<p>Edit the [storage] group in the inventory which contains the hostname of the
+hosts that have the block devices you have prepped as shown above.</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="p">[</span><span class="n">storage</span><span class="p">]</span>
+<span class="n">controller</span>
+<span class="n">compute1</span>
+</pre></div>
+</div>
+<p>Enable Ceph in <code class="docutils literal"><span class="pre">/etc/kolla/globals.yml</span></code>:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>enable_ceph: &quot;yes&quot;
+</pre></div>
+</div>
+<p>RadosGW is optional, enable it in <code class="docutils literal"><span class="pre">/etc/kolla/globals.yml</span></code>:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>enable_ceph_rgw: &quot;yes&quot;
+</pre></div>
+</div>
+<p>RGW requires a healthy cluster in order to be successfully deployed. On initial
+start up, RGW will create several pools. The first pool should be in an
+operational state to proceed with the second one, and so on. So, in the case of
+an <strong>all-in-one</strong> deployment, it is necessary to change the default number of
+copies for the pools before deployment. Modify the file
+<code class="docutils literal"><span class="pre">/etc/kolla/config/ceph.conf</span></code> and add the contents:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>[global]
+osd pool default size = 1
+osd pool default min size = 1
+</pre></div>
+</div>
+</div>
+<div class="section" id="deployment">
+<h2>Deployment<a class="headerlink" href="#deployment" title="Permalink to this headline">¶</a></h2>
+<p>Finally deploy the Ceph-enabled OpenStack:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>kolla-ansible deploy -i path/to/inventory
+</pre></div>
+</div>
+</div>
+<div class="section" id="using-a-cache-tier">
+<h2>Using a Cache Tier<a class="headerlink" href="#using-a-cache-tier" title="Permalink to this headline">¶</a></h2>
+<p>An optional <a class="reference external" href="http://docs.ceph.com/docs/jewel/rados/operations/cache-tiering/">cache tier</a>
+can be deployed by formatting at least one cache device and enabling cache.
+tiering in the globals.yml configuration file.</p>
+<p>To prepare an OSD as a cache device, execute the following operations:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span># &lt;WARNING ALL DATA ON $DISK will be LOST!&gt;
+# where $DISK is /dev/sdb or something similar
+parted $DISK -s -- mklabel gpt mkpart KOLLA_CEPH_OSD_CACHE_BOOTSTRAP 1 -1
+</pre></div>
+</div>
+<p>Enable the Ceph cache tier in <code class="docutils literal"><span class="pre">/etc/kolla/globals.yml</span></code>:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>enable_ceph: &quot;yes&quot;
+ceph_enable_cache: &quot;yes&quot;
+# Valid options are [ forward, none, writeback ]
+ceph_cache_mode: &quot;writeback&quot;
+</pre></div>
+</div>
+<p>After this run the playbooks as you normally would. For example:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>kolla-ansible deploy -i path/to/inventory
+</pre></div>
+</div>
+</div>
+<div class="section" id="setting-up-an-erasure-coded-pool">
+<h2>Setting up an Erasure Coded Pool<a class="headerlink" href="#setting-up-an-erasure-coded-pool" title="Permalink to this headline">¶</a></h2>
+<p><a class="reference external" href="http://docs.ceph.com/docs/jewel/rados/operations/erasure-code/">Erasure code</a>
+is the new big thing from Ceph. Kolla has the ability to setup your Ceph pools
+as erasure coded pools. Due to technical limitations with Ceph, using erasure
+coded pools as OpenStack uses them requires a cache tier. Additionally, you
+must make the choice to use an erasure coded pool or a replicated pool
+(the default) when you initially deploy. You cannot change this without
+completely removing the pool and recreating it.</p>
+<p>To enable erasure coded pools add the following options to your
+<code class="docutils literal"><span class="pre">/etc/kolla/globals.yml</span></code> configuration file:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span># A requirement for using the erasure-coded pools is you must setup a cache tier
+# Valid options are [ erasure, replicated ]
+ceph_pool_type: &quot;erasure&quot;
+# Optionally, you can change the profile
+#ceph_erasure_profile: &quot;k=4 m=2 ruleset-failure-domain=host&quot;
+</pre></div>
+</div>
+</div>
+<div class="section" id="managing-ceph">
+<h2>Managing Ceph<a class="headerlink" href="#managing-ceph" title="Permalink to this headline">¶</a></h2>
+<p>Check the Ceph status for more diagnostic information. The sample output below
+indicates a healthy cluster:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>docker exec ceph_mon ceph -s
+cluster 5fba2fbc-551d-11e5-a8ce-01ef4c5cf93c
+ health HEALTH_OK
+ monmap e1: 1 mons at {controller=10.0.0.128:6789/0}
+        election epoch 2, quorum 0 controller
+ osdmap e18: 2 osds: 2 up, 2 in
+  pgmap v27: 64 pgs, 1 pools, 0 bytes data, 0 objects
+        68676 kB used, 20390 MB / 20457 MB avail
+              64 active+clean
+</pre></div>
+</div>
+<p>If Ceph is run in an <strong>all-in-one</strong> deployment or with less than three storage
+nodes, further configuration is required. It is necessary to change the default
+number of copies for the pool. The following example demonstrates how to change
+the number of copies for the pool to 1:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>docker exec ceph_mon ceph osd pool set rbd size 1
+</pre></div>
+</div>
+<p>All the pools must be modified if Glance, Nova, and Cinder have been deployed.
+An example of modifying the pools to have 2 copies:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>for p in images vms volumes backups; do docker exec ceph_mon ceph osd pool set ${p} size 2; done
+</pre></div>
+</div>
+<p>If using a cache tier, these changes must be made as well:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>for p in images vms volumes backups; do docker exec ceph_mon ceph osd pool set ${p}-cache size 2; done
+</pre></div>
+</div>
+<p>The default pool Ceph creates is named <strong>rbd</strong>. It is safe to remove this pool:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>docker exec ceph_mon ceph osd pool delete rbd rbd --yes-i-really-really-mean-it
+</pre></div>
+</div>
+</div>
+<div class="section" id="troubleshooting">
+<h2>Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permalink to this headline">¶</a></h2>
+<div class="section" id="deploy-fails-with-fetching-ceph-keyrings-no-json-object-could-be-decoded">
+<h3>Deploy fails with &#8216;Fetching Ceph keyrings ... No JSON object could be decoded&#8217;<a class="headerlink" href="#deploy-fails-with-fetching-ceph-keyrings-no-json-object-could-be-decoded" title="Permalink to this headline">¶</a></h3>
+<p>If an initial deploy of Ceph fails, perhaps due to improper configuration or
+similar, the cluster will be partially formed and will need to be reset for a
+successful deploy.</p>
+<p>In order to do this the operator should remove the <cite>ceph_mon_config</cite> volume
+from each Ceph monitor node:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>ansible \
+    -i ansible/inventory/multinode \
+    -a &#39;docker volume rm ceph_mon_config&#39; \
+    ceph-mon
+</pre></div>
+</div>
+</div>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Ceph in Kolla</a><ul>
+<li><a class="reference internal" href="#requirements">Requirements</a></li>
+<li><a class="reference internal" href="#preparation">Preparation</a><ul>
+<li><a class="reference internal" href="#using-an-external-journal-drive">Using an external journal drive</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#configuration">Configuration</a></li>
+<li><a class="reference internal" href="#deployment">Deployment</a></li>
+<li><a class="reference internal" href="#using-a-cache-tier">Using a Cache Tier</a></li>
+<li><a class="reference internal" href="#setting-up-an-erasure-coded-pool">Setting up an Erasure Coded Pool</a></li>
+<li><a class="reference internal" href="#managing-ceph">Managing Ceph</a></li>
+<li><a class="reference internal" href="#troubleshooting">Troubleshooting</a><ul>
+<li><a class="reference internal" href="#deploy-fails-with-fetching-ceph-keyrings-no-json-object-could-be-decoded">Deploy fails with &#8216;Fetching Ceph keyrings ... No JSON object could be decoded&#8217;</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="troubleshooting.html"
+                                  title="previous chapter">Troubleshooting Guide</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="external-ceph-guide.html"
+                                  title="next chapter">External Ceph</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/kolla-ansible
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="_sources/ceph-guide.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="external-ceph-guide.html" title="External Ceph"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="troubleshooting.html" title="Troubleshooting Guide"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="index.html">kolla-ansible 4.0.0.0b4.dev153 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2013, OpenStack Foundation.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/kolla-ansible");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

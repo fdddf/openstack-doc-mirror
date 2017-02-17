@@ -1,0 +1,762 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>taskflow.persistence.backends.impl_sqlalchemy &mdash; TaskFlow 2.9.1.dev9 documentation</title>
+    
+    <link rel="stylesheet" href="../../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../../',
+        VERSION:     '2.9.1.dev9',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../../_static/doctools.js"></script>
+    <link rel="top" title="TaskFlow 2.9.1.dev9 documentation" href="../../../../index.html" />
+    <link rel="up" title="taskflow.persistence.backends" href="../backends.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for taskflow.persistence.backends.impl_sqlalchemy</h1><div class="highlight"><pre>
+<span></span><span class="c1"># -*- coding: utf-8 -*-</span>
+
+<span class="c1">#    Copyright (C) 2012 Yahoo! Inc. All Rights Reserved.</span>
+<span class="c1">#    Copyright (C) 2013 Rackspace Hosting All Rights Reserved.</span>
+<span class="c1">#</span>
+<span class="c1">#    Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may</span>
+<span class="c1">#    not use this file except in compliance with the License. You may obtain</span>
+<span class="c1">#    a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#         http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1">#    Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1">#    distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="c1">#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="c1">#    License for the specific language governing permissions and limitations</span>
+<span class="c1">#    under the License.</span>
+
+<span class="kn">from</span> <span class="nn">__future__</span> <span class="kn">import</span> <span class="n">absolute_import</span>
+
+<span class="kn">import</span> <span class="nn">contextlib</span>
+<span class="kn">import</span> <span class="nn">copy</span>
+<span class="kn">import</span> <span class="nn">functools</span>
+<span class="kn">import</span> <span class="nn">threading</span>
+<span class="kn">import</span> <span class="nn">time</span>
+
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">strutils</span>
+<span class="kn">import</span> <span class="nn">six</span>
+<span class="kn">import</span> <span class="nn">sqlalchemy</span> <span class="kn">as</span> <span class="nn">sa</span>
+<span class="kn">from</span> <span class="nn">sqlalchemy</span> <span class="kn">import</span> <span class="n">exc</span> <span class="k">as</span> <span class="n">sa_exc</span>
+<span class="kn">from</span> <span class="nn">sqlalchemy</span> <span class="kn">import</span> <span class="n">pool</span> <span class="k">as</span> <span class="n">sa_pool</span>
+<span class="kn">from</span> <span class="nn">sqlalchemy</span> <span class="kn">import</span> <span class="n">sql</span>
+<span class="kn">import</span> <span class="nn">tenacity</span>
+
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">exceptions</span> <span class="k">as</span> <span class="n">exc</span>
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">logging</span>
+<span class="kn">from</span> <span class="nn">taskflow.persistence.backends.sqlalchemy</span> <span class="kn">import</span> <span class="n">migration</span>
+<span class="kn">from</span> <span class="nn">taskflow.persistence.backends.sqlalchemy</span> <span class="kn">import</span> <span class="n">tables</span>
+<span class="kn">from</span> <span class="nn">taskflow.persistence</span> <span class="kn">import</span> <span class="n">base</span>
+<span class="kn">from</span> <span class="nn">taskflow.persistence</span> <span class="kn">import</span> <span class="n">models</span>
+<span class="kn">from</span> <span class="nn">taskflow.utils</span> <span class="kn">import</span> <span class="n">eventlet_utils</span>
+<span class="kn">from</span> <span class="nn">taskflow.utils</span> <span class="kn">import</span> <span class="n">misc</span>
+
+
+<span class="n">LOG</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+<span class="c1"># NOTE(harlowja): This is all very similar to what oslo-incubator uses but is</span>
+<span class="c1"># not based on using oslo.cfg and its global configuration (which should not be</span>
+<span class="c1"># used in libraries such as taskflow).</span>
+<span class="c1">#</span>
+<span class="c1"># TODO(harlowja): once oslo.db appears we should be able to use that instead</span>
+<span class="c1"># since it&#39;s not supposed to have any usage of oslo.cfg in it when it</span>
+<span class="c1"># materializes as a library.</span>
+
+<span class="c1"># See: http://dev.mysql.com/doc/refman/5.0/en/error-messages-client.html</span>
+<span class="n">MY_SQL_CONN_ERRORS</span> <span class="o">=</span> <span class="p">(</span>
+    <span class="c1"># Lost connection to MySQL server at &#39;%s&#39;, system error: %d</span>
+    <span class="s1">&#39;2006&#39;</span><span class="p">,</span>
+    <span class="c1"># Can&#39;t connect to MySQL server on &#39;%s&#39; (%d)</span>
+    <span class="s1">&#39;2003&#39;</span><span class="p">,</span>
+    <span class="c1"># Can&#39;t connect to local MySQL server through socket &#39;%s&#39; (%d)</span>
+    <span class="s1">&#39;2002&#39;</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="n">MY_SQL_GONE_WAY_AWAY_ERRORS</span> <span class="o">=</span> <span class="p">(</span>
+    <span class="c1"># Lost connection to MySQL server at &#39;%s&#39;, system error: %d</span>
+    <span class="s1">&#39;2006&#39;</span><span class="p">,</span>
+    <span class="c1"># Lost connection to MySQL server during query</span>
+    <span class="s1">&#39;2013&#39;</span><span class="p">,</span>
+    <span class="c1"># Commands out of sync; you can&#39;t run this command now</span>
+    <span class="s1">&#39;2014&#39;</span><span class="p">,</span>
+    <span class="c1"># Can&#39;t open shared memory; no answer from server (%lu)</span>
+    <span class="s1">&#39;2045&#39;</span><span class="p">,</span>
+    <span class="c1"># Lost connection to MySQL server at &#39;%s&#39;, system error: %d</span>
+    <span class="s1">&#39;2055&#39;</span><span class="p">,</span>
+<span class="p">)</span>
+
+<span class="c1"># See: http://www.postgresql.org/docs/9.1/static/errcodes-appendix.html</span>
+<span class="n">POSTGRES_CONN_ERRORS</span> <span class="o">=</span> <span class="p">(</span>
+    <span class="c1"># connection_exception</span>
+    <span class="s1">&#39;08000&#39;</span><span class="p">,</span>
+    <span class="c1"># connection_does_not_exist</span>
+    <span class="s1">&#39;08003&#39;</span><span class="p">,</span>
+    <span class="c1"># connection_failure</span>
+    <span class="s1">&#39;08006&#39;</span><span class="p">,</span>
+    <span class="c1"># sqlclient_unable_to_establish_sqlconnection</span>
+    <span class="s1">&#39;08001&#39;</span><span class="p">,</span>
+    <span class="c1"># sqlserver_rejected_establishment_of_sqlconnection</span>
+    <span class="s1">&#39;08004&#39;</span><span class="p">,</span>
+    <span class="c1"># Just couldn&#39;t connect (postgres errors are pretty weird)</span>
+    <span class="s1">&#39;could not connect to server&#39;</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="n">POSTGRES_GONE_WAY_AWAY_ERRORS</span> <span class="o">=</span> <span class="p">(</span>
+    <span class="c1"># Server terminated while in progress (postgres errors are pretty weird).</span>
+    <span class="s1">&#39;server closed the connection unexpectedly&#39;</span><span class="p">,</span>
+    <span class="s1">&#39;terminating connection due to administrator command&#39;</span><span class="p">,</span>
+<span class="p">)</span>
+
+<span class="c1"># These connection urls mean sqlite is being used as an in-memory DB.</span>
+<span class="n">SQLITE_IN_MEMORY</span> <span class="o">=</span> <span class="p">(</span><span class="s1">&#39;sqlite://&#39;</span><span class="p">,</span> <span class="s1">&#39;sqlite:///&#39;</span><span class="p">,</span> <span class="s1">&#39;sqlite:///:memory:&#39;</span><span class="p">)</span>
+
+<span class="c1"># Transacation isolation levels that will be automatically applied, we prefer</span>
+<span class="c1"># strong read committed isolation levels to avoid merging and using dirty</span>
+<span class="c1"># data...</span>
+<span class="c1">#</span>
+<span class="c1"># See: http://en.wikipedia.org/wiki/Isolation_(database_systems)</span>
+<span class="n">DEFAULT_TXN_ISOLATION_LEVELS</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s1">&#39;mysql&#39;</span><span class="p">:</span> <span class="s1">&#39;READ COMMITTED&#39;</span><span class="p">,</span>
+    <span class="s1">&#39;postgresql&#39;</span><span class="p">:</span> <span class="s1">&#39;READ COMMITTED&#39;</span><span class="p">,</span>
+    <span class="s1">&#39;postgres&#39;</span><span class="p">:</span> <span class="s1">&#39;READ COMMITTED&#39;</span><span class="p">,</span>
+<span class="p">}</span>
+
+
+<span class="k">def</span> <span class="nf">_log_statements</span><span class="p">(</span><span class="n">log_level</span><span class="p">,</span> <span class="n">conn</span><span class="p">,</span> <span class="n">cursor</span><span class="p">,</span> <span class="n">statement</span><span class="p">,</span> <span class="n">parameters</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">):</span>
+    <span class="k">if</span> <span class="n">LOG</span><span class="o">.</span><span class="n">isEnabledFor</span><span class="p">(</span><span class="n">log_level</span><span class="p">):</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="n">log_level</span><span class="p">,</span> <span class="s2">&quot;Running statement &#39;</span><span class="si">%s</span><span class="s2">&#39; with parameters </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span>
+                <span class="n">statement</span><span class="p">,</span> <span class="n">parameters</span><span class="p">)</span>
+
+
+<span class="k">def</span> <span class="nf">_in_any</span><span class="p">(</span><span class="n">reason</span><span class="p">,</span> <span class="n">err_haystack</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Checks if any elements of the haystack are in the given reason.&quot;&quot;&quot;</span>
+    <span class="k">for</span> <span class="n">err</span> <span class="ow">in</span> <span class="n">err_haystack</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">reason</span><span class="o">.</span><span class="n">find</span><span class="p">(</span><span class="n">six</span><span class="o">.</span><span class="n">text_type</span><span class="p">(</span><span class="n">err</span><span class="p">))</span> <span class="o">!=</span> <span class="o">-</span><span class="mi">1</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">True</span>
+    <span class="k">return</span> <span class="bp">False</span>
+
+
+<span class="k">def</span> <span class="nf">_is_db_connection_error</span><span class="p">(</span><span class="n">reason</span><span class="p">):</span>
+    <span class="k">return</span> <span class="n">_in_any</span><span class="p">(</span><span class="n">reason</span><span class="p">,</span> <span class="nb">list</span><span class="p">(</span><span class="n">MY_SQL_CONN_ERRORS</span> <span class="o">+</span> <span class="n">POSTGRES_CONN_ERRORS</span><span class="p">))</span>
+
+
+<span class="k">def</span> <span class="nf">_as_bool</span><span class="p">(</span><span class="n">value</span><span class="p">):</span>
+    <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">value</span><span class="p">,</span> <span class="nb">bool</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">value</span>
+    <span class="c1"># This is different than strutils, but imho is an acceptable difference.</span>
+    <span class="k">if</span> <span class="n">value</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+        <span class="k">return</span> <span class="bp">False</span>
+    <span class="c1"># NOTE(harlowja): prefer strictness to avoid users getting accustomed</span>
+    <span class="c1"># to passing bad values in and this *just working* (which imho is a bad</span>
+    <span class="c1"># habit to encourage).</span>
+    <span class="k">return</span> <span class="n">strutils</span><span class="o">.</span><span class="n">bool_from_string</span><span class="p">(</span><span class="n">value</span><span class="p">,</span> <span class="n">strict</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+
+
+<span class="k">def</span> <span class="nf">_thread_yield</span><span class="p">(</span><span class="n">dbapi_con</span><span class="p">,</span> <span class="n">con_record</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Ensure other greenthreads get a chance to be executed.</span>
+
+<span class="sd">    If we use eventlet.monkey_patch(), eventlet.greenthread.sleep(0) will</span>
+<span class="sd">    execute instead of time.sleep(0).</span>
+
+<span class="sd">    Force a context switch. With common database backends (eg MySQLdb and</span>
+<span class="sd">    sqlite), there is no implicit yield caused by network I/O since they are</span>
+<span class="sd">    implemented by C libraries that eventlet cannot monkey patch.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">time</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
+
+
+<span class="k">def</span> <span class="nf">_set_sql_mode</span><span class="p">(</span><span class="n">sql_mode</span><span class="p">,</span> <span class="n">dbapi_con</span><span class="p">,</span> <span class="n">connection_rec</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Set the sql_mode session variable.</span>
+
+<span class="sd">    MySQL supports several server modes. The default is None, but sessions</span>
+<span class="sd">    may choose to enable server modes like TRADITIONAL, ANSI,</span>
+<span class="sd">    several STRICT_* modes and others.</span>
+
+<span class="sd">    Note: passing in &#39;&#39; (empty string) for sql_mode clears</span>
+<span class="sd">    the SQL mode for the session, overriding a potentially set</span>
+<span class="sd">    server default.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">cursor</span> <span class="o">=</span> <span class="n">dbapi_con</span><span class="o">.</span><span class="n">cursor</span><span class="p">()</span>
+    <span class="n">cursor</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="s2">&quot;SET SESSION sql_mode = </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span> <span class="p">[</span><span class="n">sql_mode</span><span class="p">])</span>
+
+
+<span class="k">def</span> <span class="nf">_ping_listener</span><span class="p">(</span><span class="n">dbapi_conn</span><span class="p">,</span> <span class="n">connection_rec</span><span class="p">,</span> <span class="n">connection_proxy</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Ensures that MySQL connections checked out of the pool are alive.</span>
+
+<span class="sd">    Modified + borrowed from: http://bit.ly/14BYaW6.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">dbapi_conn</span><span class="o">.</span><span class="n">cursor</span><span class="p">()</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="s1">&#39;select 1&#39;</span><span class="p">)</span>
+    <span class="k">except</span> <span class="n">dbapi_conn</span><span class="o">.</span><span class="n">OperationalError</span> <span class="k">as</span> <span class="n">ex</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">_in_any</span><span class="p">(</span><span class="n">six</span><span class="o">.</span><span class="n">text_type</span><span class="p">(</span><span class="n">ex</span><span class="o">.</span><span class="n">args</span><span class="p">[</span><span class="mi">0</span><span class="p">]),</span> <span class="n">MY_SQL_GONE_WAY_AWAY_ERRORS</span><span class="p">):</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span><span class="s1">&#39;Got mysql server has gone away&#39;</span><span class="p">,</span> <span class="n">exc_info</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+            <span class="k">raise</span> <span class="n">sa_exc</span><span class="o">.</span><span class="n">DisconnectionError</span><span class="p">(</span><span class="s2">&quot;Database server went away&quot;</span><span class="p">)</span>
+        <span class="k">elif</span> <span class="n">_in_any</span><span class="p">(</span><span class="n">six</span><span class="o">.</span><span class="n">text_type</span><span class="p">(</span><span class="n">ex</span><span class="o">.</span><span class="n">args</span><span class="p">[</span><span class="mi">0</span><span class="p">]),</span> <span class="n">POSTGRES_GONE_WAY_AWAY_ERRORS</span><span class="p">):</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span><span class="s1">&#39;Got postgres server has gone away&#39;</span><span class="p">,</span> <span class="n">exc_info</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+            <span class="k">raise</span> <span class="n">sa_exc</span><span class="o">.</span><span class="n">DisconnectionError</span><span class="p">(</span><span class="s2">&quot;Database server went away&quot;</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">raise</span>
+
+
+<span class="k">class</span> <span class="nc">_Alchemist</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Internal &lt;-&gt; external row &lt;-&gt; objects + other helper functions.</span>
+
+<span class="sd">    NOTE(harlowja): for internal usage only.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tables</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_tables</span> <span class="o">=</span> <span class="n">tables</span>
+
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span> <span class="nf">convert_flow_detail</span><span class="p">(</span><span class="n">row</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">models</span><span class="o">.</span><span class="n">FlowDetail</span><span class="o">.</span><span class="n">from_dict</span><span class="p">(</span><span class="nb">dict</span><span class="p">(</span><span class="n">row</span><span class="o">.</span><span class="n">items</span><span class="p">()))</span>
+
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span> <span class="nf">convert_book</span><span class="p">(</span><span class="n">row</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">models</span><span class="o">.</span><span class="n">LogBook</span><span class="o">.</span><span class="n">from_dict</span><span class="p">(</span><span class="nb">dict</span><span class="p">(</span><span class="n">row</span><span class="o">.</span><span class="n">items</span><span class="p">()))</span>
+
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span> <span class="nf">convert_atom_detail</span><span class="p">(</span><span class="n">row</span><span class="p">):</span>
+        <span class="n">row</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">(</span><span class="n">row</span><span class="o">.</span><span class="n">items</span><span class="p">())</span>
+        <span class="n">atom_cls</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">atom_detail_class</span><span class="p">(</span><span class="n">row</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="s1">&#39;atom_type&#39;</span><span class="p">))</span>
+        <span class="k">return</span> <span class="n">atom_cls</span><span class="o">.</span><span class="n">from_dict</span><span class="p">(</span><span class="n">row</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">atom_query_iter</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">conn</span><span class="p">,</span> <span class="n">parent_uuid</span><span class="p">):</span>
+        <span class="n">q</span> <span class="o">=</span> <span class="p">(</span><span class="n">sql</span><span class="o">.</span><span class="n">select</span><span class="p">([</span><span class="bp">self</span><span class="o">.</span><span class="n">_tables</span><span class="o">.</span><span class="n">atomdetails</span><span class="p">])</span><span class="o">.</span>
+             <span class="n">where</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_tables</span><span class="o">.</span><span class="n">atomdetails</span><span class="o">.</span><span class="n">c</span><span class="o">.</span><span class="n">parent_uuid</span> <span class="o">==</span> <span class="n">parent_uuid</span><span class="p">))</span>
+        <span class="k">for</span> <span class="n">row</span> <span class="ow">in</span> <span class="n">conn</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="n">q</span><span class="p">):</span>
+            <span class="k">yield</span> <span class="bp">self</span><span class="o">.</span><span class="n">convert_atom_detail</span><span class="p">(</span><span class="n">row</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">flow_query_iter</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">conn</span><span class="p">,</span> <span class="n">parent_uuid</span><span class="p">):</span>
+        <span class="n">q</span> <span class="o">=</span> <span class="p">(</span><span class="n">sql</span><span class="o">.</span><span class="n">select</span><span class="p">([</span><span class="bp">self</span><span class="o">.</span><span class="n">_tables</span><span class="o">.</span><span class="n">flowdetails</span><span class="p">])</span><span class="o">.</span>
+             <span class="n">where</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_tables</span><span class="o">.</span><span class="n">flowdetails</span><span class="o">.</span><span class="n">c</span><span class="o">.</span><span class="n">parent_uuid</span> <span class="o">==</span> <span class="n">parent_uuid</span><span class="p">))</span>
+        <span class="k">for</span> <span class="n">row</span> <span class="ow">in</span> <span class="n">conn</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="n">q</span><span class="p">):</span>
+            <span class="k">yield</span> <span class="bp">self</span><span class="o">.</span><span class="n">convert_flow_detail</span><span class="p">(</span><span class="n">row</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">populate_book</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">conn</span><span class="p">,</span> <span class="n">book</span><span class="p">):</span>
+        <span class="k">for</span> <span class="n">fd</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">flow_query_iter</span><span class="p">(</span><span class="n">conn</span><span class="p">,</span> <span class="n">book</span><span class="o">.</span><span class="n">uuid</span><span class="p">):</span>
+            <span class="n">book</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">fd</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">populate_flow_detail</span><span class="p">(</span><span class="n">conn</span><span class="p">,</span> <span class="n">fd</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">populate_flow_detail</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">conn</span><span class="p">,</span> <span class="n">fd</span><span class="p">):</span>
+        <span class="k">for</span> <span class="n">ad</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">atom_query_iter</span><span class="p">(</span><span class="n">conn</span><span class="p">,</span> <span class="n">fd</span><span class="o">.</span><span class="n">uuid</span><span class="p">):</span>
+            <span class="n">fd</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">ad</span><span class="p">)</span>
+
+
+<div class="viewcode-block" id="SQLAlchemyBackend"><a class="viewcode-back" href="../../../../persistence.html#taskflow.persistence.backends.impl_sqlalchemy.SQLAlchemyBackend">[docs]</a><span class="k">class</span> <span class="nc">SQLAlchemyBackend</span><span class="p">(</span><span class="n">base</span><span class="o">.</span><span class="n">Backend</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A sqlalchemy backend.</span>
+
+<span class="sd">    Example configuration::</span>
+
+<span class="sd">        conf = {</span>
+<span class="sd">            &quot;connection&quot;: &quot;sqlite:////tmp/test.db&quot;,</span>
+<span class="sd">        }</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">conf</span><span class="p">,</span> <span class="n">engine</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">SQLAlchemyBackend</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">conf</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">engine</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_engine</span> <span class="o">=</span> <span class="n">engine</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_owns_engine</span> <span class="o">=</span> <span class="bp">False</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_engine</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_create_engine</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_conf</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_owns_engine</span> <span class="o">=</span> <span class="bp">True</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_validated</span> <span class="o">=</span> <span class="bp">False</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_upgrade_lock</span> <span class="o">=</span> <span class="n">threading</span><span class="o">.</span><span class="n">Lock</span><span class="p">()</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_max_retries</span> <span class="o">=</span> <span class="n">misc</span><span class="o">.</span><span class="n">as_int</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_conf</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;max_retries&#39;</span><span class="p">))</span>
+        <span class="k">except</span> <span class="ne">TypeError</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_max_retries</span> <span class="o">=</span> <span class="mi">0</span>
+
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span> <span class="nf">_create_engine</span><span class="p">(</span><span class="n">conf</span><span class="p">):</span>
+        <span class="c1"># NOTE(harlowja): copy the internal one so that we don&#39;t modify it via</span>
+        <span class="c1"># all the popping that will happen below.</span>
+        <span class="n">conf</span> <span class="o">=</span> <span class="n">copy</span><span class="o">.</span><span class="n">deepcopy</span><span class="p">(</span><span class="n">conf</span><span class="p">)</span>
+        <span class="n">engine_args</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="s1">&#39;echo&#39;</span><span class="p">:</span> <span class="n">_as_bool</span><span class="p">(</span><span class="n">conf</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="s1">&#39;echo&#39;</span><span class="p">,</span> <span class="bp">False</span><span class="p">)),</span>
+            <span class="s1">&#39;convert_unicode&#39;</span><span class="p">:</span> <span class="n">_as_bool</span><span class="p">(</span><span class="n">conf</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="s1">&#39;convert_unicode&#39;</span><span class="p">,</span> <span class="bp">True</span><span class="p">)),</span>
+            <span class="s1">&#39;pool_recycle&#39;</span><span class="p">:</span> <span class="mi">3600</span><span class="p">,</span>
+        <span class="p">}</span>
+        <span class="k">if</span> <span class="s1">&#39;idle_timeout&#39;</span> <span class="ow">in</span> <span class="n">conf</span><span class="p">:</span>
+            <span class="n">idle_timeout</span> <span class="o">=</span> <span class="n">misc</span><span class="o">.</span><span class="n">as_int</span><span class="p">(</span><span class="n">conf</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="s1">&#39;idle_timeout&#39;</span><span class="p">))</span>
+            <span class="n">engine_args</span><span class="p">[</span><span class="s1">&#39;pool_recycle&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">idle_timeout</span>
+        <span class="n">sql_connection</span> <span class="o">=</span> <span class="n">conf</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="s1">&#39;connection&#39;</span><span class="p">)</span>
+        <span class="n">e_url</span> <span class="o">=</span> <span class="n">sa</span><span class="o">.</span><span class="n">engine</span><span class="o">.</span><span class="n">url</span><span class="o">.</span><span class="n">make_url</span><span class="p">(</span><span class="n">sql_connection</span><span class="p">)</span>
+        <span class="k">if</span> <span class="s1">&#39;sqlite&#39;</span> <span class="ow">in</span> <span class="n">e_url</span><span class="o">.</span><span class="n">drivername</span><span class="p">:</span>
+            <span class="n">engine_args</span><span class="p">[</span><span class="s2">&quot;poolclass&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">sa_pool</span><span class="o">.</span><span class="n">NullPool</span>
+
+            <span class="c1"># Adjustments for in-memory sqlite usage.</span>
+            <span class="k">if</span> <span class="n">sql_connection</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span><span class="o">.</span><span class="n">strip</span><span class="p">()</span> <span class="ow">in</span> <span class="n">SQLITE_IN_MEMORY</span><span class="p">:</span>
+                <span class="n">engine_args</span><span class="p">[</span><span class="s2">&quot;poolclass&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">sa_pool</span><span class="o">.</span><span class="n">StaticPool</span>
+                <span class="n">engine_args</span><span class="p">[</span><span class="s2">&quot;connect_args&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span><span class="s1">&#39;check_same_thread&#39;</span><span class="p">:</span> <span class="bp">False</span><span class="p">}</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">for</span> <span class="p">(</span><span class="n">k</span><span class="p">,</span> <span class="n">lookup_key</span><span class="p">)</span> <span class="ow">in</span> <span class="p">[(</span><span class="s1">&#39;pool_size&#39;</span><span class="p">,</span> <span class="s1">&#39;max_pool_size&#39;</span><span class="p">),</span>
+                                    <span class="p">(</span><span class="s1">&#39;max_overflow&#39;</span><span class="p">,</span> <span class="s1">&#39;max_overflow&#39;</span><span class="p">),</span>
+                                    <span class="p">(</span><span class="s1">&#39;pool_timeout&#39;</span><span class="p">,</span> <span class="s1">&#39;pool_timeout&#39;</span><span class="p">)]:</span>
+                <span class="k">if</span> <span class="n">lookup_key</span> <span class="ow">in</span> <span class="n">conf</span><span class="p">:</span>
+                    <span class="n">engine_args</span><span class="p">[</span><span class="n">k</span><span class="p">]</span> <span class="o">=</span> <span class="n">misc</span><span class="o">.</span><span class="n">as_int</span><span class="p">(</span><span class="n">conf</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="n">lookup_key</span><span class="p">))</span>
+        <span class="k">if</span> <span class="s1">&#39;isolation_level&#39;</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">conf</span><span class="p">:</span>
+            <span class="c1"># Check driver name exact matches first, then try driver name</span>
+            <span class="c1"># partial matches...</span>
+            <span class="n">txn_isolation_levels</span> <span class="o">=</span> <span class="n">conf</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="s1">&#39;isolation_levels&#39;</span><span class="p">,</span>
+                                            <span class="n">DEFAULT_TXN_ISOLATION_LEVELS</span><span class="p">)</span>
+            <span class="n">level_applied</span> <span class="o">=</span> <span class="bp">False</span>
+            <span class="k">for</span> <span class="p">(</span><span class="n">driver</span><span class="p">,</span> <span class="n">level</span><span class="p">)</span> <span class="ow">in</span> <span class="n">six</span><span class="o">.</span><span class="n">iteritems</span><span class="p">(</span><span class="n">txn_isolation_levels</span><span class="p">):</span>
+                <span class="k">if</span> <span class="n">driver</span> <span class="o">==</span> <span class="n">e_url</span><span class="o">.</span><span class="n">drivername</span><span class="p">:</span>
+                    <span class="n">engine_args</span><span class="p">[</span><span class="s1">&#39;isolation_level&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">level</span>
+                    <span class="n">level_applied</span> <span class="o">=</span> <span class="bp">True</span>
+                    <span class="k">break</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">level_applied</span><span class="p">:</span>
+                <span class="k">for</span> <span class="p">(</span><span class="n">driver</span><span class="p">,</span> <span class="n">level</span><span class="p">)</span> <span class="ow">in</span> <span class="n">six</span><span class="o">.</span><span class="n">iteritems</span><span class="p">(</span><span class="n">txn_isolation_levels</span><span class="p">):</span>
+                    <span class="k">if</span> <span class="n">e_url</span><span class="o">.</span><span class="n">drivername</span><span class="o">.</span><span class="n">find</span><span class="p">(</span><span class="n">driver</span><span class="p">)</span> <span class="o">!=</span> <span class="o">-</span><span class="mi">1</span><span class="p">:</span>
+                        <span class="n">engine_args</span><span class="p">[</span><span class="s1">&#39;isolation_level&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">level</span>
+                        <span class="k">break</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">engine_args</span><span class="p">[</span><span class="s1">&#39;isolation_level&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">conf</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="s1">&#39;isolation_level&#39;</span><span class="p">)</span>
+        <span class="c1"># If the configuration dict specifies any additional engine args</span>
+        <span class="c1"># or engine arg overrides make sure we merge them in.</span>
+        <span class="n">engine_args</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">conf</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="s1">&#39;engine_args&#39;</span><span class="p">,</span> <span class="p">{}))</span>
+        <span class="n">engine</span> <span class="o">=</span> <span class="n">sa</span><span class="o">.</span><span class="n">create_engine</span><span class="p">(</span><span class="n">sql_connection</span><span class="p">,</span> <span class="o">**</span><span class="n">engine_args</span><span class="p">)</span>
+        <span class="n">log_statements</span> <span class="o">=</span> <span class="n">conf</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="s1">&#39;log_statements&#39;</span><span class="p">,</span> <span class="bp">False</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">_as_bool</span><span class="p">(</span><span class="n">log_statements</span><span class="p">):</span>
+            <span class="n">log_statements_level</span> <span class="o">=</span> <span class="n">conf</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="s2">&quot;log_statements_level&quot;</span><span class="p">,</span>
+                                            <span class="n">logging</span><span class="o">.</span><span class="n">TRACE</span><span class="p">)</span>
+            <span class="n">sa</span><span class="o">.</span><span class="n">event</span><span class="o">.</span><span class="n">listen</span><span class="p">(</span><span class="n">engine</span><span class="p">,</span> <span class="s2">&quot;before_cursor_execute&quot;</span><span class="p">,</span>
+                            <span class="n">functools</span><span class="o">.</span><span class="n">partial</span><span class="p">(</span><span class="n">_log_statements</span><span class="p">,</span>
+                                              <span class="n">log_statements_level</span><span class="p">))</span>
+        <span class="n">checkin_yield</span> <span class="o">=</span> <span class="n">conf</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="s1">&#39;checkin_yield&#39;</span><span class="p">,</span>
+                                 <span class="n">eventlet_utils</span><span class="o">.</span><span class="n">EVENTLET_AVAILABLE</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">_as_bool</span><span class="p">(</span><span class="n">checkin_yield</span><span class="p">):</span>
+            <span class="n">sa</span><span class="o">.</span><span class="n">event</span><span class="o">.</span><span class="n">listen</span><span class="p">(</span><span class="n">engine</span><span class="p">,</span> <span class="s1">&#39;checkin&#39;</span><span class="p">,</span> <span class="n">_thread_yield</span><span class="p">)</span>
+        <span class="k">if</span> <span class="s1">&#39;mysql&#39;</span> <span class="ow">in</span> <span class="n">e_url</span><span class="o">.</span><span class="n">drivername</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">_as_bool</span><span class="p">(</span><span class="n">conf</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="s1">&#39;checkout_ping&#39;</span><span class="p">,</span> <span class="bp">True</span><span class="p">)):</span>
+                <span class="n">sa</span><span class="o">.</span><span class="n">event</span><span class="o">.</span><span class="n">listen</span><span class="p">(</span><span class="n">engine</span><span class="p">,</span> <span class="s1">&#39;checkout&#39;</span><span class="p">,</span> <span class="n">_ping_listener</span><span class="p">)</span>
+            <span class="n">mode</span> <span class="o">=</span> <span class="bp">None</span>
+            <span class="k">if</span> <span class="s1">&#39;mysql_sql_mode&#39;</span> <span class="ow">in</span> <span class="n">conf</span><span class="p">:</span>
+                <span class="n">mode</span> <span class="o">=</span> <span class="n">conf</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="s1">&#39;mysql_sql_mode&#39;</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">mode</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="n">sa</span><span class="o">.</span><span class="n">event</span><span class="o">.</span><span class="n">listen</span><span class="p">(</span><span class="n">engine</span><span class="p">,</span> <span class="s1">&#39;connect&#39;</span><span class="p">,</span>
+                                <span class="n">functools</span><span class="o">.</span><span class="n">partial</span><span class="p">(</span><span class="n">_set_sql_mode</span><span class="p">,</span> <span class="n">mode</span><span class="p">))</span>
+        <span class="k">return</span> <span class="n">engine</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">engine</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_engine</span>
+
+    <span class="k">def</span> <span class="nf">get_connection</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">conn</span> <span class="o">=</span> <span class="n">Connection</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">upgrade_lock</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_upgrade_lock</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_validated</span><span class="p">:</span>
+            <span class="n">conn</span><span class="o">.</span><span class="n">validate</span><span class="p">(</span><span class="n">max_retries</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_max_retries</span><span class="p">)</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_validated</span> <span class="o">=</span> <span class="bp">True</span>
+        <span class="k">return</span> <span class="n">conn</span>
+
+    <span class="k">def</span> <span class="nf">close</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="c1"># NOTE(harlowja): Only dispose of the engine if we actually own the</span>
+        <span class="c1"># engine in the first place. If the user passed in their own engine</span>
+        <span class="c1"># we should not be disposing it on their behalf...</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_owns_engine</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_engine</span><span class="o">.</span><span class="n">dispose</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_validated</span> <span class="o">=</span> <span class="bp">False</span></div>
+
+
+<span class="k">class</span> <span class="nc">Connection</span><span class="p">(</span><span class="n">base</span><span class="o">.</span><span class="n">Connection</span><span class="p">):</span>
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">backend</span><span class="p">,</span> <span class="n">upgrade_lock</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_backend</span> <span class="o">=</span> <span class="n">backend</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_upgrade_lock</span> <span class="o">=</span> <span class="n">upgrade_lock</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_engine</span> <span class="o">=</span> <span class="n">backend</span><span class="o">.</span><span class="n">engine</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_metadata</span> <span class="o">=</span> <span class="n">sa</span><span class="o">.</span><span class="n">MetaData</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_tables</span> <span class="o">=</span> <span class="n">tables</span><span class="o">.</span><span class="n">fetch</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_metadata</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_converter</span> <span class="o">=</span> <span class="n">_Alchemist</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_tables</span><span class="p">)</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">backend</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_backend</span>
+
+    <span class="k">def</span> <span class="nf">validate</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">max_retries</span><span class="o">=</span><span class="mi">0</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Performs basic **connection** validation of a sqlalchemy engine.&quot;&quot;&quot;</span>
+
+        <span class="k">def</span> <span class="nf">_retry_on_exception</span><span class="p">(</span><span class="n">exc</span><span class="p">):</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span><span class="s2">&quot;Engine connection (validate) failed due to &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span><span class="p">,</span> <span class="n">exc</span><span class="p">)</span>
+            <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">exc</span><span class="p">,</span> <span class="n">sa_exc</span><span class="o">.</span><span class="n">OperationalError</span><span class="p">)</span> <span class="ow">and</span> \
+               <span class="n">_is_db_connection_error</span><span class="p">(</span><span class="n">six</span><span class="o">.</span><span class="n">text_type</span><span class="p">(</span><span class="n">exc</span><span class="o">.</span><span class="n">args</span><span class="p">[</span><span class="mi">0</span><span class="p">])):</span>
+                <span class="c1"># We may be able to fix this by retrying...</span>
+                <span class="k">return</span> <span class="bp">True</span>
+            <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">exc</span><span class="p">,</span> <span class="p">(</span><span class="n">sa_exc</span><span class="o">.</span><span class="n">TimeoutError</span><span class="p">,</span>
+                                <span class="n">sa_exc</span><span class="o">.</span><span class="n">ResourceClosedError</span><span class="p">,</span>
+                                <span class="n">sa_exc</span><span class="o">.</span><span class="n">DisconnectionError</span><span class="p">)):</span>
+                <span class="c1"># We may be able to fix this by retrying...</span>
+                <span class="k">return</span> <span class="bp">True</span>
+            <span class="c1"># Other failures we likely can&#39;t fix by retrying...</span>
+            <span class="k">return</span> <span class="bp">False</span>
+
+        <span class="nd">@tenacity.retry</span><span class="p">(</span>
+            <span class="n">stop</span><span class="o">=</span><span class="n">tenacity</span><span class="o">.</span><span class="n">stop_after_attempt</span><span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="nb">int</span><span class="p">(</span><span class="n">max_retries</span><span class="p">))),</span>
+            <span class="n">wait</span><span class="o">=</span><span class="n">tenacity</span><span class="o">.</span><span class="n">wait_exponential</span><span class="p">(),</span>
+            <span class="n">reraise</span><span class="o">=</span><span class="bp">True</span><span class="p">,</span>
+            <span class="n">retry</span><span class="o">=</span><span class="n">tenacity</span><span class="o">.</span><span class="n">retry_if_exception</span><span class="p">(</span><span class="n">_retry_on_exception</span><span class="p">)</span>
+        <span class="p">)</span>
+        <span class="k">def</span> <span class="nf">_try_connect</span><span class="p">(</span><span class="n">engine</span><span class="p">):</span>
+            <span class="c1"># See if we can make a connection happen.</span>
+            <span class="c1">#</span>
+            <span class="c1"># NOTE(harlowja): note that even though we are connecting</span>
+            <span class="c1"># once it does not mean that we will be able to connect in</span>
+            <span class="c1"># the future, so this is more of a sanity test and is not</span>
+            <span class="c1"># complete connection insurance.</span>
+            <span class="k">with</span> <span class="n">contextlib</span><span class="o">.</span><span class="n">closing</span><span class="p">(</span><span class="n">engine</span><span class="o">.</span><span class="n">connect</span><span class="p">()):</span>
+                <span class="k">pass</span>
+
+        <span class="n">_try_connect</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_engine</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">upgrade</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_upgrade_lock</span><span class="p">:</span>
+                <span class="k">with</span> <span class="n">contextlib</span><span class="o">.</span><span class="n">closing</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_engine</span><span class="o">.</span><span class="n">connect</span><span class="p">())</span> <span class="k">as</span> <span class="n">conn</span><span class="p">:</span>
+                    <span class="c1"># NOTE(imelnikov): Alembic does not support SQLite,</span>
+                    <span class="c1"># and we don&#39;t recommend to use SQLite in production</span>
+                    <span class="c1"># deployments, so migrations are rarely needed</span>
+                    <span class="c1"># for SQLite. So we don&#39;t bother about working around</span>
+                    <span class="c1"># SQLite limitations, and create the database directly</span>
+                    <span class="c1"># from the tables when it is in use...</span>
+                    <span class="k">if</span> <span class="s1">&#39;sqlite&#39;</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_engine</span><span class="o">.</span><span class="n">url</span><span class="o">.</span><span class="n">drivername</span><span class="p">:</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">_metadata</span><span class="o">.</span><span class="n">create_all</span><span class="p">(</span><span class="n">bind</span><span class="o">=</span><span class="n">conn</span><span class="p">)</span>
+                    <span class="k">else</span><span class="p">:</span>
+                        <span class="n">migration</span><span class="o">.</span><span class="n">db_sync</span><span class="p">(</span><span class="n">conn</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">sa_exc</span><span class="o">.</span><span class="n">SQLAlchemyError</span><span class="p">:</span>
+            <span class="n">exc</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">exc</span><span class="o">.</span><span class="n">StorageFailure</span><span class="p">,</span>
+                                 <span class="s2">&quot;Failed upgrading database version&quot;</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">clear_all</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">logbooks</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_tables</span><span class="o">.</span><span class="n">logbooks</span>
+            <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_engine</span><span class="o">.</span><span class="n">begin</span><span class="p">()</span> <span class="k">as</span> <span class="n">conn</span><span class="p">:</span>
+                <span class="n">conn</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="n">logbooks</span><span class="o">.</span><span class="n">delete</span><span class="p">())</span>
+        <span class="k">except</span> <span class="n">sa_exc</span><span class="o">.</span><span class="n">DBAPIError</span><span class="p">:</span>
+            <span class="n">exc</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">exc</span><span class="o">.</span><span class="n">StorageFailure</span><span class="p">,</span>
+                                 <span class="s2">&quot;Failed clearing all entries&quot;</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">update_atom_details</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">atom_detail</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">atomdetails</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_tables</span><span class="o">.</span><span class="n">atomdetails</span>
+            <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_engine</span><span class="o">.</span><span class="n">begin</span><span class="p">()</span> <span class="k">as</span> <span class="n">conn</span><span class="p">:</span>
+                <span class="n">q</span> <span class="o">=</span> <span class="p">(</span><span class="n">sql</span><span class="o">.</span><span class="n">select</span><span class="p">([</span><span class="n">atomdetails</span><span class="p">])</span><span class="o">.</span>
+                     <span class="n">where</span><span class="p">(</span><span class="n">atomdetails</span><span class="o">.</span><span class="n">c</span><span class="o">.</span><span class="n">uuid</span> <span class="o">==</span> <span class="n">atom_detail</span><span class="o">.</span><span class="n">uuid</span><span class="p">))</span>
+                <span class="n">row</span> <span class="o">=</span> <span class="n">conn</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="n">q</span><span class="p">)</span><span class="o">.</span><span class="n">first</span><span class="p">()</span>
+                <span class="k">if</span> <span class="ow">not</span> <span class="n">row</span><span class="p">:</span>
+                    <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">NotFound</span><span class="p">(</span><span class="s2">&quot;No atom details found with uuid&quot;</span>
+                                       <span class="s2">&quot; &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span> <span class="o">%</span> <span class="n">atom_detail</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+                <span class="n">e_ad</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_converter</span><span class="o">.</span><span class="n">convert_atom_detail</span><span class="p">(</span><span class="n">row</span><span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_update_atom_details</span><span class="p">(</span><span class="n">conn</span><span class="p">,</span> <span class="n">atom_detail</span><span class="p">,</span> <span class="n">e_ad</span><span class="p">)</span>
+            <span class="k">return</span> <span class="n">e_ad</span>
+        <span class="k">except</span> <span class="n">sa_exc</span><span class="o">.</span><span class="n">SQLAlchemyError</span><span class="p">:</span>
+            <span class="n">exc</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">exc</span><span class="o">.</span><span class="n">StorageFailure</span><span class="p">,</span>
+                                 <span class="s2">&quot;Failed updating atom details&quot;</span>
+                                 <span class="s2">&quot; with uuid &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span> <span class="o">%</span> <span class="n">atom_detail</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_insert_flow_details</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">conn</span><span class="p">,</span> <span class="n">fd</span><span class="p">,</span> <span class="n">parent_uuid</span><span class="p">):</span>
+        <span class="n">value</span> <span class="o">=</span> <span class="n">fd</span><span class="o">.</span><span class="n">to_dict</span><span class="p">()</span>
+        <span class="n">value</span><span class="p">[</span><span class="s1">&#39;parent_uuid&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">parent_uuid</span>
+        <span class="n">conn</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="n">sql</span><span class="o">.</span><span class="n">insert</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_tables</span><span class="o">.</span><span class="n">flowdetails</span><span class="p">,</span> <span class="n">value</span><span class="p">))</span>
+        <span class="k">for</span> <span class="n">ad</span> <span class="ow">in</span> <span class="n">fd</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_insert_atom_details</span><span class="p">(</span><span class="n">conn</span><span class="p">,</span> <span class="n">ad</span><span class="p">,</span> <span class="n">fd</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_insert_atom_details</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">conn</span><span class="p">,</span> <span class="n">ad</span><span class="p">,</span> <span class="n">parent_uuid</span><span class="p">):</span>
+        <span class="n">value</span> <span class="o">=</span> <span class="n">ad</span><span class="o">.</span><span class="n">to_dict</span><span class="p">()</span>
+        <span class="n">value</span><span class="p">[</span><span class="s1">&#39;parent_uuid&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">parent_uuid</span>
+        <span class="n">value</span><span class="p">[</span><span class="s1">&#39;atom_type&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">models</span><span class="o">.</span><span class="n">atom_detail_type</span><span class="p">(</span><span class="n">ad</span><span class="p">)</span>
+        <span class="n">conn</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="n">sql</span><span class="o">.</span><span class="n">insert</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_tables</span><span class="o">.</span><span class="n">atomdetails</span><span class="p">,</span> <span class="n">value</span><span class="p">))</span>
+
+    <span class="k">def</span> <span class="nf">_update_atom_details</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">conn</span><span class="p">,</span> <span class="n">ad</span><span class="p">,</span> <span class="n">e_ad</span><span class="p">):</span>
+        <span class="n">e_ad</span><span class="o">.</span><span class="n">merge</span><span class="p">(</span><span class="n">ad</span><span class="p">)</span>
+        <span class="n">conn</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="n">sql</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_tables</span><span class="o">.</span><span class="n">atomdetails</span><span class="p">)</span>
+                     <span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_tables</span><span class="o">.</span><span class="n">atomdetails</span><span class="o">.</span><span class="n">c</span><span class="o">.</span><span class="n">uuid</span> <span class="o">==</span> <span class="n">e_ad</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+                     <span class="o">.</span><span class="n">values</span><span class="p">(</span><span class="n">e_ad</span><span class="o">.</span><span class="n">to_dict</span><span class="p">()))</span>
+
+    <span class="k">def</span> <span class="nf">_update_flow_details</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">conn</span><span class="p">,</span> <span class="n">fd</span><span class="p">,</span> <span class="n">e_fd</span><span class="p">):</span>
+        <span class="n">e_fd</span><span class="o">.</span><span class="n">merge</span><span class="p">(</span><span class="n">fd</span><span class="p">)</span>
+        <span class="n">conn</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="n">sql</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_tables</span><span class="o">.</span><span class="n">flowdetails</span><span class="p">)</span>
+                     <span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_tables</span><span class="o">.</span><span class="n">flowdetails</span><span class="o">.</span><span class="n">c</span><span class="o">.</span><span class="n">uuid</span> <span class="o">==</span> <span class="n">e_fd</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+                     <span class="o">.</span><span class="n">values</span><span class="p">(</span><span class="n">e_fd</span><span class="o">.</span><span class="n">to_dict</span><span class="p">()))</span>
+        <span class="k">for</span> <span class="n">ad</span> <span class="ow">in</span> <span class="n">fd</span><span class="p">:</span>
+            <span class="n">e_ad</span> <span class="o">=</span> <span class="n">e_fd</span><span class="o">.</span><span class="n">find</span><span class="p">(</span><span class="n">ad</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">e_ad</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="n">e_fd</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">ad</span><span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_insert_atom_details</span><span class="p">(</span><span class="n">conn</span><span class="p">,</span> <span class="n">ad</span><span class="p">,</span> <span class="n">fd</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_update_atom_details</span><span class="p">(</span><span class="n">conn</span><span class="p">,</span> <span class="n">ad</span><span class="p">,</span> <span class="n">e_ad</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">update_flow_details</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">flow_detail</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">flowdetails</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_tables</span><span class="o">.</span><span class="n">flowdetails</span>
+            <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_engine</span><span class="o">.</span><span class="n">begin</span><span class="p">()</span> <span class="k">as</span> <span class="n">conn</span><span class="p">:</span>
+                <span class="n">q</span> <span class="o">=</span> <span class="p">(</span><span class="n">sql</span><span class="o">.</span><span class="n">select</span><span class="p">([</span><span class="n">flowdetails</span><span class="p">])</span><span class="o">.</span>
+                     <span class="n">where</span><span class="p">(</span><span class="n">flowdetails</span><span class="o">.</span><span class="n">c</span><span class="o">.</span><span class="n">uuid</span> <span class="o">==</span> <span class="n">flow_detail</span><span class="o">.</span><span class="n">uuid</span><span class="p">))</span>
+                <span class="n">row</span> <span class="o">=</span> <span class="n">conn</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="n">q</span><span class="p">)</span><span class="o">.</span><span class="n">first</span><span class="p">()</span>
+                <span class="k">if</span> <span class="ow">not</span> <span class="n">row</span><span class="p">:</span>
+                    <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">NotFound</span><span class="p">(</span><span class="s2">&quot;No flow details found with&quot;</span>
+                                       <span class="s2">&quot; uuid &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span> <span class="o">%</span> <span class="n">flow_detail</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+                <span class="n">e_fd</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_converter</span><span class="o">.</span><span class="n">convert_flow_detail</span><span class="p">(</span><span class="n">row</span><span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_converter</span><span class="o">.</span><span class="n">populate_flow_detail</span><span class="p">(</span><span class="n">conn</span><span class="p">,</span> <span class="n">e_fd</span><span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_update_flow_details</span><span class="p">(</span><span class="n">conn</span><span class="p">,</span> <span class="n">flow_detail</span><span class="p">,</span> <span class="n">e_fd</span><span class="p">)</span>
+            <span class="k">return</span> <span class="n">e_fd</span>
+        <span class="k">except</span> <span class="n">sa_exc</span><span class="o">.</span><span class="n">SQLAlchemyError</span><span class="p">:</span>
+            <span class="n">exc</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">exc</span><span class="o">.</span><span class="n">StorageFailure</span><span class="p">,</span>
+                                 <span class="s2">&quot;Failed updating flow details with&quot;</span>
+                                 <span class="s2">&quot; uuid &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span> <span class="o">%</span> <span class="n">flow_detail</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">destroy_logbook</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">book_uuid</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">logbooks</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_tables</span><span class="o">.</span><span class="n">logbooks</span>
+            <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_engine</span><span class="o">.</span><span class="n">begin</span><span class="p">()</span> <span class="k">as</span> <span class="n">conn</span><span class="p">:</span>
+                <span class="n">q</span> <span class="o">=</span> <span class="n">logbooks</span><span class="o">.</span><span class="n">delete</span><span class="p">()</span><span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">logbooks</span><span class="o">.</span><span class="n">c</span><span class="o">.</span><span class="n">uuid</span> <span class="o">==</span> <span class="n">book_uuid</span><span class="p">)</span>
+                <span class="n">r</span> <span class="o">=</span> <span class="n">conn</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="n">q</span><span class="p">)</span>
+                <span class="k">if</span> <span class="n">r</span><span class="o">.</span><span class="n">rowcount</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+                    <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">NotFound</span><span class="p">(</span><span class="s2">&quot;No logbook found with&quot;</span>
+                                       <span class="s2">&quot; uuid &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span> <span class="o">%</span> <span class="n">book_uuid</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">sa_exc</span><span class="o">.</span><span class="n">DBAPIError</span><span class="p">:</span>
+            <span class="n">exc</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">exc</span><span class="o">.</span><span class="n">StorageFailure</span><span class="p">,</span>
+                                 <span class="s2">&quot;Failed destroying logbook &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span> <span class="o">%</span> <span class="n">book_uuid</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">save_logbook</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">book</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">logbooks</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_tables</span><span class="o">.</span><span class="n">logbooks</span>
+            <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_engine</span><span class="o">.</span><span class="n">begin</span><span class="p">()</span> <span class="k">as</span> <span class="n">conn</span><span class="p">:</span>
+                <span class="n">q</span> <span class="o">=</span> <span class="p">(</span><span class="n">sql</span><span class="o">.</span><span class="n">select</span><span class="p">([</span><span class="n">logbooks</span><span class="p">])</span><span class="o">.</span>
+                     <span class="n">where</span><span class="p">(</span><span class="n">logbooks</span><span class="o">.</span><span class="n">c</span><span class="o">.</span><span class="n">uuid</span> <span class="o">==</span> <span class="n">book</span><span class="o">.</span><span class="n">uuid</span><span class="p">))</span>
+                <span class="n">row</span> <span class="o">=</span> <span class="n">conn</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="n">q</span><span class="p">)</span><span class="o">.</span><span class="n">first</span><span class="p">()</span>
+                <span class="k">if</span> <span class="n">row</span><span class="p">:</span>
+                    <span class="n">e_lb</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_converter</span><span class="o">.</span><span class="n">convert_book</span><span class="p">(</span><span class="n">row</span><span class="p">)</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_converter</span><span class="o">.</span><span class="n">populate_book</span><span class="p">(</span><span class="n">conn</span><span class="p">,</span> <span class="n">e_lb</span><span class="p">)</span>
+                    <span class="n">e_lb</span><span class="o">.</span><span class="n">merge</span><span class="p">(</span><span class="n">book</span><span class="p">)</span>
+                    <span class="n">conn</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="n">sql</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">logbooks</span><span class="p">)</span>
+                                 <span class="o">.</span><span class="n">where</span><span class="p">(</span><span class="n">logbooks</span><span class="o">.</span><span class="n">c</span><span class="o">.</span><span class="n">uuid</span> <span class="o">==</span> <span class="n">e_lb</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+                                 <span class="o">.</span><span class="n">values</span><span class="p">(</span><span class="n">e_lb</span><span class="o">.</span><span class="n">to_dict</span><span class="p">()))</span>
+                    <span class="k">for</span> <span class="n">fd</span> <span class="ow">in</span> <span class="n">book</span><span class="p">:</span>
+                        <span class="n">e_fd</span> <span class="o">=</span> <span class="n">e_lb</span><span class="o">.</span><span class="n">find</span><span class="p">(</span><span class="n">fd</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+                        <span class="k">if</span> <span class="n">e_fd</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+                            <span class="n">e_lb</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">fd</span><span class="p">)</span>
+                            <span class="bp">self</span><span class="o">.</span><span class="n">_insert_flow_details</span><span class="p">(</span><span class="n">conn</span><span class="p">,</span> <span class="n">fd</span><span class="p">,</span> <span class="n">e_lb</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+                        <span class="k">else</span><span class="p">:</span>
+                            <span class="bp">self</span><span class="o">.</span><span class="n">_update_flow_details</span><span class="p">(</span><span class="n">conn</span><span class="p">,</span> <span class="n">fd</span><span class="p">,</span> <span class="n">e_fd</span><span class="p">)</span>
+                    <span class="k">return</span> <span class="n">e_lb</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="n">conn</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="n">sql</span><span class="o">.</span><span class="n">insert</span><span class="p">(</span><span class="n">logbooks</span><span class="p">,</span> <span class="n">book</span><span class="o">.</span><span class="n">to_dict</span><span class="p">()))</span>
+                    <span class="k">for</span> <span class="n">fd</span> <span class="ow">in</span> <span class="n">book</span><span class="p">:</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">_insert_flow_details</span><span class="p">(</span><span class="n">conn</span><span class="p">,</span> <span class="n">fd</span><span class="p">,</span> <span class="n">book</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+                    <span class="k">return</span> <span class="n">book</span>
+        <span class="k">except</span> <span class="n">sa_exc</span><span class="o">.</span><span class="n">DBAPIError</span><span class="p">:</span>
+            <span class="n">exc</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span>
+                <span class="n">exc</span><span class="o">.</span><span class="n">StorageFailure</span><span class="p">,</span>
+                <span class="s2">&quot;Failed saving logbook &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span> <span class="o">%</span> <span class="n">book</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">get_logbook</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">book_uuid</span><span class="p">,</span> <span class="n">lazy</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">logbooks</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_tables</span><span class="o">.</span><span class="n">logbooks</span>
+            <span class="k">with</span> <span class="n">contextlib</span><span class="o">.</span><span class="n">closing</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_engine</span><span class="o">.</span><span class="n">connect</span><span class="p">())</span> <span class="k">as</span> <span class="n">conn</span><span class="p">:</span>
+                <span class="n">q</span> <span class="o">=</span> <span class="p">(</span><span class="n">sql</span><span class="o">.</span><span class="n">select</span><span class="p">([</span><span class="n">logbooks</span><span class="p">])</span><span class="o">.</span>
+                     <span class="n">where</span><span class="p">(</span><span class="n">logbooks</span><span class="o">.</span><span class="n">c</span><span class="o">.</span><span class="n">uuid</span> <span class="o">==</span> <span class="n">book_uuid</span><span class="p">))</span>
+                <span class="n">row</span> <span class="o">=</span> <span class="n">conn</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="n">q</span><span class="p">)</span><span class="o">.</span><span class="n">first</span><span class="p">()</span>
+                <span class="k">if</span> <span class="ow">not</span> <span class="n">row</span><span class="p">:</span>
+                    <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">NotFound</span><span class="p">(</span><span class="s2">&quot;No logbook found with&quot;</span>
+                                       <span class="s2">&quot; uuid &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span> <span class="o">%</span> <span class="n">book_uuid</span><span class="p">)</span>
+                <span class="n">book</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_converter</span><span class="o">.</span><span class="n">convert_book</span><span class="p">(</span><span class="n">row</span><span class="p">)</span>
+                <span class="k">if</span> <span class="ow">not</span> <span class="n">lazy</span><span class="p">:</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_converter</span><span class="o">.</span><span class="n">populate_book</span><span class="p">(</span><span class="n">conn</span><span class="p">,</span> <span class="n">book</span><span class="p">)</span>
+                <span class="k">return</span> <span class="n">book</span>
+        <span class="k">except</span> <span class="n">sa_exc</span><span class="o">.</span><span class="n">DBAPIError</span><span class="p">:</span>
+            <span class="n">exc</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">exc</span><span class="o">.</span><span class="n">StorageFailure</span><span class="p">,</span>
+                                 <span class="s2">&quot;Failed getting logbook &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span> <span class="o">%</span> <span class="n">book_uuid</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">get_logbooks</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">lazy</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+        <span class="n">gathered</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">with</span> <span class="n">contextlib</span><span class="o">.</span><span class="n">closing</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_engine</span><span class="o">.</span><span class="n">connect</span><span class="p">())</span> <span class="k">as</span> <span class="n">conn</span><span class="p">:</span>
+                <span class="n">q</span> <span class="o">=</span> <span class="n">sql</span><span class="o">.</span><span class="n">select</span><span class="p">([</span><span class="bp">self</span><span class="o">.</span><span class="n">_tables</span><span class="o">.</span><span class="n">logbooks</span><span class="p">])</span>
+                <span class="k">for</span> <span class="n">row</span> <span class="ow">in</span> <span class="n">conn</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="n">q</span><span class="p">):</span>
+                    <span class="n">book</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_converter</span><span class="o">.</span><span class="n">convert_book</span><span class="p">(</span><span class="n">row</span><span class="p">)</span>
+                    <span class="k">if</span> <span class="ow">not</span> <span class="n">lazy</span><span class="p">:</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">_converter</span><span class="o">.</span><span class="n">populate_book</span><span class="p">(</span><span class="n">conn</span><span class="p">,</span> <span class="n">book</span><span class="p">)</span>
+                    <span class="n">gathered</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">book</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">sa_exc</span><span class="o">.</span><span class="n">DBAPIError</span><span class="p">:</span>
+            <span class="n">exc</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">exc</span><span class="o">.</span><span class="n">StorageFailure</span><span class="p">,</span>
+                                 <span class="s2">&quot;Failed getting logbooks&quot;</span><span class="p">)</span>
+        <span class="k">for</span> <span class="n">book</span> <span class="ow">in</span> <span class="n">gathered</span><span class="p">:</span>
+            <span class="k">yield</span> <span class="n">book</span>
+
+    <span class="k">def</span> <span class="nf">get_flows_for_book</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">book_uuid</span><span class="p">,</span> <span class="n">lazy</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+        <span class="n">gathered</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">with</span> <span class="n">contextlib</span><span class="o">.</span><span class="n">closing</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_engine</span><span class="o">.</span><span class="n">connect</span><span class="p">())</span> <span class="k">as</span> <span class="n">conn</span><span class="p">:</span>
+                <span class="k">for</span> <span class="n">fd</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_converter</span><span class="o">.</span><span class="n">flow_query_iter</span><span class="p">(</span><span class="n">conn</span><span class="p">,</span> <span class="n">book_uuid</span><span class="p">):</span>
+                    <span class="k">if</span> <span class="ow">not</span> <span class="n">lazy</span><span class="p">:</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">_converter</span><span class="o">.</span><span class="n">populate_flow_detail</span><span class="p">(</span><span class="n">conn</span><span class="p">,</span> <span class="n">fd</span><span class="p">)</span>
+                    <span class="n">gathered</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">fd</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">sa_exc</span><span class="o">.</span><span class="n">DBAPIError</span><span class="p">:</span>
+            <span class="n">exc</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">exc</span><span class="o">.</span><span class="n">StorageFailure</span><span class="p">,</span>
+                                 <span class="s2">&quot;Failed getting flow details in&quot;</span>
+                                 <span class="s2">&quot; logbook &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span> <span class="o">%</span> <span class="n">book_uuid</span><span class="p">)</span>
+        <span class="k">for</span> <span class="n">flow_details</span> <span class="ow">in</span> <span class="n">gathered</span><span class="p">:</span>
+            <span class="k">yield</span> <span class="n">flow_details</span>
+
+    <span class="k">def</span> <span class="nf">get_flow_details</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">fd_uuid</span><span class="p">,</span> <span class="n">lazy</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">flowdetails</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_tables</span><span class="o">.</span><span class="n">flowdetails</span>
+            <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_engine</span><span class="o">.</span><span class="n">begin</span><span class="p">()</span> <span class="k">as</span> <span class="n">conn</span><span class="p">:</span>
+                <span class="n">q</span> <span class="o">=</span> <span class="p">(</span><span class="n">sql</span><span class="o">.</span><span class="n">select</span><span class="p">([</span><span class="n">flowdetails</span><span class="p">])</span><span class="o">.</span>
+                     <span class="n">where</span><span class="p">(</span><span class="n">flowdetails</span><span class="o">.</span><span class="n">c</span><span class="o">.</span><span class="n">uuid</span> <span class="o">==</span> <span class="n">fd_uuid</span><span class="p">))</span>
+                <span class="n">row</span> <span class="o">=</span> <span class="n">conn</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="n">q</span><span class="p">)</span><span class="o">.</span><span class="n">first</span><span class="p">()</span>
+                <span class="k">if</span> <span class="ow">not</span> <span class="n">row</span><span class="p">:</span>
+                    <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">NotFound</span><span class="p">(</span><span class="s2">&quot;No flow details found with uuid&quot;</span>
+                                       <span class="s2">&quot; &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span> <span class="o">%</span> <span class="n">fd_uuid</span><span class="p">)</span>
+                <span class="n">fd</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_converter</span><span class="o">.</span><span class="n">convert_flow_detail</span><span class="p">(</span><span class="n">row</span><span class="p">)</span>
+                <span class="k">if</span> <span class="ow">not</span> <span class="n">lazy</span><span class="p">:</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_converter</span><span class="o">.</span><span class="n">populate_flow_detail</span><span class="p">(</span><span class="n">conn</span><span class="p">,</span> <span class="n">fd</span><span class="p">)</span>
+                <span class="k">return</span> <span class="n">fd</span>
+        <span class="k">except</span> <span class="n">sa_exc</span><span class="o">.</span><span class="n">SQLAlchemyError</span><span class="p">:</span>
+            <span class="n">exc</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">exc</span><span class="o">.</span><span class="n">StorageFailure</span><span class="p">,</span>
+                                 <span class="s2">&quot;Failed getting flow details with&quot;</span>
+                                 <span class="s2">&quot; uuid &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span> <span class="o">%</span> <span class="n">fd_uuid</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">get_atom_details</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">ad_uuid</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">atomdetails</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_tables</span><span class="o">.</span><span class="n">atomdetails</span>
+            <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_engine</span><span class="o">.</span><span class="n">begin</span><span class="p">()</span> <span class="k">as</span> <span class="n">conn</span><span class="p">:</span>
+                <span class="n">q</span> <span class="o">=</span> <span class="p">(</span><span class="n">sql</span><span class="o">.</span><span class="n">select</span><span class="p">([</span><span class="n">atomdetails</span><span class="p">])</span><span class="o">.</span>
+                     <span class="n">where</span><span class="p">(</span><span class="n">atomdetails</span><span class="o">.</span><span class="n">c</span><span class="o">.</span><span class="n">uuid</span> <span class="o">==</span> <span class="n">ad_uuid</span><span class="p">))</span>
+                <span class="n">row</span> <span class="o">=</span> <span class="n">conn</span><span class="o">.</span><span class="n">execute</span><span class="p">(</span><span class="n">q</span><span class="p">)</span><span class="o">.</span><span class="n">first</span><span class="p">()</span>
+                <span class="k">if</span> <span class="ow">not</span> <span class="n">row</span><span class="p">:</span>
+                    <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">NotFound</span><span class="p">(</span><span class="s2">&quot;No atom details found with uuid&quot;</span>
+                                       <span class="s2">&quot; &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span> <span class="o">%</span> <span class="n">ad_uuid</span><span class="p">)</span>
+                <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_converter</span><span class="o">.</span><span class="n">convert_atom_detail</span><span class="p">(</span><span class="n">row</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">sa_exc</span><span class="o">.</span><span class="n">SQLAlchemyError</span><span class="p">:</span>
+            <span class="n">exc</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">exc</span><span class="o">.</span><span class="n">StorageFailure</span><span class="p">,</span>
+                                 <span class="s2">&quot;Failed getting atom details with&quot;</span>
+                                 <span class="s2">&quot; uuid &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span> <span class="o">%</span> <span class="n">ad_uuid</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">get_atoms_for_flow</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">fd_uuid</span><span class="p">):</span>
+        <span class="n">gathered</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">with</span> <span class="n">contextlib</span><span class="o">.</span><span class="n">closing</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_engine</span><span class="o">.</span><span class="n">connect</span><span class="p">())</span> <span class="k">as</span> <span class="n">conn</span><span class="p">:</span>
+                <span class="k">for</span> <span class="n">ad</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_converter</span><span class="o">.</span><span class="n">atom_query_iter</span><span class="p">(</span><span class="n">conn</span><span class="p">,</span> <span class="n">fd_uuid</span><span class="p">):</span>
+                    <span class="n">gathered</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">ad</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">sa_exc</span><span class="o">.</span><span class="n">DBAPIError</span><span class="p">:</span>
+            <span class="n">exc</span><span class="o">.</span><span class="n">raise_with_cause</span><span class="p">(</span><span class="n">exc</span><span class="o">.</span><span class="n">StorageFailure</span><span class="p">,</span>
+                                 <span class="s2">&quot;Failed getting atom details in flow&quot;</span>
+                                 <span class="s2">&quot; detail &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span> <span class="o">%</span> <span class="n">fd_uuid</span><span class="p">)</span>
+        <span class="k">for</span> <span class="n">atom_details</span> <span class="ow">in</span> <span class="n">gathered</span><span class="p">:</span>
+            <span class="k">yield</span> <span class="n">atom_details</span>
+
+    <span class="k">def</span> <span class="nf">close</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">pass</span>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+  <h3>Navigation</h3>
+  <ul>
+
+    <li><a href="../../../../index.html">Table Of Contents</a></li>
+
+
+
+  </ul>
+
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/taskflow
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../../../index.html">TaskFlow 2.9.1.dev9 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../../../index.html" >Module code</a> &raquo;</li>
+          <li class="nav-item nav-item-2"><a href="../backends.html" accesskey="U">taskflow.persistence.backends</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2017, OpenStack Foundation.
+      Last updated on &#39;Fri Feb 10 20:11:17 2017, commit 643495f&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/TaskFlow");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

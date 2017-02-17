@@ -1,0 +1,629 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>ironic_inspector.main &mdash; Ironic Inspector 5.0.1.dev1 documentation</title>
+    
+    <link rel="stylesheet" href="../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../',
+        VERSION:     '5.0.1.dev1',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../_static/doctools.js"></script>
+    <link rel="top" title="Ironic Inspector 5.0.1.dev1 documentation" href="../../index.html" />
+    <link rel="up" title="Module code" href="../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for ironic_inspector.main</h1><div class="highlight"><pre>
+<span></span><span class="c1"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);</span>
+<span class="c1"># you may not use this file except in compliance with the License.</span>
+<span class="c1"># You may obtain a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#    http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1"># Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,</span>
+<span class="c1"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or</span>
+<span class="c1"># implied.</span>
+<span class="c1"># See the License for the specific language governing permissions and</span>
+<span class="c1"># limitations under the License.</span>
+
+<span class="kn">import</span> <span class="nn">eventlet</span>
+<span class="n">eventlet</span><span class="o">.</span><span class="n">monkey_patch</span><span class="p">()</span>
+
+<span class="kn">import</span> <span class="nn">functools</span>
+<span class="kn">import</span> <span class="nn">os</span>
+<span class="kn">import</span> <span class="nn">re</span>
+<span class="kn">import</span> <span class="nn">ssl</span>
+<span class="kn">import</span> <span class="nn">sys</span>
+
+<span class="kn">import</span> <span class="nn">flask</span>
+<span class="kn">from</span> <span class="nn">futurist</span> <span class="kn">import</span> <span class="n">periodics</span>
+<span class="kn">from</span> <span class="nn">oslo_config</span> <span class="kn">import</span> <span class="n">cfg</span>
+<span class="kn">from</span> <span class="nn">oslo_log</span> <span class="kn">import</span> <span class="n">log</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">uuidutils</span>
+<span class="kn">import</span> <span class="nn">werkzeug</span>
+
+<span class="kn">from</span> <span class="nn">ironic_inspector</span> <span class="kn">import</span> <span class="n">api_tools</span>
+<span class="kn">from</span> <span class="nn">ironic_inspector</span> <span class="kn">import</span> <span class="n">db</span>
+<span class="kn">from</span> <span class="nn">ironic_inspector.common.i18n</span> <span class="kn">import</span> <span class="n">_</span><span class="p">,</span> <span class="n">_LC</span><span class="p">,</span> <span class="n">_LE</span><span class="p">,</span> <span class="n">_LI</span><span class="p">,</span> <span class="n">_LW</span>
+<span class="kn">from</span> <span class="nn">ironic_inspector.common</span> <span class="kn">import</span> <span class="n">ironic</span> <span class="k">as</span> <span class="n">ir_utils</span>
+<span class="kn">from</span> <span class="nn">ironic_inspector.common</span> <span class="kn">import</span> <span class="n">swift</span>
+<span class="kn">from</span> <span class="nn">ironic_inspector</span> <span class="kn">import</span> <span class="n">conf</span>  <span class="c1"># noqa</span>
+<span class="kn">from</span> <span class="nn">ironic_inspector</span> <span class="kn">import</span> <span class="n">firewall</span>
+<span class="kn">from</span> <span class="nn">ironic_inspector</span> <span class="kn">import</span> <span class="n">introspect</span>
+<span class="kn">from</span> <span class="nn">ironic_inspector</span> <span class="kn">import</span> <span class="n">node_cache</span>
+<span class="kn">from</span> <span class="nn">ironic_inspector.plugins</span> <span class="kn">import</span> <span class="n">base</span> <span class="k">as</span> <span class="n">plugins_base</span>
+<span class="kn">from</span> <span class="nn">ironic_inspector</span> <span class="kn">import</span> <span class="n">process</span>
+<span class="kn">from</span> <span class="nn">ironic_inspector</span> <span class="kn">import</span> <span class="n">rules</span>
+<span class="kn">from</span> <span class="nn">ironic_inspector</span> <span class="kn">import</span> <span class="n">utils</span>
+
+<span class="n">CONF</span> <span class="o">=</span> <span class="n">cfg</span><span class="o">.</span><span class="n">CONF</span>
+
+
+<span class="n">app</span> <span class="o">=</span> <span class="n">flask</span><span class="o">.</span><span class="n">Flask</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+<span class="n">LOG</span> <span class="o">=</span> <span class="n">utils</span><span class="o">.</span><span class="n">getProcessingLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+<span class="n">MINIMUM_API_VERSION</span> <span class="o">=</span> <span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span>
+<span class="c1"># TODO(dtantsur): set to the current version as soon we move setting IPMI</span>
+<span class="c1"># credentials support completely.</span>
+<span class="n">DEFAULT_API_VERSION</span> <span class="o">=</span> <span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">8</span><span class="p">)</span>
+<span class="n">CURRENT_API_VERSION</span> <span class="o">=</span> <span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">9</span><span class="p">)</span>
+<span class="n">_LOGGING_EXCLUDED_KEYS</span> <span class="o">=</span> <span class="p">(</span><span class="s1">&#39;logs&#39;</span><span class="p">,)</span>
+
+
+<span class="k">def</span> <span class="nf">_get_version</span><span class="p">():</span>
+    <span class="n">ver</span> <span class="o">=</span> <span class="n">flask</span><span class="o">.</span><span class="n">request</span><span class="o">.</span><span class="n">headers</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">conf</span><span class="o">.</span><span class="n">VERSION_HEADER</span><span class="p">,</span>
+                                    <span class="n">_DEFAULT_API_VERSION</span><span class="p">)</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">requested</span> <span class="o">=</span> <span class="nb">tuple</span><span class="p">(</span><span class="nb">int</span><span class="p">(</span><span class="n">x</span><span class="p">)</span> <span class="k">for</span> <span class="n">x</span> <span class="ow">in</span> <span class="n">ver</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s1">&#39;.&#39;</span><span class="p">))</span>
+    <span class="k">except</span> <span class="p">(</span><span class="ne">ValueError</span><span class="p">,</span> <span class="ne">TypeError</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">error_response</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Malformed API version: expected string &#39;</span>
+                                <span class="s1">&#39;in form of X.Y&#39;</span><span class="p">),</span> <span class="n">code</span><span class="o">=</span><span class="mi">400</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">requested</span>
+
+
+<span class="k">def</span> <span class="nf">_format_version</span><span class="p">(</span><span class="n">ver</span><span class="p">):</span>
+    <span class="k">return</span> <span class="s1">&#39;</span><span class="si">%d</span><span class="s1">.</span><span class="si">%d</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="n">ver</span>
+
+
+<span class="n">_DEFAULT_API_VERSION</span> <span class="o">=</span> <span class="n">_format_version</span><span class="p">(</span><span class="n">DEFAULT_API_VERSION</span><span class="p">)</span>
+
+
+<div class="viewcode-block" id="error_response"><a class="viewcode-back" href="../../api/ironic_inspector.main.html#ironic_inspector.main.error_response">[docs]</a><span class="k">def</span> <span class="nf">error_response</span><span class="p">(</span><span class="n">exc</span><span class="p">,</span> <span class="n">code</span><span class="o">=</span><span class="mi">500</span><span class="p">):</span>
+    <span class="n">res</span> <span class="o">=</span> <span class="n">flask</span><span class="o">.</span><span class="n">jsonify</span><span class="p">(</span><span class="n">error</span><span class="o">=</span><span class="p">{</span><span class="s1">&#39;message&#39;</span><span class="p">:</span> <span class="nb">str</span><span class="p">(</span><span class="n">exc</span><span class="p">)})</span>
+    <span class="n">res</span><span class="o">.</span><span class="n">status_code</span> <span class="o">=</span> <span class="n">code</span>
+    <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;Returning error to client: </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">,</span> <span class="n">exc</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">res</span></div>
+
+
+<div class="viewcode-block" id="convert_exceptions"><a class="viewcode-back" href="../../api/ironic_inspector.main.html#ironic_inspector.main.convert_exceptions">[docs]</a><span class="k">def</span> <span class="nf">convert_exceptions</span><span class="p">(</span><span class="n">func</span><span class="p">):</span>
+    <span class="nd">@functools.wraps</span><span class="p">(</span><span class="n">func</span><span class="p">)</span>
+    <span class="k">def</span> <span class="nf">wrapper</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">func</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">utils</span><span class="o">.</span><span class="n">Error</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">error_response</span><span class="p">(</span><span class="n">exc</span><span class="p">,</span> <span class="n">exc</span><span class="o">.</span><span class="n">http_code</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">werkzeug</span><span class="o">.</span><span class="n">exceptions</span><span class="o">.</span><span class="n">HTTPException</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">error_response</span><span class="p">(</span><span class="n">exc</span><span class="p">,</span> <span class="n">exc</span><span class="o">.</span><span class="n">code</span> <span class="ow">or</span> <span class="mi">400</span><span class="p">)</span>
+        <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">exception</span><span class="p">(</span><span class="n">_LE</span><span class="p">(</span><span class="s1">&#39;Internal server error&#39;</span><span class="p">))</span>
+            <span class="n">msg</span> <span class="o">=</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;Internal server error&#39;</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">CONF</span><span class="o">.</span><span class="n">debug</span><span class="p">:</span>
+                <span class="n">msg</span> <span class="o">+=</span> <span class="s1">&#39; (</span><span class="si">%s</span><span class="s1">): </span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="p">(</span><span class="n">exc</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="vm">__name__</span><span class="p">,</span> <span class="n">exc</span><span class="p">)</span>
+            <span class="k">return</span> <span class="n">error_response</span><span class="p">(</span><span class="n">msg</span><span class="p">)</span>
+
+    <span class="k">return</span> <span class="n">wrapper</span></div>
+
+
+<span class="nd">@app.before_request</span>
+<div class="viewcode-block" id="check_api_version"><a class="viewcode-back" href="../../api/ironic_inspector.main.html#ironic_inspector.main.check_api_version">[docs]</a><span class="k">def</span> <span class="nf">check_api_version</span><span class="p">():</span>
+    <span class="n">requested</span> <span class="o">=</span> <span class="n">_get_version</span><span class="p">()</span>
+
+    <span class="k">if</span> <span class="n">requested</span> <span class="o">&lt;</span> <span class="n">MINIMUM_API_VERSION</span> <span class="ow">or</span> <span class="n">requested</span> <span class="o">&gt;</span> <span class="n">CURRENT_API_VERSION</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">error_response</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Unsupported API version </span><span class="si">%(requested)s</span><span class="s1">, &#39;</span>
+                                <span class="s1">&#39;supported range is </span><span class="si">%(min)s</span><span class="s1"> to </span><span class="si">%(max)s</span><span class="s1">&#39;</span><span class="p">)</span> <span class="o">%</span>
+                              <span class="p">{</span><span class="s1">&#39;requested&#39;</span><span class="p">:</span> <span class="n">_format_version</span><span class="p">(</span><span class="n">requested</span><span class="p">),</span>
+                               <span class="s1">&#39;min&#39;</span><span class="p">:</span> <span class="n">_format_version</span><span class="p">(</span><span class="n">MINIMUM_API_VERSION</span><span class="p">),</span>
+                               <span class="s1">&#39;max&#39;</span><span class="p">:</span> <span class="n">_format_version</span><span class="p">(</span><span class="n">CURRENT_API_VERSION</span><span class="p">)},</span>
+                              <span class="n">code</span><span class="o">=</span><span class="mi">406</span><span class="p">)</span></div>
+
+
+<span class="nd">@app.after_request</span>
+<div class="viewcode-block" id="add_version_headers"><a class="viewcode-back" href="../../api/ironic_inspector.main.html#ironic_inspector.main.add_version_headers">[docs]</a><span class="k">def</span> <span class="nf">add_version_headers</span><span class="p">(</span><span class="n">res</span><span class="p">):</span>
+    <span class="n">res</span><span class="o">.</span><span class="n">headers</span><span class="p">[</span><span class="n">conf</span><span class="o">.</span><span class="n">MIN_VERSION_HEADER</span><span class="p">]</span> <span class="o">=</span> <span class="s1">&#39;</span><span class="si">%s</span><span class="s1">.</span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="n">MINIMUM_API_VERSION</span>
+    <span class="n">res</span><span class="o">.</span><span class="n">headers</span><span class="p">[</span><span class="n">conf</span><span class="o">.</span><span class="n">MAX_VERSION_HEADER</span><span class="p">]</span> <span class="o">=</span> <span class="s1">&#39;</span><span class="si">%s</span><span class="s1">.</span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="n">CURRENT_API_VERSION</span>
+    <span class="k">return</span> <span class="n">res</span></div>
+
+
+<div class="viewcode-block" id="create_link_object"><a class="viewcode-back" href="../../api/ironic_inspector.main.html#ironic_inspector.main.create_link_object">[docs]</a><span class="k">def</span> <span class="nf">create_link_object</span><span class="p">(</span><span class="n">urls</span><span class="p">):</span>
+    <span class="n">links</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="k">for</span> <span class="n">url</span> <span class="ow">in</span> <span class="n">urls</span><span class="p">:</span>
+        <span class="n">links</span><span class="o">.</span><span class="n">append</span><span class="p">({</span><span class="s2">&quot;rel&quot;</span><span class="p">:</span> <span class="s2">&quot;self&quot;</span><span class="p">,</span>
+                      <span class="s2">&quot;href&quot;</span><span class="p">:</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">flask</span><span class="o">.</span><span class="n">request</span><span class="o">.</span><span class="n">url_root</span><span class="p">,</span> <span class="n">url</span><span class="p">)})</span>
+    <span class="k">return</span> <span class="n">links</span></div>
+
+
+<div class="viewcode-block" id="generate_resource_data"><a class="viewcode-back" href="../../api/ironic_inspector.main.html#ironic_inspector.main.generate_resource_data">[docs]</a><span class="k">def</span> <span class="nf">generate_resource_data</span><span class="p">(</span><span class="n">resources</span><span class="p">):</span>
+    <span class="n">data</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="k">for</span> <span class="n">resource</span> <span class="ow">in</span> <span class="n">resources</span><span class="p">:</span>
+        <span class="n">item</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="n">item</span><span class="p">[</span><span class="s1">&#39;name&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">resource</span><span class="p">)</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s1">&#39;/&#39;</span><span class="p">)[</span><span class="o">-</span><span class="mi">1</span><span class="p">]</span>
+        <span class="n">item</span><span class="p">[</span><span class="s1">&#39;links&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">create_link_object</span><span class="p">([</span><span class="nb">str</span><span class="p">(</span><span class="n">resource</span><span class="p">)[</span><span class="mi">1</span><span class="p">:]])</span>
+        <span class="n">data</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">item</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">data</span></div>
+
+
+<div class="viewcode-block" id="generate_introspection_status"><a class="viewcode-back" href="../../api/ironic_inspector.main.html#ironic_inspector.main.generate_introspection_status">[docs]</a><span class="k">def</span> <span class="nf">generate_introspection_status</span><span class="p">(</span><span class="n">node</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Return a dict representing current node status.</span>
+
+<span class="sd">    :param node: a NodeInfo instance</span>
+<span class="sd">    :return: dictionary</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">started_at</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">started_at</span><span class="o">.</span><span class="n">isoformat</span><span class="p">()</span>
+    <span class="n">finished_at</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">finished_at</span><span class="o">.</span><span class="n">isoformat</span><span class="p">()</span> <span class="k">if</span> <span class="n">node</span><span class="o">.</span><span class="n">finished_at</span> <span class="k">else</span> <span class="bp">None</span>
+
+    <span class="n">status</span> <span class="o">=</span> <span class="p">{}</span>
+    <span class="n">status</span><span class="p">[</span><span class="s1">&#39;uuid&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">uuid</span>
+    <span class="n">status</span><span class="p">[</span><span class="s1">&#39;finished&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="nb">bool</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">finished_at</span><span class="p">)</span>
+    <span class="n">status</span><span class="p">[</span><span class="s1">&#39;started_at&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">started_at</span>
+    <span class="n">status</span><span class="p">[</span><span class="s1">&#39;finished_at&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">finished_at</span>
+    <span class="n">status</span><span class="p">[</span><span class="s1">&#39;error&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">error</span>
+    <span class="n">status</span><span class="p">[</span><span class="s1">&#39;links&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">create_link_object</span><span class="p">(</span>
+        <span class="p">[</span><span class="s2">&quot;v</span><span class="si">%s</span><span class="s2">/introspection/</span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">CURRENT_API_VERSION</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">)])</span>
+    <span class="k">return</span> <span class="n">status</span></div>
+
+
+<span class="nd">@app.route</span><span class="p">(</span><span class="s1">&#39;/&#39;</span><span class="p">,</span> <span class="n">methods</span><span class="o">=</span><span class="p">[</span><span class="s1">&#39;GET&#39;</span><span class="p">])</span>
+<span class="nd">@convert_exceptions</span>
+<div class="viewcode-block" id="api_root"><a class="viewcode-back" href="../../api/ironic_inspector.main.html#ironic_inspector.main.api_root">[docs]</a><span class="k">def</span> <span class="nf">api_root</span><span class="p">():</span>
+    <span class="n">versions</span> <span class="o">=</span> <span class="p">[</span>
+        <span class="p">{</span>
+            <span class="s2">&quot;status&quot;</span><span class="p">:</span> <span class="s2">&quot;CURRENT&quot;</span><span class="p">,</span>
+            <span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="s1">&#39;</span><span class="si">%s</span><span class="s1">.</span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="n">CURRENT_API_VERSION</span><span class="p">,</span>
+        <span class="p">},</span>
+    <span class="p">]</span>
+
+    <span class="k">for</span> <span class="n">version</span> <span class="ow">in</span> <span class="n">versions</span><span class="p">:</span>
+        <span class="n">version</span><span class="p">[</span><span class="s1">&#39;links&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">create_link_object</span><span class="p">(</span>
+            <span class="p">[</span><span class="s2">&quot;v</span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="n">version</span><span class="p">[</span><span class="s1">&#39;id&#39;</span><span class="p">]</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="s1">&#39;.&#39;</span><span class="p">)[</span><span class="mi">0</span><span class="p">]])</span>
+
+    <span class="k">return</span> <span class="n">flask</span><span class="o">.</span><span class="n">jsonify</span><span class="p">(</span><span class="n">versions</span><span class="o">=</span><span class="n">versions</span><span class="p">)</span></div>
+
+
+<span class="nd">@app.route</span><span class="p">(</span><span class="s1">&#39;/&lt;version&gt;&#39;</span><span class="p">,</span> <span class="n">methods</span><span class="o">=</span><span class="p">[</span><span class="s1">&#39;GET&#39;</span><span class="p">])</span>
+<span class="nd">@convert_exceptions</span>
+<div class="viewcode-block" id="version_root"><a class="viewcode-back" href="../../api/ironic_inspector.main.html#ironic_inspector.main.version_root">[docs]</a><span class="k">def</span> <span class="nf">version_root</span><span class="p">(</span><span class="n">version</span><span class="p">):</span>
+    <span class="n">pat</span> <span class="o">=</span> <span class="n">re</span><span class="o">.</span><span class="n">compile</span><span class="p">(</span><span class="s2">&quot;^\/</span><span class="si">%s</span><span class="s2">\/[^\/]*?$&quot;</span> <span class="o">%</span> <span class="n">version</span><span class="p">)</span>
+
+    <span class="n">resources</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="k">for</span> <span class="n">url</span> <span class="ow">in</span> <span class="n">app</span><span class="o">.</span><span class="n">url_map</span><span class="o">.</span><span class="n">iter_rules</span><span class="p">():</span>
+        <span class="k">if</span> <span class="n">pat</span><span class="o">.</span><span class="n">match</span><span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="n">url</span><span class="p">)):</span>
+            <span class="n">resources</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">url</span><span class="p">)</span>
+
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">resources</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">utils</span><span class="o">.</span><span class="n">Error</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Version not found.&#39;</span><span class="p">),</span> <span class="n">code</span><span class="o">=</span><span class="mi">404</span><span class="p">)</span>
+
+    <span class="k">return</span> <span class="n">flask</span><span class="o">.</span><span class="n">jsonify</span><span class="p">(</span><span class="n">resources</span><span class="o">=</span><span class="n">generate_resource_data</span><span class="p">(</span><span class="n">resources</span><span class="p">))</span></div>
+
+
+<span class="nd">@app.route</span><span class="p">(</span><span class="s1">&#39;/v1/continue&#39;</span><span class="p">,</span> <span class="n">methods</span><span class="o">=</span><span class="p">[</span><span class="s1">&#39;POST&#39;</span><span class="p">])</span>
+<span class="nd">@convert_exceptions</span>
+<div class="viewcode-block" id="api_continue"><a class="viewcode-back" href="../../api/ironic_inspector.main.html#ironic_inspector.main.api_continue">[docs]</a><span class="k">def</span> <span class="nf">api_continue</span><span class="p">():</span>
+    <span class="n">data</span> <span class="o">=</span> <span class="n">flask</span><span class="o">.</span><span class="n">request</span><span class="o">.</span><span class="n">get_json</span><span class="p">(</span><span class="n">force</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">data</span><span class="p">,</span> <span class="nb">dict</span><span class="p">):</span>
+        <span class="k">raise</span> <span class="n">utils</span><span class="o">.</span><span class="n">Error</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Invalid data: expected a JSON object, got </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">)</span> <span class="o">%</span>
+                          <span class="n">data</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="vm">__name__</span><span class="p">)</span>
+
+    <span class="n">logged_data</span> <span class="o">=</span> <span class="p">{</span><span class="n">k</span><span class="p">:</span> <span class="p">(</span><span class="n">v</span> <span class="k">if</span> <span class="n">k</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">_LOGGING_EXCLUDED_KEYS</span> <span class="k">else</span> <span class="s1">&#39;&lt;hidden&gt;&#39;</span><span class="p">)</span>
+                   <span class="k">for</span> <span class="n">k</span><span class="p">,</span> <span class="n">v</span> <span class="ow">in</span> <span class="n">data</span><span class="o">.</span><span class="n">items</span><span class="p">()}</span>
+    <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Received data from the ramdisk: </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span> <span class="n">logged_data</span><span class="p">,</span>
+              <span class="n">data</span><span class="o">=</span><span class="n">data</span><span class="p">)</span>
+
+    <span class="k">return</span> <span class="n">flask</span><span class="o">.</span><span class="n">jsonify</span><span class="p">(</span><span class="n">process</span><span class="o">.</span><span class="n">process</span><span class="p">(</span><span class="n">data</span><span class="p">))</span></div>
+
+
+<span class="c1"># TODO(sambetts) Add API discovery for this endpoint</span>
+<span class="nd">@app.route</span><span class="p">(</span><span class="s1">&#39;/v1/introspection/&lt;node_id&gt;&#39;</span><span class="p">,</span> <span class="n">methods</span><span class="o">=</span><span class="p">[</span><span class="s1">&#39;GET&#39;</span><span class="p">,</span> <span class="s1">&#39;POST&#39;</span><span class="p">])</span>
+<span class="nd">@convert_exceptions</span>
+<div class="viewcode-block" id="api_introspection"><a class="viewcode-back" href="../../api/ironic_inspector.main.html#ironic_inspector.main.api_introspection">[docs]</a><span class="k">def</span> <span class="nf">api_introspection</span><span class="p">(</span><span class="n">node_id</span><span class="p">):</span>
+    <span class="n">utils</span><span class="o">.</span><span class="n">check_auth</span><span class="p">(</span><span class="n">flask</span><span class="o">.</span><span class="n">request</span><span class="p">)</span>
+
+    <span class="k">if</span> <span class="n">flask</span><span class="o">.</span><span class="n">request</span><span class="o">.</span><span class="n">method</span> <span class="o">==</span> <span class="s1">&#39;POST&#39;</span><span class="p">:</span>
+        <span class="n">new_ipmi_password</span> <span class="o">=</span> <span class="n">flask</span><span class="o">.</span><span class="n">request</span><span class="o">.</span><span class="n">args</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;new_ipmi_password&#39;</span><span class="p">,</span>
+                                                   <span class="nb">type</span><span class="o">=</span><span class="nb">str</span><span class="p">,</span>
+                                                   <span class="n">default</span><span class="o">=</span><span class="bp">None</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">new_ipmi_password</span><span class="p">:</span>
+            <span class="n">new_ipmi_username</span> <span class="o">=</span> <span class="n">flask</span><span class="o">.</span><span class="n">request</span><span class="o">.</span><span class="n">args</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;new_ipmi_username&#39;</span><span class="p">,</span>
+                                                       <span class="nb">type</span><span class="o">=</span><span class="nb">str</span><span class="p">,</span>
+                                                       <span class="n">default</span><span class="o">=</span><span class="bp">None</span><span class="p">)</span>
+            <span class="n">new_ipmi_credentials</span> <span class="o">=</span> <span class="p">(</span><span class="n">new_ipmi_username</span><span class="p">,</span> <span class="n">new_ipmi_password</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">new_ipmi_credentials</span> <span class="o">=</span> <span class="bp">None</span>
+
+        <span class="k">if</span> <span class="n">new_ipmi_credentials</span> <span class="ow">and</span> <span class="n">_get_version</span><span class="p">()</span> <span class="o">&gt;=</span> <span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">9</span><span class="p">):</span>
+            <span class="k">return</span> <span class="n">_</span><span class="p">(</span><span class="s1">&#39;Setting IPMI credentials is deprecated and not allowed &#39;</span>
+                     <span class="s1">&#39;starting with API version 1.9&#39;</span><span class="p">),</span> <span class="mi">400</span>
+
+        <span class="n">introspect</span><span class="o">.</span><span class="n">introspect</span><span class="p">(</span><span class="n">node_id</span><span class="p">,</span>
+                              <span class="n">new_ipmi_credentials</span><span class="o">=</span><span class="n">new_ipmi_credentials</span><span class="p">,</span>
+                              <span class="n">token</span><span class="o">=</span><span class="n">flask</span><span class="o">.</span><span class="n">request</span><span class="o">.</span><span class="n">headers</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;X-Auth-Token&#39;</span><span class="p">))</span>
+        <span class="k">return</span> <span class="s1">&#39;&#39;</span><span class="p">,</span> <span class="mi">202</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">node_info</span> <span class="o">=</span> <span class="n">node_cache</span><span class="o">.</span><span class="n">get_node</span><span class="p">(</span><span class="n">node_id</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">flask</span><span class="o">.</span><span class="n">json</span><span class="o">.</span><span class="n">jsonify</span><span class="p">(</span><span class="n">generate_introspection_status</span><span class="p">(</span><span class="n">node_info</span><span class="p">))</span></div>
+
+
+<span class="nd">@app.route</span><span class="p">(</span><span class="s1">&#39;/v1/introspection&#39;</span><span class="p">,</span> <span class="n">methods</span><span class="o">=</span><span class="p">[</span><span class="s1">&#39;GET&#39;</span><span class="p">])</span>
+<span class="nd">@convert_exceptions</span>
+<div class="viewcode-block" id="api_introspection_statuses"><a class="viewcode-back" href="../../api/ironic_inspector.main.html#ironic_inspector.main.api_introspection_statuses">[docs]</a><span class="k">def</span> <span class="nf">api_introspection_statuses</span><span class="p">():</span>
+    <span class="n">utils</span><span class="o">.</span><span class="n">check_auth</span><span class="p">(</span><span class="n">flask</span><span class="o">.</span><span class="n">request</span><span class="p">)</span>
+
+    <span class="n">nodes</span> <span class="o">=</span> <span class="n">node_cache</span><span class="o">.</span><span class="n">get_node_list</span><span class="p">(</span>
+        <span class="n">marker</span><span class="o">=</span><span class="n">api_tools</span><span class="o">.</span><span class="n">marker_field</span><span class="p">(),</span>
+        <span class="n">limit</span><span class="o">=</span><span class="n">api_tools</span><span class="o">.</span><span class="n">limit_field</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="n">CONF</span><span class="o">.</span><span class="n">api_max_limit</span><span class="p">)</span>
+    <span class="p">)</span>
+    <span class="n">data</span> <span class="o">=</span> <span class="p">{</span>
+        <span class="s1">&#39;introspection&#39;</span><span class="p">:</span> <span class="p">[</span><span class="n">generate_introspection_status</span><span class="p">(</span><span class="n">node</span><span class="p">)</span>
+                          <span class="k">for</span> <span class="n">node</span> <span class="ow">in</span> <span class="n">nodes</span><span class="p">]</span>
+    <span class="p">}</span>
+    <span class="k">return</span> <span class="n">flask</span><span class="o">.</span><span class="n">json</span><span class="o">.</span><span class="n">jsonify</span><span class="p">(</span><span class="n">data</span><span class="p">)</span></div>
+
+
+<span class="nd">@app.route</span><span class="p">(</span><span class="s1">&#39;/v1/introspection/&lt;node_id&gt;/abort&#39;</span><span class="p">,</span> <span class="n">methods</span><span class="o">=</span><span class="p">[</span><span class="s1">&#39;POST&#39;</span><span class="p">])</span>
+<span class="nd">@convert_exceptions</span>
+<div class="viewcode-block" id="api_introspection_abort"><a class="viewcode-back" href="../../api/ironic_inspector.main.html#ironic_inspector.main.api_introspection_abort">[docs]</a><span class="k">def</span> <span class="nf">api_introspection_abort</span><span class="p">(</span><span class="n">node_id</span><span class="p">):</span>
+    <span class="n">utils</span><span class="o">.</span><span class="n">check_auth</span><span class="p">(</span><span class="n">flask</span><span class="o">.</span><span class="n">request</span><span class="p">)</span>
+    <span class="n">introspect</span><span class="o">.</span><span class="n">abort</span><span class="p">(</span><span class="n">node_id</span><span class="p">,</span> <span class="n">token</span><span class="o">=</span><span class="n">flask</span><span class="o">.</span><span class="n">request</span><span class="o">.</span><span class="n">headers</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;X-Auth-Token&#39;</span><span class="p">))</span>
+    <span class="k">return</span> <span class="s1">&#39;&#39;</span><span class="p">,</span> <span class="mi">202</span></div>
+
+
+<span class="nd">@app.route</span><span class="p">(</span><span class="s1">&#39;/v1/introspection/&lt;node_id&gt;/data&#39;</span><span class="p">,</span> <span class="n">methods</span><span class="o">=</span><span class="p">[</span><span class="s1">&#39;GET&#39;</span><span class="p">])</span>
+<span class="nd">@convert_exceptions</span>
+<div class="viewcode-block" id="api_introspection_data"><a class="viewcode-back" href="../../api/ironic_inspector.main.html#ironic_inspector.main.api_introspection_data">[docs]</a><span class="k">def</span> <span class="nf">api_introspection_data</span><span class="p">(</span><span class="n">node_id</span><span class="p">):</span>
+    <span class="n">utils</span><span class="o">.</span><span class="n">check_auth</span><span class="p">(</span><span class="n">flask</span><span class="o">.</span><span class="n">request</span><span class="p">)</span>
+
+    <span class="k">if</span> <span class="n">CONF</span><span class="o">.</span><span class="n">processing</span><span class="o">.</span><span class="n">store_data</span> <span class="o">==</span> <span class="s1">&#39;swift&#39;</span><span class="p">:</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">uuidutils</span><span class="o">.</span><span class="n">is_uuid_like</span><span class="p">(</span><span class="n">node_id</span><span class="p">):</span>
+            <span class="n">node</span> <span class="o">=</span> <span class="n">ir_utils</span><span class="o">.</span><span class="n">get_node</span><span class="p">(</span><span class="n">node_id</span><span class="p">,</span> <span class="n">fields</span><span class="o">=</span><span class="p">[</span><span class="s1">&#39;uuid&#39;</span><span class="p">])</span>
+            <span class="n">node_id</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">uuid</span>
+        <span class="n">res</span> <span class="o">=</span> <span class="n">swift</span><span class="o">.</span><span class="n">get_introspection_data</span><span class="p">(</span><span class="n">node_id</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">res</span><span class="p">,</span> <span class="mi">200</span><span class="p">,</span> <span class="p">{</span><span class="s1">&#39;Content-Type&#39;</span><span class="p">:</span> <span class="s1">&#39;application/json&#39;</span><span class="p">}</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">error_response</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Inspector is not configured to store data. &#39;</span>
+                                <span class="s1">&#39;Set the [processing] store_data &#39;</span>
+                                <span class="s1">&#39;configuration option to change this.&#39;</span><span class="p">),</span>
+                              <span class="n">code</span><span class="o">=</span><span class="mi">404</span><span class="p">)</span></div>
+
+
+<span class="nd">@app.route</span><span class="p">(</span><span class="s1">&#39;/v1/introspection/&lt;node_id&gt;/data/unprocessed&#39;</span><span class="p">,</span> <span class="n">methods</span><span class="o">=</span><span class="p">[</span><span class="s1">&#39;POST&#39;</span><span class="p">])</span>
+<span class="nd">@convert_exceptions</span>
+<div class="viewcode-block" id="api_introspection_reapply"><a class="viewcode-back" href="../../api/ironic_inspector.main.html#ironic_inspector.main.api_introspection_reapply">[docs]</a><span class="k">def</span> <span class="nf">api_introspection_reapply</span><span class="p">(</span><span class="n">node_id</span><span class="p">):</span>
+    <span class="n">utils</span><span class="o">.</span><span class="n">check_auth</span><span class="p">(</span><span class="n">flask</span><span class="o">.</span><span class="n">request</span><span class="p">)</span>
+
+    <span class="k">if</span> <span class="n">flask</span><span class="o">.</span><span class="n">request</span><span class="o">.</span><span class="n">content_length</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">error_response</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;User data processing is not &#39;</span>
+                                <span class="s1">&#39;supported yet&#39;</span><span class="p">),</span> <span class="n">code</span><span class="o">=</span><span class="mi">400</span><span class="p">)</span>
+
+    <span class="k">if</span> <span class="n">CONF</span><span class="o">.</span><span class="n">processing</span><span class="o">.</span><span class="n">store_data</span> <span class="o">==</span> <span class="s1">&#39;swift&#39;</span><span class="p">:</span>
+        <span class="n">process</span><span class="o">.</span><span class="n">reapply</span><span class="p">(</span><span class="n">node_id</span><span class="p">)</span>
+        <span class="k">return</span> <span class="s1">&#39;&#39;</span><span class="p">,</span> <span class="mi">202</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">error_response</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Inspector is not configured to store&#39;</span>
+                                <span class="s1">&#39; data. Set the [processing] &#39;</span>
+                                <span class="s1">&#39;store_data configuration option to &#39;</span>
+                                <span class="s1">&#39;change this.&#39;</span><span class="p">),</span> <span class="n">code</span><span class="o">=</span><span class="mi">400</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="rule_repr"><a class="viewcode-back" href="../../api/ironic_inspector.main.html#ironic_inspector.main.rule_repr">[docs]</a><span class="k">def</span> <span class="nf">rule_repr</span><span class="p">(</span><span class="n">rule</span><span class="p">,</span> <span class="n">short</span><span class="p">):</span>
+    <span class="n">result</span> <span class="o">=</span> <span class="n">rule</span><span class="o">.</span><span class="n">as_dict</span><span class="p">(</span><span class="n">short</span><span class="o">=</span><span class="n">short</span><span class="p">)</span>
+    <span class="n">result</span><span class="p">[</span><span class="s1">&#39;links&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="p">[{</span>
+        <span class="s1">&#39;href&#39;</span><span class="p">:</span> <span class="n">flask</span><span class="o">.</span><span class="n">url_for</span><span class="p">(</span><span class="s1">&#39;api_rule&#39;</span><span class="p">,</span> <span class="n">uuid</span><span class="o">=</span><span class="n">result</span><span class="p">[</span><span class="s1">&#39;uuid&#39;</span><span class="p">]),</span>
+        <span class="s1">&#39;rel&#39;</span><span class="p">:</span> <span class="s1">&#39;self&#39;</span>
+    <span class="p">}]</span>
+    <span class="k">return</span> <span class="n">result</span></div>
+
+
+<span class="nd">@app.route</span><span class="p">(</span><span class="s1">&#39;/v1/rules&#39;</span><span class="p">,</span> <span class="n">methods</span><span class="o">=</span><span class="p">[</span><span class="s1">&#39;GET&#39;</span><span class="p">,</span> <span class="s1">&#39;POST&#39;</span><span class="p">,</span> <span class="s1">&#39;DELETE&#39;</span><span class="p">])</span>
+<span class="nd">@convert_exceptions</span>
+<div class="viewcode-block" id="api_rules"><a class="viewcode-back" href="../../api/ironic_inspector.main.html#ironic_inspector.main.api_rules">[docs]</a><span class="k">def</span> <span class="nf">api_rules</span><span class="p">():</span>
+    <span class="n">utils</span><span class="o">.</span><span class="n">check_auth</span><span class="p">(</span><span class="n">flask</span><span class="o">.</span><span class="n">request</span><span class="p">)</span>
+
+    <span class="k">if</span> <span class="n">flask</span><span class="o">.</span><span class="n">request</span><span class="o">.</span><span class="n">method</span> <span class="o">==</span> <span class="s1">&#39;GET&#39;</span><span class="p">:</span>
+        <span class="n">res</span> <span class="o">=</span> <span class="p">[</span><span class="n">rule_repr</span><span class="p">(</span><span class="n">rule</span><span class="p">,</span> <span class="n">short</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span> <span class="k">for</span> <span class="n">rule</span> <span class="ow">in</span> <span class="n">rules</span><span class="o">.</span><span class="n">get_all</span><span class="p">()]</span>
+        <span class="k">return</span> <span class="n">flask</span><span class="o">.</span><span class="n">jsonify</span><span class="p">(</span><span class="n">rules</span><span class="o">=</span><span class="n">res</span><span class="p">)</span>
+    <span class="k">elif</span> <span class="n">flask</span><span class="o">.</span><span class="n">request</span><span class="o">.</span><span class="n">method</span> <span class="o">==</span> <span class="s1">&#39;DELETE&#39;</span><span class="p">:</span>
+        <span class="n">rules</span><span class="o">.</span><span class="n">delete_all</span><span class="p">()</span>
+        <span class="k">return</span> <span class="s1">&#39;&#39;</span><span class="p">,</span> <span class="mi">204</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">body</span> <span class="o">=</span> <span class="n">flask</span><span class="o">.</span><span class="n">request</span><span class="o">.</span><span class="n">get_json</span><span class="p">(</span><span class="n">force</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">body</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;uuid&#39;</span><span class="p">)</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">uuidutils</span><span class="o">.</span><span class="n">is_uuid_like</span><span class="p">(</span><span class="n">body</span><span class="p">[</span><span class="s1">&#39;uuid&#39;</span><span class="p">]):</span>
+            <span class="k">raise</span> <span class="n">utils</span><span class="o">.</span><span class="n">Error</span><span class="p">(</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Invalid UUID value&#39;</span><span class="p">),</span> <span class="n">code</span><span class="o">=</span><span class="mi">400</span><span class="p">)</span>
+
+        <span class="n">rule</span> <span class="o">=</span> <span class="n">rules</span><span class="o">.</span><span class="n">create</span><span class="p">(</span><span class="n">conditions_json</span><span class="o">=</span><span class="n">body</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;conditions&#39;</span><span class="p">,</span> <span class="p">[]),</span>
+                            <span class="n">actions_json</span><span class="o">=</span><span class="n">body</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;actions&#39;</span><span class="p">,</span> <span class="p">[]),</span>
+                            <span class="n">uuid</span><span class="o">=</span><span class="n">body</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;uuid&#39;</span><span class="p">),</span>
+                            <span class="n">description</span><span class="o">=</span><span class="n">body</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;description&#39;</span><span class="p">))</span>
+
+        <span class="n">response_code</span> <span class="o">=</span> <span class="p">(</span><span class="mi">200</span> <span class="k">if</span> <span class="n">_get_version</span><span class="p">()</span> <span class="o">&lt;</span> <span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">6</span><span class="p">)</span> <span class="k">else</span> <span class="mi">201</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">flask</span><span class="o">.</span><span class="n">make_response</span><span class="p">(</span>
+            <span class="n">flask</span><span class="o">.</span><span class="n">jsonify</span><span class="p">(</span><span class="n">rule_repr</span><span class="p">(</span><span class="n">rule</span><span class="p">,</span> <span class="n">short</span><span class="o">=</span><span class="bp">False</span><span class="p">)),</span> <span class="n">response_code</span><span class="p">)</span></div>
+
+
+<span class="nd">@app.route</span><span class="p">(</span><span class="s1">&#39;/v1/rules/&lt;uuid&gt;&#39;</span><span class="p">,</span> <span class="n">methods</span><span class="o">=</span><span class="p">[</span><span class="s1">&#39;GET&#39;</span><span class="p">,</span> <span class="s1">&#39;DELETE&#39;</span><span class="p">])</span>
+<span class="nd">@convert_exceptions</span>
+<div class="viewcode-block" id="api_rule"><a class="viewcode-back" href="../../api/ironic_inspector.main.html#ironic_inspector.main.api_rule">[docs]</a><span class="k">def</span> <span class="nf">api_rule</span><span class="p">(</span><span class="n">uuid</span><span class="p">):</span>
+    <span class="n">utils</span><span class="o">.</span><span class="n">check_auth</span><span class="p">(</span><span class="n">flask</span><span class="o">.</span><span class="n">request</span><span class="p">)</span>
+
+    <span class="k">if</span> <span class="n">flask</span><span class="o">.</span><span class="n">request</span><span class="o">.</span><span class="n">method</span> <span class="o">==</span> <span class="s1">&#39;GET&#39;</span><span class="p">:</span>
+        <span class="n">rule</span> <span class="o">=</span> <span class="n">rules</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">uuid</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">flask</span><span class="o">.</span><span class="n">jsonify</span><span class="p">(</span><span class="n">rule_repr</span><span class="p">(</span><span class="n">rule</span><span class="p">,</span> <span class="n">short</span><span class="o">=</span><span class="bp">False</span><span class="p">))</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">rules</span><span class="o">.</span><span class="n">delete</span><span class="p">(</span><span class="n">uuid</span><span class="p">)</span>
+        <span class="k">return</span> <span class="s1">&#39;&#39;</span><span class="p">,</span> <span class="mi">204</span></div>
+
+
+<span class="nd">@app.errorhandler</span><span class="p">(</span><span class="mi">404</span><span class="p">)</span>
+<div class="viewcode-block" id="handle_404"><a class="viewcode-back" href="../../api/ironic_inspector.main.html#ironic_inspector.main.handle_404">[docs]</a><span class="k">def</span> <span class="nf">handle_404</span><span class="p">(</span><span class="n">error</span><span class="p">):</span>
+    <span class="k">return</span> <span class="n">error_response</span><span class="p">(</span><span class="n">error</span><span class="p">,</span> <span class="n">code</span><span class="o">=</span><span class="mi">404</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="periodic_update"><a class="viewcode-back" href="../../api/ironic_inspector.main.html#ironic_inspector.main.periodic_update">[docs]</a><span class="k">def</span> <span class="nf">periodic_update</span><span class="p">():</span>  <span class="c1"># pragma: no cover</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">firewall</span><span class="o">.</span><span class="n">update_filters</span><span class="p">()</span>
+    <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">exception</span><span class="p">(</span><span class="n">_LE</span><span class="p">(</span><span class="s1">&#39;Periodic update of firewall rules failed&#39;</span><span class="p">))</span></div>
+
+
+<div class="viewcode-block" id="periodic_clean_up"><a class="viewcode-back" href="../../api/ironic_inspector.main.html#ironic_inspector.main.periodic_clean_up">[docs]</a><span class="k">def</span> <span class="nf">periodic_clean_up</span><span class="p">():</span>  <span class="c1"># pragma: no cover</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">node_cache</span><span class="o">.</span><span class="n">clean_up</span><span class="p">():</span>
+            <span class="n">firewall</span><span class="o">.</span><span class="n">update_filters</span><span class="p">()</span>
+        <span class="n">sync_with_ironic</span><span class="p">()</span>
+    <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">exception</span><span class="p">(</span><span class="n">_LE</span><span class="p">(</span><span class="s1">&#39;Periodic clean up of node cache failed&#39;</span><span class="p">))</span></div>
+
+
+<div class="viewcode-block" id="sync_with_ironic"><a class="viewcode-back" href="../../api/ironic_inspector.main.html#ironic_inspector.main.sync_with_ironic">[docs]</a><span class="k">def</span> <span class="nf">sync_with_ironic</span><span class="p">():</span>
+    <span class="n">ironic</span> <span class="o">=</span> <span class="n">ir_utils</span><span class="o">.</span><span class="n">get_client</span><span class="p">()</span>
+    <span class="c1"># TODO(yuikotakada): pagination</span>
+    <span class="n">ironic_nodes</span> <span class="o">=</span> <span class="n">ironic</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">list</span><span class="p">(</span><span class="n">limit</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+    <span class="n">ironic_node_uuids</span> <span class="o">=</span> <span class="p">{</span><span class="n">node</span><span class="o">.</span><span class="n">uuid</span> <span class="k">for</span> <span class="n">node</span> <span class="ow">in</span> <span class="n">ironic_nodes</span><span class="p">}</span>
+    <span class="n">node_cache</span><span class="o">.</span><span class="n">delete_nodes_not_in_list</span><span class="p">(</span><span class="n">ironic_node_uuids</span><span class="p">)</span></div>
+
+
+<div class="viewcode-block" id="create_ssl_context"><a class="viewcode-back" href="../../api/ironic_inspector.main.html#ironic_inspector.main.create_ssl_context">[docs]</a><span class="k">def</span> <span class="nf">create_ssl_context</span><span class="p">():</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">CONF</span><span class="o">.</span><span class="n">use_ssl</span><span class="p">:</span>
+        <span class="k">return</span>
+
+    <span class="n">MIN_VERSION</span> <span class="o">=</span> <span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="mi">7</span><span class="p">,</span> <span class="mi">9</span><span class="p">)</span>
+
+    <span class="k">if</span> <span class="n">sys</span><span class="o">.</span><span class="n">version_info</span> <span class="o">&lt;</span> <span class="n">MIN_VERSION</span><span class="p">:</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s1">&#39;Unable to use SSL in this version of Python: &#39;</span>
+                        <span class="s1">&#39;</span><span class="si">%(current)s</span><span class="s1">, please ensure your version of Python is &#39;</span>
+                        <span class="s1">&#39;greater than </span><span class="si">%(min)s</span><span class="s1"> to enable this feature.&#39;</span><span class="p">),</span>
+                    <span class="p">{</span><span class="s1">&#39;current&#39;</span><span class="p">:</span> <span class="s1">&#39;.&#39;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="nb">map</span><span class="p">(</span><span class="nb">str</span><span class="p">,</span> <span class="n">sys</span><span class="o">.</span><span class="n">version_info</span><span class="p">[:</span><span class="mi">3</span><span class="p">])),</span>
+                     <span class="s1">&#39;min&#39;</span><span class="p">:</span> <span class="s1">&#39;.&#39;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="nb">map</span><span class="p">(</span><span class="nb">str</span><span class="p">,</span> <span class="n">MIN_VERSION</span><span class="p">))})</span>
+        <span class="k">return</span>
+
+    <span class="n">context</span> <span class="o">=</span> <span class="n">ssl</span><span class="o">.</span><span class="n">create_default_context</span><span class="p">(</span><span class="n">purpose</span><span class="o">=</span><span class="n">ssl</span><span class="o">.</span><span class="n">Purpose</span><span class="o">.</span><span class="n">CLIENT_AUTH</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">CONF</span><span class="o">.</span><span class="n">ssl_cert_path</span> <span class="ow">and</span> <span class="n">CONF</span><span class="o">.</span><span class="n">ssl_key_path</span><span class="p">:</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">context</span><span class="o">.</span><span class="n">load_cert_chain</span><span class="p">(</span><span class="n">CONF</span><span class="o">.</span><span class="n">ssl_cert_path</span><span class="p">,</span> <span class="n">CONF</span><span class="o">.</span><span class="n">ssl_key_path</span><span class="p">)</span>
+        <span class="k">except</span> <span class="ne">IOError</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s1">&#39;Failed to load certificate or key from defined &#39;</span>
+                            <span class="s1">&#39;locations: </span><span class="si">%(cert)s</span><span class="s1"> and </span><span class="si">%(key)s</span><span class="s1">, will continue &#39;</span>
+                            <span class="s1">&#39;to run with the default settings: </span><span class="si">%(exc)s</span><span class="s1">&#39;</span><span class="p">),</span>
+                        <span class="p">{</span><span class="s1">&#39;cert&#39;</span><span class="p">:</span> <span class="n">CONF</span><span class="o">.</span><span class="n">ssl_cert_path</span><span class="p">,</span> <span class="s1">&#39;key&#39;</span><span class="p">:</span> <span class="n">CONF</span><span class="o">.</span><span class="n">ssl_key_path</span><span class="p">,</span>
+                         <span class="s1">&#39;exc&#39;</span><span class="p">:</span> <span class="n">exc</span><span class="p">})</span>
+        <span class="k">except</span> <span class="n">ssl</span><span class="o">.</span><span class="n">SSLError</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s1">&#39;There was a problem with the loaded certificate &#39;</span>
+                            <span class="s1">&#39;and key, will continue to run with the default &#39;</span>
+                            <span class="s1">&#39;settings: </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">),</span> <span class="n">exc</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">context</span></div>
+
+
+<div class="viewcode-block" id="Service"><a class="viewcode-back" href="../../api/ironic_inspector.main.html#ironic_inspector.main.Service">[docs]</a><span class="k">class</span> <span class="nc">Service</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="n">_periodics_worker</span> <span class="o">=</span> <span class="bp">None</span>
+
+<div class="viewcode-block" id="Service.setup_logging"><a class="viewcode-back" href="../../api/ironic_inspector.main.html#ironic_inspector.main.Service.setup_logging">[docs]</a>    <span class="k">def</span> <span class="nf">setup_logging</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">args</span><span class="p">):</span>
+        <span class="n">log</span><span class="o">.</span><span class="n">register_options</span><span class="p">(</span><span class="n">CONF</span><span class="p">)</span>
+        <span class="n">CONF</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="n">project</span><span class="o">=</span><span class="s1">&#39;ironic-inspector&#39;</span><span class="p">)</span>
+
+        <span class="n">log</span><span class="o">.</span><span class="n">set_defaults</span><span class="p">(</span><span class="n">default_log_levels</span><span class="o">=</span><span class="p">[</span>
+            <span class="s1">&#39;sqlalchemy=WARNING&#39;</span><span class="p">,</span>
+            <span class="s1">&#39;iso8601=WARNING&#39;</span><span class="p">,</span>
+            <span class="s1">&#39;requests=WARNING&#39;</span><span class="p">,</span>
+            <span class="s1">&#39;urllib3.connectionpool=WARNING&#39;</span><span class="p">,</span>
+            <span class="s1">&#39;keystonemiddleware=WARNING&#39;</span><span class="p">,</span>
+            <span class="s1">&#39;swiftclient=WARNING&#39;</span><span class="p">,</span>
+            <span class="s1">&#39;keystoneauth=WARNING&#39;</span><span class="p">,</span>
+            <span class="s1">&#39;ironicclient=WARNING&#39;</span>
+        <span class="p">])</span>
+        <span class="n">log</span><span class="o">.</span><span class="n">setup</span><span class="p">(</span><span class="n">CONF</span><span class="p">,</span> <span class="s1">&#39;ironic_inspector&#39;</span><span class="p">)</span>
+
+        <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Configuration:&quot;</span><span class="p">)</span>
+        <span class="n">CONF</span><span class="o">.</span><span class="n">log_opt_values</span><span class="p">(</span><span class="n">LOG</span><span class="p">,</span> <span class="n">log</span><span class="o">.</span><span class="n">DEBUG</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="Service.init"><a class="viewcode-back" href="../../api/ironic_inspector.main.html#ironic_inspector.main.Service.init">[docs]</a>    <span class="k">def</span> <span class="nf">init</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">CONF</span><span class="o">.</span><span class="n">auth_strategy</span> <span class="o">!=</span> <span class="s1">&#39;noauth&#39;</span><span class="p">:</span>
+            <span class="n">utils</span><span class="o">.</span><span class="n">add_auth_middleware</span><span class="p">(</span><span class="n">app</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s1">&#39;Starting unauthenticated, please check&#39;</span>
+                            <span class="s1">&#39; configuration&#39;</span><span class="p">))</span>
+
+        <span class="k">if</span> <span class="n">CONF</span><span class="o">.</span><span class="n">processing</span><span class="o">.</span><span class="n">store_data</span> <span class="o">==</span> <span class="s1">&#39;none&#39;</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s1">&#39;Introspection data will not be stored. Change &#39;</span>
+                            <span class="s1">&#39;&quot;[processing] store_data&quot; option if this is not &#39;</span>
+                            <span class="s1">&#39;the desired behavior&#39;</span><span class="p">))</span>
+        <span class="k">elif</span> <span class="n">CONF</span><span class="o">.</span><span class="n">processing</span><span class="o">.</span><span class="n">store_data</span> <span class="o">==</span> <span class="s1">&#39;swift&#39;</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">_LI</span><span class="p">(</span><span class="s1">&#39;Introspection data will be stored in Swift in the &#39;</span>
+                         <span class="s1">&#39;container </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">),</span> <span class="n">CONF</span><span class="o">.</span><span class="n">swift</span><span class="o">.</span><span class="n">container</span><span class="p">)</span>
+
+        <span class="n">utils</span><span class="o">.</span><span class="n">add_cors_middleware</span><span class="p">(</span><span class="n">app</span><span class="p">)</span>
+
+        <span class="n">db</span><span class="o">.</span><span class="n">init</span><span class="p">()</span>
+
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">hooks</span> <span class="o">=</span> <span class="p">[</span><span class="n">ext</span><span class="o">.</span><span class="n">name</span> <span class="k">for</span> <span class="n">ext</span> <span class="ow">in</span>
+                     <span class="n">plugins_base</span><span class="o">.</span><span class="n">processing_hooks_manager</span><span class="p">()]</span>
+        <span class="k">except</span> <span class="ne">KeyError</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+            <span class="c1"># callback function raises MissingHookError derived from KeyError</span>
+            <span class="c1"># on missing hook</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">critical</span><span class="p">(</span><span class="n">_LC</span><span class="p">(</span><span class="s1">&#39;Hook(s) </span><span class="si">%s</span><span class="s1"> failed to load or was not found&#39;</span><span class="p">),</span>
+                         <span class="nb">str</span><span class="p">(</span><span class="n">exc</span><span class="p">))</span>
+            <span class="n">sys</span><span class="o">.</span><span class="n">exit</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
+
+        <span class="n">LOG</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">_LI</span><span class="p">(</span><span class="s1">&#39;Enabled processing hooks: </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">),</span> <span class="n">hooks</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">CONF</span><span class="o">.</span><span class="n">firewall</span><span class="o">.</span><span class="n">manage_firewall</span><span class="p">:</span>
+            <span class="n">firewall</span><span class="o">.</span><span class="n">init</span><span class="p">()</span>
+
+        <span class="n">periodic_update_</span> <span class="o">=</span> <span class="n">periodics</span><span class="o">.</span><span class="n">periodic</span><span class="p">(</span>
+            <span class="n">spacing</span><span class="o">=</span><span class="n">CONF</span><span class="o">.</span><span class="n">firewall</span><span class="o">.</span><span class="n">firewall_update_period</span><span class="p">,</span>
+            <span class="n">enabled</span><span class="o">=</span><span class="n">CONF</span><span class="o">.</span><span class="n">firewall</span><span class="o">.</span><span class="n">manage_firewall</span>
+        <span class="p">)(</span><span class="n">periodic_update</span><span class="p">)</span>
+        <span class="n">periodic_clean_up_</span> <span class="o">=</span> <span class="n">periodics</span><span class="o">.</span><span class="n">periodic</span><span class="p">(</span>
+            <span class="n">spacing</span><span class="o">=</span><span class="n">CONF</span><span class="o">.</span><span class="n">clean_up_period</span>
+        <span class="p">)(</span><span class="n">periodic_clean_up</span><span class="p">)</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">_periodics_worker</span> <span class="o">=</span> <span class="n">periodics</span><span class="o">.</span><span class="n">PeriodicWorker</span><span class="p">(</span>
+            <span class="n">callables</span><span class="o">=</span><span class="p">[(</span><span class="n">periodic_update_</span><span class="p">,</span> <span class="bp">None</span><span class="p">,</span> <span class="bp">None</span><span class="p">),</span>
+                       <span class="p">(</span><span class="n">periodic_clean_up_</span><span class="p">,</span> <span class="bp">None</span><span class="p">,</span> <span class="bp">None</span><span class="p">)],</span>
+            <span class="n">executor_factory</span><span class="o">=</span><span class="n">periodics</span><span class="o">.</span><span class="n">ExistingExecutor</span><span class="p">(</span><span class="n">utils</span><span class="o">.</span><span class="n">executor</span><span class="p">()))</span>
+        <span class="n">utils</span><span class="o">.</span><span class="n">executor</span><span class="p">()</span><span class="o">.</span><span class="n">submit</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_periodics_worker</span><span class="o">.</span><span class="n">start</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="Service.shutdown"><a class="viewcode-back" href="../../api/ironic_inspector.main.html#ironic_inspector.main.Service.shutdown">[docs]</a>    <span class="k">def</span> <span class="nf">shutdown</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;Shutting down&#39;</span><span class="p">)</span>
+
+        <span class="n">firewall</span><span class="o">.</span><span class="n">clean_up</span><span class="p">()</span>
+
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_periodics_worker</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_periodics_worker</span><span class="o">.</span><span class="n">stop</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_periodics_worker</span><span class="o">.</span><span class="n">wait</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_periodics_worker</span> <span class="o">=</span> <span class="bp">None</span>
+
+        <span class="k">if</span> <span class="n">utils</span><span class="o">.</span><span class="n">executor</span><span class="p">()</span><span class="o">.</span><span class="n">alive</span><span class="p">:</span>
+            <span class="n">utils</span><span class="o">.</span><span class="n">executor</span><span class="p">()</span><span class="o">.</span><span class="n">shutdown</span><span class="p">(</span><span class="n">wait</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+
+        <span class="n">LOG</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">_LI</span><span class="p">(</span><span class="s1">&#39;Shut down successfully&#39;</span><span class="p">))</span></div>
+
+<div class="viewcode-block" id="Service.run"><a class="viewcode-back" href="../../api/ironic_inspector.main.html#ironic_inspector.main.Service.run">[docs]</a>    <span class="k">def</span> <span class="nf">run</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">args</span><span class="p">,</span> <span class="n">application</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">setup_logging</span><span class="p">(</span><span class="n">args</span><span class="p">)</span>
+
+        <span class="n">app_kwargs</span> <span class="o">=</span> <span class="p">{</span><span class="s1">&#39;host&#39;</span><span class="p">:</span> <span class="n">CONF</span><span class="o">.</span><span class="n">listen_address</span><span class="p">,</span>
+                      <span class="s1">&#39;port&#39;</span><span class="p">:</span> <span class="n">CONF</span><span class="o">.</span><span class="n">listen_port</span><span class="p">}</span>
+
+        <span class="n">context</span> <span class="o">=</span> <span class="n">create_ssl_context</span><span class="p">()</span>
+        <span class="k">if</span> <span class="n">context</span><span class="p">:</span>
+            <span class="n">app_kwargs</span><span class="p">[</span><span class="s1">&#39;ssl_context&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">context</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">init</span><span class="p">()</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">application</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="o">**</span><span class="n">app_kwargs</span><span class="p">)</span>
+        <span class="k">finally</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">shutdown</span><span class="p">()</span></div></div>
+
+
+<div class="viewcode-block" id="main"><a class="viewcode-back" href="../../api/ironic_inspector.main.html#ironic_inspector.main.main">[docs]</a><span class="k">def</span> <span class="nf">main</span><span class="p">(</span><span class="n">args</span><span class="o">=</span><span class="n">sys</span><span class="o">.</span><span class="n">argv</span><span class="p">[</span><span class="mi">1</span><span class="p">:]):</span>  <span class="c1"># pragma: no cover</span>
+    <span class="n">service</span> <span class="o">=</span> <span class="n">Service</span><span class="p">()</span>
+    <span class="n">service</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">args</span><span class="p">,</span> <span class="n">app</span><span class="p">)</span></div>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/ironic-inspector
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../index.html">Ironic Inspector 5.0.1.dev1 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../index.html" accesskey="U">Module code</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright OpenStack Foundation.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/Ironic Inspector");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

@@ -1,0 +1,411 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>ironic.common.image_service &mdash; Ironic 7.0.1.dev7 documentation</title>
+    
+    <link rel="stylesheet" href="../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../_static/toggle.css" type="text/css" />
+    <link rel="stylesheet" href="../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../',
+        VERSION:     '7.0.1.dev7',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../_static/doctools.js"></script>
+    <script type="text/javascript" src="../../../_static/toggle.js"></script>
+    <link rel="top" title="Ironic 7.0.1.dev7 documentation" href="../../../index.html" />
+    <link rel="up" title="Module code" href="../../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for ironic.common.image_service</h1><div class="highlight"><pre>
+<span></span><span class="c1"># Copyright 2010 OpenStack Foundation</span>
+<span class="c1"># Copyright 2013 Hewlett-Packard Development Company, L.P.</span>
+<span class="c1"># All Rights Reserved.</span>
+<span class="c1">#</span>
+<span class="c1">#    Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may</span>
+<span class="c1">#    not use this file except in compliance with the License. You may obtain</span>
+<span class="c1">#    a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#         http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1">#    Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1">#    distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="c1">#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="c1">#    License for the specific language governing permissions and limitations</span>
+<span class="c1">#    under the License.</span>
+
+
+<span class="kn">import</span> <span class="nn">abc</span>
+<span class="kn">import</span> <span class="nn">datetime</span>
+<span class="kn">import</span> <span class="nn">os</span>
+<span class="kn">import</span> <span class="nn">shutil</span>
+
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">importutils</span>
+<span class="kn">import</span> <span class="nn">requests</span>
+<span class="kn">import</span> <span class="nn">sendfile</span>
+<span class="kn">import</span> <span class="nn">six</span>
+<span class="kn">from</span> <span class="nn">six.moves</span> <span class="kn">import</span> <span class="n">http_client</span>
+<span class="kn">import</span> <span class="nn">six.moves.urllib.parse</span> <span class="kn">as</span> <span class="nn">urlparse</span>
+
+<span class="kn">from</span> <span class="nn">ironic.common</span> <span class="kn">import</span> <span class="n">exception</span>
+<span class="kn">from</span> <span class="nn">ironic.common.i18n</span> <span class="kn">import</span> <span class="n">_</span>
+<span class="kn">from</span> <span class="nn">ironic.common</span> <span class="kn">import</span> <span class="n">keystone</span>
+<span class="kn">from</span> <span class="nn">ironic.common</span> <span class="kn">import</span> <span class="n">utils</span>
+<span class="kn">from</span> <span class="nn">ironic.conf</span> <span class="kn">import</span> <span class="n">CONF</span>
+
+<span class="n">IMAGE_CHUNK_SIZE</span> <span class="o">=</span> <span class="mi">1024</span> <span class="o">*</span> <span class="mi">1024</span>  <span class="c1"># 1mb</span>
+
+<span class="n">_GLANCE_SESSION</span> <span class="o">=</span> <span class="bp">None</span>
+
+
+<span class="k">def</span> <span class="nf">_get_glance_session</span><span class="p">():</span>
+    <span class="k">global</span> <span class="n">_GLANCE_SESSION</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">_GLANCE_SESSION</span><span class="p">:</span>
+        <span class="n">_GLANCE_SESSION</span> <span class="o">=</span> <span class="n">keystone</span><span class="o">.</span><span class="n">get_session</span><span class="p">(</span><span class="s1">&#39;glance&#39;</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">_GLANCE_SESSION</span>
+
+
+<span class="k">def</span> <span class="nf">GlanceImageService</span><span class="p">(</span><span class="n">client</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">context</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+    <span class="n">module_str</span> <span class="o">=</span> <span class="s1">&#39;ironic.common.glance_service&#39;</span>
+    <span class="k">if</span> <span class="n">version</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+        <span class="n">version</span> <span class="o">=</span> <span class="n">CONF</span><span class="o">.</span><span class="n">glance</span><span class="o">.</span><span class="n">glance_api_version</span>
+
+    <span class="n">module</span> <span class="o">=</span> <span class="n">importutils</span><span class="o">.</span><span class="n">import_versioned_module</span><span class="p">(</span><span class="n">module_str</span><span class="p">,</span> <span class="n">version</span><span class="p">,</span>
+                                                 <span class="s1">&#39;image_service&#39;</span><span class="p">)</span>
+    <span class="n">service_class</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">module</span><span class="p">,</span> <span class="s1">&#39;GlanceImageService&#39;</span><span class="p">)</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">context</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span> <span class="ow">and</span> <span class="n">CONF</span><span class="o">.</span><span class="n">glance</span><span class="o">.</span><span class="n">auth_strategy</span> <span class="o">==</span> <span class="s1">&#39;keystone&#39;</span>
+        <span class="ow">and</span> <span class="ow">not</span> <span class="n">context</span><span class="o">.</span><span class="n">auth_token</span><span class="p">):</span>
+            <span class="n">session</span> <span class="o">=</span> <span class="n">_get_glance_session</span><span class="p">()</span>
+            <span class="n">context</span><span class="o">.</span><span class="n">auth_token</span> <span class="o">=</span> <span class="n">keystone</span><span class="o">.</span><span class="n">get_admin_auth_token</span><span class="p">(</span><span class="n">session</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">service_class</span><span class="p">(</span><span class="n">client</span><span class="p">,</span> <span class="n">version</span><span class="p">,</span> <span class="n">context</span><span class="p">)</span>
+
+
+<span class="nd">@six.add_metaclass</span><span class="p">(</span><span class="n">abc</span><span class="o">.</span><span class="n">ABCMeta</span><span class="p">)</span>
+<div class="viewcode-block" id="BaseImageService"><a class="viewcode-back" href="../../../api/ironic.common.image_service.html#ironic.common.image_service.BaseImageService">[docs]</a><span class="k">class</span> <span class="nc">BaseImageService</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Provides retrieval of disk images.&quot;&quot;&quot;</span>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="BaseImageService.validate_href"><a class="viewcode-back" href="../../../api/ironic.common.image_service.html#ironic.common.image_service.BaseImageService.validate_href">[docs]</a>    <span class="k">def</span> <span class="nf">validate_href</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">image_href</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Validate image reference.</span>
+
+<span class="sd">        :param image_href: Image reference.</span>
+<span class="sd">        :raises: exception.ImageRefValidationFailed.</span>
+<span class="sd">        :returns: Information needed to further operate with an image.</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="BaseImageService.download"><a class="viewcode-back" href="../../../api/ironic.common.image_service.html#ironic.common.image_service.BaseImageService.download">[docs]</a>    <span class="k">def</span> <span class="nf">download</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">image_href</span><span class="p">,</span> <span class="n">image_file</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Downloads image to specified location.</span>
+
+<span class="sd">        :param image_href: Image reference.</span>
+<span class="sd">        :param image_file: File object to write data to.</span>
+<span class="sd">        :raises: exception.ImageRefValidationFailed.</span>
+<span class="sd">        :raises: exception.ImageDownloadFailed.</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="BaseImageService.show"><a class="viewcode-back" href="../../../api/ironic.common.image_service.html#ironic.common.image_service.BaseImageService.show">[docs]</a>    <span class="k">def</span> <span class="nf">show</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">image_href</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get dictionary of image properties.</span>
+
+<span class="sd">        :param image_href: Image reference.</span>
+<span class="sd">        :raises: exception.ImageRefValidationFailed.</span>
+<span class="sd">        :returns: dictionary of image properties. It has three of them: &#39;size&#39;,</span>
+<span class="sd">            &#39;updated_at&#39; and &#39;properties&#39;. &#39;updated_at&#39; attribute is a naive</span>
+<span class="sd">            UTC datetime object.</span>
+<span class="sd">        &quot;&quot;&quot;</span></div></div>
+
+
+<div class="viewcode-block" id="HttpImageService"><a class="viewcode-back" href="../../../api/ironic.common.image_service.html#ironic.common.image_service.HttpImageService">[docs]</a><span class="k">class</span> <span class="nc">HttpImageService</span><span class="p">(</span><span class="n">BaseImageService</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Provides retrieval of disk images using HTTP.&quot;&quot;&quot;</span>
+
+<div class="viewcode-block" id="HttpImageService.validate_href"><a class="viewcode-back" href="../../../api/ironic.common.image_service.html#ironic.common.image_service.HttpImageService.validate_href">[docs]</a>    <span class="k">def</span> <span class="nf">validate_href</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">image_href</span><span class="p">,</span> <span class="n">secret</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Validate HTTP image reference.</span>
+
+<span class="sd">        :param image_href: Image reference.</span>
+<span class="sd">        :param secret: Specify if image_href being validated should not be</span>
+<span class="sd">            shown in exception message.</span>
+<span class="sd">        :raises: exception.ImageRefValidationFailed if HEAD request failed or</span>
+<span class="sd">            returned response code not equal to 200.</span>
+<span class="sd">        :returns: Response to HEAD request.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">output_url</span> <span class="o">=</span> <span class="s1">&#39;secreturl&#39;</span> <span class="k">if</span> <span class="n">secret</span> <span class="k">else</span> <span class="n">image_href</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">response</span> <span class="o">=</span> <span class="n">requests</span><span class="o">.</span><span class="n">head</span><span class="p">(</span><span class="n">image_href</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">response</span><span class="o">.</span><span class="n">status_code</span> <span class="o">!=</span> <span class="n">http_client</span><span class="o">.</span><span class="n">OK</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">ImageRefValidationFailed</span><span class="p">(</span>
+                    <span class="n">image_href</span><span class="o">=</span><span class="n">output_url</span><span class="p">,</span>
+                    <span class="n">reason</span><span class="o">=</span><span class="n">_</span><span class="p">(</span><span class="s2">&quot;Got HTTP code </span><span class="si">%s</span><span class="s2"> instead of 200 in response to &quot;</span>
+                             <span class="s2">&quot;HEAD request.&quot;</span><span class="p">)</span> <span class="o">%</span> <span class="n">response</span><span class="o">.</span><span class="n">status_code</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">requests</span><span class="o">.</span><span class="n">RequestException</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">ImageRefValidationFailed</span><span class="p">(</span><span class="n">image_href</span><span class="o">=</span><span class="n">output_url</span><span class="p">,</span>
+                                                     <span class="n">reason</span><span class="o">=</span><span class="n">e</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">response</span></div>
+
+<div class="viewcode-block" id="HttpImageService.download"><a class="viewcode-back" href="../../../api/ironic.common.image_service.html#ironic.common.image_service.HttpImageService.download">[docs]</a>    <span class="k">def</span> <span class="nf">download</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">image_href</span><span class="p">,</span> <span class="n">image_file</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Downloads image to specified location.</span>
+
+<span class="sd">        :param image_href: Image reference.</span>
+<span class="sd">        :param image_file: File object to write data to.</span>
+<span class="sd">        :raises: exception.ImageRefValidationFailed if GET request returned</span>
+<span class="sd">            response code not equal to 200.</span>
+<span class="sd">        :raises: exception.ImageDownloadFailed if:</span>
+<span class="sd">            * IOError happened during file write;</span>
+<span class="sd">            * GET request failed.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">response</span> <span class="o">=</span> <span class="n">requests</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">image_href</span><span class="p">,</span> <span class="n">stream</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">response</span><span class="o">.</span><span class="n">status_code</span> <span class="o">!=</span> <span class="n">http_client</span><span class="o">.</span><span class="n">OK</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">ImageRefValidationFailed</span><span class="p">(</span>
+                    <span class="n">image_href</span><span class="o">=</span><span class="n">image_href</span><span class="p">,</span>
+                    <span class="n">reason</span><span class="o">=</span><span class="n">_</span><span class="p">(</span><span class="s2">&quot;Got HTTP code </span><span class="si">%s</span><span class="s2"> instead of 200 in response to &quot;</span>
+                             <span class="s2">&quot;GET request.&quot;</span><span class="p">)</span> <span class="o">%</span> <span class="n">response</span><span class="o">.</span><span class="n">status_code</span><span class="p">)</span>
+            <span class="k">with</span> <span class="n">response</span><span class="o">.</span><span class="n">raw</span> <span class="k">as</span> <span class="n">input_img</span><span class="p">:</span>
+                <span class="n">shutil</span><span class="o">.</span><span class="n">copyfileobj</span><span class="p">(</span><span class="n">input_img</span><span class="p">,</span> <span class="n">image_file</span><span class="p">,</span> <span class="n">IMAGE_CHUNK_SIZE</span><span class="p">)</span>
+        <span class="k">except</span> <span class="p">(</span><span class="n">requests</span><span class="o">.</span><span class="n">RequestException</span><span class="p">,</span> <span class="ne">IOError</span><span class="p">)</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">ImageDownloadFailed</span><span class="p">(</span><span class="n">image_href</span><span class="o">=</span><span class="n">image_href</span><span class="p">,</span>
+                                                <span class="n">reason</span><span class="o">=</span><span class="n">e</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="HttpImageService.show"><a class="viewcode-back" href="../../../api/ironic.common.image_service.html#ironic.common.image_service.HttpImageService.show">[docs]</a>    <span class="k">def</span> <span class="nf">show</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">image_href</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get dictionary of image properties.</span>
+
+<span class="sd">        :param image_href: Image reference.</span>
+<span class="sd">        :raises: exception.ImageRefValidationFailed if:</span>
+<span class="sd">            * HEAD request failed;</span>
+<span class="sd">            * HEAD request returned response code not equal to 200;</span>
+<span class="sd">            * Content-Length header not found in response to HEAD request.</span>
+<span class="sd">        :returns: dictionary of image properties. It has three of them: &#39;size&#39;,</span>
+<span class="sd">            &#39;updated_at&#39; and &#39;properties&#39;. &#39;updated_at&#39; attribute is a naive</span>
+<span class="sd">            UTC datetime object.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">response</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">validate_href</span><span class="p">(</span><span class="n">image_href</span><span class="p">)</span>
+        <span class="n">image_size</span> <span class="o">=</span> <span class="n">response</span><span class="o">.</span><span class="n">headers</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;Content-Length&#39;</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">image_size</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">ImageRefValidationFailed</span><span class="p">(</span>
+                <span class="n">image_href</span><span class="o">=</span><span class="n">image_href</span><span class="p">,</span>
+                <span class="n">reason</span><span class="o">=</span><span class="n">_</span><span class="p">(</span><span class="s2">&quot;Cannot determine image size as there is no &quot;</span>
+                         <span class="s2">&quot;Content-Length header specified in response &quot;</span>
+                         <span class="s2">&quot;to HEAD request.&quot;</span><span class="p">))</span>
+
+        <span class="c1"># Parse last-modified header to return naive datetime object</span>
+        <span class="n">str_date</span> <span class="o">=</span> <span class="n">response</span><span class="o">.</span><span class="n">headers</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;Last-Modified&#39;</span><span class="p">)</span>
+        <span class="n">date</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="k">if</span> <span class="n">str_date</span><span class="p">:</span>
+            <span class="n">http_date_format_strings</span> <span class="o">=</span> <span class="p">[</span>
+                <span class="s1">&#39;%a, </span><span class="si">%d</span><span class="s1"> %b %Y %H:%M:%S GMT&#39;</span><span class="p">,</span>  <span class="c1"># RFC 822</span>
+                <span class="s1">&#39;%A, </span><span class="si">%d</span><span class="s1">-%b-%y %H:%M:%S GMT&#39;</span><span class="p">,</span>  <span class="c1"># RFC 850</span>
+                <span class="s1">&#39;%a %b </span><span class="si">%d</span><span class="s1"> %H:%M:%S %Y&#39;</span>        <span class="c1"># ANSI C</span>
+            <span class="p">]</span>
+            <span class="k">for</span> <span class="n">fmt</span> <span class="ow">in</span> <span class="n">http_date_format_strings</span><span class="p">:</span>
+                <span class="k">try</span><span class="p">:</span>
+                    <span class="n">date</span> <span class="o">=</span> <span class="n">datetime</span><span class="o">.</span><span class="n">datetime</span><span class="o">.</span><span class="n">strptime</span><span class="p">(</span><span class="n">str_date</span><span class="p">,</span> <span class="n">fmt</span><span class="p">)</span>
+                    <span class="k">break</span>
+                <span class="k">except</span> <span class="ne">ValueError</span><span class="p">:</span>
+                    <span class="k">continue</span>
+
+        <span class="k">return</span> <span class="p">{</span>
+            <span class="s1">&#39;size&#39;</span><span class="p">:</span> <span class="nb">int</span><span class="p">(</span><span class="n">image_size</span><span class="p">),</span>
+            <span class="s1">&#39;updated_at&#39;</span><span class="p">:</span> <span class="n">date</span><span class="p">,</span>
+            <span class="s1">&#39;properties&#39;</span><span class="p">:</span> <span class="p">{}</span>
+        <span class="p">}</span></div></div>
+
+
+<div class="viewcode-block" id="FileImageService"><a class="viewcode-back" href="../../../api/ironic.common.image_service.html#ironic.common.image_service.FileImageService">[docs]</a><span class="k">class</span> <span class="nc">FileImageService</span><span class="p">(</span><span class="n">BaseImageService</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Provides retrieval of disk images available locally on the conductor.&quot;&quot;&quot;</span>
+
+<div class="viewcode-block" id="FileImageService.validate_href"><a class="viewcode-back" href="../../../api/ironic.common.image_service.html#ironic.common.image_service.FileImageService.validate_href">[docs]</a>    <span class="k">def</span> <span class="nf">validate_href</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">image_href</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Validate local image reference.</span>
+
+<span class="sd">        :param image_href: Image reference.</span>
+<span class="sd">        :raises: exception.ImageRefValidationFailed if source image file</span>
+<span class="sd">            doesn&#39;t exist.</span>
+<span class="sd">        :returns: Path to image file if it exists.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">image_path</span> <span class="o">=</span> <span class="n">urlparse</span><span class="o">.</span><span class="n">urlparse</span><span class="p">(</span><span class="n">image_href</span><span class="p">)</span><span class="o">.</span><span class="n">path</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">isfile</span><span class="p">(</span><span class="n">image_path</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">ImageRefValidationFailed</span><span class="p">(</span>
+                <span class="n">image_href</span><span class="o">=</span><span class="n">image_href</span><span class="p">,</span>
+                <span class="n">reason</span><span class="o">=</span><span class="n">_</span><span class="p">(</span><span class="s2">&quot;Specified image file not found.&quot;</span><span class="p">))</span>
+        <span class="k">return</span> <span class="n">image_path</span></div>
+
+<div class="viewcode-block" id="FileImageService.download"><a class="viewcode-back" href="../../../api/ironic.common.image_service.html#ironic.common.image_service.FileImageService.download">[docs]</a>    <span class="k">def</span> <span class="nf">download</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">image_href</span><span class="p">,</span> <span class="n">image_file</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Downloads image to specified location.</span>
+
+<span class="sd">        :param image_href: Image reference.</span>
+<span class="sd">        :param image_file: File object to write data to.</span>
+<span class="sd">        :raises: exception.ImageRefValidationFailed if source image file</span>
+<span class="sd">            doesn&#39;t exist.</span>
+<span class="sd">        :raises: exception.ImageDownloadFailed if exceptions were raised while</span>
+<span class="sd">            writing to file or creating hard link.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">source_image_path</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">validate_href</span><span class="p">(</span><span class="n">image_href</span><span class="p">)</span>
+        <span class="n">dest_image_path</span> <span class="o">=</span> <span class="n">image_file</span><span class="o">.</span><span class="n">name</span>
+        <span class="n">local_device</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">stat</span><span class="p">(</span><span class="n">dest_image_path</span><span class="p">)</span><span class="o">.</span><span class="n">st_dev</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="c1"># We should have read and write access to source file to create</span>
+            <span class="c1"># hard link to it.</span>
+            <span class="k">if</span> <span class="p">(</span><span class="n">local_device</span> <span class="o">==</span> <span class="n">os</span><span class="o">.</span><span class="n">stat</span><span class="p">(</span><span class="n">source_image_path</span><span class="p">)</span><span class="o">.</span><span class="n">st_dev</span> <span class="ow">and</span>
+                    <span class="n">os</span><span class="o">.</span><span class="n">access</span><span class="p">(</span><span class="n">source_image_path</span><span class="p">,</span> <span class="n">os</span><span class="o">.</span><span class="n">R_OK</span> <span class="o">|</span> <span class="n">os</span><span class="o">.</span><span class="n">W_OK</span><span class="p">)):</span>
+                <span class="n">image_file</span><span class="o">.</span><span class="n">close</span><span class="p">()</span>
+                <span class="n">os</span><span class="o">.</span><span class="n">remove</span><span class="p">(</span><span class="n">dest_image_path</span><span class="p">)</span>
+                <span class="n">os</span><span class="o">.</span><span class="n">link</span><span class="p">(</span><span class="n">source_image_path</span><span class="p">,</span> <span class="n">dest_image_path</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">filesize</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">getsize</span><span class="p">(</span><span class="n">source_image_path</span><span class="p">)</span>
+                <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">source_image_path</span><span class="p">,</span> <span class="s1">&#39;rb&#39;</span><span class="p">)</span> <span class="k">as</span> <span class="n">input_img</span><span class="p">:</span>
+                    <span class="n">sendfile</span><span class="o">.</span><span class="n">sendfile</span><span class="p">(</span><span class="n">image_file</span><span class="o">.</span><span class="n">fileno</span><span class="p">(),</span> <span class="n">input_img</span><span class="o">.</span><span class="n">fileno</span><span class="p">(),</span>
+                                      <span class="mi">0</span><span class="p">,</span> <span class="n">filesize</span><span class="p">)</span>
+        <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">ImageDownloadFailed</span><span class="p">(</span><span class="n">image_href</span><span class="o">=</span><span class="n">image_href</span><span class="p">,</span>
+                                                <span class="n">reason</span><span class="o">=</span><span class="n">e</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="FileImageService.show"><a class="viewcode-back" href="../../../api/ironic.common.image_service.html#ironic.common.image_service.FileImageService.show">[docs]</a>    <span class="k">def</span> <span class="nf">show</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">image_href</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get dictionary of image properties.</span>
+
+<span class="sd">        :param image_href: Image reference.</span>
+<span class="sd">        :raises: exception.ImageRefValidationFailed if image file specified</span>
+<span class="sd">            doesn&#39;t exist.</span>
+<span class="sd">        :returns: dictionary of image properties. It has three of them: &#39;size&#39;,</span>
+<span class="sd">            &#39;updated_at&#39; and &#39;properties&#39;. &#39;updated_at&#39; attribute is a naive</span>
+<span class="sd">            UTC datetime object.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">source_image_path</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">validate_href</span><span class="p">(</span><span class="n">image_href</span><span class="p">)</span>
+        <span class="k">return</span> <span class="p">{</span>
+            <span class="s1">&#39;size&#39;</span><span class="p">:</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">getsize</span><span class="p">(</span><span class="n">source_image_path</span><span class="p">),</span>
+            <span class="s1">&#39;updated_at&#39;</span><span class="p">:</span> <span class="n">utils</span><span class="o">.</span><span class="n">unix_file_modification_datetime</span><span class="p">(</span>
+                <span class="n">source_image_path</span><span class="p">),</span>
+            <span class="s1">&#39;properties&#39;</span><span class="p">:</span> <span class="p">{}</span>
+        <span class="p">}</span></div></div>
+
+
+<span class="n">protocol_mapping</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s1">&#39;http&#39;</span><span class="p">:</span> <span class="n">HttpImageService</span><span class="p">,</span>
+    <span class="s1">&#39;https&#39;</span><span class="p">:</span> <span class="n">HttpImageService</span><span class="p">,</span>
+    <span class="s1">&#39;file&#39;</span><span class="p">:</span> <span class="n">FileImageService</span><span class="p">,</span>
+    <span class="s1">&#39;glance&#39;</span><span class="p">:</span> <span class="n">GlanceImageService</span><span class="p">,</span>
+<span class="p">}</span>
+
+
+<span class="k">def</span> <span class="nf">get_image_service</span><span class="p">(</span><span class="n">image_href</span><span class="p">,</span> <span class="n">client</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">version</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">context</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Get image service instance to download the image.</span>
+
+<span class="sd">    :param image_href: String containing href to get image service for.</span>
+<span class="sd">    :param client: Glance client to be used for download, used only if</span>
+<span class="sd">        image_href is Glance href.</span>
+<span class="sd">    :param version: Version of Glance API to use, used only if image_href is</span>
+<span class="sd">        Glance href.</span>
+<span class="sd">    :param context: request context, used only if image_href is Glance href.</span>
+<span class="sd">    :raises: exception.ImageRefValidationFailed if no image service can</span>
+<span class="sd">        handle specified href.</span>
+<span class="sd">    :returns: Instance of an image service class that is able to download</span>
+<span class="sd">        specified image.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">scheme</span> <span class="o">=</span> <span class="n">urlparse</span><span class="o">.</span><span class="n">urlparse</span><span class="p">(</span><span class="n">image_href</span><span class="p">)</span><span class="o">.</span><span class="n">scheme</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="bp">cls</span> <span class="o">=</span> <span class="n">protocol_mapping</span><span class="p">[</span><span class="n">scheme</span> <span class="ow">or</span> <span class="s1">&#39;glance&#39;</span><span class="p">]</span>
+    <span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">ImageRefValidationFailed</span><span class="p">(</span>
+            <span class="n">image_href</span><span class="o">=</span><span class="n">image_href</span><span class="p">,</span>
+            <span class="n">reason</span><span class="o">=</span><span class="n">_</span><span class="p">(</span><span class="s1">&#39;Image download protocol &#39;</span>
+                     <span class="s1">&#39;</span><span class="si">%s</span><span class="s1"> is not supported.&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="n">scheme</span>
+        <span class="p">)</span>
+
+    <span class="k">if</span> <span class="bp">cls</span> <span class="o">==</span> <span class="n">GlanceImageService</span><span class="p">:</span>
+        <span class="k">return</span> <span class="bp">cls</span><span class="p">(</span><span class="n">client</span><span class="p">,</span> <span class="n">version</span><span class="p">,</span> <span class="n">context</span><span class="p">)</span>
+    <span class="k">return</span> <span class="bp">cls</span><span class="p">()</span>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/ironic
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../../index.html">Ironic 7.0.1.dev7 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../../index.html" accesskey="U">Module code</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright OpenStack Foundation.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/Ironic");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

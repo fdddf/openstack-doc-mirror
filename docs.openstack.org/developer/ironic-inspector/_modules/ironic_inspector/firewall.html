@@ -1,0 +1,375 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>ironic_inspector.firewall &mdash; Ironic Inspector 5.0.1.dev1 documentation</title>
+    
+    <link rel="stylesheet" href="../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../',
+        VERSION:     '5.0.1.dev1',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../_static/doctools.js"></script>
+    <link rel="top" title="Ironic Inspector 5.0.1.dev1 documentation" href="../../index.html" />
+    <link rel="up" title="Module code" href="../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for ironic_inspector.firewall</h1><div class="highlight"><pre>
+<span></span><span class="c1"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);</span>
+<span class="c1"># you may not use this file except in compliance with the License.</span>
+<span class="c1"># You may obtain a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#    http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1"># Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,</span>
+<span class="c1"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or</span>
+<span class="c1"># implied.</span>
+<span class="c1"># See the License for the specific language governing permissions and</span>
+<span class="c1"># limitations under the License.</span>
+
+<span class="kn">import</span> <span class="nn">contextlib</span>
+<span class="kn">import</span> <span class="nn">os</span>
+<span class="kn">import</span> <span class="nn">re</span>
+<span class="kn">import</span> <span class="nn">subprocess</span>
+
+<span class="kn">from</span> <span class="nn">eventlet</span> <span class="kn">import</span> <span class="n">semaphore</span>
+<span class="kn">from</span> <span class="nn">oslo_config</span> <span class="kn">import</span> <span class="n">cfg</span>
+<span class="kn">from</span> <span class="nn">oslo_log</span> <span class="kn">import</span> <span class="n">log</span>
+
+<span class="kn">from</span> <span class="nn">ironic_inspector.common.i18n</span> <span class="kn">import</span> <span class="n">_LE</span><span class="p">,</span> <span class="n">_LW</span>
+<span class="kn">from</span> <span class="nn">ironic_inspector.common</span> <span class="kn">import</span> <span class="n">ironic</span> <span class="k">as</span> <span class="n">ir_utils</span>
+<span class="kn">from</span> <span class="nn">ironic_inspector</span> <span class="kn">import</span> <span class="n">node_cache</span>
+
+
+<span class="n">CONF</span> <span class="o">=</span> <span class="n">cfg</span><span class="o">.</span><span class="n">CONF</span>
+<span class="n">LOG</span> <span class="o">=</span> <span class="n">log</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="s2">&quot;ironic_inspector.firewall&quot;</span><span class="p">)</span>
+<span class="n">NEW_CHAIN</span> <span class="o">=</span> <span class="bp">None</span>
+<span class="n">CHAIN</span> <span class="o">=</span> <span class="bp">None</span>
+<span class="n">INTERFACE</span> <span class="o">=</span> <span class="bp">None</span>
+<span class="n">LOCK</span> <span class="o">=</span> <span class="n">semaphore</span><span class="o">.</span><span class="n">BoundedSemaphore</span><span class="p">()</span>
+<span class="n">BASE_COMMAND</span> <span class="o">=</span> <span class="bp">None</span>
+<span class="n">BLACKLIST_CACHE</span> <span class="o">=</span> <span class="bp">None</span>
+<span class="n">ENABLED</span> <span class="o">=</span> <span class="bp">True</span>
+<span class="n">EMAC_REGEX</span> <span class="o">=</span> <span class="s1">&#39;EMAC=([0-9a-f]{2}(:[0-9a-f]{2}){5}) IMAC=.*&#39;</span>
+
+
+<span class="k">def</span> <span class="nf">_iptables</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+    <span class="c1"># NOTE(dtantsur): -w flag makes it wait for xtables lock</span>
+    <span class="n">cmd</span> <span class="o">=</span> <span class="n">BASE_COMMAND</span> <span class="o">+</span> <span class="n">args</span>
+    <span class="n">ignore</span> <span class="o">=</span> <span class="n">kwargs</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="s1">&#39;ignore&#39;</span><span class="p">,</span> <span class="bp">False</span><span class="p">)</span>
+    <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;Running iptables </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">,</span> <span class="n">args</span><span class="p">)</span>
+    <span class="n">kwargs</span><span class="p">[</span><span class="s1">&#39;stderr&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">subprocess</span><span class="o">.</span><span class="n">STDOUT</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">subprocess</span><span class="o">.</span><span class="n">check_output</span><span class="p">(</span><span class="n">cmd</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+    <span class="k">except</span> <span class="n">subprocess</span><span class="o">.</span><span class="n">CalledProcessError</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+        <span class="n">output</span> <span class="o">=</span> <span class="n">exc</span><span class="o">.</span><span class="n">output</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span><span class="s1">&#39;</span><span class="se">\n</span><span class="s1">&#39;</span><span class="p">,</span> <span class="s1">&#39;. &#39;</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">ignore</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;Ignoring failed iptables </span><span class="si">%(args)s</span><span class="s1">: </span><span class="si">%(output)s</span><span class="s1">&#39;</span><span class="p">,</span>
+                      <span class="p">{</span><span class="s1">&#39;args&#39;</span><span class="p">:</span> <span class="n">args</span><span class="p">,</span> <span class="s1">&#39;output&#39;</span><span class="p">:</span> <span class="n">output</span><span class="p">})</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">_LE</span><span class="p">(</span><span class="s1">&#39;iptables </span><span class="si">%(iptables)s</span><span class="s1"> failed: </span><span class="si">%(exc)s</span><span class="s1">&#39;</span><span class="p">),</span>
+                      <span class="p">{</span><span class="s1">&#39;iptables&#39;</span><span class="p">:</span> <span class="n">args</span><span class="p">,</span> <span class="s1">&#39;exc&#39;</span><span class="p">:</span> <span class="n">output</span><span class="p">})</span>
+            <span class="k">raise</span>
+
+
+<div class="viewcode-block" id="init"><a class="viewcode-back" href="../../api/ironic_inspector.firewall.html#ironic_inspector.firewall.init">[docs]</a><span class="k">def</span> <span class="nf">init</span><span class="p">():</span>
+    <span class="sd">&quot;&quot;&quot;Initialize firewall management.</span>
+
+<span class="sd">    Must be called one on start-up.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">CONF</span><span class="o">.</span><span class="n">firewall</span><span class="o">.</span><span class="n">manage_firewall</span><span class="p">:</span>
+        <span class="k">return</span>
+
+    <span class="k">global</span> <span class="n">INTERFACE</span><span class="p">,</span> <span class="n">CHAIN</span><span class="p">,</span> <span class="n">NEW_CHAIN</span><span class="p">,</span> <span class="n">BASE_COMMAND</span><span class="p">,</span> <span class="n">BLACKLIST_CACHE</span>
+    <span class="n">BLACKLIST_CACHE</span> <span class="o">=</span> <span class="bp">None</span>
+    <span class="n">INTERFACE</span> <span class="o">=</span> <span class="n">CONF</span><span class="o">.</span><span class="n">firewall</span><span class="o">.</span><span class="n">dnsmasq_interface</span>
+    <span class="n">CHAIN</span> <span class="o">=</span> <span class="n">CONF</span><span class="o">.</span><span class="n">firewall</span><span class="o">.</span><span class="n">firewall_chain</span>
+    <span class="n">NEW_CHAIN</span> <span class="o">=</span> <span class="n">CHAIN</span> <span class="o">+</span> <span class="s1">&#39;_temp&#39;</span>
+    <span class="n">BASE_COMMAND</span> <span class="o">=</span> <span class="p">(</span><span class="s1">&#39;sudo&#39;</span><span class="p">,</span> <span class="s1">&#39;ironic-inspector-rootwrap&#39;</span><span class="p">,</span>
+                    <span class="n">CONF</span><span class="o">.</span><span class="n">rootwrap_config</span><span class="p">,</span> <span class="s1">&#39;iptables&#39;</span><span class="p">,)</span>
+
+    <span class="c1"># -w flag makes iptables wait for xtables lock, but it&#39;s not supported</span>
+    <span class="c1"># everywhere yet</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">devnull</span><span class="p">,</span> <span class="s1">&#39;wb&#39;</span><span class="p">)</span> <span class="k">as</span> <span class="n">null</span><span class="p">:</span>
+            <span class="n">subprocess</span><span class="o">.</span><span class="n">check_call</span><span class="p">(</span><span class="n">BASE_COMMAND</span> <span class="o">+</span> <span class="p">(</span><span class="s1">&#39;-w&#39;</span><span class="p">,</span> <span class="s1">&#39;-h&#39;</span><span class="p">),</span>
+                                  <span class="n">stderr</span><span class="o">=</span><span class="n">null</span><span class="p">,</span> <span class="n">stdout</span><span class="o">=</span><span class="n">null</span><span class="p">)</span>
+    <span class="k">except</span> <span class="n">subprocess</span><span class="o">.</span><span class="n">CalledProcessError</span><span class="p">:</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s1">&#39;iptables does not support -w flag, please update &#39;</span>
+                        <span class="s1">&#39;it to at least version 1.4.21&#39;</span><span class="p">))</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">BASE_COMMAND</span> <span class="o">+=</span> <span class="p">(</span><span class="s1">&#39;-w&#39;</span><span class="p">,)</span>
+
+    <span class="n">_clean_up</span><span class="p">(</span><span class="n">CHAIN</span><span class="p">)</span>
+    <span class="c1"># Not really needed, but helps to validate that we have access to iptables</span>
+    <span class="n">_iptables</span><span class="p">(</span><span class="s1">&#39;-N&#39;</span><span class="p">,</span> <span class="n">CHAIN</span><span class="p">)</span></div>
+
+
+<span class="k">def</span> <span class="nf">_clean_up</span><span class="p">(</span><span class="n">chain</span><span class="p">):</span>
+    <span class="n">_iptables</span><span class="p">(</span><span class="s1">&#39;-D&#39;</span><span class="p">,</span> <span class="s1">&#39;INPUT&#39;</span><span class="p">,</span> <span class="s1">&#39;-i&#39;</span><span class="p">,</span> <span class="n">INTERFACE</span><span class="p">,</span> <span class="s1">&#39;-p&#39;</span><span class="p">,</span> <span class="s1">&#39;udp&#39;</span><span class="p">,</span>
+              <span class="s1">&#39;--dport&#39;</span><span class="p">,</span> <span class="s1">&#39;67&#39;</span><span class="p">,</span> <span class="s1">&#39;-j&#39;</span><span class="p">,</span> <span class="n">chain</span><span class="p">,</span>
+              <span class="n">ignore</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+    <span class="n">_iptables</span><span class="p">(</span><span class="s1">&#39;-F&#39;</span><span class="p">,</span> <span class="n">chain</span><span class="p">,</span> <span class="n">ignore</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+    <span class="n">_iptables</span><span class="p">(</span><span class="s1">&#39;-X&#39;</span><span class="p">,</span> <span class="n">chain</span><span class="p">,</span> <span class="n">ignore</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+
+
+<div class="viewcode-block" id="clean_up"><a class="viewcode-back" href="../../api/ironic_inspector.firewall.html#ironic_inspector.firewall.clean_up">[docs]</a><span class="k">def</span> <span class="nf">clean_up</span><span class="p">():</span>
+    <span class="sd">&quot;&quot;&quot;Clean up everything before exiting.&quot;&quot;&quot;</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">CONF</span><span class="o">.</span><span class="n">firewall</span><span class="o">.</span><span class="n">manage_firewall</span><span class="p">:</span>
+        <span class="k">return</span>
+
+    <span class="n">_clean_up</span><span class="p">(</span><span class="n">CHAIN</span><span class="p">)</span>
+    <span class="n">_clean_up</span><span class="p">(</span><span class="n">NEW_CHAIN</span><span class="p">)</span></div>
+
+
+<span class="k">def</span> <span class="nf">_should_enable_dhcp</span><span class="p">():</span>
+    <span class="sd">&quot;&quot;&quot;Check whether we should enable DHCP at all.</span>
+
+<span class="sd">    We won&#39;t even open our DHCP if no nodes are on introspection and</span>
+<span class="sd">    node_not_found_hook is not set.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">return</span> <span class="p">(</span><span class="n">node_cache</span><span class="o">.</span><span class="n">introspection_active</span><span class="p">()</span> <span class="ow">or</span>
+            <span class="n">CONF</span><span class="o">.</span><span class="n">processing</span><span class="o">.</span><span class="n">node_not_found_hook</span><span class="p">)</span>
+
+
+<span class="nd">@contextlib.contextmanager</span>
+<span class="k">def</span> <span class="nf">_temporary_chain</span><span class="p">(</span><span class="n">chain</span><span class="p">,</span> <span class="n">main_chain</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Context manager to operate on a temporary chain.&quot;&quot;&quot;</span>
+    <span class="c1"># Clean up a bit to account for possible troubles on previous run</span>
+    <span class="n">_clean_up</span><span class="p">(</span><span class="n">chain</span><span class="p">)</span>
+    <span class="n">_iptables</span><span class="p">(</span><span class="s1">&#39;-N&#39;</span><span class="p">,</span> <span class="n">chain</span><span class="p">)</span>
+
+    <span class="k">yield</span>
+
+    <span class="c1"># Swap chains</span>
+    <span class="n">_iptables</span><span class="p">(</span><span class="s1">&#39;-I&#39;</span><span class="p">,</span> <span class="s1">&#39;INPUT&#39;</span><span class="p">,</span> <span class="s1">&#39;-i&#39;</span><span class="p">,</span> <span class="n">INTERFACE</span><span class="p">,</span> <span class="s1">&#39;-p&#39;</span><span class="p">,</span> <span class="s1">&#39;udp&#39;</span><span class="p">,</span>
+              <span class="s1">&#39;--dport&#39;</span><span class="p">,</span> <span class="s1">&#39;67&#39;</span><span class="p">,</span> <span class="s1">&#39;-j&#39;</span><span class="p">,</span> <span class="n">chain</span><span class="p">)</span>
+    <span class="n">_iptables</span><span class="p">(</span><span class="s1">&#39;-D&#39;</span><span class="p">,</span> <span class="s1">&#39;INPUT&#39;</span><span class="p">,</span> <span class="s1">&#39;-i&#39;</span><span class="p">,</span> <span class="n">INTERFACE</span><span class="p">,</span> <span class="s1">&#39;-p&#39;</span><span class="p">,</span> <span class="s1">&#39;udp&#39;</span><span class="p">,</span>
+              <span class="s1">&#39;--dport&#39;</span><span class="p">,</span> <span class="s1">&#39;67&#39;</span><span class="p">,</span> <span class="s1">&#39;-j&#39;</span><span class="p">,</span> <span class="n">main_chain</span><span class="p">,</span>
+              <span class="n">ignore</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+    <span class="n">_iptables</span><span class="p">(</span><span class="s1">&#39;-F&#39;</span><span class="p">,</span> <span class="n">main_chain</span><span class="p">,</span> <span class="n">ignore</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+    <span class="n">_iptables</span><span class="p">(</span><span class="s1">&#39;-X&#39;</span><span class="p">,</span> <span class="n">main_chain</span><span class="p">,</span> <span class="n">ignore</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+    <span class="n">_iptables</span><span class="p">(</span><span class="s1">&#39;-E&#39;</span><span class="p">,</span> <span class="n">chain</span><span class="p">,</span> <span class="n">main_chain</span><span class="p">)</span>
+
+
+<span class="k">def</span> <span class="nf">_disable_dhcp</span><span class="p">():</span>
+    <span class="sd">&quot;&quot;&quot;Disable DHCP completely.&quot;&quot;&quot;</span>
+    <span class="k">global</span> <span class="n">ENABLED</span><span class="p">,</span> <span class="n">BLACKLIST_CACHE</span>
+
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">ENABLED</span><span class="p">:</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;DHCP is already disabled, not updating&#39;</span><span class="p">)</span>
+        <span class="k">return</span>
+
+    <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;No nodes on introspection and node_not_found_hook is &#39;</span>
+              <span class="s1">&#39;not set - disabling DHCP&#39;</span><span class="p">)</span>
+    <span class="n">BLACKLIST_CACHE</span> <span class="o">=</span> <span class="bp">None</span>
+    <span class="k">with</span> <span class="n">_temporary_chain</span><span class="p">(</span><span class="n">NEW_CHAIN</span><span class="p">,</span> <span class="n">CHAIN</span><span class="p">):</span>
+        <span class="c1"># Blacklist everything</span>
+        <span class="n">_iptables</span><span class="p">(</span><span class="s1">&#39;-A&#39;</span><span class="p">,</span> <span class="n">NEW_CHAIN</span><span class="p">,</span> <span class="s1">&#39;-j&#39;</span><span class="p">,</span> <span class="s1">&#39;REJECT&#39;</span><span class="p">)</span>
+
+    <span class="n">ENABLED</span> <span class="o">=</span> <span class="bp">False</span>
+
+
+<div class="viewcode-block" id="update_filters"><a class="viewcode-back" href="../../api/ironic_inspector.firewall.html#ironic_inspector.firewall.update_filters">[docs]</a><span class="k">def</span> <span class="nf">update_filters</span><span class="p">(</span><span class="n">ironic</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Update firewall filter rules for introspection.</span>
+
+<span class="sd">    Gives access to PXE boot port for any machine, except for those,</span>
+<span class="sd">    whose MAC is registered in Ironic and is not on introspection right now.</span>
+
+<span class="sd">    This function is called from both introspection initialization code and</span>
+<span class="sd">    from periodic task. This function is supposed to be resistant to unexpected</span>
+<span class="sd">    iptables state.</span>
+
+<span class="sd">    ``init()`` function must be called once before any call to this function.</span>
+<span class="sd">    This function is using ``eventlet`` semaphore to serialize access from</span>
+<span class="sd">    different green threads.</span>
+
+<span class="sd">    Does nothing, if firewall management is disabled in configuration.</span>
+
+<span class="sd">    :param ironic: Ironic client instance, optional.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">global</span> <span class="n">BLACKLIST_CACHE</span><span class="p">,</span> <span class="n">ENABLED</span>
+
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">CONF</span><span class="o">.</span><span class="n">firewall</span><span class="o">.</span><span class="n">manage_firewall</span><span class="p">:</span>
+        <span class="k">return</span>
+
+    <span class="k">assert</span> <span class="n">INTERFACE</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span>
+    <span class="n">ironic</span> <span class="o">=</span> <span class="n">ir_utils</span><span class="o">.</span><span class="n">get_client</span><span class="p">()</span> <span class="k">if</span> <span class="n">ironic</span> <span class="ow">is</span> <span class="bp">None</span> <span class="k">else</span> <span class="n">ironic</span>
+    <span class="k">with</span> <span class="n">LOCK</span><span class="p">:</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">_should_enable_dhcp</span><span class="p">():</span>
+            <span class="n">_disable_dhcp</span><span class="p">()</span>
+            <span class="k">return</span>
+
+        <span class="n">ports_active</span> <span class="o">=</span> <span class="n">ironic</span><span class="o">.</span><span class="n">port</span><span class="o">.</span><span class="n">list</span><span class="p">(</span><span class="n">limit</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span> <span class="n">fields</span><span class="o">=</span><span class="p">[</span><span class="s1">&#39;address&#39;</span><span class="p">,</span> <span class="s1">&#39;extra&#39;</span><span class="p">])</span>
+        <span class="n">macs_active</span> <span class="o">=</span> <span class="nb">set</span><span class="p">(</span><span class="n">p</span><span class="o">.</span><span class="n">address</span> <span class="k">for</span> <span class="n">p</span> <span class="ow">in</span> <span class="n">ports_active</span><span class="p">)</span>
+        <span class="n">to_blacklist</span> <span class="o">=</span> <span class="n">macs_active</span> <span class="o">-</span> <span class="n">node_cache</span><span class="o">.</span><span class="n">active_macs</span><span class="p">()</span>
+        <span class="n">ib_mac_mapping</span> <span class="o">=</span> <span class="p">(</span>
+            <span class="n">_ib_mac_to_rmac_mapping</span><span class="p">(</span><span class="n">to_blacklist</span><span class="p">,</span> <span class="n">ports_active</span><span class="p">))</span>
+
+        <span class="k">if</span> <span class="p">(</span><span class="n">BLACKLIST_CACHE</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span> <span class="ow">and</span>
+                <span class="n">to_blacklist</span> <span class="o">==</span> <span class="n">BLACKLIST_CACHE</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">ib_mac_mapping</span><span class="p">):</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;Not updating iptables - no changes in MAC list </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">,</span>
+                      <span class="n">to_blacklist</span><span class="p">)</span>
+            <span class="k">return</span>
+
+        <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;Blacklisting active MAC</span><span class="se">\&#39;</span><span class="s1">s </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">,</span> <span class="n">to_blacklist</span><span class="p">)</span>
+        <span class="c1"># Force update on the next iteration if this attempt fails</span>
+        <span class="n">BLACKLIST_CACHE</span> <span class="o">=</span> <span class="bp">None</span>
+
+        <span class="k">with</span> <span class="n">_temporary_chain</span><span class="p">(</span><span class="n">NEW_CHAIN</span><span class="p">,</span> <span class="n">CHAIN</span><span class="p">):</span>
+            <span class="c1"># - Blacklist active macs, so that nova can boot them</span>
+            <span class="k">for</span> <span class="n">mac</span> <span class="ow">in</span> <span class="n">to_blacklist</span><span class="p">:</span>
+                <span class="n">mac</span> <span class="o">=</span> <span class="n">ib_mac_mapping</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">mac</span><span class="p">)</span> <span class="ow">or</span> <span class="n">mac</span>
+                <span class="n">_iptables</span><span class="p">(</span><span class="s1">&#39;-A&#39;</span><span class="p">,</span> <span class="n">NEW_CHAIN</span><span class="p">,</span> <span class="s1">&#39;-m&#39;</span><span class="p">,</span> <span class="s1">&#39;mac&#39;</span><span class="p">,</span>
+                          <span class="s1">&#39;--mac-source&#39;</span><span class="p">,</span> <span class="n">mac</span><span class="p">,</span> <span class="s1">&#39;-j&#39;</span><span class="p">,</span> <span class="s1">&#39;DROP&#39;</span><span class="p">)</span>
+            <span class="c1"># - Whitelist everything else</span>
+            <span class="n">_iptables</span><span class="p">(</span><span class="s1">&#39;-A&#39;</span><span class="p">,</span> <span class="n">NEW_CHAIN</span><span class="p">,</span> <span class="s1">&#39;-j&#39;</span><span class="p">,</span> <span class="s1">&#39;ACCEPT&#39;</span><span class="p">)</span>
+
+        <span class="c1"># Cache result of successful iptables update</span>
+        <span class="n">ENABLED</span> <span class="o">=</span> <span class="bp">True</span>
+        <span class="n">BLACKLIST_CACHE</span> <span class="o">=</span> <span class="n">to_blacklist</span></div>
+
+
+<span class="k">def</span> <span class="nf">_ib_mac_to_rmac_mapping</span><span class="p">(</span><span class="n">blacklist_macs</span><span class="p">,</span> <span class="n">ports_active</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Mapping between host InfiniBand MAC to EthernetOverInfiniBand MAC</span>
+
+<span class="sd">    On InfiniBand deployment we need to map between the baremetal host</span>
+<span class="sd">    InfiniBand MAC to the EoIB MAC. The EoIB MAC addresses are learned</span>
+<span class="sd">    automatically by the EoIB interfaces and those MACs are recorded</span>
+<span class="sd">    to the /sys/class/net/&lt;ethoib_interface&gt;/eth/neighs file.</span>
+<span class="sd">    The InfiniBand GUID is taken from the ironic port client-id extra</span>
+<span class="sd">    attribute. The InfiniBand GUID is the last 8 bytes of the client-id.</span>
+<span class="sd">    The file format allows to map the GUID to EoIB MAC. The firewall</span>
+<span class="sd">    rules based on those MACs get applied to the dnsmasq_interface by the</span>
+<span class="sd">    update_filters function.</span>
+
+<span class="sd">    :param blacklist_macs: List of InfiniBand baremetal hosts macs to</span>
+<span class="sd">                           blacklist.</span>
+<span class="sd">    :param ports_active: list of active ironic ports</span>
+<span class="sd">    :return baremetal InfiniBand to remote mac on ironic node mapping</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">ethoib_interfaces</span> <span class="o">=</span> <span class="n">CONF</span><span class="o">.</span><span class="n">firewall</span><span class="o">.</span><span class="n">ethoib_interfaces</span>
+    <span class="n">ib_mac_to_remote_mac</span> <span class="o">=</span> <span class="p">{}</span>
+    <span class="k">for</span> <span class="n">interface</span> <span class="ow">in</span> <span class="n">ethoib_interfaces</span><span class="p">:</span>
+        <span class="n">neighs_file</span> <span class="o">=</span> <span class="p">(</span>
+            <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="s1">&#39;/sys/class/net&#39;</span><span class="p">,</span> <span class="n">interface</span><span class="p">,</span> <span class="s1">&#39;eth/neighs&#39;</span><span class="p">))</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">neighs_file</span><span class="p">,</span> <span class="s1">&#39;r&#39;</span><span class="p">)</span> <span class="k">as</span> <span class="n">fd</span><span class="p">:</span>
+                <span class="n">data</span> <span class="o">=</span> <span class="n">fd</span><span class="o">.</span><span class="n">read</span><span class="p">()</span>
+        <span class="k">except</span> <span class="ne">IOError</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">error</span><span class="p">(</span>
+                <span class="n">_LE</span><span class="p">(</span><span class="s1">&#39;Interface </span><span class="si">%s</span><span class="s1"> is not Ethernet Over InfiniBand; &#39;</span>
+                    <span class="s1">&#39;Skipping ...&#39;</span><span class="p">),</span> <span class="n">interface</span><span class="p">)</span>
+            <span class="k">continue</span>
+        <span class="k">for</span> <span class="n">port</span> <span class="ow">in</span> <span class="n">ports_active</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">port</span><span class="o">.</span><span class="n">address</span> <span class="ow">in</span> <span class="n">blacklist_macs</span><span class="p">:</span>
+                <span class="n">client_id</span> <span class="o">=</span> <span class="n">port</span><span class="o">.</span><span class="n">extra</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;client-id&#39;</span><span class="p">)</span>
+                <span class="k">if</span> <span class="n">client_id</span><span class="p">:</span>
+                    <span class="c1"># Note(moshele): The last 8 bytes in the client-id is</span>
+                    <span class="c1"># the baremetal node InfiniBand GUID</span>
+                    <span class="n">guid</span> <span class="o">=</span> <span class="n">client_id</span><span class="p">[</span><span class="o">-</span><span class="mi">23</span><span class="p">:]</span>
+                    <span class="n">p</span> <span class="o">=</span> <span class="n">re</span><span class="o">.</span><span class="n">compile</span><span class="p">(</span><span class="n">EMAC_REGEX</span> <span class="o">+</span> <span class="n">guid</span><span class="p">)</span>
+                    <span class="n">match</span> <span class="o">=</span> <span class="n">p</span><span class="o">.</span><span class="n">search</span><span class="p">(</span><span class="n">data</span><span class="p">)</span>
+                    <span class="k">if</span> <span class="n">match</span><span class="p">:</span>
+                        <span class="n">ib_mac_to_remote_mac</span><span class="p">[</span><span class="n">port</span><span class="o">.</span><span class="n">address</span><span class="p">]</span> <span class="o">=</span> <span class="n">match</span><span class="o">.</span><span class="n">group</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">ib_mac_to_remote_mac</span>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/ironic-inspector
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../index.html">Ironic Inspector 5.0.1.dev1 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../index.html" accesskey="U">Module code</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright OpenStack Foundation.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/Ironic Inspector");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

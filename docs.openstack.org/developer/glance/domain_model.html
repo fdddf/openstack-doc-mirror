@@ -1,0 +1,404 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Domain model &mdash; glance 14.0.0.0rc2.dev4 documentation</title>
+    
+    <link rel="stylesheet" href="_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '14.0.0.0rc2.dev4',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <link rel="top" title="glance 14.0.0.0rc2.dev4 documentation" href="index.html" />
+    <link rel="next" title="Glance domain model implementation" href="domain_implementation.html" />
+    <link rel="prev" title="Glance database architecture" href="database_architecture.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="domain-model">
+<h1>Domain model<a class="headerlink" href="#domain-model" title="Permalink to this headline">¶</a></h1>
+<p>The main goal of a domain model is refactoring the logic around
+object manipulation by splitting it to independent layers. Each
+subsequent layer wraps the previous one creating an &#8220;onion&#8221; structure,
+thus realizing a design pattern called &#8220;Decorator.&#8221; The main feature
+of domain model is to use a composition instead of inheritance or
+basic decoration while building an architecture. This provides
+flexibility and transparency of an internal organization for a developer,
+because he does not know what layers are used and works with a domain
+model object as with a common object.</p>
+<div class="section" id="inner-architecture">
+<h2>Inner architecture<a class="headerlink" href="#inner-architecture" title="Permalink to this headline">¶</a></h2>
+<p>Each layer defines its own operations’ implementation through a
+special <code class="docutils literal"><span class="pre">proxy</span></code> class. At first, operations are performed on the
+upper layer, then they successively pass the control to the underlying
+layers.</p>
+<p>The nesting of layers can be specified explicitly using a programmer
+interface Gateway or implicitly using <code class="docutils literal"><span class="pre">helper</span></code> classes. Nesting
+may also depend on various conditions, skipping or adding additional
+layers during domain object creation.</p>
+</div>
+<div class="section" id="proxies">
+<h2>Proxies<a class="headerlink" href="#proxies" title="Permalink to this headline">¶</a></h2>
+<p>The layer behavior is described in special <code class="docutils literal"><span class="pre">proxy</span></code> classes
+that must provide exactly the same interface as the original class
+does. In addition, each <code class="docutils literal"><span class="pre">proxy</span></code> class has a field <code class="docutils literal"><span class="pre">base</span></code>
+indicating a lower layer object that is an instance of another
+<code class="docutils literal"><span class="pre">proxy</span></code> or <code class="docutils literal"><span class="pre">original</span></code> class.</p>
+<p>To access the rest of the fields, you can use special <code class="docutils literal"><span class="pre">proxy</span></code>
+properties or universal methods <code class="docutils literal"><span class="pre">set_property</span></code> and <code class="docutils literal"><span class="pre">get_property</span></code>.</p>
+<p>In addition, the <code class="docutils literal"><span class="pre">proxy</span></code> class must have an <code class="docutils literal"><span class="pre">__init__</span></code> format
+method:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>def __init__(self, base, helper_class=None, helper_kwargs=None, **kwargs)
+</pre></div>
+</div>
+<p>where <code class="docutils literal"><span class="pre">base</span></code> corresponds to the underlying object layer,
+<code class="docutils literal"><span class="pre">proxy_class</span></code> and <code class="docutils literal"><span class="pre">proxy_kwargs</span></code> are optional and are used to
+create a <code class="docutils literal"><span class="pre">helper</span></code> class.
+Thus, to access a <code class="docutils literal"><span class="pre">meth1</span></code> method from the underlying layer, it is
+enough to call it on the <code class="docutils literal"><span class="pre">base</span></code> object:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>def meth1(*args, **kwargs):
+        …
+        self.base.meth1(*args, **kwargs)
+        …
+</pre></div>
+</div>
+<p>To get access to the domain object field, it is recommended to use
+properties that are created by an auxiliary function:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="k">def</span> <span class="nf">_create_property_proxy</span><span class="p">(</span><span class="n">attr</span><span class="p">):</span>
+    <span class="k">def</span> <span class="nf">get_attr</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="nb">getattr</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">base</span><span class="p">,</span> <span class="n">attr</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">set_attr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">value</span><span class="p">):</span>
+        <span class="k">return</span> <span class="nb">setattr</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">base</span><span class="p">,</span> <span class="n">attr</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">del_attr</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="nb">delattr</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">base</span><span class="p">,</span> <span class="n">attr</span><span class="p">)</span>
+
+    <span class="k">return</span> <span class="nb">property</span><span class="p">(</span><span class="n">get_attr</span><span class="p">,</span> <span class="n">set_attr</span><span class="p">,</span> <span class="n">del_attr</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>So, the reference to the underlying layer field <code class="docutils literal"><span class="pre">prop1</span></code> looks like:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>class Proxy(object):
+        …
+        prop1 = _create_property_proxy(&#39;prop1&#39;)
+        …
+</pre></div>
+</div>
+<p>If the number of layers is big, it is reasonable to create a common
+parent <code class="docutils literal"><span class="pre">proxy</span></code> class that provides further control transfer. This
+facilitates the writing of specific layers if they do not provide a
+particular implementation of some operation.</p>
+</div>
+<div class="section" id="gateway">
+<h2>Gateway<a class="headerlink" href="#gateway" title="Permalink to this headline">¶</a></h2>
+<p><code class="docutils literal"><span class="pre">gateway</span></code> is a mechanism to explicitly specify a composition of
+the domain model layers. It defines an interface to retrieve the
+domain model object based on the <code class="docutils literal"><span class="pre">proxy</span></code> classes described above.</p>
+<div class="section" id="example-of-the-gateway-implementation">
+<h3>Example of the gateway implementation<a class="headerlink" href="#example-of-the-gateway-implementation" title="Permalink to this headline">¶</a></h3>
+<p>This example defines three classes:</p>
+<ul class="simple">
+<li><code class="docutils literal"><span class="pre">Base</span></code> is the main class that sets an interface for all the
+<code class="docutils literal"><span class="pre">proxy</span></code> classes.</li>
+<li><code class="docutils literal"><span class="pre">LoggerProxy</span></code> class implements additional logic associated with
+the logging of messages from the <code class="docutils literal"><span class="pre">print_msg</span></code> method.</li>
+<li><code class="docutils literal"><span class="pre">ValidatorProxy</span></code> class implements an optional check that helps to
+determine whether all the parameters in the <code class="docutils literal"><span class="pre">sum_numbers</span></code> method
+are positive.</li>
+</ul>
+<div class="highlight-python"><div class="highlight"><pre><span></span>class Base(object):
+    &quot;&quot;Base class in domain model.&quot;&quot;&quot;
+    msg = &quot;Hello Domain&quot;
+
+    def print_msg(self):
+        print(self.msg)
+
+    def sum_numbers(self, *args):
+        return sum(args)
+
+class LoggerProxy(object):
+    &quot;&quot;&quot;&quot;Class extends functionality by writing message to log.&quot;&quot;&quot;
+    def __init__(self, base, logg):
+        self.base = base
+        self.logg = logg
+
+    # Proxy to provide implicit access to inner layer.
+    msg = _create_property_proxy(&#39;msg&#39;)
+
+    def print_msg(self):
+        # Write message to log and then pass the control to inner layer.
+        self.logg.write(&quot;Message %s has been written to the log&quot;) % self.msg
+        self.base.print_msg()
+
+    def sum_numbers(self, *args):
+        # Nothing to do here. Just pass the control to the next layer.
+        return self.base.sum_numbers(*args)
+
+class ValidatorProxy(object):
+    &quot;&quot;&quot;Class validates that input parameters are correct.&quot;&quot;&quot;
+    def __init__(self, base):
+        self.base = base
+
+    msg = _create_property_proxy(&#39;msg&#39;)
+
+    def print_msg(self):
+        # There are no checks.
+        self.base.print_msg()
+
+    def sum_numbers(self, *args):
+        # Validate input numbers and pass them further.
+        for arg in args:
+            if arg &lt;= 0:
+                return &quot;Only positive numbers are supported.&quot;
+        return self.base.sum_numbers(*args)
+</pre></div>
+</div>
+<p>Thus, the <code class="docutils literal"><span class="pre">gateway</span></code> method for the above example may look like:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="k">def</span> <span class="nf">gateway</span><span class="p">(</span><span class="n">logg</span><span class="p">,</span> <span class="n">only_positive</span><span class="o">=</span><span class="bp">True</span><span class="p">):</span>
+    <span class="n">base</span> <span class="o">=</span> <span class="n">Base</span><span class="p">()</span>
+    <span class="n">logger</span> <span class="o">=</span> <span class="n">LoggerProxy</span><span class="p">(</span><span class="n">base</span><span class="p">,</span> <span class="n">logg</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">only_positive</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">ValidatorProxy</span><span class="p">(</span><span class="n">logger</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">logger</span>
+
+<span class="n">domain_object</span> <span class="o">=</span> <span class="n">gateway</span><span class="p">(</span><span class="n">sys</span><span class="o">.</span><span class="n">stdout</span><span class="p">,</span> <span class="n">only_positive</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>It is important to consider that the order of the layers matters.
+And even if layers are logically independent from each other,
+rearranging them in different order may lead to another result.</p>
+</div>
+</div>
+<div class="section" id="helpers">
+<h2>Helpers<a class="headerlink" href="#helpers" title="Permalink to this headline">¶</a></h2>
+<p><code class="docutils literal"><span class="pre">Helper</span></code> objects are used for an implicit nesting assignment that
+is based on a specification described in an auxiliary method (similar
+to <code class="docutils literal"><span class="pre">gateway</span></code>). This approach may be helpful when using a <em>simple
+factory</em> for generating objects. Such a way is more flexible as it
+allows specifying the wrappers dynamically.</p>
+<p>The <code class="docutils literal"><span class="pre">helper</span></code> class is unique for all the <code class="docutils literal"><span class="pre">proxy</span></code> classes and it
+has the following form:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="k">class</span> <span class="nc">Helper</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">proxy_class</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">proxy_kwargs</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">proxy_class</span> <span class="o">=</span> <span class="n">proxy_class</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">proxy_kwargs</span> <span class="o">=</span> <span class="n">proxy_kwargs</span> <span class="ow">or</span> <span class="p">{}</span>
+
+    <span class="k">def</span> <span class="nf">proxy</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">obj</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Wrap an object.&quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="n">obj</span> <span class="ow">is</span> <span class="bp">None</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">proxy_class</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">obj</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">proxy_class</span><span class="p">(</span><span class="n">obj</span><span class="p">,</span> <span class="o">**</span><span class="bp">self</span><span class="o">.</span><span class="n">proxy_kwargs</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">unproxy</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">obj</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Return object from inner layer.&quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="n">obj</span> <span class="ow">is</span> <span class="bp">None</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">proxy_class</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">obj</span>
+        <span class="k">return</span> <span class="n">obj</span><span class="o">.</span><span class="n">base</span>
+</pre></div>
+</div>
+<div class="section" id="example-of-a-simple-factory-implementation">
+<h3>Example of a simple factory implementation<a class="headerlink" href="#example-of-a-simple-factory-implementation" title="Permalink to this headline">¶</a></h3>
+<p>Here is a code of a <em>simple factory</em> for generating objects from the
+previous example. It specifies a <code class="docutils literal"><span class="pre">BaseFactory</span></code> class with a
+<code class="docutils literal"><span class="pre">generate</span></code> method and related <code class="docutils literal"><span class="pre">proxy</span></code> classes:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="k">class</span> <span class="nc">BaseFactory</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Simple factory to generate an object.&quot;&quot;&quot;</span>
+    <span class="k">def</span> <span class="nf">generate</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">Base</span><span class="p">()</span>
+
+<span class="k">class</span> <span class="nc">LoggerFactory</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Proxy class to add logging functionality.&quot;&quot;&quot;</span>
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">base</span><span class="p">,</span> <span class="n">logg</span><span class="p">,</span> <span class="n">proxy_class</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">proxy_kwargs</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">helper</span> <span class="o">=</span> <span class="n">Helper</span><span class="p">(</span><span class="n">proxy_class</span><span class="p">,</span> <span class="n">proxy_kwargs</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">base</span> <span class="o">=</span> <span class="n">base</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">logg</span> <span class="o">=</span> <span class="n">logg</span>
+
+    <span class="k">def</span> <span class="nf">generate</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">helper</span><span class="o">.</span><span class="n">proxy</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">base</span><span class="o">.</span><span class="n">generate</span><span class="p">())</span>
+
+<span class="k">class</span> <span class="nc">ValidatorFactory</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Proxy class to add validation.&quot;&quot;&quot;</span>
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">base</span><span class="p">,</span> <span class="n">only_positive</span><span class="o">=</span><span class="bp">True</span><span class="p">,</span> <span class="n">proxy_class</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">proxy_kwargs</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">helper</span> <span class="o">=</span> <span class="n">Helper</span><span class="p">(</span><span class="n">proxy_class</span><span class="p">,</span> <span class="n">proxy_kwargs</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">base</span> <span class="o">=</span> <span class="n">base</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">only_positive</span> <span class="o">=</span> <span class="n">only_positive</span>
+
+    <span class="k">def</span> <span class="nf">generate</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">only_positive</span><span class="p">:</span>
+            <span class="c1"># Wrap in ValidatorProxy if required.</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">helper</span><span class="o">.</span><span class="n">proxy</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">base</span><span class="o">.</span><span class="n">generate</span><span class="p">())</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">base</span><span class="o">.</span><span class="n">generate</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>Further, <code class="docutils literal"><span class="pre">BaseFactory</span></code> and related <code class="docutils literal"><span class="pre">proxy</span></code> classes are combined
+together:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="k">def</span> <span class="nf">create_factory</span><span class="p">(</span><span class="n">logg</span><span class="p">,</span> <span class="n">only_positive</span><span class="o">=</span><span class="bp">True</span><span class="p">):</span>
+    <span class="n">base_factory</span> <span class="o">=</span> <span class="n">BaseFactory</span><span class="p">()</span>
+    <span class="n">logger_factory</span> <span class="o">=</span> <span class="n">LoggerFactory</span><span class="p">(</span><span class="n">base_factory</span><span class="p">,</span> <span class="n">logg</span><span class="p">,</span>
+                                   <span class="n">proxy_class</span><span class="o">=</span><span class="n">LoggerProxy</span><span class="p">,</span>
+                                   <span class="n">proxy_kwargs</span><span class="o">=</span><span class="nb">dict</span><span class="p">(</span><span class="n">logg</span><span class="o">=</span><span class="n">logg</span><span class="p">))</span>
+    <span class="n">validator_factory</span> <span class="o">=</span> <span class="n">ValidatorFactory</span><span class="p">(</span><span class="n">logger_factory</span><span class="p">,</span> <span class="n">only_positive</span><span class="p">,</span>
+                                         <span class="n">proxy_class</span> <span class="o">=</span> <span class="n">ValidatorProxy</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">validator_factory</span>
+</pre></div>
+</div>
+<p>Ultimately, to generate a domain object, you create and run a factory
+method <code class="docutils literal"><span class="pre">generate</span></code> which implicitly creates a composite object. This
+method is based on specifications that are set forth in the <code class="docutils literal"><span class="pre">proxy</span></code>
+class.</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="n">factory</span> <span class="o">=</span> <span class="n">create_factory</span><span class="p">(</span><span class="n">sys</span><span class="o">.</span><span class="n">stdout</span><span class="p">,</span> <span class="n">only_positive</span><span class="o">=</span><span class="bp">False</span><span class="p">)</span>
+<span class="n">domain_object</span> <span class="o">=</span> <span class="n">factory</span><span class="o">.</span><span class="n">generate</span><span class="p">()</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="section" id="why-do-you-need-a-domain-if-you-can-use-decorators">
+<h2>Why do you need a domain if you can use decorators?<a class="headerlink" href="#why-do-you-need-a-domain-if-you-can-use-decorators" title="Permalink to this headline">¶</a></h2>
+<p>In the above examples, to implement the planned logic, it is quite
+possible to use standard Python language techniques such as
+decorators. However, to implement more complicated operations, the
+domain model is reasonable and justified.</p>
+<p>In general, the domain is useful when:</p>
+<ul class="simple">
+<li>there are more than three layers. In such case, the domain model
+usage facilitates the understanding and supporting of the code;</li>
+<li>wrapping must be implemented depending on some conditions,
+including dynamic wrapping;</li>
+<li>there is a requirement to wrap objects implicitly by helpers.</li>
+</ul>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Domain model</a><ul>
+<li><a class="reference internal" href="#inner-architecture">Inner architecture</a></li>
+<li><a class="reference internal" href="#proxies">Proxies</a></li>
+<li><a class="reference internal" href="#gateway">Gateway</a><ul>
+<li><a class="reference internal" href="#example-of-the-gateway-implementation">Example of the gateway implementation</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#helpers">Helpers</a><ul>
+<li><a class="reference internal" href="#example-of-a-simple-factory-implementation">Example of a simple factory implementation</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#why-do-you-need-a-domain-if-you-can-use-decorators">Why do you need a domain if you can use decorators?</a></li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="database_architecture.html"
+                                  title="previous chapter">Glance database architecture</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="domain_implementation.html"
+                                  title="next chapter">Glance domain model implementation</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/glance
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="_sources/domain_model.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="right" >
+          <a href="domain_implementation.html" title="Glance domain model implementation"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="database_architecture.html" title="Glance database architecture"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="index.html">glance 14.0.0.0rc2.dev4 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2010-present, OpenStack Foundation..
+      Last updated on &#39;Fri Feb 10 09:39:49 2017, commit 65dd7ae&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/glance");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

@@ -1,0 +1,1428 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>ironic.drivers.base &mdash; Ironic 7.0.1.dev5 documentation</title>
+    
+    <link rel="stylesheet" href="../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../_static/toggle.css" type="text/css" />
+    <link rel="stylesheet" href="../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../',
+        VERSION:     '7.0.1.dev5',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../_static/doctools.js"></script>
+    <script type="text/javascript" src="../../../_static/toggle.js"></script>
+    <link rel="top" title="Ironic 7.0.1.dev5 documentation" href="../../../index.html" />
+    <link rel="up" title="Module code" href="../../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for ironic.drivers.base</h1><div class="highlight"><pre>
+<span></span><span class="c1"># -*- encoding: utf-8 -*-</span>
+<span class="c1">#</span>
+<span class="c1"># Copyright 2013 Hewlett-Packard Development Company, L.P.</span>
+<span class="c1">#</span>
+<span class="c1"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may</span>
+<span class="c1"># not use this file except in compliance with the License. You may obtain</span>
+<span class="c1"># a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#      http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1"># Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="c1"># WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="c1"># License for the specific language governing permissions and limitations</span>
+<span class="c1"># under the License.</span>
+<span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">Abstract base classes for drivers.</span>
+<span class="sd">&quot;&quot;&quot;</span>
+
+<span class="kn">import</span> <span class="nn">abc</span>
+<span class="kn">import</span> <span class="nn">collections</span>
+<span class="kn">import</span> <span class="nn">copy</span>
+<span class="kn">import</span> <span class="nn">inspect</span>
+<span class="kn">import</span> <span class="nn">json</span>
+<span class="kn">import</span> <span class="nn">os</span>
+
+<span class="kn">from</span> <span class="nn">oslo_log</span> <span class="kn">import</span> <span class="n">log</span> <span class="k">as</span> <span class="n">logging</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">excutils</span>
+<span class="kn">import</span> <span class="nn">six</span>
+
+<span class="kn">from</span> <span class="nn">ironic.common</span> <span class="kn">import</span> <span class="n">exception</span>
+<span class="kn">from</span> <span class="nn">ironic.common.i18n</span> <span class="kn">import</span> <span class="n">_</span><span class="p">,</span> <span class="n">_LE</span><span class="p">,</span> <span class="n">_LW</span>
+<span class="kn">from</span> <span class="nn">ironic.common</span> <span class="kn">import</span> <span class="n">raid</span>
+<span class="kn">from</span> <span class="nn">ironic.common</span> <span class="kn">import</span> <span class="n">states</span>
+<span class="kn">from</span> <span class="nn">ironic.drivers.modules.network</span> <span class="kn">import</span> <span class="n">common</span> <span class="k">as</span> <span class="n">net_common</span>
+
+<span class="n">LOG</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+<span class="n">RAID_CONFIG_SCHEMA</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">dirname</span><span class="p">(</span><span class="vm">__file__</span><span class="p">),</span>
+                                  <span class="s1">&#39;raid_config_schema.json&#39;</span><span class="p">)</span>
+
+
+<span class="nd">@six.add_metaclass</span><span class="p">(</span><span class="n">abc</span><span class="o">.</span><span class="n">ABCMeta</span><span class="p">)</span>
+<div class="viewcode-block" id="BaseDriver"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.BaseDriver">[docs]</a><span class="k">class</span> <span class="nc">BaseDriver</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Base class for all drivers.</span>
+
+<span class="sd">    Defines the `core`, `standardized`, and `vendor-specific` interfaces for</span>
+<span class="sd">    drivers. Any loadable driver must implement all `core` interfaces.</span>
+<span class="sd">    Actual implementation may instantiate one or more classes, as long as</span>
+<span class="sd">    the interfaces are appropriate.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">supported</span> <span class="o">=</span> <span class="bp">True</span>
+    <span class="sd">&quot;&quot;&quot;Indicates if a driver is supported.</span>
+
+<span class="sd">    This will be set to False for drivers which are untested in first- or</span>
+<span class="sd">    third-party CI, or in the process of being deprecated.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">core_interfaces</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="n">standard_interfaces</span> <span class="o">=</span> <span class="p">[]</span>
+
+    <span class="n">power</span> <span class="o">=</span> <span class="bp">None</span>
+    <span class="n">core_interfaces</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s1">&#39;power&#39;</span><span class="p">)</span>
+    <span class="sd">&quot;&quot;&quot;`Core` attribute for managing power state.</span>
+
+<span class="sd">    A reference to an instance of :class:PowerInterface.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">deploy</span> <span class="o">=</span> <span class="bp">None</span>
+    <span class="n">core_interfaces</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s1">&#39;deploy&#39;</span><span class="p">)</span>
+    <span class="sd">&quot;&quot;&quot;`Core` attribute for managing deployments.</span>
+
+<span class="sd">    A reference to an instance of :class:DeployInterface.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">console</span> <span class="o">=</span> <span class="bp">None</span>
+    <span class="n">standard_interfaces</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s1">&#39;console&#39;</span><span class="p">)</span>
+    <span class="sd">&quot;&quot;&quot;`Standard` attribute for managing console access.</span>
+
+<span class="sd">    A reference to an instance of :class:ConsoleInterface.</span>
+<span class="sd">    May be None, if unsupported by a driver.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">rescue</span> <span class="o">=</span> <span class="bp">None</span>
+    <span class="c1"># NOTE(deva): hide rescue from the interface list in Icehouse</span>
+    <span class="c1">#             because the API for this has not been created yet.</span>
+    <span class="c1"># standard_interfaces.append(&#39;rescue&#39;)</span>
+    <span class="sd">&quot;&quot;&quot;`Standard` attribute for accessing rescue features.</span>
+
+<span class="sd">    A reference to an instance of :class:RescueInterface.</span>
+<span class="sd">    May be None, if unsupported by a driver.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">management</span> <span class="o">=</span> <span class="bp">None</span>
+    <span class="sd">&quot;&quot;&quot;`Standard` attribute for management related features.</span>
+
+<span class="sd">    A reference to an instance of :class:ManagementInterface.</span>
+<span class="sd">    May be None, if unsupported by a driver.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">standard_interfaces</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s1">&#39;management&#39;</span><span class="p">)</span>
+
+    <span class="n">boot</span> <span class="o">=</span> <span class="bp">None</span>
+    <span class="sd">&quot;&quot;&quot;`Standard` attribute for boot related features.</span>
+
+<span class="sd">    A reference to an instance of :class:BootInterface.</span>
+<span class="sd">    May be None, if unsupported by a driver.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">standard_interfaces</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s1">&#39;boot&#39;</span><span class="p">)</span>
+
+    <span class="n">vendor</span> <span class="o">=</span> <span class="bp">None</span>
+    <span class="sd">&quot;&quot;&quot;Attribute for accessing any vendor-specific extensions.</span>
+
+<span class="sd">    A reference to an instance of :class:VendorInterface.</span>
+<span class="sd">    May be None, if the driver does not implement any vendor extensions.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">inspect</span> <span class="o">=</span> <span class="bp">None</span>
+    <span class="sd">&quot;&quot;&quot;`Standard` attribute for inspection related features.</span>
+
+<span class="sd">    A reference to an instance of :class:InspectInterface.</span>
+<span class="sd">    May be None, if unsupported by a driver.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">standard_interfaces</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s1">&#39;inspect&#39;</span><span class="p">)</span>
+
+    <span class="n">raid</span> <span class="o">=</span> <span class="bp">None</span>
+    <span class="sd">&quot;&quot;&quot;`Standard` attribute for RAID related features.</span>
+
+<span class="sd">    A reference to an instance of :class:RaidInterface.</span>
+<span class="sd">    May be None, if unsupported by a driver.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">standard_interfaces</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s1">&#39;raid&#39;</span><span class="p">)</span>
+
+    <span class="nd">@abc.abstractmethod</span>
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">pass</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">all_interfaces</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">core_interfaces</span> <span class="o">+</span> <span class="bp">self</span><span class="o">.</span><span class="n">standard_interfaces</span> <span class="o">+</span> <span class="p">[</span><span class="s1">&#39;vendor&#39;</span><span class="p">]</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">non_vendor_interfaces</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">core_interfaces</span> <span class="o">+</span> <span class="bp">self</span><span class="o">.</span><span class="n">standard_interfaces</span>
+
+<div class="viewcode-block" id="BaseDriver.get_properties"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.BaseDriver.get_properties">[docs]</a>    <span class="k">def</span> <span class="nf">get_properties</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get the properties of the driver.</span>
+
+<span class="sd">        :returns: dictionary of &lt;property name&gt;:&lt;property description&gt; entries.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+
+        <span class="n">properties</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="k">for</span> <span class="n">iface_name</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">all_interfaces</span><span class="p">:</span>
+            <span class="n">iface</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">iface_name</span><span class="p">,</span> <span class="bp">None</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">iface</span><span class="p">:</span>
+                <span class="n">properties</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">iface</span><span class="o">.</span><span class="n">get_properties</span><span class="p">())</span>
+        <span class="k">return</span> <span class="n">properties</span></div></div>
+
+
+<div class="viewcode-block" id="BareDriver"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.BareDriver">[docs]</a><span class="k">class</span> <span class="nc">BareDriver</span><span class="p">(</span><span class="n">BaseDriver</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A bare driver object which will have interfaces attached later.</span>
+
+<span class="sd">    Any composable interfaces should be added as class attributes of this</span>
+<span class="sd">    class, as well as appended to core_interfaces or standard_interfaces here.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">network</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="sd">&quot;&quot;&quot;`Core` attribute for network connectivity.</span>
+
+<span class="sd">        A reference to an instance of :class:NetworkInterface.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">core_interfaces</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s1">&#39;network&#39;</span><span class="p">)</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">storage</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="sd">&quot;&quot;&quot;`Standard` attribute for (remote) storage interface.</span>
+
+<span class="sd">        A reference to an instance of :class:StorageInterface.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">standard_interfaces</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="s1">&#39;storage&#39;</span><span class="p">)</span></div>
+
+
+<span class="n">ALL_INTERFACES</span> <span class="o">=</span> <span class="nb">set</span><span class="p">(</span><span class="n">BareDriver</span><span class="p">()</span><span class="o">.</span><span class="n">all_interfaces</span><span class="p">)</span>
+<span class="sd">&quot;&quot;&quot;Constant holding all known interfaces.</span>
+
+<span class="sd">Includes interfaces not exposed via BaseDriver.all_interfaces.</span>
+<span class="sd">&quot;&quot;&quot;</span>
+
+
+<span class="nd">@six.add_metaclass</span><span class="p">(</span><span class="n">abc</span><span class="o">.</span><span class="n">ABCMeta</span><span class="p">)</span>
+<div class="viewcode-block" id="BaseInterface"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.BaseInterface">[docs]</a><span class="k">class</span> <span class="nc">BaseInterface</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A base interface implementing common functions for Driver Interfaces.&quot;&quot;&quot;</span>
+
+    <span class="n">supported</span> <span class="o">=</span> <span class="bp">True</span>
+    <span class="sd">&quot;&quot;&quot;Indicates if an interface is supported.</span>
+
+<span class="sd">    This will be set to False for interfaces which are untested in first- or</span>
+<span class="sd">    third-party CI, or in the process of being deprecated.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">interface_type</span> <span class="o">=</span> <span class="s1">&#39;base&#39;</span>
+    <span class="sd">&quot;&quot;&quot;Interface type, used for clean steps and logging.&quot;&quot;&quot;</span>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="BaseInterface.get_properties"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.BaseInterface.get_properties">[docs]</a>    <span class="k">def</span> <span class="nf">get_properties</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Return the properties of the interface.</span>
+
+<span class="sd">        :returns: dictionary of &lt;property name&gt;:&lt;property description&gt; entries.</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="BaseInterface.validate"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.BaseInterface.validate">[docs]</a>    <span class="k">def</span> <span class="nf">validate</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Validate the driver-specific Node deployment info.</span>
+
+<span class="sd">        This method validates whether the &#39;driver_info&#39; and/or &#39;instance_info&#39;</span>
+<span class="sd">        properties of the task&#39;s node contains the required information for</span>
+<span class="sd">        this interface to function.</span>
+
+<span class="sd">        This method is often executed synchronously in API requests, so it</span>
+<span class="sd">        should not conduct long-running checks.</span>
+
+<span class="sd">        :param task: a TaskManager instance containing the node to act on.</span>
+<span class="sd">        :raises: InvalidParameterValue on malformed parameter(s)</span>
+<span class="sd">        :raises: MissingParameterValue on missing parameter(s)</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+    <span class="k">def</span> <span class="fm">__new__</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="c1"># Get the list of clean steps when the interface is initialized by</span>
+        <span class="c1"># the conductor. We use __new__ instead of __init___</span>
+        <span class="c1"># to avoid breaking backwards compatibility with all the drivers.</span>
+        <span class="c1"># We want to return all steps, regardless of priority.</span>
+
+        <span class="n">super_new</span> <span class="o">=</span> <span class="nb">super</span><span class="p">(</span><span class="n">BaseInterface</span><span class="p">,</span> <span class="bp">cls</span><span class="p">)</span><span class="o">.</span><span class="fm">__new__</span>
+        <span class="k">if</span> <span class="n">super_new</span> <span class="ow">is</span> <span class="nb">object</span><span class="o">.</span><span class="fm">__new__</span><span class="p">:</span>
+            <span class="n">instance</span> <span class="o">=</span> <span class="n">super_new</span><span class="p">(</span><span class="bp">cls</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">instance</span> <span class="o">=</span> <span class="n">super_new</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+        <span class="n">instance</span><span class="o">.</span><span class="n">clean_steps</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">for</span> <span class="n">n</span><span class="p">,</span> <span class="n">method</span> <span class="ow">in</span> <span class="n">inspect</span><span class="o">.</span><span class="n">getmembers</span><span class="p">(</span><span class="n">instance</span><span class="p">,</span> <span class="n">inspect</span><span class="o">.</span><span class="n">ismethod</span><span class="p">):</span>
+            <span class="k">if</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">method</span><span class="p">,</span> <span class="s1">&#39;_is_clean_step&#39;</span><span class="p">,</span> <span class="bp">False</span><span class="p">):</span>
+                <span class="c1"># Create a CleanStep to represent this method</span>
+                <span class="n">step</span> <span class="o">=</span> <span class="p">{</span><span class="s1">&#39;step&#39;</span><span class="p">:</span> <span class="n">method</span><span class="o">.</span><span class="vm">__name__</span><span class="p">,</span>
+                        <span class="s1">&#39;priority&#39;</span><span class="p">:</span> <span class="n">method</span><span class="o">.</span><span class="n">_clean_step_priority</span><span class="p">,</span>
+                        <span class="s1">&#39;abortable&#39;</span><span class="p">:</span> <span class="n">method</span><span class="o">.</span><span class="n">_clean_step_abortable</span><span class="p">,</span>
+                        <span class="s1">&#39;argsinfo&#39;</span><span class="p">:</span> <span class="n">method</span><span class="o">.</span><span class="n">_clean_step_argsinfo</span><span class="p">,</span>
+                        <span class="s1">&#39;interface&#39;</span><span class="p">:</span> <span class="n">instance</span><span class="o">.</span><span class="n">interface_type</span><span class="p">}</span>
+                <span class="n">instance</span><span class="o">.</span><span class="n">clean_steps</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">step</span><span class="p">)</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;Found clean steps </span><span class="si">%(steps)s</span><span class="s1"> for interface </span><span class="si">%(interface)s</span><span class="s1">&#39;</span><span class="p">,</span>
+                  <span class="p">{</span><span class="s1">&#39;steps&#39;</span><span class="p">:</span> <span class="n">instance</span><span class="o">.</span><span class="n">clean_steps</span><span class="p">,</span>
+                   <span class="s1">&#39;interface&#39;</span><span class="p">:</span> <span class="n">instance</span><span class="o">.</span><span class="n">interface_type</span><span class="p">})</span>
+        <span class="k">return</span> <span class="n">instance</span>
+
+<div class="viewcode-block" id="BaseInterface.get_clean_steps"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.BaseInterface.get_clean_steps">[docs]</a>    <span class="k">def</span> <span class="nf">get_clean_steps</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get a list of (enabled and disabled) clean steps for the interface.</span>
+
+<span class="sd">        This function will return all clean steps (both enabled and disabled)</span>
+<span class="sd">        for the interface, in an unordered list.</span>
+
+<span class="sd">        :param task: A TaskManager object, useful for interfaces overriding</span>
+<span class="sd">            this function</span>
+<span class="sd">        :raises NodeCleaningFailure: if there is a problem getting the steps</span>
+<span class="sd">            from the driver. For example, when a node (using an agent driver)</span>
+<span class="sd">            has just been enrolled and the agent isn&#39;t alive yet to be queried</span>
+<span class="sd">            for the available clean steps.</span>
+<span class="sd">        :returns: A list of clean step dictionaries</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">clean_steps</span></div>
+
+<div class="viewcode-block" id="BaseInterface.execute_clean_step"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.BaseInterface.execute_clean_step">[docs]</a>    <span class="k">def</span> <span class="nf">execute_clean_step</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">,</span> <span class="n">step</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Execute the clean step on task.node.</span>
+
+<span class="sd">        A clean step must take a single positional argument: a TaskManager</span>
+<span class="sd">        object. It may take one or more keyword variable arguments (for</span>
+<span class="sd">        use with manual cleaning only.)</span>
+
+<span class="sd">        A step can be executed synchronously or asynchronously. A step should</span>
+<span class="sd">        return None if the method has completed synchronously or</span>
+<span class="sd">        states.CLEANWAIT if the step will continue to execute asynchronously.</span>
+<span class="sd">        If the step executes asynchronously, it should issue a call to the</span>
+<span class="sd">        &#39;continue_node_clean&#39; RPC, so the conductor can begin the next</span>
+<span class="sd">        clean step.</span>
+
+<span class="sd">        :param task: A TaskManager object</span>
+<span class="sd">        :param step: The clean step dictionary representing the step to execute</span>
+<span class="sd">        :returns: None if this method has completed synchronously, or</span>
+<span class="sd">            states.CLEANWAIT if the step will continue to execute</span>
+<span class="sd">            asynchronously.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">args</span> <span class="o">=</span> <span class="n">step</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;args&#39;</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">args</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="k">return</span> <span class="nb">getattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">step</span><span class="p">[</span><span class="s1">&#39;step&#39;</span><span class="p">])(</span><span class="n">task</span><span class="p">,</span> <span class="o">**</span><span class="n">args</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">return</span> <span class="nb">getattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">step</span><span class="p">[</span><span class="s1">&#39;step&#39;</span><span class="p">])(</span><span class="n">task</span><span class="p">)</span></div></div>
+
+
+<div class="viewcode-block" id="DeployInterface"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.DeployInterface">[docs]</a><span class="k">class</span> <span class="nc">DeployInterface</span><span class="p">(</span><span class="n">BaseInterface</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Interface for deploy-related actions.&quot;&quot;&quot;</span>
+    <span class="n">interface_type</span> <span class="o">=</span> <span class="s1">&#39;deploy&#39;</span>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="DeployInterface.deploy"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.DeployInterface.deploy">[docs]</a>    <span class="k">def</span> <span class="nf">deploy</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Perform a deployment to the task&#39;s node.</span>
+
+<span class="sd">        Perform the necessary work to deploy an image onto the specified node.</span>
+<span class="sd">        This method will be called after prepare(), which may have already</span>
+<span class="sd">        performed any preparatory steps, such as pre-caching some data for the</span>
+<span class="sd">        node.</span>
+
+<span class="sd">        :param task: a TaskManager instance containing the node to act on.</span>
+<span class="sd">        :returns: status of the deploy. One of ironic.common.states.</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="DeployInterface.tear_down"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.DeployInterface.tear_down">[docs]</a>    <span class="k">def</span> <span class="nf">tear_down</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Tear down a previous deployment on the task&#39;s node.</span>
+
+<span class="sd">        Given a node that has been previously deployed to,</span>
+<span class="sd">        do all cleanup and tear down necessary to &quot;un-deploy&quot; that node.</span>
+
+<span class="sd">        :param task: a TaskManager instance containing the node to act on.</span>
+<span class="sd">        :returns: status of the deploy. One of ironic.common.states.</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="DeployInterface.prepare"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.DeployInterface.prepare">[docs]</a>    <span class="k">def</span> <span class="nf">prepare</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Prepare the deployment environment for the task&#39;s node.</span>
+
+<span class="sd">        If preparation of the deployment environment ahead of time is possible,</span>
+<span class="sd">        this method should be implemented by the driver.</span>
+
+<span class="sd">        If implemented, this method must be idempotent. It may be called</span>
+<span class="sd">        multiple times for the same node on the same conductor.</span>
+
+<span class="sd">        This method is called before `deploy`.</span>
+
+<span class="sd">        :param task: a TaskManager instance containing the node to act on.</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="DeployInterface.clean_up"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.DeployInterface.clean_up">[docs]</a>    <span class="k">def</span> <span class="nf">clean_up</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Clean up the deployment environment for the task&#39;s node.</span>
+
+<span class="sd">        If preparation of the deployment environment ahead of time is possible,</span>
+<span class="sd">        this method should be implemented by the driver. It should erase</span>
+<span class="sd">        anything cached by the `prepare` method.</span>
+
+<span class="sd">        If implemented, this method must be idempotent. It may be called</span>
+<span class="sd">        multiple times for the same node on the same conductor, and it may be</span>
+<span class="sd">        called by multiple conductors in parallel. Therefore, it must not</span>
+<span class="sd">        require an exclusive lock.</span>
+
+<span class="sd">        This method is called before `tear_down`.</span>
+
+<span class="sd">        :param task: a TaskManager instance containing the node to act on.</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="DeployInterface.take_over"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.DeployInterface.take_over">[docs]</a>    <span class="k">def</span> <span class="nf">take_over</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Take over management of this task&#39;s node from a dead conductor.</span>
+
+<span class="sd">        If conductors&#39; hosts maintain a static relationship to nodes, this</span>
+<span class="sd">        method should be implemented by the driver to allow conductors to</span>
+<span class="sd">        perform the necessary work during the remapping of nodes to conductors</span>
+<span class="sd">        when a conductor joins or leaves the cluster.</span>
+
+<span class="sd">        For example, the PXE driver has an external dependency:</span>
+<span class="sd">            Neutron must forward DHCP BOOT requests to a conductor which has</span>
+<span class="sd">            prepared the tftpboot environment for the given node. When a</span>
+<span class="sd">            conductor goes offline, another conductor must change this setting</span>
+<span class="sd">            in Neutron as part of remapping that node&#39;s control to itself.</span>
+<span class="sd">            This is performed within the `takeover` method.</span>
+
+<span class="sd">        :param task: a TaskManager instance containing the node to act on.</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+<div class="viewcode-block" id="DeployInterface.prepare_cleaning"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.DeployInterface.prepare_cleaning">[docs]</a>    <span class="k">def</span> <span class="nf">prepare_cleaning</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Prepare the node for cleaning tasks.</span>
+
+<span class="sd">        For example, nodes that use the Ironic Python Agent will need to</span>
+<span class="sd">        boot the ramdisk in order to do in-band cleaning tasks.</span>
+
+<span class="sd">        If the function is asynchronous, the driver will need to handle</span>
+<span class="sd">        settings node.driver_internal_info[&#39;clean_steps&#39;] and node.clean_step,</span>
+<span class="sd">        as they would be set in ironic.conductor.manager._do_node_clean,</span>
+<span class="sd">        but cannot be set when this is asynchronous. After, the interface</span>
+<span class="sd">        should make an RPC call to continue_node_cleaning to start cleaning.</span>
+
+<span class="sd">        NOTE(JoshNang) this should be moved to BootInterface when it gets</span>
+<span class="sd">        implemented.</span>
+
+<span class="sd">        :param task: a TaskManager instance containing the node to act on.</span>
+<span class="sd">        :returns: If this function is going to be asynchronous, should return</span>
+<span class="sd">            `states.CLEANWAIT`. Otherwise, should return `None`. The interface</span>
+<span class="sd">            will need to call _get_cleaning_steps and then RPC to</span>
+<span class="sd">            continue_node_cleaning</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">pass</span></div>
+
+<div class="viewcode-block" id="DeployInterface.tear_down_cleaning"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.DeployInterface.tear_down_cleaning">[docs]</a>    <span class="k">def</span> <span class="nf">tear_down_cleaning</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Tear down after cleaning is completed.</span>
+
+<span class="sd">        Given that cleaning is complete, do all cleanup and tear</span>
+<span class="sd">        down necessary to allow the node to be deployed to again.</span>
+
+<span class="sd">        NOTE(JoshNang) this should be moved to BootInterface when it gets</span>
+<span class="sd">        implemented.</span>
+
+<span class="sd">        :param task: a TaskManager instance containing the node to act on.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">pass</span></div>
+
+<div class="viewcode-block" id="DeployInterface.heartbeat"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.DeployInterface.heartbeat">[docs]</a>    <span class="k">def</span> <span class="nf">heartbeat</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">,</span> <span class="n">callback_url</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Record a heartbeat for the node.</span>
+
+<span class="sd">        :param task: a TaskManager instance containing the node to act on.</span>
+<span class="sd">        :param callback_url: a URL to use to call to the ramdisk.</span>
+<span class="sd">        :return: None</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s1">&#39;Got heartbeat message from node </span><span class="si">%(node)s</span><span class="s1">, but &#39;</span>
+                        <span class="s1">&#39;the driver </span><span class="si">%(driver)s</span><span class="s1"> does not support heartbeating&#39;</span><span class="p">),</span>
+                    <span class="p">{</span><span class="s1">&#39;node&#39;</span><span class="p">:</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="s1">&#39;driver&#39;</span><span class="p">:</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">driver</span><span class="p">})</span></div></div>
+
+
+<div class="viewcode-block" id="BootInterface"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.BootInterface">[docs]</a><span class="k">class</span> <span class="nc">BootInterface</span><span class="p">(</span><span class="n">BaseInterface</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Interface for boot-related actions.&quot;&quot;&quot;</span>
+    <span class="n">interface_type</span> <span class="o">=</span> <span class="s1">&#39;boot&#39;</span>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="BootInterface.prepare_ramdisk"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.BootInterface.prepare_ramdisk">[docs]</a>    <span class="k">def</span> <span class="nf">prepare_ramdisk</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">,</span> <span class="n">ramdisk_params</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Prepares the boot of Ironic ramdisk.</span>
+
+<span class="sd">        This method prepares the boot of the deploy ramdisk after</span>
+<span class="sd">        reading relevant information from the node&#39;s database.</span>
+
+<span class="sd">        :param task: a task from TaskManager.</span>
+<span class="sd">        :param ramdisk_params: the options to be passed to the ironic ramdisk.</span>
+<span class="sd">            Different implementations might want to boot the ramdisk in</span>
+<span class="sd">            different ways by passing parameters to them.  For example,</span>
+
+<span class="sd">            When Agent ramdisk is booted to deploy a node, it takes the</span>
+<span class="sd">            parameters ipa-api-url, etc.</span>
+
+<span class="sd">            Other implementations can make use of ramdisk_params to pass such</span>
+<span class="sd">            information.  Different implementations of boot interface will</span>
+<span class="sd">            have different ways of passing parameters to the ramdisk.</span>
+<span class="sd">        :returns: None</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="BootInterface.clean_up_ramdisk"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.BootInterface.clean_up_ramdisk">[docs]</a>    <span class="k">def</span> <span class="nf">clean_up_ramdisk</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Cleans up the boot of ironic ramdisk.</span>
+
+<span class="sd">        This method cleans up the environment that was setup for booting the</span>
+<span class="sd">        deploy ramdisk.</span>
+
+<span class="sd">        :param task: a task from TaskManager.</span>
+<span class="sd">        :returns: None</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="BootInterface.prepare_instance"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.BootInterface.prepare_instance">[docs]</a>    <span class="k">def</span> <span class="nf">prepare_instance</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Prepares the boot of instance.</span>
+
+<span class="sd">        This method prepares the boot of the instance after reading</span>
+<span class="sd">        relevant information from the node&#39;s database.</span>
+
+<span class="sd">        :param task: a task from TaskManager.</span>
+<span class="sd">        :returns: None</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="BootInterface.clean_up_instance"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.BootInterface.clean_up_instance">[docs]</a>    <span class="k">def</span> <span class="nf">clean_up_instance</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Cleans up the boot of instance.</span>
+
+<span class="sd">        This method cleans up the environment that was setup for booting</span>
+<span class="sd">        the instance.</span>
+
+<span class="sd">        :param task: a task from TaskManager.</span>
+<span class="sd">        :returns: None</span>
+<span class="sd">        &quot;&quot;&quot;</span></div></div>
+
+
+<div class="viewcode-block" id="PowerInterface"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.PowerInterface">[docs]</a><span class="k">class</span> <span class="nc">PowerInterface</span><span class="p">(</span><span class="n">BaseInterface</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Interface for power-related actions.&quot;&quot;&quot;</span>
+    <span class="n">interface_type</span> <span class="o">=</span> <span class="s1">&#39;power&#39;</span>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="PowerInterface.get_power_state"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.PowerInterface.get_power_state">[docs]</a>    <span class="k">def</span> <span class="nf">get_power_state</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Return the power state of the task&#39;s node.</span>
+
+<span class="sd">        :param task: a TaskManager instance containing the node to act on.</span>
+<span class="sd">        :raises: MissingParameterValue if a required parameter is missing.</span>
+<span class="sd">        :returns: a power state. One of :mod:`ironic.common.states`.</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="PowerInterface.set_power_state"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.PowerInterface.set_power_state">[docs]</a>    <span class="k">def</span> <span class="nf">set_power_state</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">,</span> <span class="n">power_state</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Set the power state of the task&#39;s node.</span>
+
+<span class="sd">        :param task: a TaskManager instance containing the node to act on.</span>
+<span class="sd">        :param power_state: Any power state from :mod:`ironic.common.states`.</span>
+<span class="sd">        :param timeout: timeout (in seconds) positive integer (&gt; 0) for any</span>
+<span class="sd">          power state. ``None`` indicates to use default timeout.</span>
+<span class="sd">        :raises: MissingParameterValue if a required parameter is missing.</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="PowerInterface.reboot"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.PowerInterface.reboot">[docs]</a>    <span class="k">def</span> <span class="nf">reboot</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Perform a hard reboot of the task&#39;s node.</span>
+
+<span class="sd">        Drivers are expected to properly handle case when node is powered off</span>
+<span class="sd">        by powering it on.</span>
+
+<span class="sd">        :param task: a TaskManager instance containing the node to act on.</span>
+<span class="sd">        :param timeout: timeout (in seconds) positive integer (&gt; 0) for any</span>
+<span class="sd">          power state. ``None`` indicates to use default timeout.</span>
+<span class="sd">        :raises: MissingParameterValue if a required parameter is missing.</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+<div class="viewcode-block" id="PowerInterface.get_supported_power_states"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.PowerInterface.get_supported_power_states">[docs]</a>    <span class="k">def</span> <span class="nf">get_supported_power_states</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get a list of the supported power states.</span>
+
+<span class="sd">        :param task: A TaskManager instance containing the node to act on.</span>
+<span class="sd">        :returns: A list with the supported power states defined</span>
+<span class="sd">                  in :mod:`ironic.common.states`.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="p">[</span><span class="n">states</span><span class="o">.</span><span class="n">POWER_ON</span><span class="p">,</span> <span class="n">states</span><span class="o">.</span><span class="n">POWER_OFF</span><span class="p">,</span> <span class="n">states</span><span class="o">.</span><span class="n">REBOOT</span><span class="p">]</span></div></div>
+
+
+<div class="viewcode-block" id="ConsoleInterface"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.ConsoleInterface">[docs]</a><span class="k">class</span> <span class="nc">ConsoleInterface</span><span class="p">(</span><span class="n">BaseInterface</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Interface for console-related actions.&quot;&quot;&quot;</span>
+    <span class="n">interface_type</span> <span class="o">=</span> <span class="s2">&quot;console&quot;</span>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="ConsoleInterface.start_console"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.ConsoleInterface.start_console">[docs]</a>    <span class="k">def</span> <span class="nf">start_console</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Start a remote console for the task&#39;s node.</span>
+
+<span class="sd">        This method should not raise an exception if console already started.</span>
+
+<span class="sd">        :param task: a TaskManager instance containing the node to act on.</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="ConsoleInterface.stop_console"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.ConsoleInterface.stop_console">[docs]</a>    <span class="k">def</span> <span class="nf">stop_console</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Stop the remote console session for the task&#39;s node.</span>
+
+<span class="sd">        :param task: a TaskManager instance containing the node to act on.</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="ConsoleInterface.get_console"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.ConsoleInterface.get_console">[docs]</a>    <span class="k">def</span> <span class="nf">get_console</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get connection information about the console.</span>
+
+<span class="sd">        This method should return the necessary information for the</span>
+<span class="sd">        client to access the console.</span>
+
+<span class="sd">        :param task: a TaskManager instance containing the node to act on.</span>
+<span class="sd">        :returns: the console connection information.</span>
+<span class="sd">        &quot;&quot;&quot;</span></div></div>
+
+
+<div class="viewcode-block" id="RescueInterface"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.RescueInterface">[docs]</a><span class="k">class</span> <span class="nc">RescueInterface</span><span class="p">(</span><span class="n">BaseInterface</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Interface for rescue-related actions.&quot;&quot;&quot;</span>
+    <span class="n">interface_type</span> <span class="o">=</span> <span class="s2">&quot;rescue&quot;</span>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="RescueInterface.rescue"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.RescueInterface.rescue">[docs]</a>    <span class="k">def</span> <span class="nf">rescue</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Boot the task&#39;s node into a rescue environment.</span>
+
+<span class="sd">        :param task: a TaskManager instance containing the node to act on.</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="RescueInterface.unrescue"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.RescueInterface.unrescue">[docs]</a>    <span class="k">def</span> <span class="nf">unrescue</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Tear down the rescue environment, and return to normal.</span>
+
+<span class="sd">        :param task: a TaskManager instance containing the node to act on.</span>
+<span class="sd">        &quot;&quot;&quot;</span></div></div>
+
+
+<span class="c1"># Representation of a single vendor method metadata</span>
+<span class="n">VendorMetadata</span> <span class="o">=</span> <span class="n">collections</span><span class="o">.</span><span class="n">namedtuple</span><span class="p">(</span><span class="s1">&#39;VendorMetadata&#39;</span><span class="p">,</span> <span class="p">[</span><span class="s1">&#39;method&#39;</span><span class="p">,</span>
+                                                           <span class="s1">&#39;metadata&#39;</span><span class="p">])</span>
+
+
+<span class="k">def</span> <span class="nf">_passthru</span><span class="p">(</span><span class="n">http_methods</span><span class="p">,</span> <span class="n">method</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">async</span><span class="o">=</span><span class="bp">True</span><span class="p">,</span> <span class="n">driver_passthru</span><span class="o">=</span><span class="bp">False</span><span class="p">,</span>
+              <span class="n">description</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">attach</span><span class="o">=</span><span class="bp">False</span><span class="p">,</span> <span class="n">require_exclusive_lock</span><span class="o">=</span><span class="bp">True</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;A decorator for registering a function as a passthru function.</span>
+
+<span class="sd">    Decorator ensures function is ready to catch any ironic exceptions</span>
+<span class="sd">    and reraise them after logging the issue. It also catches non-ironic</span>
+<span class="sd">    exceptions reraising them as a VendorPassthruException after writing</span>
+<span class="sd">    a log.</span>
+
+<span class="sd">    Logs need to be added because even though the exception is being</span>
+<span class="sd">    reraised, it won&#39;t be handled if it is an async. call.</span>
+
+<span class="sd">    :param http_methods: A list of supported HTTP methods by the vendor</span>
+<span class="sd">                         function.</span>
+<span class="sd">    :param method: an arbitrary string describing the action to be taken.</span>
+<span class="sd">    :param async: Boolean value. If True invoke the passthru function</span>
+<span class="sd">                  asynchronously; if False, synchronously. If a passthru</span>
+<span class="sd">                  function touches the BMC we strongly recommend it to</span>
+<span class="sd">                  run asynchronously. Defaults to True.</span>
+<span class="sd">    :param driver_passthru: Boolean value. True if this is a driver vendor</span>
+<span class="sd">                            passthru method, and False if it is a node</span>
+<span class="sd">                            vendor passthru method.</span>
+<span class="sd">    :param attach: Boolean value. True if the return value should be</span>
+<span class="sd">                   attached to the response object, and False if the return</span>
+<span class="sd">                   value should be returned in the response body.</span>
+<span class="sd">                   Defaults to False.</span>
+<span class="sd">    :param description: a string shortly describing what the method does.</span>
+<span class="sd">    :param require_exclusive_lock: Boolean value. Only valid for node passthru</span>
+<span class="sd">                                   methods. If True, lock the node before</span>
+<span class="sd">                                   validate() and invoking the vendor method.</span>
+<span class="sd">                                   The node remains locked during execution</span>
+<span class="sd">                                   for a synchronous passthru method. If False,</span>
+<span class="sd">                                   don&#39;t lock the node. Defaults to True.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">def</span> <span class="nf">handle_passthru</span><span class="p">(</span><span class="n">func</span><span class="p">):</span>
+        <span class="n">api_method</span> <span class="o">=</span> <span class="n">method</span>
+        <span class="k">if</span> <span class="n">api_method</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">api_method</span> <span class="o">=</span> <span class="n">func</span><span class="o">.</span><span class="vm">__name__</span>
+
+        <span class="n">supported_</span> <span class="o">=</span> <span class="p">[</span><span class="n">i</span><span class="o">.</span><span class="n">upper</span><span class="p">()</span> <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="n">http_methods</span><span class="p">]</span>
+        <span class="n">description_</span> <span class="o">=</span> <span class="n">description</span> <span class="ow">or</span> <span class="s1">&#39;&#39;</span>
+        <span class="n">metadata</span> <span class="o">=</span> <span class="n">VendorMetadata</span><span class="p">(</span><span class="n">api_method</span><span class="p">,</span> <span class="p">{</span><span class="s1">&#39;http_methods&#39;</span><span class="p">:</span> <span class="n">supported_</span><span class="p">,</span>
+                                               <span class="s1">&#39;async&#39;</span><span class="p">:</span> <span class="n">async</span><span class="p">,</span>
+                                               <span class="s1">&#39;description&#39;</span><span class="p">:</span> <span class="n">description_</span><span class="p">,</span>
+                                               <span class="s1">&#39;attach&#39;</span><span class="p">:</span> <span class="n">attach</span><span class="p">})</span>
+        <span class="k">if</span> <span class="n">driver_passthru</span><span class="p">:</span>
+            <span class="n">func</span><span class="o">.</span><span class="n">_driver_metadata</span> <span class="o">=</span> <span class="n">metadata</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">metadata</span><span class="p">[</span><span class="mi">1</span><span class="p">][</span><span class="s1">&#39;require_exclusive_lock&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">require_exclusive_lock</span>
+            <span class="n">func</span><span class="o">.</span><span class="n">_vendor_metadata</span> <span class="o">=</span> <span class="n">metadata</span>
+
+        <span class="n">passthru_logmessage</span> <span class="o">=</span> <span class="n">_LE</span><span class="p">(</span><span class="s1">&#39;vendor_passthru failed with method </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">)</span>
+
+        <span class="nd">@six.wraps</span><span class="p">(</span><span class="n">func</span><span class="p">)</span>
+        <span class="k">def</span> <span class="nf">passthru_handler</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="k">return</span> <span class="n">func</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+            <span class="k">except</span> <span class="n">exception</span><span class="o">.</span><span class="n">IronicException</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+                <span class="k">with</span> <span class="n">excutils</span><span class="o">.</span><span class="n">save_and_reraise_exception</span><span class="p">():</span>
+                    <span class="n">LOG</span><span class="o">.</span><span class="n">exception</span><span class="p">(</span><span class="n">passthru_logmessage</span><span class="p">,</span> <span class="n">api_method</span><span class="p">)</span>
+            <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+                <span class="c1"># catch-all in case something bubbles up here</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">exception</span><span class="p">(</span><span class="n">passthru_logmessage</span><span class="p">,</span> <span class="n">api_method</span><span class="p">)</span>
+                <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">VendorPassthruException</span><span class="p">(</span><span class="n">message</span><span class="o">=</span><span class="n">e</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">passthru_handler</span>
+    <span class="k">return</span> <span class="n">handle_passthru</span>
+
+
+<span class="k">def</span> <span class="nf">passthru</span><span class="p">(</span><span class="n">http_methods</span><span class="p">,</span> <span class="n">method</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">async</span><span class="o">=</span><span class="bp">True</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+             <span class="n">attach</span><span class="o">=</span><span class="bp">False</span><span class="p">,</span> <span class="n">require_exclusive_lock</span><span class="o">=</span><span class="bp">True</span><span class="p">):</span>
+    <span class="k">return</span> <span class="n">_passthru</span><span class="p">(</span><span class="n">http_methods</span><span class="p">,</span> <span class="n">method</span><span class="p">,</span> <span class="n">async</span><span class="p">,</span> <span class="n">driver_passthru</span><span class="o">=</span><span class="bp">False</span><span class="p">,</span>
+                     <span class="n">description</span><span class="o">=</span><span class="n">description</span><span class="p">,</span> <span class="n">attach</span><span class="o">=</span><span class="n">attach</span><span class="p">,</span>
+                     <span class="n">require_exclusive_lock</span><span class="o">=</span><span class="n">require_exclusive_lock</span><span class="p">)</span>
+
+
+<span class="k">def</span> <span class="nf">driver_passthru</span><span class="p">(</span><span class="n">http_methods</span><span class="p">,</span> <span class="n">method</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">async</span><span class="o">=</span><span class="bp">True</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+                    <span class="n">attach</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+    <span class="k">return</span> <span class="n">_passthru</span><span class="p">(</span><span class="n">http_methods</span><span class="p">,</span> <span class="n">method</span><span class="p">,</span> <span class="n">async</span><span class="p">,</span> <span class="n">driver_passthru</span><span class="o">=</span><span class="bp">True</span><span class="p">,</span>
+                     <span class="n">description</span><span class="o">=</span><span class="n">description</span><span class="p">,</span> <span class="n">attach</span><span class="o">=</span><span class="n">attach</span><span class="p">)</span>
+
+
+<div class="viewcode-block" id="VendorInterface"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.VendorInterface">[docs]</a><span class="k">class</span> <span class="nc">VendorInterface</span><span class="p">(</span><span class="n">BaseInterface</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Interface for all vendor passthru functionality.</span>
+
+<span class="sd">    Additional vendor- or driver-specific capabilities should be</span>
+<span class="sd">    implemented as a method in the class inheriting from this class and</span>
+<span class="sd">    use the @passthru or @driver_passthru decorators.</span>
+
+<span class="sd">    Methods decorated with @driver_passthru should be short-lived because</span>
+<span class="sd">    it is a blocking call.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">interface_type</span> <span class="o">=</span> <span class="s2">&quot;vendor&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__new__</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="n">super_new</span> <span class="o">=</span> <span class="nb">super</span><span class="p">(</span><span class="n">VendorInterface</span><span class="p">,</span> <span class="bp">cls</span><span class="p">)</span><span class="o">.</span><span class="fm">__new__</span>
+        <span class="k">if</span> <span class="n">super_new</span> <span class="ow">is</span> <span class="nb">object</span><span class="o">.</span><span class="fm">__new__</span><span class="p">:</span>
+            <span class="n">inst</span> <span class="o">=</span> <span class="n">super_new</span><span class="p">(</span><span class="bp">cls</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">inst</span> <span class="o">=</span> <span class="n">super_new</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+
+        <span class="n">inst</span><span class="o">.</span><span class="n">vendor_routes</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="n">inst</span><span class="o">.</span><span class="n">driver_routes</span> <span class="o">=</span> <span class="p">{}</span>
+
+        <span class="k">for</span> <span class="n">name</span><span class="p">,</span> <span class="n">ref</span> <span class="ow">in</span> <span class="n">inspect</span><span class="o">.</span><span class="n">getmembers</span><span class="p">(</span><span class="n">inst</span><span class="p">,</span> <span class="n">predicate</span><span class="o">=</span><span class="n">inspect</span><span class="o">.</span><span class="n">ismethod</span><span class="p">):</span>
+            <span class="n">vmeta</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">ref</span><span class="p">,</span> <span class="s1">&#39;_vendor_metadata&#39;</span><span class="p">,</span> <span class="bp">None</span><span class="p">)</span>
+            <span class="n">dmeta</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">ref</span><span class="p">,</span> <span class="s1">&#39;_driver_metadata&#39;</span><span class="p">,</span> <span class="bp">None</span><span class="p">)</span>
+
+            <span class="k">if</span> <span class="n">vmeta</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="n">metadata</span> <span class="o">=</span> <span class="n">copy</span><span class="o">.</span><span class="n">deepcopy</span><span class="p">(</span><span class="n">vmeta</span><span class="o">.</span><span class="n">metadata</span><span class="p">)</span>
+                <span class="n">metadata</span><span class="p">[</span><span class="s1">&#39;func&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">ref</span>
+                <span class="n">inst</span><span class="o">.</span><span class="n">vendor_routes</span><span class="o">.</span><span class="n">update</span><span class="p">({</span><span class="n">vmeta</span><span class="o">.</span><span class="n">method</span><span class="p">:</span> <span class="n">metadata</span><span class="p">})</span>
+
+            <span class="k">if</span> <span class="n">dmeta</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="n">metadata</span> <span class="o">=</span> <span class="n">copy</span><span class="o">.</span><span class="n">deepcopy</span><span class="p">(</span><span class="n">dmeta</span><span class="o">.</span><span class="n">metadata</span><span class="p">)</span>
+                <span class="n">metadata</span><span class="p">[</span><span class="s1">&#39;func&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">ref</span>
+                <span class="n">inst</span><span class="o">.</span><span class="n">driver_routes</span><span class="o">.</span><span class="n">update</span><span class="p">({</span><span class="n">dmeta</span><span class="o">.</span><span class="n">method</span><span class="p">:</span> <span class="n">metadata</span><span class="p">})</span>
+
+        <span class="k">return</span> <span class="n">inst</span>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="VendorInterface.validate"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.VendorInterface.validate">[docs]</a>    <span class="k">def</span> <span class="nf">validate</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">,</span> <span class="n">method</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Validate vendor-specific actions.</span>
+
+<span class="sd">        If invalid, raises an exception; otherwise returns None.</span>
+
+<span class="sd">        :param task: a task from TaskManager.</span>
+<span class="sd">        :param method: method to be validated</span>
+<span class="sd">        :param kwargs: info for action.</span>
+<span class="sd">        :raises: UnsupportedDriverExtension if &#39;method&#39; can not be mapped to</span>
+<span class="sd">                 the supported interfaces.</span>
+<span class="sd">        :raises: InvalidParameterValue if kwargs does not contain &#39;method&#39;.</span>
+<span class="sd">        :raises: MissingParameterValue</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+<div class="viewcode-block" id="VendorInterface.driver_validate"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.VendorInterface.driver_validate">[docs]</a>    <span class="k">def</span> <span class="nf">driver_validate</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">method</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Validate driver-vendor-passthru actions.</span>
+
+<span class="sd">        If invalid, raises an exception; otherwise returns None.</span>
+
+<span class="sd">        :param method: method to be validated</span>
+<span class="sd">        :param kwargs: info for action.</span>
+<span class="sd">        :raises: MissingParameterValue if kwargs does not contain</span>
+<span class="sd">                 certain parameter.</span>
+<span class="sd">        :raises: InvalidParameterValue if parameter does not match.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">pass</span></div></div>
+
+
+<div class="viewcode-block" id="ManagementInterface"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.ManagementInterface">[docs]</a><span class="k">class</span> <span class="nc">ManagementInterface</span><span class="p">(</span><span class="n">BaseInterface</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Interface for management related actions.&quot;&quot;&quot;</span>
+    <span class="n">interface_type</span> <span class="o">=</span> <span class="s1">&#39;management&#39;</span>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="ManagementInterface.get_supported_boot_devices"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.ManagementInterface.get_supported_boot_devices">[docs]</a>    <span class="k">def</span> <span class="nf">get_supported_boot_devices</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get a list of the supported boot devices.</span>
+
+<span class="sd">        :param task: a task from TaskManager.</span>
+<span class="sd">        :returns: A list with the supported boot devices defined</span>
+<span class="sd">                  in :mod:`ironic.common.boot_devices`.</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="ManagementInterface.set_boot_device"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.ManagementInterface.set_boot_device">[docs]</a>    <span class="k">def</span> <span class="nf">set_boot_device</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">,</span> <span class="n">device</span><span class="p">,</span> <span class="n">persistent</span><span class="o">=</span><span class="bp">False</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Set the boot device for a node.</span>
+
+<span class="sd">        Set the boot device to use on next reboot of the node.</span>
+
+<span class="sd">        :param task: a task from TaskManager.</span>
+<span class="sd">        :param device: the boot device, one of</span>
+<span class="sd">                       :mod:`ironic.common.boot_devices`.</span>
+<span class="sd">        :param persistent: Boolean value. True if the boot device will</span>
+<span class="sd">                           persist to all future boots, False if not.</span>
+<span class="sd">                           Default: False.</span>
+<span class="sd">        :raises: InvalidParameterValue if an invalid boot device is</span>
+<span class="sd">                 specified.</span>
+<span class="sd">        :raises: MissingParameterValue if a required parameter is missing</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="ManagementInterface.get_boot_device"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.ManagementInterface.get_boot_device">[docs]</a>    <span class="k">def</span> <span class="nf">get_boot_device</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get the current boot device for a node.</span>
+
+<span class="sd">        Provides the current boot device of the node. Be aware that not</span>
+<span class="sd">        all drivers support this.</span>
+
+<span class="sd">        :param task: a task from TaskManager.</span>
+<span class="sd">        :raises: MissingParameterValue if a required parameter is missing</span>
+<span class="sd">        :returns: a dictionary containing:</span>
+
+<span class="sd">            :boot_device:</span>
+<span class="sd">                the boot device, one of :mod:`ironic.common.boot_devices` or</span>
+<span class="sd">                None if it is unknown.</span>
+<span class="sd">            :persistent:</span>
+<span class="sd">                Whether the boot device will persist to all future boots or</span>
+<span class="sd">                not, None if it is unknown.</span>
+
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="ManagementInterface.get_sensors_data"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.ManagementInterface.get_sensors_data">[docs]</a>    <span class="k">def</span> <span class="nf">get_sensors_data</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get sensors data method.</span>
+
+<span class="sd">        :param task: a TaskManager instance.</span>
+<span class="sd">        :raises: FailedToGetSensorData when getting the sensor data fails.</span>
+<span class="sd">        :raises: FailedToParseSensorData when parsing sensor data fails.</span>
+<span class="sd">        :returns: returns a consistent format dict of sensor data grouped by</span>
+<span class="sd">                  sensor type, which can be processed by Ceilometer.</span>
+<span class="sd">                  eg,</span>
+
+<span class="sd">                  ::</span>
+
+<span class="sd">                      {</span>
+<span class="sd">                        &#39;Sensor Type 1&#39;: {</span>
+<span class="sd">                          &#39;Sensor ID 1&#39;: {</span>
+<span class="sd">                            &#39;Sensor Reading&#39;: &#39;current value&#39;,</span>
+<span class="sd">                            &#39;key1&#39;: &#39;value1&#39;,</span>
+<span class="sd">                            &#39;key2&#39;: &#39;value2&#39;</span>
+<span class="sd">                          },</span>
+<span class="sd">                          &#39;Sensor ID 2&#39;: {</span>
+<span class="sd">                            &#39;Sensor Reading&#39;: &#39;current value&#39;,</span>
+<span class="sd">                            &#39;key1&#39;: &#39;value1&#39;,</span>
+<span class="sd">                            &#39;key2&#39;: &#39;value2&#39;</span>
+<span class="sd">                          }</span>
+<span class="sd">                        },</span>
+<span class="sd">                        &#39;Sensor Type 2&#39;: {</span>
+<span class="sd">                          &#39;Sensor ID 3&#39;: {</span>
+<span class="sd">                            &#39;Sensor Reading&#39;: &#39;current value&#39;,</span>
+<span class="sd">                            &#39;key1&#39;: &#39;value1&#39;,</span>
+<span class="sd">                            &#39;key2&#39;: &#39;value2&#39;</span>
+<span class="sd">                          },</span>
+<span class="sd">                          &#39;Sensor ID 4&#39;: {</span>
+<span class="sd">                            &#39;Sensor Reading&#39;: &#39;current value&#39;,</span>
+<span class="sd">                            &#39;key1&#39;: &#39;value1&#39;,</span>
+<span class="sd">                            &#39;key2&#39;: &#39;value2&#39;</span>
+<span class="sd">                          }</span>
+<span class="sd">                        }</span>
+<span class="sd">                      }</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+<div class="viewcode-block" id="ManagementInterface.inject_nmi"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.ManagementInterface.inject_nmi">[docs]</a>    <span class="k">def</span> <span class="nf">inject_nmi</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Inject NMI, Non Maskable Interrupt.</span>
+
+<span class="sd">        Inject NMI (Non Maskable Interrupt) for a node immediately.</span>
+
+<span class="sd">        :param task: A TaskManager instance containing the node to act on.</span>
+<span class="sd">        :raises: UnsupportedDriverExtension</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">UnsupportedDriverExtension</span><span class="p">(</span>
+            <span class="n">driver</span><span class="o">=</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">driver</span><span class="p">,</span> <span class="n">extension</span><span class="o">=</span><span class="s1">&#39;inject_nmi&#39;</span><span class="p">)</span></div></div>
+
+
+<div class="viewcode-block" id="InspectInterface"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.InspectInterface">[docs]</a><span class="k">class</span> <span class="nc">InspectInterface</span><span class="p">(</span><span class="n">BaseInterface</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Interface for inspection-related actions.&quot;&quot;&quot;</span>
+    <span class="n">interface_type</span> <span class="o">=</span> <span class="s1">&#39;inspect&#39;</span>
+
+    <span class="n">ESSENTIAL_PROPERTIES</span> <span class="o">=</span> <span class="p">{</span><span class="s1">&#39;memory_mb&#39;</span><span class="p">,</span> <span class="s1">&#39;local_gb&#39;</span><span class="p">,</span> <span class="s1">&#39;cpus&#39;</span><span class="p">,</span> <span class="s1">&#39;cpu_arch&#39;</span><span class="p">}</span>
+    <span class="sd">&quot;&quot;&quot;The properties required by scheduler/deploy.&quot;&quot;&quot;</span>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="InspectInterface.inspect_hardware"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.InspectInterface.inspect_hardware">[docs]</a>    <span class="k">def</span> <span class="nf">inspect_hardware</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Inspect hardware.</span>
+
+<span class="sd">        Inspect hardware to obtain the essential &amp; additional hardware</span>
+<span class="sd">        properties.</span>
+
+<span class="sd">        :param task: a task from TaskManager.</span>
+<span class="sd">        :raises: HardwareInspectionFailure, if unable to get essential</span>
+<span class="sd">                 hardware properties.</span>
+<span class="sd">        :returns: resulting state of the inspection i.e. states.MANAGEABLE</span>
+<span class="sd">                  or None.</span>
+<span class="sd">        &quot;&quot;&quot;</span></div></div>
+
+
+<div class="viewcode-block" id="RAIDInterface"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.RAIDInterface">[docs]</a><span class="k">class</span> <span class="nc">RAIDInterface</span><span class="p">(</span><span class="n">BaseInterface</span><span class="p">):</span>
+    <span class="n">interface_type</span> <span class="o">=</span> <span class="s1">&#39;raid&#39;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Constructor for RAIDInterface class.&quot;&quot;&quot;</span>
+        <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">RAID_CONFIG_SCHEMA</span><span class="p">,</span> <span class="s1">&#39;r&#39;</span><span class="p">)</span> <span class="k">as</span> <span class="n">raid_schema_fobj</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">raid_schema</span> <span class="o">=</span> <span class="n">json</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">raid_schema_fobj</span><span class="p">)</span>
+
+<div class="viewcode-block" id="RAIDInterface.get_properties"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.RAIDInterface.get_properties">[docs]</a>    <span class="k">def</span> <span class="nf">get_properties</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Return the properties of the interface.</span>
+
+<span class="sd">        :returns: dictionary of &lt;property name&gt;:&lt;property description&gt; entries.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="p">{}</span></div>
+
+<div class="viewcode-block" id="RAIDInterface.validate"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.RAIDInterface.validate">[docs]</a>    <span class="k">def</span> <span class="nf">validate</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Validates the RAID Interface.</span>
+
+<span class="sd">        This method validates the properties defined by Ironic for RAID</span>
+<span class="sd">        configuration. Driver implementations of this interface can override</span>
+<span class="sd">        this method for doing more validations (such as BMC&#39;s credentials).</span>
+
+<span class="sd">        :param task: a TaskManager instance.</span>
+<span class="sd">        :raises: InvalidParameterValue, if the RAID configuration is invalid.</span>
+<span class="sd">        :raises: MissingParameterValue, if some parameters are missing.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">target_raid_config</span> <span class="o">=</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">target_raid_config</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">target_raid_config</span><span class="p">:</span>
+            <span class="k">return</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">validate_raid_config</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">target_raid_config</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="RAIDInterface.validate_raid_config"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.RAIDInterface.validate_raid_config">[docs]</a>    <span class="k">def</span> <span class="nf">validate_raid_config</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">,</span> <span class="n">raid_config</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Validates the given RAID configuration.</span>
+
+<span class="sd">        This method validates the given RAID configuration.  Driver</span>
+<span class="sd">        implementations of this interface can override this method to support</span>
+<span class="sd">        custom parameters for RAID configuration.</span>
+
+<span class="sd">        :param task: a TaskManager instance.</span>
+<span class="sd">        :param raid_config: The RAID configuration to validate.</span>
+<span class="sd">        :raises: InvalidParameterValue, if the RAID configuration is invalid.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">raid</span><span class="o">.</span><span class="n">validate_configuration</span><span class="p">(</span><span class="n">raid_config</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">raid_schema</span><span class="p">)</span></div>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="RAIDInterface.create_configuration"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.RAIDInterface.create_configuration">[docs]</a>    <span class="k">def</span> <span class="nf">create_configuration</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">,</span>
+                             <span class="n">create_root_volume</span><span class="o">=</span><span class="bp">True</span><span class="p">,</span>
+                             <span class="n">create_nonroot_volumes</span><span class="o">=</span><span class="bp">True</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Creates RAID configuration on the given node.</span>
+
+<span class="sd">        This method creates a RAID configuration on the given node.</span>
+<span class="sd">        It assumes that the target RAID configuration is already</span>
+<span class="sd">        available in node.target_raid_config.</span>
+<span class="sd">        Implementations of this interface are supposed to read the</span>
+<span class="sd">        RAID configuration from node.target_raid_config. After the</span>
+<span class="sd">        RAID configuration is done (either in this method OR in a call-back</span>
+<span class="sd">        method), ironic.common.raid.update_raid_info()</span>
+<span class="sd">        may be called to sync the node&#39;s RAID-related information with the</span>
+<span class="sd">        RAID configuration applied on the node.</span>
+
+<span class="sd">        :param task: a TaskManager instance.</span>
+<span class="sd">        :param create_root_volume: Setting this to False indicates</span>
+<span class="sd">            not to create root volume that is specified in the node&#39;s</span>
+<span class="sd">            target_raid_config. Default value is True.</span>
+<span class="sd">        :param create_nonroot_volumes: Setting this to False indicates</span>
+<span class="sd">            not to create non-root volumes (all except the root volume) in the</span>
+<span class="sd">            node&#39;s target_raid_config.  Default value is True.</span>
+<span class="sd">        :returns: states.CLEANWAIT if RAID configuration is in progress</span>
+<span class="sd">            asynchronously or None if it is complete.</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="RAIDInterface.delete_configuration"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.RAIDInterface.delete_configuration">[docs]</a>    <span class="k">def</span> <span class="nf">delete_configuration</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Deletes RAID configuration on the given node.</span>
+
+<span class="sd">        This method deletes the RAID configuration on the give node.</span>
+<span class="sd">        After RAID configuration is deleted, node.raid_config should be</span>
+<span class="sd">        cleared by the implementation.</span>
+
+<span class="sd">        :param task: a TaskManager instance.</span>
+<span class="sd">        :returns: states.CLEANWAIT if deletion is in progress</span>
+<span class="sd">            asynchronously or None if it is complete.</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+<div class="viewcode-block" id="RAIDInterface.get_logical_disk_properties"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.RAIDInterface.get_logical_disk_properties">[docs]</a>    <span class="k">def</span> <span class="nf">get_logical_disk_properties</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get the properties that can be specified for logical disks.</span>
+
+<span class="sd">        This method returns a dictionary containing the properties that can</span>
+<span class="sd">        be specified for logical disks and a textual description for them.</span>
+
+<span class="sd">        :returns: A dictionary containing properties that can be mentioned for</span>
+<span class="sd">            logical disks and a textual description for them.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="n">raid</span><span class="o">.</span><span class="n">get_logical_disk_properties</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">raid_schema</span><span class="p">)</span></div></div>
+
+
+<div class="viewcode-block" id="NetworkInterface"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.NetworkInterface">[docs]</a><span class="k">class</span> <span class="nc">NetworkInterface</span><span class="p">(</span><span class="n">BaseInterface</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Base class for network interfaces.&quot;&quot;&quot;</span>
+
+    <span class="n">interface_type</span> <span class="o">=</span> <span class="s1">&#39;network&#39;</span>
+
+    <span class="c1"># Use these booleans to prevent conductor logs being spammed by deprecation</span>
+    <span class="c1"># warnings.</span>
+    <span class="n">_deprecated_port_change_shown</span> <span class="o">=</span> <span class="bp">False</span>
+    <span class="n">_deprecated_portgroup_change_shown</span> <span class="o">=</span> <span class="bp">False</span>
+    <span class="n">_deprecated_vif_attach_shown</span> <span class="o">=</span> <span class="bp">False</span>
+    <span class="n">_deprecated_vif_detach_shown</span> <span class="o">=</span> <span class="bp">False</span>
+    <span class="n">_deprecated_vif_list_shown</span> <span class="o">=</span> <span class="bp">False</span>
+    <span class="n">_deprecated_get_current_vif_shown</span> <span class="o">=</span> <span class="bp">False</span>
+
+<div class="viewcode-block" id="NetworkInterface.get_properties"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.NetworkInterface.get_properties">[docs]</a>    <span class="k">def</span> <span class="nf">get_properties</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Return the properties of the interface.</span>
+
+<span class="sd">        :returns: dictionary of &lt;property name&gt;:&lt;property description&gt; entries.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="p">{}</span></div>
+
+<div class="viewcode-block" id="NetworkInterface.validate"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.NetworkInterface.validate">[docs]</a>    <span class="k">def</span> <span class="nf">validate</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Validates the network interface.</span>
+
+<span class="sd">        :param task: a TaskManager instance.</span>
+<span class="sd">        :raises: InvalidParameterValue, if the network interface configuration</span>
+<span class="sd">            is invalid.</span>
+<span class="sd">        :raises: MissingParameterValue, if some parameters are missing.</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+    <span class="c1"># TODO(vsaienko) Make this method abstract in Pike.</span>
+<div class="viewcode-block" id="NetworkInterface.port_changed"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.NetworkInterface.port_changed">[docs]</a>    <span class="k">def</span> <span class="nf">port_changed</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">,</span> <span class="n">port_obj</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Handle any actions required when a port changes</span>
+
+<span class="sd">        :param task: a TaskManager instance.</span>
+<span class="sd">        :param port_obj: a changed Port object.</span>
+<span class="sd">        :raises: Conflict, FailedToUpdateDHCPOptOnPort</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">default_impl</span> <span class="o">=</span> <span class="n">net_common</span><span class="o">.</span><span class="n">VIFPortIDMixin</span><span class="p">()</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_deprecated_port_change_shown</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="n">_deprecated_port_change_shown</span> <span class="o">=</span> <span class="bp">True</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s1">&#39;The network interface </span><span class="si">%s</span><span class="s1"> should be updated to &#39;</span>
+                            <span class="s1">&#39;implement the port_changed function. Falling &#39;</span>
+                            <span class="s1">&#39;back to default implementation, this behaviour &#39;</span>
+                            <span class="s1">&#39;will be removed in Pike&#39;</span><span class="p">),</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="vm">__name__</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">default_impl</span><span class="o">.</span><span class="n">port_changed</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">port_obj</span><span class="p">)</span></div>
+
+    <span class="c1"># TODO(vsaienko) Make this method abstract in Pike.</span>
+<div class="viewcode-block" id="NetworkInterface.portgroup_changed"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.NetworkInterface.portgroup_changed">[docs]</a>    <span class="k">def</span> <span class="nf">portgroup_changed</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">,</span> <span class="n">portgroup_obj</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Handle any actions required when a port changes</span>
+
+<span class="sd">        :param task: a TaskManager instance.</span>
+<span class="sd">        :param portgroup_obj: a changed Port object.</span>
+<span class="sd">        :raises: Conflict, FailedToUpdateDHCPOptOnPort</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">default_impl</span> <span class="o">=</span> <span class="n">net_common</span><span class="o">.</span><span class="n">VIFPortIDMixin</span><span class="p">()</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_deprecated_portgroup_change_shown</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="n">_deprecated_port_change_shown</span> <span class="o">=</span> <span class="bp">True</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s1">&#39;The network interface </span><span class="si">%s</span><span class="s1"> should be updated to &#39;</span>
+                            <span class="s1">&#39;implement the portgroup_changed function. &#39;</span>
+                            <span class="s1">&#39;Falling back to default implementation, this &#39;</span>
+                            <span class="s1">&#39;behaviour will be removed in Pike&#39;</span><span class="p">),</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="vm">__name__</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">default_impl</span><span class="o">.</span><span class="n">portgroup_changed</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">portgroup_obj</span><span class="p">)</span></div>
+
+    <span class="c1"># TODO(vsaienko) Make this method abstract in Pike.</span>
+<div class="viewcode-block" id="NetworkInterface.vif_attach"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.NetworkInterface.vif_attach">[docs]</a>    <span class="k">def</span> <span class="nf">vif_attach</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">,</span> <span class="n">vif_info</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Attach a virtual network interface to a node</span>
+
+<span class="sd">        :param task: A TaskManager instance.</span>
+<span class="sd">        :param vif_info: a dictionary of information about a VIF.</span>
+<span class="sd">            It must have an &#39;id&#39; key, whose value is a unique identifier</span>
+<span class="sd">            for that VIF.</span>
+<span class="sd">        :raises: NetworkError, VifAlreadyAttached, NoFreePhysicalPorts</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">default_impl</span> <span class="o">=</span> <span class="n">net_common</span><span class="o">.</span><span class="n">VIFPortIDMixin</span><span class="p">()</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_deprecated_vif_attach_shown</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="n">_deprecated_vif_attach_shown</span> <span class="o">=</span> <span class="bp">True</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s1">&#39;The network interface </span><span class="si">%s</span><span class="s1"> should be updated to &#39;</span>
+                            <span class="s1">&#39;implement the vif_attach function. Falling &#39;</span>
+                            <span class="s1">&#39;back to default implementation, this behaviour &#39;</span>
+                            <span class="s1">&#39;will be removed in Pike&#39;</span><span class="p">),</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="vm">__name__</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">default_impl</span><span class="o">.</span><span class="n">vif_attach</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">vif_info</span><span class="p">)</span></div>
+
+    <span class="c1"># TODO(vsaienko) Make this method abstract in Pike.</span>
+<div class="viewcode-block" id="NetworkInterface.vif_detach"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.NetworkInterface.vif_detach">[docs]</a>    <span class="k">def</span> <span class="nf">vif_detach</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">,</span> <span class="n">vif_id</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Detach a virtual network interface from a node</span>
+
+<span class="sd">        :param task: A TaskManager instance.</span>
+<span class="sd">        :param vif_id: A VIF ID to detach</span>
+<span class="sd">        :raises: NetworkError, VifNotAttached</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">default_impl</span> <span class="o">=</span> <span class="n">net_common</span><span class="o">.</span><span class="n">VIFPortIDMixin</span><span class="p">()</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_deprecated_vif_detach_shown</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="n">_deprecated_vif_detach_shown</span> <span class="o">=</span> <span class="bp">True</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s1">&#39;The network interface </span><span class="si">%s</span><span class="s1"> should be updated to &#39;</span>
+                            <span class="s1">&#39;implement the vif_detach function. Falling &#39;</span>
+                            <span class="s1">&#39;back to default implementation, this behaviour &#39;</span>
+                            <span class="s1">&#39;will be removed in Pike&#39;</span><span class="p">),</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="vm">__name__</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">default_impl</span><span class="o">.</span><span class="n">vif_detach</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">vif_id</span><span class="p">)</span></div>
+
+    <span class="c1"># TODO(vsaienko) Make this method abstract in Pike.</span>
+<div class="viewcode-block" id="NetworkInterface.vif_list"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.NetworkInterface.vif_list">[docs]</a>    <span class="k">def</span> <span class="nf">vif_list</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;List attached VIF IDs for a node</span>
+
+<span class="sd">        :param task: A TaskManager instance.</span>
+<span class="sd">        :returns: List of VIF dictionaries, each dictionary will have an &#39;id&#39;</span>
+<span class="sd">            entry with the ID of the VIF.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">default_impl</span> <span class="o">=</span> <span class="n">net_common</span><span class="o">.</span><span class="n">VIFPortIDMixin</span><span class="p">()</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_deprecated_vif_list_shown</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="n">_deprecated_vif_list_shown</span> <span class="o">=</span> <span class="bp">True</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s1">&#39;The network interface </span><span class="si">%s</span><span class="s1"> should be updated to &#39;</span>
+                            <span class="s1">&#39;implement the vif_list function. Falling &#39;</span>
+                            <span class="s1">&#39;back to default implementation, this behaviour &#39;</span>
+                            <span class="s1">&#39;will be removed in Pike&#39;</span><span class="p">),</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="vm">__name__</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">default_impl</span><span class="o">.</span><span class="n">vif_list</span><span class="p">(</span><span class="n">task</span><span class="p">)</span></div>
+
+    <span class="c1"># TODO(vsaienko) Make this method abstract in Pike.</span>
+<div class="viewcode-block" id="NetworkInterface.get_current_vif"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.NetworkInterface.get_current_vif">[docs]</a>    <span class="k">def</span> <span class="nf">get_current_vif</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">,</span> <span class="n">p_obj</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Returns the currently used VIF associated with port or portgroup</span>
+
+<span class="sd">        We are booting the node only in one network at a time, and presence of</span>
+<span class="sd">        cleaning_vif_port_id means we&#39;re doing cleaning, of</span>
+<span class="sd">        provisioning_vif_port_id - provisioning.</span>
+<span class="sd">        Otherwise it&#39;s a tenant network.</span>
+
+<span class="sd">        :param task: A TaskManager instance.</span>
+<span class="sd">        :param p_obj: Ironic port or portgroup object.</span>
+<span class="sd">        :returns: VIF ID associated with p_obj or None.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">default_impl</span> <span class="o">=</span> <span class="n">net_common</span><span class="o">.</span><span class="n">VIFPortIDMixin</span><span class="p">()</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_deprecated_get_current_vif_shown</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="n">_deprecated_get_current_vif_shown</span> <span class="o">=</span> <span class="bp">True</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s1">&#39;The network interface </span><span class="si">%s</span><span class="s1"> should be updated to &#39;</span>
+                            <span class="s1">&#39;implement the get_current_vif function. Falling &#39;</span>
+                            <span class="s1">&#39;back to default implementation, this behaviour &#39;</span>
+                            <span class="s1">&#39;will be removed in Pike&#39;</span><span class="p">),</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="vm">__name__</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">default_impl</span><span class="o">.</span><span class="n">get_current_vif</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">p_obj</span><span class="p">)</span></div>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="NetworkInterface.add_provisioning_network"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.NetworkInterface.add_provisioning_network">[docs]</a>    <span class="k">def</span> <span class="nf">add_provisioning_network</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Add the provisioning network to a node.</span>
+
+<span class="sd">        :param task: A TaskManager instance.</span>
+<span class="sd">        :raises: NetworkError</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="NetworkInterface.remove_provisioning_network"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.NetworkInterface.remove_provisioning_network">[docs]</a>    <span class="k">def</span> <span class="nf">remove_provisioning_network</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Remove the provisioning network from a node.</span>
+
+<span class="sd">        :param task: A TaskManager instance.</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="NetworkInterface.configure_tenant_networks"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.NetworkInterface.configure_tenant_networks">[docs]</a>    <span class="k">def</span> <span class="nf">configure_tenant_networks</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Configure tenant networks for a node.</span>
+
+<span class="sd">        :param task: A TaskManager instance.</span>
+<span class="sd">        :raises: NetworkError</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="NetworkInterface.unconfigure_tenant_networks"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.NetworkInterface.unconfigure_tenant_networks">[docs]</a>    <span class="k">def</span> <span class="nf">unconfigure_tenant_networks</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Unconfigure tenant networks for a node.</span>
+
+<span class="sd">        :param task: A TaskManager instance.</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="NetworkInterface.add_cleaning_network"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.NetworkInterface.add_cleaning_network">[docs]</a>    <span class="k">def</span> <span class="nf">add_cleaning_network</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Add the cleaning network to a node.</span>
+
+<span class="sd">        :param task: A TaskManager instance.</span>
+<span class="sd">        :returns: a dictionary in the form {port.uuid: neutron_port[&#39;id&#39;]}</span>
+<span class="sd">        :raises: NetworkError</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="NetworkInterface.remove_cleaning_network"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.NetworkInterface.remove_cleaning_network">[docs]</a>    <span class="k">def</span> <span class="nf">remove_cleaning_network</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Remove the cleaning network from a node.</span>
+
+<span class="sd">        :param task: A TaskManager instance.</span>
+<span class="sd">        :raises: NetworkError</span>
+<span class="sd">        &quot;&quot;&quot;</span></div></div>
+
+
+<span class="nd">@six.add_metaclass</span><span class="p">(</span><span class="n">abc</span><span class="o">.</span><span class="n">ABCMeta</span><span class="p">)</span>
+<div class="viewcode-block" id="StorageInterface"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.StorageInterface">[docs]</a><span class="k">class</span> <span class="nc">StorageInterface</span><span class="p">(</span><span class="n">BaseInterface</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Base class for storage interfaces.&quot;&quot;&quot;</span>
+
+    <span class="n">interface_type</span> <span class="o">=</span> <span class="s1">&#39;storage&#39;</span>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="StorageInterface.attach_volumes"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.StorageInterface.attach_volumes">[docs]</a>    <span class="k">def</span> <span class="nf">attach_volumes</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Informs the storage subsystem to attach all volumes for the node.</span>
+
+<span class="sd">        :param task: a TaskManager instance.</span>
+<span class="sd">        :raises: UnsupportedDriverExtension</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="StorageInterface.detach_volumes"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.StorageInterface.detach_volumes">[docs]</a>    <span class="k">def</span> <span class="nf">detach_volumes</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Informs the storage subsystem to detach all volumes for the node.</span>
+
+<span class="sd">        :param task: a TaskManager instance.</span>
+<span class="sd">        :raises: UnsupportedDriverExtension</span>
+<span class="sd">        &quot;&quot;&quot;</span></div>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="StorageInterface.should_write_image"><a class="viewcode-back" href="../../../api/ironic.drivers.base.html#ironic.drivers.base.StorageInterface.should_write_image">[docs]</a>    <span class="k">def</span> <span class="nf">should_write_image</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Determines if deploy should perform the image write-out.</span>
+
+<span class="sd">        :param task: a TaskManager instance.</span>
+<span class="sd">        :returns: Boolean value to indicate if the interface expects</span>
+<span class="sd">                  the image to be written by Ironic.</span>
+<span class="sd">        :raises: UnsupportedDriverExtension</span>
+<span class="sd">        &quot;&quot;&quot;</span></div></div>
+
+
+<span class="k">def</span> <span class="nf">_validate_argsinfo</span><span class="p">(</span><span class="n">argsinfo</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Validate args info.</span>
+
+<span class="sd">    This method validates args info, so that the values are the expected</span>
+<span class="sd">    data types and required values are specified.</span>
+
+<span class="sd">    :param argsinfo: a dictionary of keyword arguments where key is the name of</span>
+<span class="sd">        the argument and value is a dictionary as follows::</span>
+
+<span class="sd">            ‘description’: &lt;description&gt;. Required. This should include</span>
+<span class="sd">                           possible values.</span>
+<span class="sd">            ‘required’: Boolean. Optional; default is False. True if this</span>
+<span class="sd">                        argument is required.  If so, it must be specified in</span>
+<span class="sd">                        the clean request; false if it is optional.</span>
+<span class="sd">    :raises InvalidParameterValue if any of the arguments are invalid</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">argsinfo</span><span class="p">:</span>
+        <span class="k">return</span>
+
+    <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">argsinfo</span><span class="p">,</span> <span class="nb">dict</span><span class="p">):</span>
+        <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">InvalidParameterValue</span><span class="p">(</span>
+            <span class="n">_</span><span class="p">(</span><span class="s1">&#39;&quot;argsinfo&quot; must be a dictionary instead of &quot;</span><span class="si">%s</span><span class="s1">&quot;&#39;</span><span class="p">)</span> <span class="o">%</span>
+            <span class="n">argsinfo</span><span class="p">)</span>
+    <span class="k">for</span> <span class="p">(</span><span class="n">arg</span><span class="p">,</span> <span class="n">info</span><span class="p">)</span> <span class="ow">in</span> <span class="n">argsinfo</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">info</span><span class="p">,</span> <span class="nb">dict</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">InvalidParameterValue</span><span class="p">(</span>
+                <span class="n">_</span><span class="p">(</span><span class="s1">&#39;Argument &quot;</span><span class="si">%(arg)s</span><span class="s1">&quot; must be a dictionary instead of &#39;</span>
+                  <span class="s1">&#39;&quot;</span><span class="si">%(val)s</span><span class="s1">&quot;.&#39;</span><span class="p">)</span> <span class="o">%</span> <span class="p">{</span><span class="s1">&#39;arg&#39;</span><span class="p">:</span> <span class="n">arg</span><span class="p">,</span> <span class="s1">&#39;val&#39;</span><span class="p">:</span> <span class="n">info</span><span class="p">})</span>
+        <span class="n">has_description</span> <span class="o">=</span> <span class="bp">False</span>
+        <span class="k">for</span> <span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span> <span class="ow">in</span> <span class="n">info</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+            <span class="k">if</span> <span class="n">key</span> <span class="o">==</span> <span class="s1">&#39;description&#39;</span><span class="p">:</span>
+                <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">value</span><span class="p">,</span> <span class="n">six</span><span class="o">.</span><span class="n">string_types</span><span class="p">):</span>
+                    <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">InvalidParameterValue</span><span class="p">(</span>
+                        <span class="n">_</span><span class="p">(</span><span class="s1">&#39;For argument &quot;</span><span class="si">%(arg)s</span><span class="s1">&quot;, &quot;description&quot; must be a &#39;</span>
+                          <span class="s1">&#39;string value instead of &quot;</span><span class="si">%(value)s</span><span class="s1">&quot;.&#39;</span><span class="p">)</span> <span class="o">%</span>
+                        <span class="p">{</span><span class="s1">&#39;arg&#39;</span><span class="p">:</span> <span class="n">arg</span><span class="p">,</span> <span class="s1">&#39;value&#39;</span><span class="p">:</span> <span class="n">value</span><span class="p">})</span>
+                <span class="n">has_description</span> <span class="o">=</span> <span class="bp">True</span>
+            <span class="k">elif</span> <span class="n">key</span> <span class="o">==</span> <span class="s1">&#39;required&#39;</span><span class="p">:</span>
+                <span class="k">if</span> <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">value</span><span class="p">,</span> <span class="nb">bool</span><span class="p">):</span>
+                    <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">InvalidParameterValue</span><span class="p">(</span>
+                        <span class="n">_</span><span class="p">(</span><span class="s1">&#39;For argument &quot;</span><span class="si">%(arg)s</span><span class="s1">&quot;, &quot;required&quot; must be a &#39;</span>
+                          <span class="s1">&#39;Boolean value instead of &quot;</span><span class="si">%(value)s</span><span class="s1">&quot;.&#39;</span><span class="p">)</span> <span class="o">%</span>
+                        <span class="p">{</span><span class="s1">&#39;arg&#39;</span><span class="p">:</span> <span class="n">arg</span><span class="p">,</span> <span class="s1">&#39;value&#39;</span><span class="p">:</span> <span class="n">value</span><span class="p">})</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">InvalidParameterValue</span><span class="p">(</span>
+                    <span class="n">_</span><span class="p">(</span><span class="s1">&#39;Argument &quot;</span><span class="si">%(arg)s</span><span class="s1">&quot; has an invalid key named &quot;</span><span class="si">%(key)s</span><span class="s1">&quot;. &#39;</span>
+                      <span class="s1">&#39;It must be &quot;description&quot; or &quot;required&quot;.&#39;</span><span class="p">)</span>
+                    <span class="o">%</span> <span class="p">{</span><span class="s1">&#39;key&#39;</span><span class="p">:</span> <span class="n">key</span><span class="p">,</span> <span class="s1">&#39;arg&#39;</span><span class="p">:</span> <span class="n">arg</span><span class="p">})</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">has_description</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">InvalidParameterValue</span><span class="p">(</span>
+                <span class="n">_</span><span class="p">(</span><span class="s1">&#39;Argument &quot;</span><span class="si">%(arg)s</span><span class="s1">&quot; is missing a &quot;description&quot;.&#39;</span><span class="p">)</span> <span class="o">%</span>
+                <span class="p">{</span><span class="s1">&#39;arg&#39;</span><span class="p">:</span> <span class="n">arg</span><span class="p">})</span>
+
+
+<span class="k">def</span> <span class="nf">clean_step</span><span class="p">(</span><span class="n">priority</span><span class="p">,</span> <span class="n">abortable</span><span class="o">=</span><span class="bp">False</span><span class="p">,</span> <span class="n">argsinfo</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Decorator for cleaning steps.</span>
+
+<span class="sd">    Cleaning steps may be used in manual or automated cleaning.</span>
+
+<span class="sd">    For automated cleaning, only steps with priorities greater than 0 are</span>
+<span class="sd">    used. These steps are ordered by priority from highest value to lowest</span>
+<span class="sd">    value. For steps with the same priority, they are ordered by driver</span>
+<span class="sd">    interface priority (see conductor.manager.CLEANING_INTERFACE_PRIORITY).</span>
+<span class="sd">    execute_clean_step() will be called on each step.</span>
+
+<span class="sd">    For manual cleaning, the clean steps will be executed in a similar fashion</span>
+<span class="sd">    to automated cleaning, but the steps and order of execution must be</span>
+<span class="sd">    explicitly specified by the user when invoking the cleaning API.</span>
+
+<span class="sd">    Decorated clean steps must take as the only positional argument, a</span>
+<span class="sd">    TaskManager object. Clean steps used in manual cleaning may also take</span>
+<span class="sd">    keyword variable arguments (as described in argsinfo).</span>
+
+<span class="sd">    Clean steps can be either synchronous or asynchronous.  If the step is</span>
+<span class="sd">    synchronous, it should return `None` when finished, and the conductor</span>
+<span class="sd">    will continue on to the next step. While the clean step is executing, the</span>
+<span class="sd">    node will be in `states.CLEANING` provision state. If the step is</span>
+<span class="sd">    asynchronous, the step should return `states.CLEANWAIT` to the</span>
+<span class="sd">    conductor before it starts the asynchronous work.  When the step is</span>
+<span class="sd">    complete, the step should make an RPC call to `continue_node_clean` to</span>
+<span class="sd">    move to the next step in cleaning. The node will be in `states.CLEANWAIT`</span>
+<span class="sd">    provision state during the asynchronous work.</span>
+
+<span class="sd">    Examples::</span>
+
+<span class="sd">        class MyInterface(base.BaseInterface):</span>
+<span class="sd">            # CONF.example_cleaning_priority should be an int CONF option</span>
+<span class="sd">            @base.clean_step(priority=CONF.example_cleaning_priority)</span>
+<span class="sd">            def example_cleaning(self, task):</span>
+<span class="sd">                # do some cleaning</span>
+
+<span class="sd">            @base.clean_step(priority=0, abortable=True, argsinfo=</span>
+<span class="sd">                             {&#39;size&#39;: {&#39;description&#39;: &#39;size of widget (MB)&#39;,</span>
+<span class="sd">                                       &#39;required&#39;: True}})</span>
+<span class="sd">            def advanced_clean(self, task, **kwargs):</span>
+<span class="sd">                # do some advanced cleaning</span>
+
+<span class="sd">    :param priority: an integer priority, should be a CONF option</span>
+<span class="sd">    :param abortable: Boolean value. Whether the clean step is abortable</span>
+<span class="sd">        or not; defaults to False.</span>
+<span class="sd">    :param argsinfo: a dictionary of keyword arguments where key is the name of</span>
+<span class="sd">        the argument and value is a dictionary as follows::</span>
+
+<span class="sd">            ‘description’: &lt;description&gt;. Required. This should include</span>
+<span class="sd">                           possible values.</span>
+<span class="sd">            ‘required’: Boolean. Optional; default is False. True if this</span>
+<span class="sd">                        argument is required.  If so, it must be specified in</span>
+<span class="sd">                        the clean request; false if it is optional.</span>
+<span class="sd">    :raises InvalidParameterValue if any of the arguments are invalid</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">def</span> <span class="nf">decorator</span><span class="p">(</span><span class="n">func</span><span class="p">):</span>
+        <span class="n">func</span><span class="o">.</span><span class="n">_is_clean_step</span> <span class="o">=</span> <span class="bp">True</span>
+        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">priority</span><span class="p">,</span> <span class="nb">int</span><span class="p">):</span>
+            <span class="n">func</span><span class="o">.</span><span class="n">_clean_step_priority</span> <span class="o">=</span> <span class="n">priority</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">InvalidParameterValue</span><span class="p">(</span>
+                <span class="n">_</span><span class="p">(</span><span class="s1">&#39;&quot;priority&quot; must be an integer value instead of &quot;</span><span class="si">%s</span><span class="s1">&quot;&#39;</span><span class="p">)</span>
+                <span class="o">%</span> <span class="n">priority</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">abortable</span><span class="p">,</span> <span class="nb">bool</span><span class="p">):</span>
+            <span class="n">func</span><span class="o">.</span><span class="n">_clean_step_abortable</span> <span class="o">=</span> <span class="n">abortable</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">InvalidParameterValue</span><span class="p">(</span>
+                <span class="n">_</span><span class="p">(</span><span class="s1">&#39;&quot;abortable&quot; must be a Boolean value instead of &quot;</span><span class="si">%s</span><span class="s1">&quot;&#39;</span><span class="p">)</span>
+                <span class="o">%</span> <span class="n">abortable</span><span class="p">)</span>
+
+        <span class="n">_validate_argsinfo</span><span class="p">(</span><span class="n">argsinfo</span><span class="p">)</span>
+        <span class="n">func</span><span class="o">.</span><span class="n">_clean_step_argsinfo</span> <span class="o">=</span> <span class="n">argsinfo</span>
+        <span class="k">return</span> <span class="n">func</span>
+    <span class="k">return</span> <span class="n">decorator</span>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/ironic
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../../index.html">Ironic 7.0.1.dev5 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../../index.html" accesskey="U">Module code</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright OpenStack Foundation.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/Ironic");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

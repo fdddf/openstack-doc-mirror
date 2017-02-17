@@ -1,0 +1,289 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>QoS implementaiton for networking-midonet &mdash; networking-midonet 4.0.1.dev3 documentation</title>
+    
+    <link rel="stylesheet" href="../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../',
+        VERSION:     '4.0.1.dev3',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../_static/doctools.js"></script>
+    <link rel="top" title="networking-midonet 4.0.1.dev3 documentation" href="../../index.html" />
+    <link rel="up" title="Specifications" href="../index.html" />
+    <link rel="next" title="Gerrit Dashboards" href="../../dashboards/index.html" />
+    <link rel="prev" title="Floating IP via router interfaces" href="../mitaka/router-interface-fip.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="qos-implementaiton-for-networking-midonet">
+<h1>QoS implementaiton for networking-midonet<a class="headerlink" href="#qos-implementaiton-for-networking-midonet" title="Permalink to this headline">¶</a></h1>
+<p>This spec describes how to implement QoS extension for networking-midonet.
+The backend side is covered by another spec. <a class="footnote-reference" href="#backend-design" id="id1">[5]</a></p>
+<div class="section" id="proposed-change">
+<h2>Proposed Change<a class="headerlink" href="#proposed-change" title="Permalink to this headline">¶</a></h2>
+<div class="section" id="qos-driver">
+<h3>QoS driver<a class="headerlink" href="#qos-driver" title="Permalink to this headline">¶</a></h3>
+<p>Use the Neutron QoS plugin as it is.  Implement MidoNet specific
+notification driver which communicates with the MidoNet API.</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="p">[</span><span class="n">DEFAULT</span><span class="p">]</span>
+<span class="n">service_plugins</span> <span class="o">=</span> <span class="n">qos</span>
+
+<span class="p">[</span><span class="n">qos</span><span class="p">]</span>
+<span class="n">notification_drivers</span> <span class="o">=</span> <span class="n">midonet</span><span class="p">,</span><span class="n">message_queue</span>
+</pre></div>
+</div>
+<p>setup.cfg:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>neutron.qos.notification_drivers =
+    midonet = midonet.neutron.services.qos.driver:MidoNetQosServiceNotificationDriver
+</pre></div>
+</div>
+<p>Note: <cite>message_queue</cite> driver <a class="footnote-reference" href="#rpc-driver" id="id2">[4]</a> is the AMQP RPC <a class="footnote-reference" href="#qos-rpc" id="id3">[7]</a>
+based driver for the reference implementation.  It isn&#8217;t necessary for
+MidoNet-only deployments.</p>
+<p>Neutron QoS plugin <a class="footnote-reference" href="#neutron-qos-plugin" id="id4">[1]</a> has notification driver
+mechansim <a class="footnote-reference" href="#driver-manager" id="id5">[2]</a>, which can be used for networking-midonet
+to implement backend notifications.</p>
+<p>When Neutron QoS plugin receives API requests, it updates the
+corresponding DB rows.  After commiting the DB changes, it calls
+one of the following methods of the loaded notification drivers:</p>
+<ul class="simple">
+<li>create_policy</li>
+<li>update_policy</li>
+<li>delete_policy</li>
+</ul>
+<p>Note: a request for a rule (eg. <cite>update_policy_rule</cite>) ends up with a
+notification for the entire policy the rule belongs to.</p>
+<p>Note: a request for a specific rule type (eg. <cite>update_policy_dscp_marking_rule</cite>)
+are automatically converted to a generic method (eg. <cite>update_policy_rule</cite>)
+by the QoS extension, namely <cite>QoSPluginBase</cite>.  <a class="footnote-reference" href="#method-proxy" id="id6">[6]</a></p>
+</div>
+<div class="section" id="error-handling">
+<h3>Error handling<a class="headerlink" href="#error-handling" title="Permalink to this headline">¶</a></h3>
+<p>Notification driver methods are considered async and always success.
+<a class="footnote-reference" href="#bug-1627749" id="id7">[9]</a>
+Currently there&#8217;s no convenient way to report errors from the backend.
+While it&#8217;s possible for a driver to return an error by raising an
+exception, if multiple drivers are loaded and one of them fails
+that way, the rest of drivers are just skipped.  Even if we assume
+the simplest case where only MidoNet QoS driver is loaded, there&#8217;s
+no mechanism to mark the resource error or rollback the operation.
+There&#8217;s an ongoing effort in Neutron <a class="footnote-reference" href="#id10" id="id8">[8]</a> in that area,
+which might improve the situation.</p>
+</div>
+<div class="section" id="core-resource-extensions">
+<h3>Core resource extensions<a class="headerlink" href="#core-resource-extensions" title="Permalink to this headline">¶</a></h3>
+<p>For ML2, the existing QoS extension driver should work.</p>
+<p>If we want to make this feature available for the monolithic plugins,
+the equivalent needs to be implemented for them.</p>
+</div>
+</div>
+<div class="section" id="alternative">
+<h2>Alternative<a class="headerlink" href="#alternative" title="Permalink to this headline">¶</a></h2>
+<p>Instead of the QoS driver, we can implement the entire QoS plugin by
+ourselves.</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="p">[</span><span class="n">DEFAULT</span><span class="p">]</span>
+<span class="n">service_plugins</span> <span class="o">=</span> <span class="n">midonet_qos</span>
+</pre></div>
+</div>
+<p>setup.cfg:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>neutron.service_plugins =
+    midonet_qos = midonet.neutron.services.qos.plugin:MidonetQosPlugin
+</pre></div>
+</div>
+<p>This might fit the current backend design <a class="footnote-reference" href="#backend-design" id="id9">[5]</a> better.</p>
+<p>We can re-use the reference QoS plugin and its DB models by inheriting
+its class.  It&#8217;s a rather discouraged pattern these days, though.
+This way the first implementation might be simpler.  But it might be
+tricky to deal with other backends (consider ML2 heterogeneous deployments)
+and future enhancements in Neutron.</p>
+</div>
+<div class="section" id="references">
+<h2>References<a class="headerlink" href="#references" title="Permalink to this headline">¶</a></h2>
+<table class="docutils footnote" frame="void" id="neutron-qos-plugin" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label"><a class="fn-backref" href="#id4">[1]</a></td><td><a class="reference external" href="https://github.com/openstack/neutron/blob/2be2d97d11719db88537a9664c95f1b6b11d3707/neutron/services/qos/qos_plugin.py">https://github.com/openstack/neutron/blob/2be2d97d11719db88537a9664c95f1b6b11d3707/neutron/services/qos/qos_plugin.py</a></td></tr>
+</tbody>
+</table>
+<table class="docutils footnote" frame="void" id="driver-manager" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label"><a class="fn-backref" href="#id5">[2]</a></td><td><a class="reference external" href="https://github.com/openstack/neutron/blob/2be2d97d11719db88537a9664c95f1b6b11d3707/neutron/services/qos/notification_drivers/manager.py">https://github.com/openstack/neutron/blob/2be2d97d11719db88537a9664c95f1b6b11d3707/neutron/services/qos/notification_drivers/manager.py</a></td></tr>
+</tbody>
+</table>
+<table class="docutils footnote" frame="void" id="driver-base" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label">[3]</td><td><a class="reference external" href="https://github.com/openstack/neutron/blob/2be2d97d11719db88537a9664c95f1b6b11d3707/neutron/services/qos/notification_drivers/qos_base.py#L18">https://github.com/openstack/neutron/blob/2be2d97d11719db88537a9664c95f1b6b11d3707/neutron/services/qos/notification_drivers/qos_base.py#L18</a></td></tr>
+</tbody>
+</table>
+<table class="docutils footnote" frame="void" id="rpc-driver" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label"><a class="fn-backref" href="#id2">[4]</a></td><td><a class="reference external" href="https://github.com/openstack/neutron/blob/2be2d97d11719db88537a9664c95f1b6b11d3707/neutron/services/qos/notification_drivers/message_queue.py#L40">https://github.com/openstack/neutron/blob/2be2d97d11719db88537a9664c95f1b6b11d3707/neutron/services/qos/notification_drivers/message_queue.py#L40</a></td></tr>
+</tbody>
+</table>
+<table class="docutils footnote" frame="void" id="backend-design" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label">[5]</td><td><em>(<a class="fn-backref" href="#id1">1</a>, <a class="fn-backref" href="#id9">2</a>)</em> <a class="reference external" href="https://review.gerrithub.io/#/c/289456/">https://review.gerrithub.io/#/c/289456/</a></td></tr>
+</tbody>
+</table>
+<table class="docutils footnote" frame="void" id="method-proxy" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label"><a class="fn-backref" href="#id6">[6]</a></td><td><a class="reference external" href="https://github.com/openstack/neutron/blob/2be2d97d11719db88537a9664c95f1b6b11d3707/neutron/extensions/qos.py#L225">https://github.com/openstack/neutron/blob/2be2d97d11719db88537a9664c95f1b6b11d3707/neutron/extensions/qos.py#L225</a></td></tr>
+</tbody>
+</table>
+<table class="docutils footnote" frame="void" id="qos-rpc" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label"><a class="fn-backref" href="#id3">[7]</a></td><td><a class="reference external" href="http://docs.openstack.org/developer/neutron/devref/quality_of_service.html#rpc-communication">http://docs.openstack.org/developer/neutron/devref/quality_of_service.html#rpc-communication</a></td></tr>
+</tbody>
+</table>
+<table class="docutils footnote" frame="void" id="id10" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label"><a class="fn-backref" href="#id8">[8]</a></td><td><a class="reference external" href="https://review.openstack.org/#/c/351858/">https://review.openstack.org/#/c/351858/</a></td></tr>
+</tbody>
+</table>
+<table class="docutils footnote" frame="void" id="bug-1627749" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label"><a class="fn-backref" href="#id7">[9]</a></td><td><a class="reference external" href="https://bugs.launchpad.net/neutron/+bug/1627749">https://bugs.launchpad.net/neutron/+bug/1627749</a></td></tr>
+</tbody>
+</table>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="../../index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">QoS implementaiton for networking-midonet</a><ul>
+<li><a class="reference internal" href="#proposed-change">Proposed Change</a><ul>
+<li><a class="reference internal" href="#qos-driver">QoS driver</a></li>
+<li><a class="reference internal" href="#error-handling">Error handling</a></li>
+<li><a class="reference internal" href="#core-resource-extensions">Core resource extensions</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#alternative">Alternative</a></li>
+<li><a class="reference internal" href="#references">References</a></li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="../mitaka/router-interface-fip.html"
+                                  title="previous chapter">Floating IP via router interfaces</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="../../dashboards/index.html"
+                                  title="next chapter">Gerrit Dashboards</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/networking-midonet
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="../../_sources/specs/ocata/midonet-qos.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="right" >
+          <a href="../../dashboards/index.html" title="Gerrit Dashboards"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="../mitaka/router-interface-fip.html" title="Floating IP via router interfaces"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../index.html">networking-midonet 4.0.1.dev3 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../index.html" accesskey="U">Specifications</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2015, OpenStack Foundation.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/networking-midonet");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

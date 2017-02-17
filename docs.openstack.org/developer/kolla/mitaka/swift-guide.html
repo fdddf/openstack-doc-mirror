@@ -1,0 +1,298 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Swift in Kolla &mdash; kolla 2.0.3.dev72 documentation</title>
+    
+    <link rel="stylesheet" href="_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '2.0.3.dev72',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <link rel="top" title="kolla 2.0.3.dev72 documentation" href="index.html" />
+    <link rel="prev" title="Manila in Kolla" href="manila-guide.html" /> 
+  </head>
+  <body>
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body">
+            
+  <div class="section" id="swift-in-kolla">
+<h1>Swift in Kolla<a class="headerlink" href="#swift-in-kolla" title="Permalink to this headline">¶</a></h1>
+<div class="section" id="overview">
+<h2>Overview<a class="headerlink" href="#overview" title="Permalink to this headline">¶</a></h2>
+<p>Kolla can deploy a full working Swift setup in either a AIO or multi node setup.</p>
+</div>
+<div class="section" id="prerequisites">
+<h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Permalink to this headline">¶</a></h2>
+<p>Before running Swift we need to generate &#8220;rings&#8221;, which are binary compressed
+files that at a high level let the various Swift services know where data is in
+the cluster. We hope to automate this process in a future release.</p>
+<div class="section" id="disks-with-a-partition-table-recommended">
+<h3>Disks with a partition table (recommended)<a class="headerlink" href="#disks-with-a-partition-table-recommended" title="Permalink to this headline">¶</a></h3>
+<p>Swift also expects block devices to be available for storage. To prepare a disk
+for use as Swift storage device, a special partition name and filesystem label
+need to be added.  So that Kolla can detect those disks and mount for services.</p>
+<p>Follow the example below to add 3 disks for an AIO demo setup.</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span># &lt;WARNING ALL DATA ON DISK will be LOST!&gt;
+index=0
+for d in sdc sdd sde; do
+    parted /dev/${d} -s -- mklabel gpt mkpart KOLLA_SWIFT_DATA 1 -1
+    sudo mkfs.xfs -f -L d${index} /dev/${d}1
+    (( index++ ))
+done
+</pre></div>
+</div>
+<p>For evaluation, loopback devices can be used in lieu of real disks:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>index=0
+for d in sdc sdd sde; do
+    free_device=$(losetup -f)
+    fallocate -l 1G /tmp/$d
+    losetup $free_device /tmp/$d
+    parted $free_device -s -- mklabel gpt mkpart KOLLA_SWIFT_DATA 1 -1
+    sudo mkfs.xfs -f -L d${index} ${free_device}p1
+    (( index++ ))
+done
+</pre></div>
+</div>
+</div>
+<div class="section" id="disks-without-a-partition-table">
+<h3>Disks without a partition table<a class="headerlink" href="#disks-without-a-partition-table" title="Permalink to this headline">¶</a></h3>
+<p>Kolla also supports unpartitioned disk (filesystem on /dev/sdc instead of
+/dev/sdc1) detection purely based on filesystem label. This is generally not a
+recommended practice but can be helpful for Kolla to take over Swift deployment
+already using disk like this.</p>
+<p>Given hard disks with labels swd1, swd2, swd3, use the following settings in
+ansible/roles/swift/defaults/main.yml</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>swift_devices_match_mode: &quot;prefix&quot;
+swift_devices_name: &quot;swd&quot;
+</pre></div>
+</div>
+</div>
+<div class="section" id="rings">
+<h3>Rings<a class="headerlink" href="#rings" title="Permalink to this headline">¶</a></h3>
+<p>Run following commands locally to generate Rings for AIO demo setup. The
+commands work with &#8220;disks with partition table&#8221; example listed above. Please
+modify accordingly if your setup is different.</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>export KOLLA_INTERNAL_ADDRESS=1.2.3.4
+export KOLLA_BASE_DISTRO=centos
+export KOLLA_INSTALL_TYPE=binary
+
+# Object ring
+docker run \
+  -v /etc/kolla/config/swift/:/etc/kolla/config/swift/ \
+  kolla/${KOLLA_BASE_DISTRO}-${KOLLA_INSTALL_TYPE}-swift-base \
+  swift-ring-builder /etc/kolla/config/swift/object.builder create 10 3 1
+
+for i in {0..2}; do
+  docker run \
+    -v /etc/kolla/config/swift/:/etc/kolla/config/swift/ \
+    kolla/${KOLLA_BASE_DISTRO}-${KOLLA_INSTALL_TYPE}-swift-base swift-ring-builder \
+    /etc/kolla/config/swift/object.builder add r1z1-${KOLLA_INTERNAL_ADDRESS}:6000/d${i} 1;
+done
+
+# Account ring
+docker run \
+  -v /etc/kolla/config/swift/:/etc/kolla/config/swift/ \
+  kolla/${KOLLA_BASE_DISTRO}-${KOLLA_INSTALL_TYPE}-swift-base \
+  swift-ring-builder /etc/kolla/config/swift/account.builder create 10 3 1
+
+for i in {0..2}; do
+  docker run \
+    -v /etc/kolla/config/swift/:/etc/kolla/config/swift/ \
+    kolla/${KOLLA_BASE_DISTRO}-${KOLLA_INSTALL_TYPE}-swift-base swift-ring-builder \
+    /etc/kolla/config/swift/account.builder add r1z1-${KOLLA_INTERNAL_ADDRESS}:6001/d${i} 1;
+done
+
+# Container ring
+docker run \
+  -v /etc/kolla/config/swift/:/etc/kolla/config/swift/ \
+  kolla/${KOLLA_BASE_DISTRO}-${KOLLA_INSTALL_TYPE}-swift-base \
+  swift-ring-builder /etc/kolla/config/swift/container.builder create 10 3 1
+
+for i in {0..2}; do
+  docker run \
+    -v /etc/kolla/config/swift/:/etc/kolla/config/swift/ \
+    kolla/${KOLLA_BASE_DISTRO}-${KOLLA_INSTALL_TYPE}-swift-base swift-ring-builder \
+    /etc/kolla/config/swift/container.builder add r1z1-${KOLLA_INTERNAL_ADDRESS}:6002/d${i} 1;
+done
+
+for ring in object account container; do
+  docker run \
+    -v /etc/kolla/config/swift/:/etc/kolla/config/swift/ \
+    kolla/${KOLLA_BASE_DISTRO}-${KOLLA_INSTALL_TYPE}-swift-base swift-ring-builder \
+    /etc/kolla/config/swift/${ring}.builder rebalance;
+done
+</pre></div>
+</div>
+<p>Similar commands can be used for multinode, you will just need to run the &#8216;add&#8217; step for each IP
+in the cluster.</p>
+<p>For more info, see
+<a class="reference external" href="http://docs.openstack.org/kilo/install-guide/install/apt/content/swift-initial-rings.html">http://docs.openstack.org/kilo/install-guide/install/apt/content/swift-initial-rings.html</a></p>
+</div>
+</div>
+<div class="section" id="deploying">
+<h2>Deploying<a class="headerlink" href="#deploying" title="Permalink to this headline">¶</a></h2>
+<p>Enable Swift in /etc/kolla/globals.yml:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>enable_swift : &quot;yes&quot;
+</pre></div>
+</div>
+<p>Once the rings are in place, deploying Swift is the same as any other Kolla Ansible service. Below
+is the minimal command to bring up Swift AIO, and it&#8217;s dependencies:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>ansible-playbook \
+  -i ansible/inventory/all-in-one \
+  -e @/etc/kolla/globals.yml \
+  -e @etc/kolla/passwords.yml \
+  ansible/site.yml \
+  --tags=rabbitmq,mariadb,keystone,swift
+</pre></div>
+</div>
+</div>
+<div class="section" id="validation">
+<h2>Validation<a class="headerlink" href="#validation" title="Permalink to this headline">¶</a></h2>
+<p>A very basic smoke test:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>$ swift stat
+                          Account: AUTH_4c19d363b9cf432a80e34f06b1fa5749
+                     Containers: 1
+                        Objects: 0
+                          Bytes: 0
+Containers in policy &quot;policy-0&quot;: 1
+   Objects in policy &quot;policy-0&quot;: 0
+     Bytes in policy &quot;policy-0&quot;: 0
+    X-Account-Project-Domain-Id: default
+                    X-Timestamp: 1440168098.28319
+                     X-Trans-Id: txf5a62b7d7fc541f087703-0055d73be7
+                   Content-Type: text/plain; charset=utf-8
+                  Accept-Ranges: bytes
+
+$ swift upload mycontainer README.rst
+README.md
+
+$ swift list
+mycontainer
+
+$ swift download mycontainer README.md
+README.md [auth 0.248s, headers 0.939s, total 0.939s, 0.006 MB/s]
+</pre></div>
+</div>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Swift in Kolla</a><ul>
+<li><a class="reference internal" href="#overview">Overview</a></li>
+<li><a class="reference internal" href="#prerequisites">Prerequisites</a><ul>
+<li><a class="reference internal" href="#disks-with-a-partition-table-recommended">Disks with a partition table (recommended)</a></li>
+<li><a class="reference internal" href="#disks-without-a-partition-table">Disks without a partition table</a></li>
+<li><a class="reference internal" href="#rings">Rings</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#deploying">Deploying</a></li>
+<li><a class="reference internal" href="#validation">Validation</a></li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="manila-guide.html"
+                                  title="previous chapter">Manila in Kolla</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/kolla
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="_sources/swift-guide.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="manila-guide.html" title="Manila in Kolla"
+             accesskey="P">previous</a> |</li>
+        <li><a href="index.html">kolla 2.0.3.dev72 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer">
+        &copy; Copyright 2013, OpenStack Foundation.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.2.3.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/kolla");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

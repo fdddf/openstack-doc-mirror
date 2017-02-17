@@ -1,0 +1,330 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>taskflow.listeners.base &mdash; TaskFlow 2.9.1.dev9 documentation</title>
+    
+    <link rel="stylesheet" href="../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../',
+        VERSION:     '2.9.1.dev9',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../_static/doctools.js"></script>
+    <link rel="top" title="TaskFlow 2.9.1.dev9 documentation" href="../../../index.html" />
+    <link rel="up" title="Module code" href="../../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for taskflow.listeners.base</h1><div class="highlight"><pre>
+<span></span><span class="c1"># -*- coding: utf-8 -*-</span>
+
+<span class="c1">#    Copyright (C) 2013 Yahoo! Inc. All Rights Reserved.</span>
+<span class="c1">#</span>
+<span class="c1">#    Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may</span>
+<span class="c1">#    not use this file except in compliance with the License. You may obtain</span>
+<span class="c1">#    a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#         http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1">#    Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1">#    distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="c1">#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="c1">#    License for the specific language governing permissions and limitations</span>
+<span class="c1">#    under the License.</span>
+
+<span class="kn">from</span> <span class="nn">__future__</span> <span class="kn">import</span> <span class="n">absolute_import</span>
+
+<span class="kn">import</span> <span class="nn">abc</span>
+
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">excutils</span>
+<span class="kn">import</span> <span class="nn">six</span>
+
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">logging</span>
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">states</span>
+<span class="kn">from</span> <span class="nn">taskflow.types</span> <span class="kn">import</span> <span class="n">failure</span>
+<span class="kn">from</span> <span class="nn">taskflow.types</span> <span class="kn">import</span> <span class="n">notifier</span>
+
+<span class="n">LOG</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+<span class="c1">#: These states will results be usable, other states do not produce results.</span>
+<span class="n">FINISH_STATES</span> <span class="o">=</span> <span class="p">(</span><span class="n">states</span><span class="o">.</span><span class="n">FAILURE</span><span class="p">,</span> <span class="n">states</span><span class="o">.</span><span class="n">SUCCESS</span><span class="p">,</span>
+                 <span class="n">states</span><span class="o">.</span><span class="n">REVERTED</span><span class="p">,</span> <span class="n">states</span><span class="o">.</span><span class="n">REVERT_FAILURE</span><span class="p">)</span>
+
+<span class="c1">#: What is listened for by default...</span>
+<span class="n">DEFAULT_LISTEN_FOR</span> <span class="o">=</span> <span class="p">(</span><span class="n">notifier</span><span class="o">.</span><span class="n">Notifier</span><span class="o">.</span><span class="n">ANY</span><span class="p">,)</span>
+
+
+<span class="k">def</span> <span class="nf">_task_matcher</span><span class="p">(</span><span class="n">details</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Matches task details emitted.&quot;&quot;&quot;</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">details</span><span class="p">:</span>
+        <span class="k">return</span> <span class="bp">False</span>
+    <span class="k">if</span> <span class="s1">&#39;task_name&#39;</span> <span class="ow">in</span> <span class="n">details</span> <span class="ow">and</span> <span class="s1">&#39;task_uuid&#39;</span> <span class="ow">in</span> <span class="n">details</span><span class="p">:</span>
+        <span class="k">return</span> <span class="bp">True</span>
+    <span class="k">return</span> <span class="bp">False</span>
+
+
+<span class="k">def</span> <span class="nf">_retry_matcher</span><span class="p">(</span><span class="n">details</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Matches retry details emitted.&quot;&quot;&quot;</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">details</span><span class="p">:</span>
+        <span class="k">return</span> <span class="bp">False</span>
+    <span class="k">if</span> <span class="s1">&#39;retry_name&#39;</span> <span class="ow">in</span> <span class="n">details</span> <span class="ow">and</span> <span class="s1">&#39;retry_uuid&#39;</span> <span class="ow">in</span> <span class="n">details</span><span class="p">:</span>
+        <span class="k">return</span> <span class="bp">True</span>
+    <span class="k">return</span> <span class="bp">False</span>
+
+
+<span class="k">def</span> <span class="nf">_bulk_deregister</span><span class="p">(</span><span class="n">notifier</span><span class="p">,</span> <span class="n">registered</span><span class="p">,</span> <span class="n">details_filter</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Bulk deregisters callbacks associated with many states.&quot;&quot;&quot;</span>
+    <span class="k">while</span> <span class="n">registered</span><span class="p">:</span>
+        <span class="n">state</span><span class="p">,</span> <span class="n">cb</span> <span class="o">=</span> <span class="n">registered</span><span class="o">.</span><span class="n">pop</span><span class="p">()</span>
+        <span class="n">notifier</span><span class="o">.</span><span class="n">deregister</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">cb</span><span class="p">,</span>
+                            <span class="n">details_filter</span><span class="o">=</span><span class="n">details_filter</span><span class="p">)</span>
+
+
+<span class="k">def</span> <span class="nf">_bulk_register</span><span class="p">(</span><span class="n">watch_states</span><span class="p">,</span> <span class="n">notifier</span><span class="p">,</span> <span class="n">cb</span><span class="p">,</span> <span class="n">details_filter</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Bulk registers a callback associated with many states.&quot;&quot;&quot;</span>
+    <span class="n">registered</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="k">for</span> <span class="n">state</span> <span class="ow">in</span> <span class="n">watch_states</span><span class="p">:</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">notifier</span><span class="o">.</span><span class="n">is_registered</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">cb</span><span class="p">,</span>
+                                          <span class="n">details_filter</span><span class="o">=</span><span class="n">details_filter</span><span class="p">):</span>
+                <span class="n">notifier</span><span class="o">.</span><span class="n">register</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="n">cb</span><span class="p">,</span>
+                                  <span class="n">details_filter</span><span class="o">=</span><span class="n">details_filter</span><span class="p">)</span>
+                <span class="n">registered</span><span class="o">.</span><span class="n">append</span><span class="p">((</span><span class="n">state</span><span class="p">,</span> <span class="n">cb</span><span class="p">))</span>
+    <span class="k">except</span> <span class="ne">ValueError</span><span class="p">:</span>
+        <span class="k">with</span> <span class="n">excutils</span><span class="o">.</span><span class="n">save_and_reraise_exception</span><span class="p">():</span>
+            <span class="n">_bulk_deregister</span><span class="p">(</span><span class="n">notifier</span><span class="p">,</span> <span class="n">registered</span><span class="p">,</span>
+                             <span class="n">details_filter</span><span class="o">=</span><span class="n">details_filter</span><span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">registered</span>
+
+
+<div class="viewcode-block" id="Listener"><a class="viewcode-back" href="../../../notifications.html#taskflow.listeners.base.Listener">[docs]</a><span class="k">class</span> <span class="nc">Listener</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Base class for listeners.</span>
+
+<span class="sd">    A listener can be attached to an engine to do various actions on flow and</span>
+<span class="sd">    atom state transitions. It implements the context manager protocol to be</span>
+<span class="sd">    able to register and unregister with a given engine automatically when a</span>
+<span class="sd">    context is entered and when it is exited.</span>
+
+<span class="sd">    To implement a listener, derive from this class and override</span>
+<span class="sd">    ``_flow_receiver`` and/or ``_task_receiver`` and/or ``_retry_receiver``</span>
+<span class="sd">    methods (in this class, they do nothing).</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">engine</span><span class="p">,</span>
+                 <span class="n">task_listen_for</span><span class="o">=</span><span class="n">DEFAULT_LISTEN_FOR</span><span class="p">,</span>
+                 <span class="n">flow_listen_for</span><span class="o">=</span><span class="n">DEFAULT_LISTEN_FOR</span><span class="p">,</span>
+                 <span class="n">retry_listen_for</span><span class="o">=</span><span class="n">DEFAULT_LISTEN_FOR</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">task_listen_for</span><span class="p">:</span>
+            <span class="n">task_listen_for</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">retry_listen_for</span><span class="p">:</span>
+            <span class="n">retry_listen_for</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">flow_listen_for</span><span class="p">:</span>
+            <span class="n">flow_listen_for</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_listen_for</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="s1">&#39;task&#39;</span><span class="p">:</span> <span class="nb">list</span><span class="p">(</span><span class="n">task_listen_for</span><span class="p">),</span>
+            <span class="s1">&#39;retry&#39;</span><span class="p">:</span> <span class="nb">list</span><span class="p">(</span><span class="n">retry_listen_for</span><span class="p">),</span>
+            <span class="s1">&#39;flow&#39;</span><span class="p">:</span> <span class="nb">list</span><span class="p">(</span><span class="n">flow_listen_for</span><span class="p">),</span>
+        <span class="p">}</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_engine</span> <span class="o">=</span> <span class="n">engine</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_registered</span> <span class="o">=</span> <span class="p">{}</span>
+
+    <span class="k">def</span> <span class="nf">_flow_receiver</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state</span><span class="p">,</span> <span class="n">details</span><span class="p">):</span>
+        <span class="k">pass</span>
+
+    <span class="k">def</span> <span class="nf">_task_receiver</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state</span><span class="p">,</span> <span class="n">details</span><span class="p">):</span>
+        <span class="k">pass</span>
+
+    <span class="k">def</span> <span class="nf">_retry_receiver</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state</span><span class="p">,</span> <span class="n">details</span><span class="p">):</span>
+        <span class="k">pass</span>
+
+    <span class="k">def</span> <span class="nf">deregister</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="s1">&#39;task&#39;</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_registered</span><span class="p">:</span>
+            <span class="n">_bulk_deregister</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_engine</span><span class="o">.</span><span class="n">atom_notifier</span><span class="p">,</span>
+                             <span class="bp">self</span><span class="o">.</span><span class="n">_registered</span><span class="p">[</span><span class="s1">&#39;task&#39;</span><span class="p">],</span>
+                             <span class="n">details_filter</span><span class="o">=</span><span class="n">_task_matcher</span><span class="p">)</span>
+            <span class="k">del</span> <span class="bp">self</span><span class="o">.</span><span class="n">_registered</span><span class="p">[</span><span class="s1">&#39;task&#39;</span><span class="p">]</span>
+        <span class="k">if</span> <span class="s1">&#39;retry&#39;</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_registered</span><span class="p">:</span>
+            <span class="n">_bulk_deregister</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_engine</span><span class="o">.</span><span class="n">atom_notifier</span><span class="p">,</span>
+                             <span class="bp">self</span><span class="o">.</span><span class="n">_registered</span><span class="p">[</span><span class="s1">&#39;retry&#39;</span><span class="p">],</span>
+                             <span class="n">details_filter</span><span class="o">=</span><span class="n">_retry_matcher</span><span class="p">)</span>
+            <span class="k">del</span> <span class="bp">self</span><span class="o">.</span><span class="n">_registered</span><span class="p">[</span><span class="s1">&#39;retry&#39;</span><span class="p">]</span>
+        <span class="k">if</span> <span class="s1">&#39;flow&#39;</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_registered</span><span class="p">:</span>
+            <span class="n">_bulk_deregister</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_engine</span><span class="o">.</span><span class="n">notifier</span><span class="p">,</span>
+                             <span class="bp">self</span><span class="o">.</span><span class="n">_registered</span><span class="p">[</span><span class="s1">&#39;flow&#39;</span><span class="p">])</span>
+            <span class="k">del</span> <span class="bp">self</span><span class="o">.</span><span class="n">_registered</span><span class="p">[</span><span class="s1">&#39;flow&#39;</span><span class="p">]</span>
+
+    <span class="k">def</span> <span class="nf">register</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="s1">&#39;task&#39;</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_registered</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_registered</span><span class="p">[</span><span class="s1">&#39;task&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">_bulk_register</span><span class="p">(</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_listen_for</span><span class="p">[</span><span class="s1">&#39;task&#39;</span><span class="p">],</span> <span class="bp">self</span><span class="o">.</span><span class="n">_engine</span><span class="o">.</span><span class="n">atom_notifier</span><span class="p">,</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_task_receiver</span><span class="p">,</span> <span class="n">details_filter</span><span class="o">=</span><span class="n">_task_matcher</span><span class="p">)</span>
+        <span class="k">if</span> <span class="s1">&#39;retry&#39;</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_registered</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_registered</span><span class="p">[</span><span class="s1">&#39;retry&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">_bulk_register</span><span class="p">(</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_listen_for</span><span class="p">[</span><span class="s1">&#39;retry&#39;</span><span class="p">],</span> <span class="bp">self</span><span class="o">.</span><span class="n">_engine</span><span class="o">.</span><span class="n">atom_notifier</span><span class="p">,</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_retry_receiver</span><span class="p">,</span> <span class="n">details_filter</span><span class="o">=</span><span class="n">_retry_matcher</span><span class="p">)</span>
+        <span class="k">if</span> <span class="s1">&#39;flow&#39;</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_registered</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_registered</span><span class="p">[</span><span class="s1">&#39;flow&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">_bulk_register</span><span class="p">(</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_listen_for</span><span class="p">[</span><span class="s1">&#39;flow&#39;</span><span class="p">],</span> <span class="bp">self</span><span class="o">.</span><span class="n">_engine</span><span class="o">.</span><span class="n">notifier</span><span class="p">,</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_flow_receiver</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="fm">__enter__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">register</span><span class="p">()</span>
+        <span class="k">return</span> <span class="bp">self</span>
+
+    <span class="k">def</span> <span class="fm">__exit__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="nb">type</span><span class="p">,</span> <span class="n">value</span><span class="p">,</span> <span class="n">tb</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">deregister</span><span class="p">()</span>
+        <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+            <span class="c1"># Don&#39;t let deregistering throw exceptions</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span><span class="s2">&quot;Failed deregistering listeners from engine </span><span class="si">%s</span><span class="s2">&quot;</span><span class="p">,</span>
+                     <span class="bp">self</span><span class="o">.</span><span class="n">_engine</span><span class="p">,</span> <span class="n">exc_info</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span></div>
+
+
+<span class="nd">@six.add_metaclass</span><span class="p">(</span><span class="n">abc</span><span class="o">.</span><span class="n">ABCMeta</span><span class="p">)</span>
+<div class="viewcode-block" id="DumpingListener"><a class="viewcode-back" href="../../../notifications.html#taskflow.listeners.base.DumpingListener">[docs]</a><span class="k">class</span> <span class="nc">DumpingListener</span><span class="p">(</span><span class="n">Listener</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Abstract base class for dumping listeners.</span>
+
+<span class="sd">    This provides a simple listener that can be attached to an engine which can</span>
+<span class="sd">    be derived from to dump task and/or flow state transitions to some target</span>
+<span class="sd">    backend.</span>
+
+<span class="sd">    To implement your own dumping listener derive from this class and</span>
+<span class="sd">    override the ``_dump`` method.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="nd">@abc.abstractmethod</span>
+    <span class="k">def</span> <span class="nf">_dump</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">message</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Dumps the provided *templated* message to some output.&quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="nf">_flow_receiver</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state</span><span class="p">,</span> <span class="n">details</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_dump</span><span class="p">(</span><span class="s2">&quot;</span><span class="si">%s</span><span class="s2"> has moved flow &#39;</span><span class="si">%s</span><span class="s2">&#39; (</span><span class="si">%s</span><span class="s2">) into state &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span>
+                   <span class="s2">&quot; from state &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_engine</span><span class="p">,</span> <span class="n">details</span><span class="p">[</span><span class="s1">&#39;flow_name&#39;</span><span class="p">],</span>
+                   <span class="n">details</span><span class="p">[</span><span class="s1">&#39;flow_uuid&#39;</span><span class="p">],</span> <span class="n">state</span><span class="p">,</span> <span class="n">details</span><span class="p">[</span><span class="s1">&#39;old_state&#39;</span><span class="p">])</span>
+
+    <span class="k">def</span> <span class="nf">_task_receiver</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">state</span><span class="p">,</span> <span class="n">details</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">state</span> <span class="ow">in</span> <span class="n">FINISH_STATES</span><span class="p">:</span>
+            <span class="n">result</span> <span class="o">=</span> <span class="n">details</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;result&#39;</span><span class="p">)</span>
+            <span class="n">exc_info</span> <span class="o">=</span> <span class="bp">None</span>
+            <span class="n">was_failure</span> <span class="o">=</span> <span class="bp">False</span>
+            <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="n">failure</span><span class="o">.</span><span class="n">Failure</span><span class="p">):</span>
+                <span class="k">if</span> <span class="n">result</span><span class="o">.</span><span class="n">exc_info</span><span class="p">:</span>
+                    <span class="n">exc_info</span> <span class="o">=</span> <span class="nb">tuple</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">exc_info</span><span class="p">)</span>
+                <span class="n">was_failure</span> <span class="o">=</span> <span class="bp">True</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_dump</span><span class="p">(</span><span class="s2">&quot;</span><span class="si">%s</span><span class="s2"> has moved task &#39;</span><span class="si">%s</span><span class="s2">&#39; (</span><span class="si">%s</span><span class="s2">) into state &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span>
+                       <span class="s2">&quot; from state &#39;</span><span class="si">%s</span><span class="s2">&#39; with result &#39;</span><span class="si">%s</span><span class="s2">&#39; (failure=</span><span class="si">%s</span><span class="s2">)&quot;</span><span class="p">,</span>
+                       <span class="bp">self</span><span class="o">.</span><span class="n">_engine</span><span class="p">,</span> <span class="n">details</span><span class="p">[</span><span class="s1">&#39;task_name&#39;</span><span class="p">],</span>
+                       <span class="n">details</span><span class="p">[</span><span class="s1">&#39;task_uuid&#39;</span><span class="p">],</span> <span class="n">state</span><span class="p">,</span> <span class="n">details</span><span class="p">[</span><span class="s1">&#39;old_state&#39;</span><span class="p">],</span>
+                       <span class="n">result</span><span class="p">,</span> <span class="n">was_failure</span><span class="p">,</span> <span class="n">exc_info</span><span class="o">=</span><span class="n">exc_info</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_dump</span><span class="p">(</span><span class="s2">&quot;</span><span class="si">%s</span><span class="s2"> has moved task &#39;</span><span class="si">%s</span><span class="s2">&#39; (</span><span class="si">%s</span><span class="s2">) into state &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span>
+                       <span class="s2">&quot; from state &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_engine</span><span class="p">,</span> <span class="n">details</span><span class="p">[</span><span class="s1">&#39;task_name&#39;</span><span class="p">],</span>
+                       <span class="n">details</span><span class="p">[</span><span class="s1">&#39;task_uuid&#39;</span><span class="p">],</span> <span class="n">state</span><span class="p">,</span> <span class="n">details</span><span class="p">[</span><span class="s1">&#39;old_state&#39;</span><span class="p">])</span></div>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+  <h3>Navigation</h3>
+  <ul>
+
+    <li><a href="../../../index.html">Table Of Contents</a></li>
+
+
+
+  </ul>
+
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/taskflow
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../../index.html">TaskFlow 2.9.1.dev9 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../../index.html" accesskey="U">Module code</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2017, OpenStack Foundation.
+      Last updated on &#39;Fri Feb 10 20:11:17 2017, commit 643495f&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/TaskFlow");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

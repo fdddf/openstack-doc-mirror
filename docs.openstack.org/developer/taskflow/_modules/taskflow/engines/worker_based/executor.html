@@ -1,0 +1,410 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>taskflow.engines.worker_based.executor &mdash; TaskFlow 2.9.1.dev9 documentation</title>
+    
+    <link rel="stylesheet" href="../../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../../',
+        VERSION:     '2.9.1.dev9',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../../_static/doctools.js"></script>
+    <link rel="top" title="TaskFlow 2.9.1.dev9 documentation" href="../../../../index.html" />
+    <link rel="up" title="Module code" href="../../../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for taskflow.engines.worker_based.executor</h1><div class="highlight"><pre>
+<span></span><span class="c1"># -*- coding: utf-8 -*-</span>
+
+<span class="c1">#    Copyright (C) 2014 Yahoo! Inc. All Rights Reserved.</span>
+<span class="c1">#</span>
+<span class="c1">#    Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may</span>
+<span class="c1">#    not use this file except in compliance with the License. You may obtain</span>
+<span class="c1">#    a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#         http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1">#    Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1">#    distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="c1">#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="c1">#    License for the specific language governing permissions and limitations</span>
+<span class="c1">#    under the License.</span>
+
+<span class="kn">import</span> <span class="nn">functools</span>
+<span class="kn">import</span> <span class="nn">threading</span>
+
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">timeutils</span>
+<span class="kn">import</span> <span class="nn">six</span>
+
+<span class="kn">from</span> <span class="nn">taskflow.engines.action_engine</span> <span class="kn">import</span> <span class="n">executor</span>
+<span class="kn">from</span> <span class="nn">taskflow.engines.worker_based</span> <span class="kn">import</span> <span class="n">dispatcher</span>
+<span class="kn">from</span> <span class="nn">taskflow.engines.worker_based</span> <span class="kn">import</span> <span class="n">protocol</span> <span class="k">as</span> <span class="n">pr</span>
+<span class="kn">from</span> <span class="nn">taskflow.engines.worker_based</span> <span class="kn">import</span> <span class="n">proxy</span>
+<span class="kn">from</span> <span class="nn">taskflow.engines.worker_based</span> <span class="kn">import</span> <span class="n">types</span> <span class="k">as</span> <span class="n">wt</span>
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">exceptions</span> <span class="k">as</span> <span class="n">exc</span>
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">logging</span>
+<span class="kn">from</span> <span class="nn">taskflow.task</span> <span class="kn">import</span> <span class="n">EVENT_UPDATE_PROGRESS</span>  <span class="c1"># noqa</span>
+<span class="kn">from</span> <span class="nn">taskflow.utils</span> <span class="kn">import</span> <span class="n">kombu_utils</span> <span class="k">as</span> <span class="n">ku</span>
+<span class="kn">from</span> <span class="nn">taskflow.utils</span> <span class="kn">import</span> <span class="n">misc</span>
+<span class="kn">from</span> <span class="nn">taskflow.utils</span> <span class="kn">import</span> <span class="n">threading_utils</span> <span class="k">as</span> <span class="n">tu</span>
+
+<span class="n">LOG</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+
+<div class="viewcode-block" id="WorkerTaskExecutor"><a class="viewcode-back" href="../../../../workers.html#taskflow.engines.worker_based.executor.WorkerTaskExecutor">[docs]</a><span class="k">class</span> <span class="nc">WorkerTaskExecutor</span><span class="p">(</span><span class="n">executor</span><span class="o">.</span><span class="n">TaskExecutor</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Executes tasks on remote workers.&quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">uuid</span><span class="p">,</span> <span class="n">exchange</span><span class="p">,</span> <span class="n">topics</span><span class="p">,</span>
+                 <span class="n">transition_timeout</span><span class="o">=</span><span class="n">pr</span><span class="o">.</span><span class="n">REQUEST_TIMEOUT</span><span class="p">,</span>
+                 <span class="n">url</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">transport</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">transport_options</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+                 <span class="n">retry_options</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">worker_expiry</span><span class="o">=</span><span class="n">pr</span><span class="o">.</span><span class="n">EXPIRES_AFTER</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_uuid</span> <span class="o">=</span> <span class="n">uuid</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_ongoing_requests</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_ongoing_requests_lock</span> <span class="o">=</span> <span class="n">threading</span><span class="o">.</span><span class="n">RLock</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_transition_timeout</span> <span class="o">=</span> <span class="n">transition_timeout</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_proxy</span> <span class="o">=</span> <span class="n">proxy</span><span class="o">.</span><span class="n">Proxy</span><span class="p">(</span><span class="n">uuid</span><span class="p">,</span> <span class="n">exchange</span><span class="p">,</span>
+                                  <span class="n">on_wait</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_on_wait</span><span class="p">,</span> <span class="n">url</span><span class="o">=</span><span class="n">url</span><span class="p">,</span>
+                                  <span class="n">transport</span><span class="o">=</span><span class="n">transport</span><span class="p">,</span>
+                                  <span class="n">transport_options</span><span class="o">=</span><span class="n">transport_options</span><span class="p">,</span>
+                                  <span class="n">retry_options</span><span class="o">=</span><span class="n">retry_options</span><span class="p">)</span>
+        <span class="c1"># NOTE(harlowja): This is the most simplest finder impl. that</span>
+        <span class="c1"># doesn&#39;t have external dependencies (outside of what this engine</span>
+        <span class="c1"># already requires); it though does create periodic &#39;polling&#39; traffic</span>
+        <span class="c1"># to workers to &#39;learn&#39; of the tasks they can perform (and requires</span>
+        <span class="c1"># pre-existing knowledge of the topics those workers are on to gather</span>
+        <span class="c1"># and update this information).</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_finder</span> <span class="o">=</span> <span class="n">wt</span><span class="o">.</span><span class="n">ProxyWorkerFinder</span><span class="p">(</span><span class="n">uuid</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_proxy</span><span class="p">,</span> <span class="n">topics</span><span class="p">,</span>
+                                            <span class="n">worker_expiry</span><span class="o">=</span><span class="n">worker_expiry</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_proxy</span><span class="o">.</span><span class="n">dispatcher</span><span class="o">.</span><span class="n">type_handlers</span><span class="o">.</span><span class="n">update</span><span class="p">({</span>
+            <span class="n">pr</span><span class="o">.</span><span class="n">RESPONSE</span><span class="p">:</span> <span class="n">dispatcher</span><span class="o">.</span><span class="n">Handler</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_process_response</span><span class="p">,</span>
+                                            <span class="n">validator</span><span class="o">=</span><span class="n">pr</span><span class="o">.</span><span class="n">Response</span><span class="o">.</span><span class="n">validate</span><span class="p">),</span>
+            <span class="n">pr</span><span class="o">.</span><span class="n">NOTIFY</span><span class="p">:</span> <span class="n">dispatcher</span><span class="o">.</span><span class="n">Handler</span><span class="p">(</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_finder</span><span class="o">.</span><span class="n">process_response</span><span class="p">,</span>
+                <span class="n">validator</span><span class="o">=</span><span class="n">functools</span><span class="o">.</span><span class="n">partial</span><span class="p">(</span><span class="n">pr</span><span class="o">.</span><span class="n">Notify</span><span class="o">.</span><span class="n">validate</span><span class="p">,</span>
+                                            <span class="n">response</span><span class="o">=</span><span class="bp">True</span><span class="p">)),</span>
+        <span class="p">})</span>
+        <span class="c1"># Thread that will run the message dispatching (and periodically</span>
+        <span class="c1"># call the on_wait callback to do various things) loop...</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_helper</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_messages_processed</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="s1">&#39;finder&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_finder</span><span class="o">.</span><span class="n">messages_processed</span><span class="p">,</span>
+        <span class="p">}</span>
+
+    <span class="k">def</span> <span class="nf">_process_response</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">response</span><span class="p">,</span> <span class="n">message</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Process response from remote side.&quot;&quot;&quot;</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Started processing response message &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span><span class="p">,</span>
+                  <span class="n">ku</span><span class="o">.</span><span class="n">DelayedPretty</span><span class="p">(</span><span class="n">message</span><span class="p">))</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">request_uuid</span> <span class="o">=</span> <span class="n">message</span><span class="o">.</span><span class="n">properties</span><span class="p">[</span><span class="s1">&#39;correlation_id&#39;</span><span class="p">]</span>
+        <span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">&quot;The &#39;correlation_id&#39; message property is&quot;</span>
+                        <span class="s2">&quot; missing in message &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span><span class="p">,</span>
+                        <span class="n">ku</span><span class="o">.</span><span class="n">DelayedPretty</span><span class="p">(</span><span class="n">message</span><span class="p">))</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">request</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_ongoing_requests</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">request_uuid</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">request</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="n">response</span> <span class="o">=</span> <span class="n">pr</span><span class="o">.</span><span class="n">Response</span><span class="o">.</span><span class="n">from_dict</span><span class="p">(</span><span class="n">response</span><span class="p">)</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Extracted response &#39;</span><span class="si">%s</span><span class="s2">&#39; and matched it to&quot;</span>
+                          <span class="s2">&quot; request &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span><span class="p">,</span> <span class="n">response</span><span class="p">,</span> <span class="n">request</span><span class="p">)</span>
+                <span class="k">if</span> <span class="n">response</span><span class="o">.</span><span class="n">state</span> <span class="o">==</span> <span class="n">pr</span><span class="o">.</span><span class="n">RUNNING</span><span class="p">:</span>
+                    <span class="n">request</span><span class="o">.</span><span class="n">transition_and_log_error</span><span class="p">(</span><span class="n">pr</span><span class="o">.</span><span class="n">RUNNING</span><span class="p">,</span> <span class="n">logger</span><span class="o">=</span><span class="n">LOG</span><span class="p">)</span>
+                <span class="k">elif</span> <span class="n">response</span><span class="o">.</span><span class="n">state</span> <span class="o">==</span> <span class="n">pr</span><span class="o">.</span><span class="n">EVENT</span><span class="p">:</span>
+                    <span class="c1"># Proxy the event + details to the task notifier so</span>
+                    <span class="c1"># that it shows up in the local process (and activates</span>
+                    <span class="c1"># any local callbacks...); thus making it look like</span>
+                    <span class="c1"># the task is running locally (in some regards).</span>
+                    <span class="n">event_type</span> <span class="o">=</span> <span class="n">response</span><span class="o">.</span><span class="n">data</span><span class="p">[</span><span class="s1">&#39;event_type&#39;</span><span class="p">]</span>
+                    <span class="n">details</span> <span class="o">=</span> <span class="n">response</span><span class="o">.</span><span class="n">data</span><span class="p">[</span><span class="s1">&#39;details&#39;</span><span class="p">]</span>
+                    <span class="n">request</span><span class="o">.</span><span class="n">task</span><span class="o">.</span><span class="n">notifier</span><span class="o">.</span><span class="n">notify</span><span class="p">(</span><span class="n">event_type</span><span class="p">,</span> <span class="n">details</span><span class="p">)</span>
+                <span class="k">elif</span> <span class="n">response</span><span class="o">.</span><span class="n">state</span> <span class="ow">in</span> <span class="p">(</span><span class="n">pr</span><span class="o">.</span><span class="n">FAILURE</span><span class="p">,</span> <span class="n">pr</span><span class="o">.</span><span class="n">SUCCESS</span><span class="p">):</span>
+                    <span class="k">if</span> <span class="n">request</span><span class="o">.</span><span class="n">transition_and_log_error</span><span class="p">(</span><span class="n">response</span><span class="o">.</span><span class="n">state</span><span class="p">,</span>
+                                                        <span class="n">logger</span><span class="o">=</span><span class="n">LOG</span><span class="p">):</span>
+                        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_ongoing_requests_lock</span><span class="p">:</span>
+                            <span class="k">del</span> <span class="bp">self</span><span class="o">.</span><span class="n">_ongoing_requests</span><span class="p">[</span><span class="n">request</span><span class="o">.</span><span class="n">uuid</span><span class="p">]</span>
+                        <span class="n">request</span><span class="o">.</span><span class="n">set_result</span><span class="p">(</span><span class="n">result</span><span class="o">=</span><span class="n">response</span><span class="o">.</span><span class="n">data</span><span class="p">[</span><span class="s1">&#39;result&#39;</span><span class="p">])</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">&quot;Unexpected response status &#39;</span><span class="si">%s</span><span class="s2">&#39;&quot;</span><span class="p">,</span>
+                                <span class="n">response</span><span class="o">.</span><span class="n">state</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Request with id=&#39;</span><span class="si">%s</span><span class="s2">&#39; not found&quot;</span><span class="p">,</span> <span class="n">request_uuid</span><span class="p">)</span>
+
+    <span class="nd">@staticmethod</span>
+    <span class="k">def</span> <span class="nf">_handle_expired_request</span><span class="p">(</span><span class="n">request</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Handle a expired request.</span>
+
+<span class="sd">        When a request has expired it is removed from the ongoing requests</span>
+<span class="sd">        dictionary and a ``RequestTimeout`` exception is set as a</span>
+<span class="sd">        request result.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="n">request</span><span class="o">.</span><span class="n">transition_and_log_error</span><span class="p">(</span><span class="n">pr</span><span class="o">.</span><span class="n">FAILURE</span><span class="p">,</span> <span class="n">logger</span><span class="o">=</span><span class="n">LOG</span><span class="p">):</span>
+            <span class="c1"># Raise an exception (and then catch it) so we get a nice</span>
+            <span class="c1"># traceback that the request will get instead of it getting</span>
+            <span class="c1"># just an exception with no traceback...</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">request_age</span> <span class="o">=</span> <span class="n">timeutils</span><span class="o">.</span><span class="n">now</span><span class="p">()</span> <span class="o">-</span> <span class="n">request</span><span class="o">.</span><span class="n">created_on</span>
+                <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">RequestTimeout</span><span class="p">(</span>
+                    <span class="s2">&quot;Request &#39;</span><span class="si">%s</span><span class="s2">&#39; has expired after waiting for </span><span class="si">%0.2f</span><span class="s2">&quot;</span>
+                    <span class="s2">&quot; seconds for it to transition out of (</span><span class="si">%s</span><span class="s2">) states&quot;</span>
+                    <span class="o">%</span> <span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="n">request_age</span><span class="p">,</span> <span class="s2">&quot;, &quot;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">pr</span><span class="o">.</span><span class="n">WAITING_STATES</span><span class="p">)))</span>
+            <span class="k">except</span> <span class="n">exc</span><span class="o">.</span><span class="n">RequestTimeout</span><span class="p">:</span>
+                <span class="k">with</span> <span class="n">misc</span><span class="o">.</span><span class="n">capture_failure</span><span class="p">()</span> <span class="k">as</span> <span class="n">failure</span><span class="p">:</span>
+                    <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="n">failure</span><span class="o">.</span><span class="n">exception_str</span><span class="p">)</span>
+                    <span class="n">request</span><span class="o">.</span><span class="n">set_result</span><span class="p">(</span><span class="n">failure</span><span class="p">)</span>
+            <span class="k">return</span> <span class="bp">True</span>
+        <span class="k">return</span> <span class="bp">False</span>
+
+    <span class="k">def</span> <span class="nf">_clean</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_ongoing_requests</span><span class="p">:</span>
+            <span class="k">return</span>
+        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_ongoing_requests_lock</span><span class="p">:</span>
+            <span class="n">ongoing_requests_uuids</span> <span class="o">=</span> <span class="nb">set</span><span class="p">(</span><span class="n">six</span><span class="o">.</span><span class="n">iterkeys</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_ongoing_requests</span><span class="p">))</span>
+        <span class="n">waiting_requests</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="n">expired_requests</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="k">for</span> <span class="n">request_uuid</span> <span class="ow">in</span> <span class="n">ongoing_requests_uuids</span><span class="p">:</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">request</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_ongoing_requests</span><span class="p">[</span><span class="n">request_uuid</span><span class="p">]</span>
+            <span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+                <span class="c1"># Guess it got removed before we got to it...</span>
+                <span class="k">pass</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">if</span> <span class="n">request</span><span class="o">.</span><span class="n">expired</span><span class="p">:</span>
+                    <span class="n">expired_requests</span><span class="p">[</span><span class="n">request_uuid</span><span class="p">]</span> <span class="o">=</span> <span class="n">request</span>
+                <span class="k">elif</span> <span class="n">request</span><span class="o">.</span><span class="n">current_state</span> <span class="o">==</span> <span class="n">pr</span><span class="o">.</span><span class="n">WAITING</span><span class="p">:</span>
+                    <span class="n">waiting_requests</span><span class="p">[</span><span class="n">request_uuid</span><span class="p">]</span> <span class="o">=</span> <span class="n">request</span>
+        <span class="k">if</span> <span class="n">expired_requests</span><span class="p">:</span>
+            <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_ongoing_requests_lock</span><span class="p">:</span>
+                <span class="k">while</span> <span class="n">expired_requests</span><span class="p">:</span>
+                    <span class="n">request_uuid</span><span class="p">,</span> <span class="n">request</span> <span class="o">=</span> <span class="n">expired_requests</span><span class="o">.</span><span class="n">popitem</span><span class="p">()</span>
+                    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_handle_expired_request</span><span class="p">(</span><span class="n">request</span><span class="p">):</span>
+                        <span class="k">del</span> <span class="bp">self</span><span class="o">.</span><span class="n">_ongoing_requests</span><span class="p">[</span><span class="n">request_uuid</span><span class="p">]</span>
+        <span class="k">if</span> <span class="n">waiting_requests</span><span class="p">:</span>
+            <span class="n">finder</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_finder</span>
+            <span class="n">new_messages_processed</span> <span class="o">=</span> <span class="n">finder</span><span class="o">.</span><span class="n">messages_processed</span>
+            <span class="n">last_messages_processed</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_messages_processed</span><span class="p">[</span><span class="s1">&#39;finder&#39;</span><span class="p">]</span>
+            <span class="k">if</span> <span class="n">new_messages_processed</span> <span class="o">&gt;</span> <span class="n">last_messages_processed</span><span class="p">:</span>
+                <span class="c1"># Some new message got to the finder, so we can see</span>
+                <span class="c1"># if any new workers match (if no new messages have been</span>
+                <span class="c1"># processed we might as well not do anything).</span>
+                <span class="k">while</span> <span class="n">waiting_requests</span><span class="p">:</span>
+                    <span class="n">_request_uuid</span><span class="p">,</span> <span class="n">request</span> <span class="o">=</span> <span class="n">waiting_requests</span><span class="o">.</span><span class="n">popitem</span><span class="p">()</span>
+                    <span class="n">worker</span> <span class="o">=</span> <span class="n">finder</span><span class="o">.</span><span class="n">get_worker_for_task</span><span class="p">(</span><span class="n">request</span><span class="o">.</span><span class="n">task</span><span class="p">)</span>
+                    <span class="k">if</span> <span class="p">(</span><span class="n">worker</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span> <span class="ow">and</span>
+                            <span class="n">request</span><span class="o">.</span><span class="n">transition_and_log_error</span><span class="p">(</span><span class="n">pr</span><span class="o">.</span><span class="n">PENDING</span><span class="p">,</span>
+                                                             <span class="n">logger</span><span class="o">=</span><span class="n">LOG</span><span class="p">)):</span>
+                        <span class="bp">self</span><span class="o">.</span><span class="n">_publish_request</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="n">worker</span><span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_messages_processed</span><span class="p">[</span><span class="s1">&#39;finder&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="n">new_messages_processed</span>
+
+    <span class="k">def</span> <span class="nf">_on_wait</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;This function is called cyclically between draining events.&quot;&quot;&quot;</span>
+        <span class="c1"># Publish any finding messages (used to locate workers).</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_finder</span><span class="o">.</span><span class="n">maybe_publish</span><span class="p">()</span>
+        <span class="c1"># If the finder hasn&#39;t heard from workers in a given amount</span>
+        <span class="c1"># of time, then those workers are likely dead, so clean them out...</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_finder</span><span class="o">.</span><span class="n">clean</span><span class="p">()</span>
+        <span class="c1"># Process any expired requests or requests that have no current</span>
+        <span class="c1"># worker located (publish messages for those if we now do have</span>
+        <span class="c1"># a worker located).</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_clean</span><span class="p">()</span>
+
+    <span class="k">def</span> <span class="nf">_submit_task</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">,</span> <span class="n">task_uuid</span><span class="p">,</span> <span class="n">action</span><span class="p">,</span> <span class="n">arguments</span><span class="p">,</span>
+                     <span class="n">progress_callback</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">result</span><span class="o">=</span><span class="n">pr</span><span class="o">.</span><span class="n">NO_RESULT</span><span class="p">,</span>
+                     <span class="n">failures</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Submit task request to a worker.&quot;&quot;&quot;</span>
+        <span class="n">request</span> <span class="o">=</span> <span class="n">pr</span><span class="o">.</span><span class="n">Request</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">task_uuid</span><span class="p">,</span> <span class="n">action</span><span class="p">,</span> <span class="n">arguments</span><span class="p">,</span>
+                             <span class="n">timeout</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_transition_timeout</span><span class="p">,</span>
+                             <span class="n">result</span><span class="o">=</span><span class="n">result</span><span class="p">,</span> <span class="n">failures</span><span class="o">=</span><span class="n">failures</span><span class="p">)</span>
+        <span class="c1"># Register the callback, so that we can proxy the progress correctly.</span>
+        <span class="k">if</span> <span class="p">(</span><span class="n">progress_callback</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span> <span class="ow">and</span>
+                <span class="n">task</span><span class="o">.</span><span class="n">notifier</span><span class="o">.</span><span class="n">can_be_registered</span><span class="p">(</span><span class="n">EVENT_UPDATE_PROGRESS</span><span class="p">)):</span>
+            <span class="n">task</span><span class="o">.</span><span class="n">notifier</span><span class="o">.</span><span class="n">register</span><span class="p">(</span><span class="n">EVENT_UPDATE_PROGRESS</span><span class="p">,</span> <span class="n">progress_callback</span><span class="p">)</span>
+            <span class="n">request</span><span class="o">.</span><span class="n">future</span><span class="o">.</span><span class="n">add_done_callback</span><span class="p">(</span>
+                <span class="k">lambda</span> <span class="n">_fut</span><span class="p">:</span> <span class="n">task</span><span class="o">.</span><span class="n">notifier</span><span class="o">.</span><span class="n">deregister</span><span class="p">(</span><span class="n">EVENT_UPDATE_PROGRESS</span><span class="p">,</span>
+                                                      <span class="n">progress_callback</span><span class="p">))</span>
+        <span class="c1"># Get task&#39;s worker and publish request if worker was found.</span>
+        <span class="n">worker</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_finder</span><span class="o">.</span><span class="n">get_worker_for_task</span><span class="p">(</span><span class="n">task</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">worker</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">request</span><span class="o">.</span><span class="n">transition_and_log_error</span><span class="p">(</span><span class="n">pr</span><span class="o">.</span><span class="n">PENDING</span><span class="p">,</span> <span class="n">logger</span><span class="o">=</span><span class="n">LOG</span><span class="p">):</span>
+                <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_ongoing_requests_lock</span><span class="p">:</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">_ongoing_requests</span><span class="p">[</span><span class="n">request</span><span class="o">.</span><span class="n">uuid</span><span class="p">]</span> <span class="o">=</span> <span class="n">request</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_publish_request</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="n">worker</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Delaying submission of &#39;</span><span class="si">%s</span><span class="s2">&#39;, no currently known&quot;</span>
+                      <span class="s2">&quot; worker/s available to process it&quot;</span><span class="p">,</span> <span class="n">request</span><span class="p">)</span>
+            <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_ongoing_requests_lock</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_ongoing_requests</span><span class="p">[</span><span class="n">request</span><span class="o">.</span><span class="n">uuid</span><span class="p">]</span> <span class="o">=</span> <span class="n">request</span>
+        <span class="k">return</span> <span class="n">request</span><span class="o">.</span><span class="n">future</span>
+
+    <span class="k">def</span> <span class="nf">_publish_request</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">request</span><span class="p">,</span> <span class="n">worker</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Publish request to a given topic.&quot;&quot;&quot;</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s2">&quot;Submitting execution of &#39;</span><span class="si">%s</span><span class="s2">&#39; to worker &#39;</span><span class="si">%s</span><span class="s2">&#39; (expecting&quot;</span>
+                  <span class="s2">&quot; response identified by reply_to=</span><span class="si">%s</span><span class="s2"> and&quot;</span>
+                  <span class="s2">&quot; correlation_id=</span><span class="si">%s</span><span class="s2">) - waited </span><span class="si">%0.3f</span><span class="s2"> seconds to&quot;</span>
+                  <span class="s2">&quot; get published&quot;</span><span class="p">,</span> <span class="n">request</span><span class="p">,</span> <span class="n">worker</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_uuid</span><span class="p">,</span>
+                  <span class="n">request</span><span class="o">.</span><span class="n">uuid</span><span class="p">,</span> <span class="n">timeutils</span><span class="o">.</span><span class="n">now</span><span class="p">()</span> <span class="o">-</span> <span class="n">request</span><span class="o">.</span><span class="n">created_on</span><span class="p">)</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_proxy</span><span class="o">.</span><span class="n">publish</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="n">worker</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span>
+                                <span class="n">reply_to</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">_uuid</span><span class="p">,</span>
+                                <span class="n">correlation_id</span><span class="o">=</span><span class="n">request</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+        <span class="k">except</span> <span class="ne">Exception</span><span class="p">:</span>
+            <span class="k">with</span> <span class="n">misc</span><span class="o">.</span><span class="n">capture_failure</span><span class="p">()</span> <span class="k">as</span> <span class="n">failure</span><span class="p">:</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">critical</span><span class="p">(</span><span class="s2">&quot;Failed to submit &#39;</span><span class="si">%s</span><span class="s2">&#39; (transitioning it to&quot;</span>
+                             <span class="s2">&quot; </span><span class="si">%s</span><span class="s2">)&quot;</span><span class="p">,</span> <span class="n">request</span><span class="p">,</span> <span class="n">pr</span><span class="o">.</span><span class="n">FAILURE</span><span class="p">,</span> <span class="n">exc_info</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+                <span class="k">if</span> <span class="n">request</span><span class="o">.</span><span class="n">transition_and_log_error</span><span class="p">(</span><span class="n">pr</span><span class="o">.</span><span class="n">FAILURE</span><span class="p">,</span> <span class="n">logger</span><span class="o">=</span><span class="n">LOG</span><span class="p">):</span>
+                    <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_ongoing_requests_lock</span><span class="p">:</span>
+                        <span class="k">del</span> <span class="bp">self</span><span class="o">.</span><span class="n">_ongoing_requests</span><span class="p">[</span><span class="n">request</span><span class="o">.</span><span class="n">uuid</span><span class="p">]</span>
+                    <span class="n">request</span><span class="o">.</span><span class="n">set_result</span><span class="p">(</span><span class="n">failure</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">execute_task</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">,</span> <span class="n">task_uuid</span><span class="p">,</span> <span class="n">arguments</span><span class="p">,</span>
+                     <span class="n">progress_callback</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_submit_task</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">task_uuid</span><span class="p">,</span> <span class="n">pr</span><span class="o">.</span><span class="n">EXECUTE</span><span class="p">,</span> <span class="n">arguments</span><span class="p">,</span>
+                                 <span class="n">progress_callback</span><span class="o">=</span><span class="n">progress_callback</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">revert_task</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">,</span> <span class="n">task_uuid</span><span class="p">,</span> <span class="n">arguments</span><span class="p">,</span> <span class="n">result</span><span class="p">,</span> <span class="n">failures</span><span class="p">,</span>
+                    <span class="n">progress_callback</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_submit_task</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">task_uuid</span><span class="p">,</span> <span class="n">pr</span><span class="o">.</span><span class="n">REVERT</span><span class="p">,</span> <span class="n">arguments</span><span class="p">,</span>
+                                 <span class="n">result</span><span class="o">=</span><span class="n">result</span><span class="p">,</span> <span class="n">failures</span><span class="o">=</span><span class="n">failures</span><span class="p">,</span>
+                                 <span class="n">progress_callback</span><span class="o">=</span><span class="n">progress_callback</span><span class="p">)</span>
+
+<div class="viewcode-block" id="WorkerTaskExecutor.wait_for_workers"><a class="viewcode-back" href="../../../../workers.html#taskflow.engines.worker_based.executor.WorkerTaskExecutor.wait_for_workers">[docs]</a>    <span class="k">def</span> <span class="nf">wait_for_workers</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">workers</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Waits for geq workers to notify they are ready to do work.</span>
+
+<span class="sd">        NOTE(harlowja): if a timeout is provided this function will wait</span>
+<span class="sd">        until that timeout expires, if the amount of workers does not reach</span>
+<span class="sd">        the desired amount of workers before the timeout expires then this will</span>
+<span class="sd">        return how many workers are still needed, otherwise it will</span>
+<span class="sd">        return zero.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_finder</span><span class="o">.</span><span class="n">wait_for_workers</span><span class="p">(</span><span class="n">workers</span><span class="o">=</span><span class="n">workers</span><span class="p">,</span>
+                                             <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="WorkerTaskExecutor.start"><a class="viewcode-back" href="../../../../workers.html#taskflow.engines.worker_based.executor.WorkerTaskExecutor.start">[docs]</a>    <span class="k">def</span> <span class="nf">start</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Starts message processing thread.&quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_helper</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s2">&quot;Worker executor must be stopped before&quot;</span>
+                               <span class="s2">&quot; it can be started&quot;</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_helper</span> <span class="o">=</span> <span class="n">tu</span><span class="o">.</span><span class="n">daemon_thread</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_proxy</span><span class="o">.</span><span class="n">start</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_helper</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_proxy</span><span class="o">.</span><span class="n">wait</span><span class="p">()</span></div>
+
+<div class="viewcode-block" id="WorkerTaskExecutor.stop"><a class="viewcode-back" href="../../../../workers.html#taskflow.engines.worker_based.executor.WorkerTaskExecutor.stop">[docs]</a>    <span class="k">def</span> <span class="nf">stop</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Stops message processing thread.&quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_helper</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_proxy</span><span class="o">.</span><span class="n">stop</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_helper</span><span class="o">.</span><span class="n">join</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_helper</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="k">with</span> <span class="bp">self</span><span class="o">.</span><span class="n">_ongoing_requests_lock</span><span class="p">:</span>
+            <span class="k">while</span> <span class="bp">self</span><span class="o">.</span><span class="n">_ongoing_requests</span><span class="p">:</span>
+                <span class="n">_request_uuid</span><span class="p">,</span> <span class="n">request</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_ongoing_requests</span><span class="o">.</span><span class="n">popitem</span><span class="p">()</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_handle_expired_request</span><span class="p">(</span><span class="n">request</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_finder</span><span class="o">.</span><span class="n">reset</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_messages_processed</span><span class="p">[</span><span class="s1">&#39;finder&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_finder</span><span class="o">.</span><span class="n">messages_processed</span></div></div>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+  <h3>Navigation</h3>
+  <ul>
+
+    <li><a href="../../../../index.html">Table Of Contents</a></li>
+
+
+
+  </ul>
+
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/taskflow
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../../../index.html">TaskFlow 2.9.1.dev9 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../../../index.html" accesskey="U">Module code</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2017, OpenStack Foundation.
+      Last updated on &#39;Fri Feb 10 20:11:17 2017, commit 643495f&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/TaskFlow");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

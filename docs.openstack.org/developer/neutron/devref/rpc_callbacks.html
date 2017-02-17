@@ -1,0 +1,428 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Neutron Messaging Callback System &mdash; neutron 10.0.0.0rc2.dev58 documentation</title>
+    
+    <link rel="stylesheet" href="../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../',
+        VERSION:     '10.0.0.0rc2.dev58',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../_static/jquery.js"></script>
+    <script type="text/javascript" src="../_static/underscore.js"></script>
+    <script type="text/javascript" src="../_static/doctools.js"></script>
+    <link rel="top" title="neutron 10.0.0.0rc2.dev58 documentation" href="../index.html" />
+    <link rel="up" title="Developer Guide" href="index.html" />
+    <link rel="next" title="Layer 3 Networking in Neutron - via Layer 3 agent &amp; OpenVSwitch" href="layer3.html" />
+    <link rel="prev" title="Neutron RPC API Layer" href="rpc_api.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="neutron-messaging-callback-system">
+<span id="rpc-callbacks"></span><h1>Neutron Messaging Callback System<a class="headerlink" href="#neutron-messaging-callback-system" title="Permalink to this headline">¶</a></h1>
+<p>Neutron already has a <a class="reference internal" href="callbacks.html"><em>callback system</em></a> for
+in-process resource callbacks where publishers and subscribers are able
+to publish and subscribe for resource events.</p>
+<p>This system is different, and is intended to be used for inter-process
+callbacks, via the messaging fanout mechanisms.</p>
+<p>In Neutron, agents may need to subscribe to specific resource details which
+may change over time. And the purpose of this messaging callback system
+is to allow agent subscription to those resources without the need to extend
+modify existing RPC calls, or creating new RPC messages.</p>
+<p>A few resource which can benefit of this system:</p>
+<ul class="simple">
+<li>QoS policies;</li>
+<li>Security Groups.</li>
+</ul>
+<p>Using a remote publisher/subscriber pattern, the information about such
+resources could be published using fanout messages to all interested nodes,
+minimizing messaging requests from agents to server since the agents
+get subscribed for their whole lifecycle (unless they unsubscribe).</p>
+<p>Within an agent, there could be multiple subscriber callbacks to the same
+resource events, the resources updates would be dispatched to the subscriber
+callbacks from a single message. Any update would come in a single message,
+doing only a single oslo versioned objects deserialization on each receiving
+agent.</p>
+<p>This publishing/subscription mechanism is highly dependent on the format
+of the resources passed around. This is why the library only allows
+versioned objects to be published and subscribed. Oslo versioned objects
+allow object version down/up conversion. <a class="footnote-reference" href="#vo-mkcompat" id="id1">[2]</a> <a class="footnote-reference" href="#vo-mkcptests" id="id2">[3]</a></p>
+<p>For the VO&#8217;s versioning schema look here: <a class="footnote-reference" href="#vo-versioning" id="id3">[4]</a></p>
+<p>versioned_objects serialization/deserialization with the
+obj_to_primitive(target_version=..) and primitive_to_obj() <a class="footnote-reference" href="#ov-serdes" id="id4">[1]</a>
+methods is used internally to convert/retrieve objects before/after messaging.</p>
+<p>Serialized versioned objects look like:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="p">{</span><span class="s1">&#39;versioned_object.version&#39;</span><span class="p">:</span> <span class="s1">&#39;1.0&#39;</span><span class="p">,</span>
+ <span class="s1">&#39;versioned_object.name&#39;</span><span class="p">:</span> <span class="s1">&#39;QoSPolicy&#39;</span><span class="p">,</span>
+ <span class="s1">&#39;versioned_object.data&#39;</span><span class="p">:</span> <span class="p">{</span><span class="s1">&#39;rules&#39;</span><span class="p">:</span> <span class="p">[</span>
+                                     <span class="p">{</span><span class="s1">&#39;versioned_object.version&#39;</span><span class="p">:</span> <span class="s1">&#39;1.0&#39;</span><span class="p">,</span>
+                                      <span class="s1">&#39;versioned_object.name&#39;</span><span class="p">:</span> <span class="s1">&#39;QoSBandwidthLimitRule&#39;</span><span class="p">,</span>
+                                      <span class="s1">&#39;versioned_object.data&#39;</span><span class="p">:</span> <span class="p">{</span><span class="s1">&#39;name&#39;</span><span class="p">:</span> <span class="sa">u</span><span class="s1">&#39;a&#39;</span><span class="p">},</span>
+                                      <span class="s1">&#39;versioned_object.namespace&#39;</span><span class="p">:</span> <span class="s1">&#39;versionedobjects&#39;</span><span class="p">}</span>
+                                     <span class="p">],</span>
+                           <span class="s1">&#39;uuid&#39;</span><span class="p">:</span> <span class="sa">u</span><span class="s1">&#39;abcde&#39;</span><span class="p">,</span>
+                           <span class="s1">&#39;name&#39;</span><span class="p">:</span> <span class="sa">u</span><span class="s1">&#39;aaa&#39;</span><span class="p">},</span>
+ <span class="s1">&#39;versioned_object.namespace&#39;</span><span class="p">:</span> <span class="s1">&#39;versionedobjects&#39;</span><span class="p">}</span>
+</pre></div>
+</div>
+<div class="section" id="rolling-upgrades-strategy">
+<h2>Rolling upgrades strategy<a class="headerlink" href="#rolling-upgrades-strategy" title="Permalink to this headline">¶</a></h2>
+<p>In this section we assume the standard Neutron upgrade process, which means
+upgrade the server first and then upgrade the agents:</p>
+<p><a class="reference internal" href="upgrade.html"><em>More information about the upgrade strategy</em></a>.</p>
+<p>We provide an automatic method which avoids manual pinning and unpinning
+of versions by the administrator which could be prone to error.</p>
+<div class="section" id="resource-pull-requests">
+<h3>Resource pull requests<a class="headerlink" href="#resource-pull-requests" title="Permalink to this headline">¶</a></h3>
+<p>Resource pull requests will always be ok because the underlying resource RPC
+does provide the version of the requested resource id  / ids. The server will
+be upgraded first, so it will always be able to satisfy any version the agents
+request.</p>
+</div>
+<div class="section" id="resource-push-notifications">
+<h3>Resource push notifications<a class="headerlink" href="#resource-push-notifications" title="Permalink to this headline">¶</a></h3>
+<p>Agents will subscribe to the neutron-vo-&lt;resource_type&gt;-&lt;version&gt; fanout queue
+which carries updated objects for the version they know about. The versions
+they know about depend on the runtime Neutron versioned objects they started with.</p>
+<p>When the server upgrades, it should be able to instantly calculate a census of
+agent versions per object (we will define a mechanism for this in a later
+section). It will use the census to send fanout messages on all the version
+span a resource type has.</p>
+<p>For example, if neutron-server knew it has rpc-callback aware agents with
+versions 1.0, and versions 1.2 of resource type &#8220;A&#8221;, any update would be sent
+to neutron-vo-A_1.0 and neutron-vo-A_1.2.</p>
+<p>TODO(mangelajo): Verify that after upgrade is finished any unused messaging
+resources (queues, exchanges, and so on) are released as older agents go away
+and neutron-server stops producing new message casts. Otherwise document the
+need for a neutron-server restart after rolling upgrade has finished if we
+want the queues cleaned up.</p>
+<div class="section" id="leveraging-agent-state-reports-for-object-version-discovery">
+<h4>Leveraging agent state reports for object version discovery<a class="headerlink" href="#leveraging-agent-state-reports-for-object-version-discovery" title="Permalink to this headline">¶</a></h4>
+<p>We add a row to the agent db for tracking agent known objects and version
+numbers. This resembles the implementation of the configuration column.</p>
+<p>Agents report at start not only their configuration now, but also
+their subscribed object type / version pairs, that are stored in the
+database and made available to any neutron-server requesting it:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>&#39;resource_versions&#39;: {&#39;QosPolicy&#39;: &#39;1.1&#39;,
+                      &#39;SecurityGroup&#39;: &#39;1.0&#39;,
+                      &#39;Port&#39;: &#39;1.0&#39;}
+</pre></div>
+</div>
+<p>There was a subset of Liberty agents depending on QosPolicy that required
+&#8216;QosPolicy&#8217;: &#8216;1.0&#8217; if the qos plugin is installed. We were able to identify
+those by the binary name (included in the report):</p>
+<ul class="simple">
+<li>&#8216;neutron-openvswitch-agent&#8217;</li>
+<li>&#8216;neutron-sriov-nic-agent&#8217;</li>
+</ul>
+<p>This transition was handled in the Mitaka version, but it&#8217;s not handled
+anymore in Newton, since only one major version step upgrades are supported.</p>
+</div>
+<div class="section" id="version-discovery">
+<h4>Version discovery<a class="headerlink" href="#version-discovery" title="Permalink to this headline">¶</a></h4>
+<p>With the above mechanism in place and considering the exception of
+neutron-openvswitch-agent and neutron-sriov-agent requiring QoSpolicy 1.0,
+we discover the subset of versions to be sent on every push notification.</p>
+<p>Agents that are in down state are excluded from this calculation.
+We use an extended timeout for agents in this calculation to make sure
+we&#8217;re on the safe side, specially if deployer marked agents with low
+timeouts.</p>
+<p>Starting at Mitaka, any agent interested in versioned objects via this API
+should report their resource/version tuples of interest (the resource type/
+version pairs they&#8217;re subscribed to).</p>
+<p>The plugins interested in this RPC mechanism must inherit AgentDbMixin,
+since this mechanism is only intended to be used from agents at the moment,
+while it could be extended to be consumed from other components if necessary.</p>
+<p>The AgentDbMixin provides:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="k">def</span> <span class="nf">get_agents_resource_versions</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">tracker</span><span class="p">):</span>
+   <span class="o">...</span>
+</pre></div>
+</div>
+<div class="section" id="caching-mechanism">
+<h5>Caching mechanism<a class="headerlink" href="#caching-mechanism" title="Permalink to this headline">¶</a></h5>
+<p>The version subset per object is cached to avoid DB requests on every push
+given that we assume that all old agents are already registered at the time of
+upgrade.</p>
+<p>Cached subset is re-evaluated (to cut down the version sets as agents
+upgrade) after neutron.api.rpc.callbacks.version_manager.VERSIONS_TTL.</p>
+<p>As a fast path to update this cache on all neutron-servers when upgraded agents
+come up (or old agents revive after a long timeout or even a downgrade) the
+server registering the new status update notifies the other servers about
+the new consumer resource versions via cast.</p>
+<p>All notifications for all calculated version sets must be sent, as non-upgraded
+agents would otherwise not receive them.</p>
+<p>It is safe to send notifications to any fanout queue as they will be discarded
+if no agent is listening.</p>
+</div>
+</div>
+</div>
+</div>
+<div class="section" id="topic-names-for-every-resource-type-rpc-endpoint">
+<h2>Topic names for every resource type RPC endpoint<a class="headerlink" href="#topic-names-for-every-resource-type-rpc-endpoint" title="Permalink to this headline">¶</a></h2>
+<p>neutron-vo-&lt;resource_class_name&gt;-&lt;version&gt;</p>
+<p>In the future, we may want to get oslo messaging to support subscribing
+topics dynamically, then we may want to use:</p>
+<p>neutron-vo-&lt;resource_class_name&gt;-&lt;resource_id&gt;-&lt;version&gt; instead,</p>
+<p>or something equivalent which would allow fine granularity for the receivers
+to only get interesting information to them.</p>
+</div>
+<div class="section" id="subscribing-to-resources">
+<h2>Subscribing to resources<a class="headerlink" href="#subscribing-to-resources" title="Permalink to this headline">¶</a></h2>
+<p>Imagine that you have agent A, which just got to handle a new port, which
+has an associated security group, and QoS policy.</p>
+<p>The agent code processing port updates may look like:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>from neutron.api.rpc.callbacks.consumer import registry
+from neutron.api.rpc.callbacks import events
+from neutron.api.rpc.callbacks import resources
+
+
+def process_resource_updates(context, resource_type, resource_list, event_type):
+
+    # send to the right handler which will update any control plane
+    # details related to the updated resources...
+
+
+def subscribe_resources():
+    registry.register(process_resource_updates, resources.SEC_GROUP)
+
+    registry.register(process_resource_updates, resources.QOS_POLICY)
+
+def port_update(port):
+
+    # here we extract sg_id and qos_policy_id from port..
+
+    sec_group = registry.pull(resources.SEC_GROUP, sg_id)
+    qos_policy = registry.pull(resources.QOS_POLICY, qos_policy_id)
+</pre></div>
+</div>
+<p>The relevant function is:</p>
+<ul class="simple">
+<li>register(callback, resource_type): subscribes callback to a resource type.</li>
+</ul>
+<p>The callback function will receive the following arguments:</p>
+<ul class="simple">
+<li>context: the neutron context that triggered the notification.</li>
+<li>resource_type: the type of resource which is receiving the update.</li>
+<li>resource_list: list of resources which have been pushed by server.</li>
+<li>event_type: will be one of CREATED, UPDATED, or DELETED, see
+neutron.api.rpc.callbacks.events for details.</li>
+</ul>
+<p>With the underlying oslo_messaging support for dynamic topics on the receiver
+we cannot implement a per &#8220;resource type + resource id&#8221; topic, rabbitmq seems
+to handle 10000&#8217;s of topics without suffering, but creating 100&#8217;s of
+oslo_messaging receivers on different topics seems to crash.</p>
+<p>We may want to look into that later, to avoid agents receiving resource updates
+which are uninteresting to them.</p>
+</div>
+<div class="section" id="unsubscribing-from-resources">
+<h2>Unsubscribing from resources<a class="headerlink" href="#unsubscribing-from-resources" title="Permalink to this headline">¶</a></h2>
+<p>To unsubscribe registered callbacks:</p>
+<ul class="simple">
+<li>unsubscribe(callback, resource_type): unsubscribe from specific resource type.</li>
+<li>unsubscribe_all(): unsubscribe from all resources.</li>
+</ul>
+</div>
+<div class="section" id="sending-resource-events">
+<h2>Sending resource events<a class="headerlink" href="#sending-resource-events" title="Permalink to this headline">¶</a></h2>
+<p>On the server side, resource updates could come from anywhere, a service plugin,
+an extension, anything that updates, creates, or destroys the resources and that
+is of any interest to subscribed agents.</p>
+<p>A callback is expected to receive a list of resources. When resources in the list
+belong to the same resource type, a single push RPC message is sent; if the list
+contains objects of different resource types, resources of each type are grouped
+and sent separately, one push RPC message per type. On the receiver side,
+resources in a list always belong to the same type. In other words, a server-side
+push of a list of heterogeneous objects will result into N messages on bus and
+N client-side callback invocations, where N is the number of unique resource
+types in the given list, e.g. L(A, A, B, C, C, C) would be fragmented into
+L1(A, A), L2(B), L3(C, C, C), and each list pushed separately.</p>
+<p>Note: there is no guarantee in terms of order in which separate resource lists
+will be delivered to consumers.</p>
+<p>The server/publisher side may look like:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="kn">from</span> <span class="nn">neutron.api.rpc.callbacks.producer</span> <span class="kn">import</span> <span class="n">registry</span>
+<span class="kn">from</span> <span class="nn">neutron.api.rpc.callbacks</span> <span class="kn">import</span> <span class="n">events</span>
+
+<span class="k">def</span> <span class="nf">create_qos_policy</span><span class="p">(</span><span class="o">...</span><span class="p">):</span>
+    <span class="n">policy</span> <span class="o">=</span> <span class="n">fetch_policy</span><span class="p">(</span><span class="o">...</span><span class="p">)</span>
+    <span class="n">update_the_db</span><span class="p">(</span><span class="o">...</span><span class="p">)</span>
+    <span class="n">registry</span><span class="o">.</span><span class="n">push</span><span class="p">([</span><span class="n">policy</span><span class="p">],</span> <span class="n">events</span><span class="o">.</span><span class="n">CREATED</span><span class="p">)</span>
+
+<span class="k">def</span> <span class="nf">update_qos_policy</span><span class="p">(</span><span class="o">...</span><span class="p">):</span>
+    <span class="n">policy</span> <span class="o">=</span> <span class="n">fetch_policy</span><span class="p">(</span><span class="o">...</span><span class="p">)</span>
+    <span class="n">update_the_db</span><span class="p">(</span><span class="o">...</span><span class="p">)</span>
+    <span class="n">registry</span><span class="o">.</span><span class="n">push</span><span class="p">([</span><span class="n">policy</span><span class="p">],</span> <span class="n">events</span><span class="o">.</span><span class="n">UPDATED</span><span class="p">)</span>
+
+<span class="k">def</span> <span class="nf">delete_qos_policy</span><span class="p">(</span><span class="o">...</span><span class="p">):</span>
+    <span class="n">policy</span> <span class="o">=</span> <span class="n">fetch_policy</span><span class="p">(</span><span class="o">...</span><span class="p">)</span>
+    <span class="n">update_the_db</span><span class="p">(</span><span class="o">...</span><span class="p">)</span>
+    <span class="n">registry</span><span class="o">.</span><span class="n">push</span><span class="p">([</span><span class="n">policy</span><span class="p">],</span> <span class="n">events</span><span class="o">.</span><span class="n">DELETED</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+<div class="section" id="references">
+<h2>References<a class="headerlink" href="#references" title="Permalink to this headline">¶</a></h2>
+<table class="docutils footnote" frame="void" id="ov-serdes" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label"><a class="fn-backref" href="#id4">[1]</a></td><td><a class="reference external" href="https://github.com/openstack/oslo.versionedobjects/blob/ce00f18f7e9143b5175e889970564813189e3e6d/oslo_versionedobjects/tests/test_objects.py#L410">https://github.com/openstack/oslo.versionedobjects/blob/ce00f18f7e9143b5175e889970564813189e3e6d/oslo_versionedobjects/tests/test_objects.py#L410</a></td></tr>
+</tbody>
+</table>
+<table class="docutils footnote" frame="void" id="vo-mkcompat" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label"><a class="fn-backref" href="#id1">[2]</a></td><td><a class="reference external" href="https://github.com/openstack/oslo.versionedobjects/blob/ce00f18f7e9143b5175e889970564813189e3e6d/oslo_versionedobjects/base.py#L474">https://github.com/openstack/oslo.versionedobjects/blob/ce00f18f7e9143b5175e889970564813189e3e6d/oslo_versionedobjects/base.py#L474</a></td></tr>
+</tbody>
+</table>
+<table class="docutils footnote" frame="void" id="vo-mkcptests" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label"><a class="fn-backref" href="#id2">[3]</a></td><td><a class="reference external" href="https://github.com/openstack/oslo.versionedobjects/blob/ce00f18f7e9143b5175e889970564813189e3e6d/oslo_versionedobjects/tests/test_objects.py#L114">https://github.com/openstack/oslo.versionedobjects/blob/ce00f18f7e9143b5175e889970564813189e3e6d/oslo_versionedobjects/tests/test_objects.py#L114</a></td></tr>
+</tbody>
+</table>
+<table class="docutils footnote" frame="void" id="vo-versioning" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label"><a class="fn-backref" href="#id3">[4]</a></td><td><a class="reference external" href="https://github.com/openstack/oslo.versionedobjects/blob/ce00f18f7e9143b5175e889970564813189e3e6d/oslo_versionedobjects/base.py#L248">https://github.com/openstack/oslo.versionedobjects/blob/ce00f18f7e9143b5175e889970564813189e3e6d/oslo_versionedobjects/base.py#L248</a></td></tr>
+</tbody>
+</table>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="../index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Neutron Messaging Callback System</a><ul>
+<li><a class="reference internal" href="#rolling-upgrades-strategy">Rolling upgrades strategy</a><ul>
+<li><a class="reference internal" href="#resource-pull-requests">Resource pull requests</a></li>
+<li><a class="reference internal" href="#resource-push-notifications">Resource push notifications</a><ul>
+<li><a class="reference internal" href="#leveraging-agent-state-reports-for-object-version-discovery">Leveraging agent state reports for object version discovery</a></li>
+<li><a class="reference internal" href="#version-discovery">Version discovery</a><ul>
+<li><a class="reference internal" href="#caching-mechanism">Caching mechanism</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+<li><a class="reference internal" href="#topic-names-for-every-resource-type-rpc-endpoint">Topic names for every resource type RPC endpoint</a></li>
+<li><a class="reference internal" href="#subscribing-to-resources">Subscribing to resources</a></li>
+<li><a class="reference internal" href="#unsubscribing-from-resources">Unsubscribing from resources</a></li>
+<li><a class="reference internal" href="#sending-resource-events">Sending resource events</a></li>
+<li><a class="reference internal" href="#references">References</a></li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="rpc_api.html"
+                                  title="previous chapter">Neutron RPC API Layer</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="layer3.html"
+                                  title="next chapter">Layer 3 Networking in Neutron - via Layer 3 agent &amp; OpenVSwitch</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/neutron
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="../_sources/devref/rpc_callbacks.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="right" >
+          <a href="layer3.html" title="Layer 3 Networking in Neutron - via Layer 3 agent &amp; OpenVSwitch"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="rpc_api.html" title="Neutron RPC API Layer"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../index.html">neutron 10.0.0.0rc2.dev58 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="index.html" accesskey="U">Developer Guide</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2011-present, OpenStack Foundation..
+      Last updated on Feb 14, 2017.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/neutron");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

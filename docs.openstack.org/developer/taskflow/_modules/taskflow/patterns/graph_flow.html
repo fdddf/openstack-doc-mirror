@@ -1,0 +1,498 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>taskflow.patterns.graph_flow &mdash; TaskFlow 2.9.1.dev9 documentation</title>
+    
+    <link rel="stylesheet" href="../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../',
+        VERSION:     '2.9.1.dev9',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../_static/doctools.js"></script>
+    <link rel="top" title="TaskFlow 2.9.1.dev9 documentation" href="../../../index.html" />
+    <link rel="up" title="Module code" href="../../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for taskflow.patterns.graph_flow</h1><div class="highlight"><pre>
+<span></span><span class="c1"># -*- coding: utf-8 -*-</span>
+
+<span class="c1">#    Copyright (C) 2012 Yahoo! Inc. All Rights Reserved.</span>
+<span class="c1">#</span>
+<span class="c1">#    Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may</span>
+<span class="c1">#    not use this file except in compliance with the License. You may obtain</span>
+<span class="c1">#    a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#         http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1">#    Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1">#    distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="c1">#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="c1">#    License for the specific language governing permissions and limitations</span>
+<span class="c1">#    under the License.</span>
+
+<span class="kn">import</span> <span class="nn">collections</span>
+
+<span class="kn">import</span> <span class="nn">six</span>
+
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">deciders</span> <span class="k">as</span> <span class="n">de</span>
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">exceptions</span> <span class="k">as</span> <span class="n">exc</span>
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">flow</span>
+<span class="kn">from</span> <span class="nn">taskflow.types</span> <span class="kn">import</span> <span class="n">graph</span> <span class="k">as</span> <span class="n">gr</span>
+
+
+<span class="k">def</span> <span class="nf">_unsatisfied_requires</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">graph</span><span class="p">,</span> <span class="o">*</span><span class="n">additional_provided</span><span class="p">):</span>
+    <span class="n">requires</span> <span class="o">=</span> <span class="nb">set</span><span class="p">(</span><span class="n">node</span><span class="o">.</span><span class="n">requires</span><span class="p">)</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">requires</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">requires</span>
+    <span class="k">for</span> <span class="n">provided</span> <span class="ow">in</span> <span class="n">additional_provided</span><span class="p">:</span>
+        <span class="c1"># This is using the difference() method vs the -</span>
+        <span class="c1"># operator since the latter doesn&#39;t work with frozen</span>
+        <span class="c1"># or regular sets (when used in combination with ordered</span>
+        <span class="c1"># sets).</span>
+        <span class="c1">#</span>
+        <span class="c1"># If this is not done the following happens...</span>
+        <span class="c1">#</span>
+        <span class="c1"># TypeError: unsupported operand type(s)</span>
+        <span class="c1"># for -: &#39;set&#39; and &#39;OrderedSet&#39;</span>
+        <span class="n">requires</span> <span class="o">=</span> <span class="n">requires</span><span class="o">.</span><span class="n">difference</span><span class="p">(</span><span class="n">provided</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">requires</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">requires</span>
+    <span class="k">for</span> <span class="n">pred</span> <span class="ow">in</span> <span class="n">graph</span><span class="o">.</span><span class="n">bfs_predecessors_iter</span><span class="p">(</span><span class="n">node</span><span class="p">):</span>
+        <span class="n">requires</span> <span class="o">=</span> <span class="n">requires</span><span class="o">.</span><span class="n">difference</span><span class="p">(</span><span class="n">pred</span><span class="o">.</span><span class="n">provides</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">requires</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">requires</span>
+    <span class="k">return</span> <span class="n">requires</span>
+
+
+<div class="viewcode-block" id="Flow"><a class="viewcode-back" href="../../../patterns.html#taskflow.patterns.graph_flow.Flow">[docs]</a><span class="k">class</span> <span class="nc">Flow</span><span class="p">(</span><span class="n">flow</span><span class="o">.</span><span class="n">Flow</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Graph flow pattern.</span>
+
+<span class="sd">    Contained *flows/tasks* will be executed according to their dependencies</span>
+<span class="sd">    which will be resolved by using the *flows/tasks* provides and requires</span>
+<span class="sd">    mappings or by following manually created dependency links.</span>
+
+<span class="sd">    From dependencies a `directed graph`_ is built. If it has edge ``A -&gt; B``,</span>
+<span class="sd">    this means ``B`` depends on ``A`` (and that the execution of ``B`` must</span>
+<span class="sd">    wait until ``A`` has finished executing, on reverting this means that the</span>
+<span class="sd">    reverting of ``A`` must wait until ``B`` has finished reverting).</span>
+
+<span class="sd">    Note: `cyclic`_ dependencies are not allowed.</span>
+
+<span class="sd">    .. _directed graph: https://en.wikipedia.org/wiki/Directed_graph</span>
+<span class="sd">    .. _cyclic: https://en.wikipedia.org/wiki/Cycle_graph</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">name</span><span class="p">,</span> <span class="n">retry</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">Flow</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">retry</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_graph</span> <span class="o">=</span> <span class="n">gr</span><span class="o">.</span><span class="n">DiGraph</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="n">name</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_graph</span><span class="o">.</span><span class="n">freeze</span><span class="p">()</span>
+
+    <span class="c1">#: Extracts the unsatisified symbol requirements of a single node.</span>
+    <span class="n">_unsatisfied_requires</span> <span class="o">=</span> <span class="nb">staticmethod</span><span class="p">(</span><span class="n">_unsatisfied_requires</span><span class="p">)</span>
+
+<div class="viewcode-block" id="Flow.link"><a class="viewcode-back" href="../../../patterns.html#taskflow.patterns.graph_flow.Flow.link">[docs]</a>    <span class="k">def</span> <span class="nf">link</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">u</span><span class="p">,</span> <span class="n">v</span><span class="p">,</span> <span class="n">decider</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">decider_depth</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Link existing node u as a runtime dependency of existing node v.</span>
+
+<span class="sd">        Note that if the addition of these edges creates a `cyclic`_ graph</span>
+<span class="sd">        then a :class:`~taskflow.exceptions.DependencyFailure` will be</span>
+<span class="sd">        raised and the provided changes will be discarded. If the nodes</span>
+<span class="sd">        that are being requested to link do not exist in this graph than a</span>
+<span class="sd">        :class:`ValueError` will be raised.</span>
+
+<span class="sd">        :param u: task or flow to create a link from (must exist already)</span>
+<span class="sd">        :param v: task or flow to create a link to (must exist already)</span>
+<span class="sd">        :param decider: A callback function that will be expected to decide</span>
+<span class="sd">                        at runtime whether ``v`` should be allowed to</span>
+<span class="sd">                        execute (or whether the execution of ``v`` should be</span>
+<span class="sd">                        ignored, and therefore not executed). It is expected</span>
+<span class="sd">                        to take as single keyword argument ``history`` which</span>
+<span class="sd">                        will be the execution results of all ``u`` decidable</span>
+<span class="sd">                        links that have ``v`` as a target. It is expected to</span>
+<span class="sd">                        return a single boolean (``True`` to allow ``v``</span>
+<span class="sd">                        execution or ``False`` to not).</span>
+<span class="sd">        :param decider_depth: One of the :py:class:`~taskflow.deciders.Depth`</span>
+<span class="sd">                              enumerations (or a string version of) that will</span>
+<span class="sd">                              be used to influence what atoms are ignored</span>
+<span class="sd">                              when the decider provided results false. If</span>
+<span class="sd">                              not provided (and a valid decider is provided</span>
+<span class="sd">                              then this defaults to</span>
+<span class="sd">                              :py:attr:`~taskflow.deciders.Depth.ALL`).</span>
+
+<span class="sd">        .. _cyclic: https://en.wikipedia.org/wiki/Cycle_graph</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_graph</span><span class="o">.</span><span class="n">has_node</span><span class="p">(</span><span class="n">u</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;Node &#39;</span><span class="si">%s</span><span class="s2">&#39; not found to link from&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">u</span><span class="p">))</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_graph</span><span class="o">.</span><span class="n">has_node</span><span class="p">(</span><span class="n">v</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;Node &#39;</span><span class="si">%s</span><span class="s2">&#39; not found to link to&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">v</span><span class="p">))</span>
+        <span class="k">if</span> <span class="n">decider</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="k">if</span> <span class="ow">not</span> <span class="n">six</span><span class="o">.</span><span class="n">callable</span><span class="p">(</span><span class="n">decider</span><span class="p">):</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;Decider boolean callback must be callable&quot;</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_swap</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_link</span><span class="p">(</span><span class="n">u</span><span class="p">,</span> <span class="n">v</span><span class="p">,</span> <span class="n">manual</span><span class="o">=</span><span class="bp">True</span><span class="p">,</span>
+                              <span class="n">decider</span><span class="o">=</span><span class="n">decider</span><span class="p">,</span> <span class="n">decider_depth</span><span class="o">=</span><span class="n">decider_depth</span><span class="p">))</span>
+        <span class="k">return</span> <span class="bp">self</span></div>
+
+    <span class="k">def</span> <span class="nf">_link</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">u</span><span class="p">,</span> <span class="n">v</span><span class="p">,</span> <span class="n">graph</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+              <span class="n">reason</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">manual</span><span class="o">=</span><span class="bp">False</span><span class="p">,</span> <span class="n">decider</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+              <span class="n">decider_depth</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="n">mutable_graph</span> <span class="o">=</span> <span class="bp">True</span>
+        <span class="k">if</span> <span class="n">graph</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">graph</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_graph</span>
+            <span class="n">mutable_graph</span> <span class="o">=</span> <span class="bp">False</span>
+        <span class="c1"># NOTE(harlowja): Add an edge to a temporary copy and only if that</span>
+        <span class="c1"># copy is valid then do we swap with the underlying graph.</span>
+        <span class="n">attrs</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">get_edge_data</span><span class="p">(</span><span class="n">u</span><span class="p">,</span> <span class="n">v</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">attrs</span><span class="p">:</span>
+            <span class="n">attrs</span> <span class="o">=</span> <span class="p">{}</span>
+        <span class="k">if</span> <span class="n">decider</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">attrs</span><span class="p">[</span><span class="n">flow</span><span class="o">.</span><span class="n">LINK_DECIDER</span><span class="p">]</span> <span class="o">=</span> <span class="n">decider</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="c1"># Remove existing decider depth, if one existed.</span>
+                <span class="k">del</span> <span class="n">attrs</span><span class="p">[</span><span class="n">flow</span><span class="o">.</span><span class="n">LINK_DECIDER_DEPTH</span><span class="p">]</span>
+            <span class="k">except</span> <span class="ne">KeyError</span><span class="p">:</span>
+                <span class="k">pass</span>
+        <span class="k">if</span> <span class="n">decider_depth</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">decider</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;Decider depth requires a decider to be&quot;</span>
+                                 <span class="s2">&quot; provided along with it&quot;</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">decider_depth</span> <span class="o">=</span> <span class="n">de</span><span class="o">.</span><span class="n">Depth</span><span class="o">.</span><span class="n">translate</span><span class="p">(</span><span class="n">decider_depth</span><span class="p">)</span>
+                <span class="n">attrs</span><span class="p">[</span><span class="n">flow</span><span class="o">.</span><span class="n">LINK_DECIDER_DEPTH</span><span class="p">]</span> <span class="o">=</span> <span class="n">decider_depth</span>
+        <span class="k">if</span> <span class="n">manual</span><span class="p">:</span>
+            <span class="n">attrs</span><span class="p">[</span><span class="n">flow</span><span class="o">.</span><span class="n">LINK_MANUAL</span><span class="p">]</span> <span class="o">=</span> <span class="bp">True</span>
+        <span class="k">if</span> <span class="n">reason</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">flow</span><span class="o">.</span><span class="n">LINK_REASONS</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">attrs</span><span class="p">:</span>
+                <span class="n">attrs</span><span class="p">[</span><span class="n">flow</span><span class="o">.</span><span class="n">LINK_REASONS</span><span class="p">]</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+            <span class="n">attrs</span><span class="p">[</span><span class="n">flow</span><span class="o">.</span><span class="n">LINK_REASONS</span><span class="p">]</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">reason</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">mutable_graph</span><span class="p">:</span>
+            <span class="n">graph</span> <span class="o">=</span> <span class="n">gr</span><span class="o">.</span><span class="n">DiGraph</span><span class="p">(</span><span class="n">graph</span><span class="p">)</span>
+        <span class="n">graph</span><span class="o">.</span><span class="n">add_edge</span><span class="p">(</span><span class="n">u</span><span class="p">,</span> <span class="n">v</span><span class="p">,</span> <span class="o">**</span><span class="n">attrs</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">graph</span>
+
+    <span class="k">def</span> <span class="nf">_swap</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">graph</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Validates the replacement graph and then swaps the underlying graph.</span>
+
+<span class="sd">        After swapping occurs the underlying graph will be frozen so that the</span>
+<span class="sd">        immutability invariant is maintained (we may be able to relax this</span>
+<span class="sd">        constraint in the future since our exposed public api does not allow</span>
+<span class="sd">        direct access to the underlying graph).</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">graph</span><span class="o">.</span><span class="n">is_directed_acyclic</span><span class="p">():</span>
+            <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">DependencyFailure</span><span class="p">(</span><span class="s2">&quot;No path through the node(s) in the&quot;</span>
+                                        <span class="s2">&quot; graph produces an ordering that&quot;</span>
+                                        <span class="s2">&quot; will allow for logical&quot;</span>
+                                        <span class="s2">&quot; edge traversal&quot;</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_graph</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">freeze</span><span class="p">()</span>
+
+<div class="viewcode-block" id="Flow.add"><a class="viewcode-back" href="../../../patterns.html#taskflow.patterns.graph_flow.Flow.add">[docs]</a>    <span class="k">def</span> <span class="nf">add</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">nodes</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Adds a given task/tasks/flow/flows to this flow.</span>
+
+<span class="sd">        Note that if the addition of these nodes (and any edges) creates</span>
+<span class="sd">        a `cyclic`_ graph then</span>
+<span class="sd">        a :class:`~taskflow.exceptions.DependencyFailure` will be</span>
+<span class="sd">        raised and the applied changes will be discarded.</span>
+
+<span class="sd">        :param nodes: node(s) to add to the flow</span>
+<span class="sd">        :param kwargs: keyword arguments, the two keyword arguments</span>
+<span class="sd">                       currently processed are:</span>
+
+<span class="sd">                        * ``resolve_requires`` a boolean that when true (the</span>
+<span class="sd">                          default) implies that when node(s) are added their</span>
+<span class="sd">                          symbol requirements will be matched to existing</span>
+<span class="sd">                          node(s) and links will be automatically made to those</span>
+<span class="sd">                          providers. If multiple possible providers exist</span>
+<span class="sd">                          then a</span>
+<span class="sd">                          :class:`~taskflow.exceptions.AmbiguousDependency`</span>
+<span class="sd">                          exception will be raised and the provided additions</span>
+<span class="sd">                          will be discarded.</span>
+<span class="sd">                        * ``resolve_existing``, a boolean that when true (the</span>
+<span class="sd">                          default) implies that on addition of a new node that</span>
+<span class="sd">                          existing node(s) will have their requirements scanned</span>
+<span class="sd">                          for symbols that this newly added node can provide.</span>
+<span class="sd">                          If a match is found a link is automatically created</span>
+<span class="sd">                          from the newly added node to the requiree.</span>
+
+<span class="sd">        .. _cyclic: https://en.wikipedia.org/wiki/Cycle_graph</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+
+        <span class="c1"># Let&#39;s try to avoid doing any work if we can; since the below code</span>
+        <span class="c1"># after this filter can create more temporary graphs that aren&#39;t needed</span>
+        <span class="c1"># if the nodes already exist...</span>
+        <span class="n">nodes</span> <span class="o">=</span> <span class="p">[</span><span class="n">i</span> <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="n">nodes</span> <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_graph</span><span class="o">.</span><span class="n">has_node</span><span class="p">(</span><span class="n">i</span><span class="p">)]</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">nodes</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">self</span>
+
+        <span class="c1"># This syntax will *hopefully* be better in future versions of python.</span>
+        <span class="c1">#</span>
+        <span class="c1"># See: http://legacy.python.org/dev/peps/pep-3102/ (python 3.0+)</span>
+        <span class="n">resolve_requires</span> <span class="o">=</span> <span class="nb">bool</span><span class="p">(</span><span class="n">kwargs</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;resolve_requires&#39;</span><span class="p">,</span> <span class="bp">True</span><span class="p">))</span>
+        <span class="n">resolve_existing</span> <span class="o">=</span> <span class="nb">bool</span><span class="p">(</span><span class="n">kwargs</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;resolve_existing&#39;</span><span class="p">,</span> <span class="bp">True</span><span class="p">))</span>
+
+        <span class="c1"># Figure out what the existing nodes *still* require and what they</span>
+        <span class="c1"># provide so we can do this lookup later when inferring.</span>
+        <span class="n">required</span> <span class="o">=</span> <span class="n">collections</span><span class="o">.</span><span class="n">defaultdict</span><span class="p">(</span><span class="nb">list</span><span class="p">)</span>
+        <span class="n">provided</span> <span class="o">=</span> <span class="n">collections</span><span class="o">.</span><span class="n">defaultdict</span><span class="p">(</span><span class="nb">list</span><span class="p">)</span>
+
+        <span class="n">retry_provides</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_retry</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="k">for</span> <span class="n">value</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_retry</span><span class="o">.</span><span class="n">requires</span><span class="p">:</span>
+                <span class="n">required</span><span class="p">[</span><span class="n">value</span><span class="p">]</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_retry</span><span class="p">)</span>
+            <span class="k">for</span> <span class="n">value</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_retry</span><span class="o">.</span><span class="n">provides</span><span class="p">:</span>
+                <span class="n">retry_provides</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">value</span><span class="p">)</span>
+                <span class="n">provided</span><span class="p">[</span><span class="n">value</span><span class="p">]</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_retry</span><span class="p">)</span>
+
+        <span class="k">for</span> <span class="n">node</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_graph</span><span class="o">.</span><span class="n">nodes_iter</span><span class="p">():</span>
+            <span class="k">for</span> <span class="n">value</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_unsatisfied_requires</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_graph</span><span class="p">,</span>
+                                                    <span class="n">retry_provides</span><span class="p">):</span>
+                <span class="n">required</span><span class="p">[</span><span class="n">value</span><span class="p">]</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">node</span><span class="p">)</span>
+            <span class="k">for</span> <span class="n">value</span> <span class="ow">in</span> <span class="n">node</span><span class="o">.</span><span class="n">provides</span><span class="p">:</span>
+                <span class="n">provided</span><span class="p">[</span><span class="n">value</span><span class="p">]</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">node</span><span class="p">)</span>
+
+        <span class="c1"># NOTE(harlowja): Add node(s) and edge(s) to a temporary copy of the</span>
+        <span class="c1"># underlying graph and only if that is successful added to do we then</span>
+        <span class="c1"># swap with the underlying graph.</span>
+        <span class="n">tmp_graph</span> <span class="o">=</span> <span class="n">gr</span><span class="o">.</span><span class="n">DiGraph</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_graph</span><span class="p">)</span>
+        <span class="k">for</span> <span class="n">node</span> <span class="ow">in</span> <span class="n">nodes</span><span class="p">:</span>
+            <span class="n">tmp_graph</span><span class="o">.</span><span class="n">add_node</span><span class="p">(</span><span class="n">node</span><span class="p">)</span>
+
+            <span class="c1"># Try to find a valid provider.</span>
+            <span class="k">if</span> <span class="n">resolve_requires</span><span class="p">:</span>
+                <span class="k">for</span> <span class="n">value</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_unsatisfied_requires</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">tmp_graph</span><span class="p">,</span>
+                                                        <span class="n">retry_provides</span><span class="p">):</span>
+                    <span class="k">if</span> <span class="n">value</span> <span class="ow">in</span> <span class="n">provided</span><span class="p">:</span>
+                        <span class="n">providers</span> <span class="o">=</span> <span class="n">provided</span><span class="p">[</span><span class="n">value</span><span class="p">]</span>
+                        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">providers</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">1</span><span class="p">:</span>
+                            <span class="n">provider_names</span> <span class="o">=</span> <span class="p">[</span><span class="n">n</span><span class="o">.</span><span class="n">name</span> <span class="k">for</span> <span class="n">n</span> <span class="ow">in</span> <span class="n">providers</span><span class="p">]</span>
+                            <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">AmbiguousDependency</span><span class="p">(</span>
+                                <span class="s2">&quot;Resolution error detected when&quot;</span>
+                                <span class="s2">&quot; adding &#39;</span><span class="si">%(node)s</span><span class="s2">&#39;, multiple&quot;</span>
+                                <span class="s2">&quot; providers </span><span class="si">%(providers)s</span><span class="s2"> found for&quot;</span>
+                                <span class="s2">&quot; required symbol &#39;</span><span class="si">%(value)s</span><span class="s2">&#39;&quot;</span>
+                                <span class="o">%</span> <span class="nb">dict</span><span class="p">(</span><span class="n">node</span><span class="o">=</span><span class="n">node</span><span class="o">.</span><span class="n">name</span><span class="p">,</span>
+                                       <span class="n">providers</span><span class="o">=</span><span class="nb">sorted</span><span class="p">(</span><span class="n">provider_names</span><span class="p">),</span>
+                                       <span class="n">value</span><span class="o">=</span><span class="n">value</span><span class="p">))</span>
+                        <span class="k">else</span><span class="p">:</span>
+                            <span class="bp">self</span><span class="o">.</span><span class="n">_link</span><span class="p">(</span><span class="n">providers</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">node</span><span class="p">,</span>
+                                       <span class="n">graph</span><span class="o">=</span><span class="n">tmp_graph</span><span class="p">,</span> <span class="n">reason</span><span class="o">=</span><span class="n">value</span><span class="p">)</span>
+                    <span class="k">else</span><span class="p">:</span>
+                        <span class="n">required</span><span class="p">[</span><span class="n">value</span><span class="p">]</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">node</span><span class="p">)</span>
+
+            <span class="k">for</span> <span class="n">value</span> <span class="ow">in</span> <span class="n">node</span><span class="o">.</span><span class="n">provides</span><span class="p">:</span>
+                <span class="n">provided</span><span class="p">[</span><span class="n">value</span><span class="p">]</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">node</span><span class="p">)</span>
+
+            <span class="c1"># See if what we provide fulfills any existing requiree.</span>
+            <span class="k">if</span> <span class="n">resolve_existing</span><span class="p">:</span>
+                <span class="k">for</span> <span class="n">value</span> <span class="ow">in</span> <span class="n">node</span><span class="o">.</span><span class="n">provides</span><span class="p">:</span>
+                    <span class="k">if</span> <span class="n">value</span> <span class="ow">in</span> <span class="n">required</span><span class="p">:</span>
+                        <span class="k">for</span> <span class="n">requiree</span> <span class="ow">in</span> <span class="nb">list</span><span class="p">(</span><span class="n">required</span><span class="p">[</span><span class="n">value</span><span class="p">]):</span>
+                            <span class="k">if</span> <span class="n">requiree</span> <span class="ow">is</span> <span class="ow">not</span> <span class="n">node</span><span class="p">:</span>
+                                <span class="bp">self</span><span class="o">.</span><span class="n">_link</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">requiree</span><span class="p">,</span>
+                                           <span class="n">graph</span><span class="o">=</span><span class="n">tmp_graph</span><span class="p">,</span> <span class="n">reason</span><span class="o">=</span><span class="n">value</span><span class="p">)</span>
+                                <span class="n">required</span><span class="p">[</span><span class="n">value</span><span class="p">]</span><span class="o">.</span><span class="n">remove</span><span class="p">(</span><span class="n">requiree</span><span class="p">)</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">_swap</span><span class="p">(</span><span class="n">tmp_graph</span><span class="p">)</span>
+        <span class="k">return</span> <span class="bp">self</span></div>
+
+    <span class="k">def</span> <span class="nf">_get_subgraph</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get the active subgraph of _graph.</span>
+
+<span class="sd">        Descendants may override this to make only part of self._graph</span>
+<span class="sd">        visible.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_graph</span>
+
+    <span class="k">def</span> <span class="fm">__len__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_subgraph</span><span class="p">()</span><span class="o">.</span><span class="n">number_of_nodes</span><span class="p">()</span>
+
+    <span class="k">def</span> <span class="fm">__iter__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">for</span> <span class="n">n</span><span class="p">,</span> <span class="n">_n_data</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">iter_nodes</span><span class="p">():</span>
+            <span class="k">yield</span> <span class="n">n</span>
+
+    <span class="k">def</span> <span class="nf">iter_links</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_subgraph</span><span class="p">()</span><span class="o">.</span><span class="n">edges_iter</span><span class="p">(</span><span class="n">data</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">iter_nodes</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">g</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_subgraph</span><span class="p">()</span>
+        <span class="k">for</span> <span class="n">n</span> <span class="ow">in</span> <span class="n">g</span><span class="o">.</span><span class="n">topological_sort</span><span class="p">():</span>
+            <span class="k">yield</span> <span class="n">n</span><span class="p">,</span> <span class="n">g</span><span class="o">.</span><span class="n">node</span><span class="p">[</span><span class="n">n</span><span class="p">]</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">requires</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">requires</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+        <span class="n">retry_provides</span> <span class="o">=</span> <span class="nb">set</span><span class="p">()</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_retry</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">requires</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_retry</span><span class="o">.</span><span class="n">requires</span><span class="p">)</span>
+            <span class="n">retry_provides</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_retry</span><span class="o">.</span><span class="n">provides</span><span class="p">)</span>
+        <span class="n">g</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_subgraph</span><span class="p">()</span>
+        <span class="k">for</span> <span class="n">node</span> <span class="ow">in</span> <span class="n">g</span><span class="o">.</span><span class="n">nodes_iter</span><span class="p">():</span>
+            <span class="n">requires</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_unsatisfied_requires</span><span class="p">(</span><span class="n">node</span><span class="p">,</span> <span class="n">g</span><span class="p">,</span>
+                                                       <span class="n">retry_provides</span><span class="p">))</span>
+        <span class="k">return</span> <span class="nb">frozenset</span><span class="p">(</span><span class="n">requires</span><span class="p">)</span></div>
+
+
+<span class="k">def</span> <span class="nf">_reset_cached_subgraph</span><span class="p">(</span><span class="n">func</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Resets cached subgraph after execution, in case it was affected.&quot;&quot;&quot;</span>
+
+    <span class="nd">@six.wraps</span><span class="p">(</span><span class="n">func</span><span class="p">)</span>
+    <span class="k">def</span> <span class="nf">wrapper</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="n">result</span> <span class="o">=</span> <span class="n">func</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_subgraph</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="k">return</span> <span class="n">result</span>
+
+    <span class="k">return</span> <span class="n">wrapper</span>
+
+
+<div class="viewcode-block" id="TargetedFlow"><a class="viewcode-back" href="../../../patterns.html#taskflow.patterns.graph_flow.TargetedFlow">[docs]</a><span class="k">class</span> <span class="nc">TargetedFlow</span><span class="p">(</span><span class="n">Flow</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Graph flow with a target.</span>
+
+<span class="sd">    Adds possibility to execute a flow up to certain graph node</span>
+<span class="sd">    (task or subflow).</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">TargetedFlow</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="o">*</span><span class="n">args</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_subgraph</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_target</span> <span class="o">=</span> <span class="bp">None</span>
+
+<div class="viewcode-block" id="TargetedFlow.set_target"><a class="viewcode-back" href="../../../patterns.html#taskflow.patterns.graph_flow.TargetedFlow.set_target">[docs]</a>    <span class="k">def</span> <span class="nf">set_target</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">target_node</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Set target for the flow.</span>
+
+<span class="sd">        Any node(s) (tasks or subflows) not needed for the target</span>
+<span class="sd">        node will not be executed.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_graph</span><span class="o">.</span><span class="n">has_node</span><span class="p">(</span><span class="n">target_node</span><span class="p">):</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">&quot;Node &#39;</span><span class="si">%s</span><span class="s2">&#39; not found&quot;</span> <span class="o">%</span> <span class="n">target_node</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_target</span> <span class="o">=</span> <span class="n">target_node</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_subgraph</span> <span class="o">=</span> <span class="bp">None</span></div>
+
+<div class="viewcode-block" id="TargetedFlow.reset_target"><a class="viewcode-back" href="../../../patterns.html#taskflow.patterns.graph_flow.TargetedFlow.reset_target">[docs]</a>    <span class="k">def</span> <span class="nf">reset_target</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Reset target for the flow.</span>
+
+<span class="sd">        All node(s) of the flow will be executed.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_target</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_subgraph</span> <span class="o">=</span> <span class="bp">None</span></div>
+
+    <span class="n">add</span> <span class="o">=</span> <span class="n">_reset_cached_subgraph</span><span class="p">(</span><span class="n">Flow</span><span class="o">.</span><span class="n">add</span><span class="p">)</span>
+
+    <span class="n">link</span> <span class="o">=</span> <span class="n">_reset_cached_subgraph</span><span class="p">(</span><span class="n">Flow</span><span class="o">.</span><span class="n">link</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_get_subgraph</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_subgraph</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_subgraph</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_target</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_graph</span>
+        <span class="n">nodes</span> <span class="o">=</span> <span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">_target</span><span class="p">]</span>
+        <span class="n">nodes</span><span class="o">.</span><span class="n">extend</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_graph</span><span class="o">.</span><span class="n">bfs_predecessors_iter</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_target</span><span class="p">))</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_subgraph</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_graph</span><span class="o">.</span><span class="n">subgraph</span><span class="p">(</span><span class="n">nodes</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_subgraph</span><span class="o">.</span><span class="n">freeze</span><span class="p">()</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_subgraph</span></div>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+  <h3>Navigation</h3>
+  <ul>
+
+    <li><a href="../../../index.html">Table Of Contents</a></li>
+
+
+
+  </ul>
+
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/taskflow
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../../index.html">TaskFlow 2.9.1.dev9 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../../index.html" accesskey="U">Module code</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2017, OpenStack Foundation.
+      Last updated on &#39;Fri Feb 10 20:11:17 2017, commit 643495f&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/TaskFlow");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

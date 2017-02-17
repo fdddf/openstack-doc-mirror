@@ -1,0 +1,594 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Object Encryption &mdash; swift 2.12.1.dev102 documentation</title>
+    
+    <link rel="stylesheet" href="_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '2.12.1.dev102',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <link rel="top" title="swift 2.12.1.dev102 documentation" href="index.html" />
+    <link rel="next" title="Using Swift as Backing Store for Service Data" href="overview_backing_store.html" />
+    <link rel="prev" title="Erasure Code Support" href="overview_erasure_code.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="object-encryption">
+<h1>Object Encryption<a class="headerlink" href="#object-encryption" title="Permalink to this headline">¶</a></h1>
+<p>Swift supports the optional encryption of object data at rest on storage nodes.
+The encryption of object data is intended to mitigate the risk of users&#8217; data
+being read if an unauthorised party were to gain physical access to a disk.</p>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">Swift&#8217;s data-at-rest encryption accepts plaintext object data from the
+client, encrypts it in the cluster, and stores the encrypted data. This
+protects object data from inadvertently being exposed if a data drive
+leaves the Swift cluster. If a user wishes to ensure that the plaintext
+data is always encrypted while in transit and in storage, it is strongly
+recommended that the data be encrypted before sending it to the Swift
+cluster. Encrypting on the client side is the only way to ensure that the
+data is fully encrypted for its entire lifecycle.</p>
+</div>
+<p>Encryption of data at rest is implemented by middleware that may be included in
+the proxy server WSGI pipeline. The feature is internal to a Swift cluster and
+not exposed through the API. Clients are unaware that data is encrypted by this
+feature internally to the Swift service; internally encrypted data should never
+be returned to clients via the Swift API.</p>
+<p>The following data are encrypted while at rest in Swift:</p>
+<ul class="simple">
+<li>Object content i.e. the content of an object PUT request&#8217;s body</li>
+<li>The entity tag (ETag) of objects that have non-zero content</li>
+<li>All custom user object metadata values i.e. metadata sent using
+X-Object-Meta- prefixed headers with PUT or POST requests</li>
+</ul>
+<p>Any data or metadata not included in the list above are not encrypted,
+including:</p>
+<ul class="simple">
+<li>Account, container and object names</li>
+<li>Account and container custom user metadata values</li>
+<li>All custom user metadata names</li>
+<li>Object Content-Type values</li>
+<li>Object size</li>
+<li>System metadata</li>
+</ul>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p>This feature is intended to provide <cite>confidentiality</cite> of data that is at
+rest i.e. to protect user data from being read by an attacker that gains
+access to disks on which object data is stored.</p>
+<p>This feature is not intended to prevent undetectable <cite>modification</cite>
+of user data at rest.</p>
+<p class="last">This feature is not intended to protect against an attacker that gains
+access to Swift&#8217;s internal network connections, or gains access to key
+material or is able to modify the Swift code running on Swift nodes.</p>
+</div>
+<div class="section" id="deployment-and-operation">
+<span id="encryption-deployment"></span><h2>Deployment and operation<a class="headerlink" href="#deployment-and-operation" title="Permalink to this headline">¶</a></h2>
+<p>Encryption is deployed by adding two middleware filters to the proxy
+server WSGI pipeline and including their respective filter configuration
+sections in the <cite>proxy-server.conf</cite> file. <a class="reference internal" href="#container-sync-client-config"><span>Additional steps</span></a> are required if the container sync feature is
+being used.</p>
+<p>The <cite>keymaster</cite> and <cite>encryption</cite> middleware filters must be to the right of all
+other middleware in the pipeline apart from the final proxy-logging middleware,
+and in the order shown in this example:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>&lt;other middleware&gt; keymaster encryption proxy-logging proxy-server
+
+[filter:keymaster]
+use = egg:swift#keymaster
+encryption_root_secret = your_secret
+
+[filter:encryption]
+use = egg:swift#encryption
+# disable_encryption = False
+</pre></div>
+</div>
+<p>See the <cite>proxy-server.conf-sample</cite> file for further details on the middleware
+configuration options.</p>
+<p>The keymaster config option <code class="docutils literal"><span class="pre">encryption_root_secret</span></code> MUST be set to a value
+of at least 44 valid base-64 characters before the middleware is used and
+should be consistent across all proxy servers. The minimum length of 44 has
+been chosen because it is the length of a base-64 encoded 32 byte value.</p>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p>The <code class="docutils literal"><span class="pre">encryption_root_secret</span></code> option holds the master secret key used for
+encryption.  The security of all encrypted data critically depends on this
+key and it should therefore be set to a high-entropy value. For example, a
+suitable <code class="docutils literal"><span class="pre">encryption_root_secret</span></code> may be obtained by base-64 encoding a
+32 byte (or longer) value generated by a cryptographically secure random
+number generator.</p>
+<p>The <code class="docutils literal"><span class="pre">encryption_root_secret</span></code> value is necessary to recover any encrypted
+data from the storage system, and therefore, it must be guarded against
+accidental loss. Its value (and consequently, the proxy-server.conf file)
+should not be stored on any disk that is in any account, container or
+object ring.</p>
+<p class="last">The <code class="docutils literal"><span class="pre">encryption_root_secret</span></code> value should not be changed once deployed.
+Doing so would prevent Swift from properly decrypting data that was
+encrypted using the former value, and would therefore result in the loss of
+that data.</p>
+</div>
+<p>One method for generating a suitable value for <code class="docutils literal"><span class="pre">encryption_root_secret</span></code> is to
+use the <code class="docutils literal"><span class="pre">openssl</span></code> command line tool:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>openssl rand -base64 32
+</pre></div>
+</div>
+<p>Once deployed, the encryption filter will by default encrypt object data and
+metadata when handling PUT and POST requests and decrypt object data and
+metadata when handling GET and HEAD requests. COPY requests are transformed
+into GET and PUT requests by the <a class="reference internal" href="middleware.html#copy"><span>Server Side Copy</span></a> middleware before reaching the
+encryption middleware and as a result object data and metadata is decrypted and
+re-encrypted when copied.</p>
+<div class="section" id="upgrade-considerations">
+<h3>Upgrade Considerations<a class="headerlink" href="#upgrade-considerations" title="Permalink to this headline">¶</a></h3>
+<p>When upgrading an existing cluster to deploy encryption, the following sequence
+of steps is recommended:</p>
+<ol class="arabic simple">
+<li>Upgrade all object servers</li>
+<li>Upgrade all proxy servers</li>
+<li>Add keymaster and encryption middlewares to every proxy server&#8217;s middleware
+pipeline with the encryption <code class="docutils literal"><span class="pre">disable_encryption</span></code> option set to <code class="docutils literal"><span class="pre">True</span></code>
+and the keymaster <code class="docutils literal"><span class="pre">encryption_root_secret</span></code> value set as described above.</li>
+<li>If required, follow the steps for <a class="reference internal" href="#container-sync-client-config"><span>Container sync configuration</span></a>.</li>
+<li>Finally, change the encryption <code class="docutils literal"><span class="pre">disable_encryption</span></code> option to <code class="docutils literal"><span class="pre">False</span></code></li>
+</ol>
+<p>Objects that existed in the cluster prior to the keymaster and encryption
+middlewares being deployed are still readable with GET and HEAD requests. The
+content of those objects will not be encrypted unless they are written again by
+a PUT or COPY request. Any user metadata of those objects will not be encrypted
+unless it is written again by a PUT, POST or COPY request.</p>
+</div>
+<div class="section" id="disabling-encryption">
+<h3>Disabling Encryption<a class="headerlink" href="#disabling-encryption" title="Permalink to this headline">¶</a></h3>
+<p>Once deployed, the keymaster and encryption middlewares should not be removed
+from the pipeline. To do so will cause encrypted object data and/or metadata to
+be returned in response to GET or HEAD requests for objects that were
+previously encrypted.</p>
+<p>Encryption of inbound object data may be disabled by setting the encryption
+<code class="docutils literal"><span class="pre">disable_encryption</span></code> option to <code class="docutils literal"><span class="pre">True</span></code>, in which case existing encrypted
+objects will remain encrypted but new data written with PUT, POST or COPY
+requests will not be encrypted. The keymaster and encryption middlewares should
+remain in the pipeline even when encryption of new objects is not required. The
+encryption middleware is needed to handle GET requests for objects that may
+have been previously encrypted. The keymaster is needed to provide keys for
+those requests.</p>
+</div>
+<div class="section" id="container-sync-configuration">
+<span id="container-sync-client-config"></span><h3>Container sync configuration<a class="headerlink" href="#container-sync-configuration" title="Permalink to this headline">¶</a></h3>
+<p>If container sync is being used then the keymaster and encryption middlewares
+must be added to the container sync internal client pipeline. The following
+configuration steps are required:</p>
+<ol class="arabic">
+<li><p class="first">Create a custom internal client configuration file for container sync (if
+one is not already in use) based on the sample file
+<cite>internal-client.conf-sample</cite>. For example, copy
+<cite>internal-client.conf-sample</cite> to <cite>/etc/swift/container-sync-client.conf</cite>.</p>
+</li>
+<li><p class="first">Modify this file to include the middlewares in the pipeline in
+the same way as described above for the proxy server.</p>
+</li>
+<li><p class="first">Modify the container-sync section of all container server config files to
+point to this internal client config file using the
+<code class="docutils literal"><span class="pre">internal_client_conf_path</span></code> option. For example:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>internal_client_conf_path = /etc/swift/container-sync-client.conf
+</pre></div>
+</div>
+</li>
+</ol>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">The <code class="docutils literal"><span class="pre">encryption_root_secret</span></code> value is necessary to recover any encrypted
+data from the storage system, and therefore, it must be guarded against
+accidental loss. Its value (and consequently, the custom internal client
+configuration file) should not be stored on any disk that is in any
+account, container or object ring.</p>
+</div>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">These container sync configuration steps will be necessary for container
+sync probe tests to pass if the encryption middlewares are included in the
+proxy pipeline of a test cluster.</p>
+</div>
+</div>
+</div>
+<div class="section" id="implementation">
+<h2>Implementation<a class="headerlink" href="#implementation" title="Permalink to this headline">¶</a></h2>
+<div class="section" id="encryption-scheme">
+<h3>Encryption scheme<a class="headerlink" href="#encryption-scheme" title="Permalink to this headline">¶</a></h3>
+<p>Plaintext data is encrypted to ciphertext using the AES cipher with 256-bit
+keys implemented by the python <a class="reference external" href="https://pypi.python.org/pypi/cryptography">cryptography package</a>. The cipher is used in counter
+(CTR) mode so that any byte or range of bytes in the ciphertext may be
+decrypted independently of any other bytes in the ciphertext. This enables very
+simple handling of ranged GETs.</p>
+<p>In general an item of unencrypted data, <code class="docutils literal"><span class="pre">plaintext</span></code>, is transformed to an
+item of encrypted data, <code class="docutils literal"><span class="pre">ciphertext</span></code>:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="n">ciphertext</span> <span class="o">=</span> <span class="n">E</span><span class="p">(</span><span class="n">plaintext</span><span class="p">,</span> <span class="n">k</span><span class="p">,</span> <span class="n">iv</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>where <code class="docutils literal"><span class="pre">E</span></code> is the encryption function, <code class="docutils literal"><span class="pre">k</span></code> is an encryption key and <code class="docutils literal"><span class="pre">iv</span></code>
+is a unique initialization vector (IV) chosen for each encryption context. For
+example, the object body is one encryption context with a randomly chosen IV.
+The IV is stored as metadata of the encrypted item so that it is available for
+decryption:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="n">plaintext</span> <span class="o">=</span> <span class="n">D</span><span class="p">(</span><span class="n">ciphertext</span><span class="p">,</span> <span class="n">k</span><span class="p">,</span> <span class="n">iv</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>where <code class="docutils literal"><span class="pre">D</span></code> is the decryption function.</p>
+<p>The implementation of CTR mode follows <a class="reference external" href="http://csrc.nist.gov/publications/nistpubs/800-38a/sp800-38a.pdf">NIST SP800-38A</a>, and the
+full IV passed to the encryption or decryption function serves as the initial
+counter block.</p>
+<p>In general any encrypted item has accompanying crypto-metadata that describes
+the IV and the cipher algorithm used for the encryption:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>crypto_metadata = {&quot;iv&quot;: &lt;16 byte value&gt;,
+                   &quot;cipher&quot;: &quot;AES_CTR_256&quot;}
+</pre></div>
+</div>
+<p>This crypto-metadata is stored either with the ciphertext (for user
+metadata and etags) or as a separate header (for object bodies).</p>
+</div>
+<div class="section" id="key-management">
+<h3>Key management<a class="headerlink" href="#key-management" title="Permalink to this headline">¶</a></h3>
+<p>A keymaster middleware is responsible for providing the keys required for each
+encryption and decryption operation. Two keys are required when handling object
+requests: a <cite>container key</cite> that is uniquely associated with the container path
+and an <cite>object key</cite> that is uniquely associated with the object path.  These
+keys are made available to the encryption middleware via a callback function
+that the keymaster installs in the WSGI request environ.</p>
+<p>The current keymaster implementation derives container and object keys from the
+<code class="docutils literal"><span class="pre">encryption_root_secret</span></code> in a deterministic way by constructing a SHA256
+HMAC using the <code class="docutils literal"><span class="pre">encryption_root_secret</span></code> as a key and the container or object
+path as a message, for example:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="n">object_key</span> <span class="o">=</span> <span class="n">HMAC</span><span class="p">(</span><span class="n">encryption_root_secret</span><span class="p">,</span> <span class="s2">&quot;/a/c/o&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Other strategies for providing object and container keys may be employed by
+future implementations of alternative keymaster middleware.</p>
+<p>During each object PUT, a random key is generated to encrypt the object body.
+This random key is then encrypted using the object key provided by the
+keymaster. This makes it safe to store the encrypted random key alongside the
+encrypted object data and metadata.</p>
+<p>This process of <cite>key wrapping</cite> enables more efficient re-keying events when the
+object key may need to be replaced and consequently any data encrypted using
+that key must be re-encrypted. Key wrapping minimizes the amount of data
+encrypted using those keys to just other randomly chosen keys which can be
+re-wrapped efficiently without needing to re-encrypt the larger amounts of data
+that were encrypted using the random keys.</p>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">Re-keying is not currently implemented. Key wrapping is implemented
+in anticipation of future re-keying operations.</p>
+</div>
+</div>
+<div class="section" id="encryption-middleware">
+<h3>Encryption middleware<a class="headerlink" href="#encryption-middleware" title="Permalink to this headline">¶</a></h3>
+<p>The encryption middleware is composed of an <cite>encrypter</cite> component and a
+<cite>decrypter</cite> component.</p>
+<div class="section" id="encrypter-operation">
+<h4>Encrypter operation<a class="headerlink" href="#encrypter-operation" title="Permalink to this headline">¶</a></h4>
+<div class="section" id="custom-user-metadata">
+<h5>Custom user metadata<a class="headerlink" href="#custom-user-metadata" title="Permalink to this headline">¶</a></h5>
+<p>The encrypter encrypts each item of custom user metadata using the object key
+provided by the keymaster and an IV that is randomly chosen for that metadata
+item. The encrypted values are stored as <a class="reference internal" href="development_middleware.html#transient-sysmeta"><span>Object Transient-Sysmeta</span></a> with
+associated crypto-metadata appended to the encrypted value. For example:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>X-Object-Meta-Private1: value1
+X-Object-Meta-Private2: value2
+</pre></div>
+</div>
+<p>are transformed to:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>X-Object-Transient-Sysmeta-Crypto-Meta-Private1:
+  E(value1, object_key, header_iv_1); swift_meta={&quot;iv&quot;: header_iv_1,
+                                                  &quot;cipher&quot;: &quot;AES_CTR_256&quot;}
+X-Object-Transient-Sysmeta-Crypto-Meta-Private2:
+  E(value2, object_key, header_iv_2); swift_meta={&quot;iv&quot;: header_iv_2,
+                                                  &quot;cipher&quot;: &quot;AES_CTR_256&quot;}
+</pre></div>
+</div>
+<p>The unencrypted custom user metadata headers are removed.</p>
+</div>
+<div class="section" id="object-body">
+<h5>Object body<a class="headerlink" href="#object-body" title="Permalink to this headline">¶</a></h5>
+<p>Encryption of an object body is performed using a randomly chosen body key
+and a randomly chosen IV:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="n">body_ciphertext</span> <span class="o">=</span> <span class="n">E</span><span class="p">(</span><span class="n">body_plaintext</span><span class="p">,</span> <span class="n">body_key</span><span class="p">,</span> <span class="n">body_iv</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>The body_key is wrapped using the object key provided by the keymaster and a
+randomly chosen IV:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span><span class="n">wrapped_body_key</span> <span class="o">=</span> <span class="n">E</span><span class="p">(</span><span class="n">body_key</span><span class="p">,</span> <span class="n">object_key</span><span class="p">,</span> <span class="n">body_key_iv</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>The encrypter stores the associated crypto-metadata in a system metadata
+header:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>X-Object-Sysmeta-Crypto-Body-Meta:
+    {&quot;iv&quot;: body_iv,
+     &quot;cipher&quot;: &quot;AES_CTR_256&quot;,
+     &quot;body_key&quot;: {&quot;key&quot;: wrapped_body_key,
+                  &quot;iv&quot;: body_key_iv}}
+</pre></div>
+</div>
+<p>Note that in this case there is an extra item of crypto-metadata which stores
+the wrapped body key and its IV.</p>
+</div>
+<div class="section" id="entity-tag">
+<h5>Entity tag<a class="headerlink" href="#entity-tag" title="Permalink to this headline">¶</a></h5>
+<p>While encrypting the object body the encrypter also calculates the ETag (md5
+digest) of the plaintext body. This value is encrypted using the object key
+provided by the keymaster and a randomly chosen IV, and saved as an item of
+system metadata, with associated crypto-metadata appended to the encrypted
+value:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>X-Object-Sysmeta-Crypto-Etag:
+  E(md5(plaintext), object_key, etag_iv); swift_meta={&quot;iv&quot;: etag_iv,
+                                                      &quot;cipher&quot;: &quot;AES_CTR_256&quot;}
+</pre></div>
+</div>
+<p>The encrypter also forces an encrypted version of the plaintext ETag to be sent
+with container updates by adding an update override header to the PUT request.
+The associated crypto-metadata is appended to the encrypted ETag value of this
+update override header:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>X-Object-Sysmeta-Container-Update-Override-Etag:
+    E(md5(plaintext), container_key, override_etag_iv);
+    meta={&quot;iv&quot;: override_etag_iv, &quot;cipher&quot;: &quot;AES_CTR_256&quot;}
+</pre></div>
+</div>
+<p>The container key is used for this encryption so that the decrypter is able
+to decrypt the ETags in container listings when handling a container request,
+since object keys may not be available in that context.</p>
+<p>Since the plaintext ETag value is only known once the encrypter has completed
+processing the entire object body, the <code class="docutils literal"><span class="pre">X-Object-Sysmeta-Crypto-Etag</span></code> and
+<code class="docutils literal"><span class="pre">X-Object-Sysmeta-Container-Update-Override-Etag</span></code> headers are sent after the
+encrypted object body using the proxy server&#8217;s support for request footers.</p>
+</div>
+<div class="section" id="conditional-requests">
+<span id="id1"></span><h5>Conditional Requests<a class="headerlink" href="#conditional-requests" title="Permalink to this headline">¶</a></h5>
+<p>In general, an object server evaluates conditional requests with
+<code class="docutils literal"><span class="pre">If[-None]-Match</span></code> headers by comparing values listed in an
+<code class="docutils literal"><span class="pre">If[-None]-Match</span></code> header against the ETag that is stored in the object
+metadata. This is not possible when the ETag stored in object metadata has been
+encrypted. The encrypter therefore calculates an HMAC using the object key and
+the ETag while handling object PUT requests, and stores this under the metadata
+key <code class="docutils literal"><span class="pre">X-Object-Sysmeta-Crypto-Etag-Mac</span></code>:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>X-Object-Sysmeta-Crypto-Etag-Mac: HMAC(object_key, md5(plaintext))
+</pre></div>
+</div>
+<p>Like other ETag-related metadata, this is sent after the encrypted object body
+using the proxy server&#8217;s support for request footers.</p>
+<p>The encrypter similarly calculates an HMAC for each ETag value included in
+<code class="docutils literal"><span class="pre">If[-None]-Match</span></code> headers of conditional GET or HEAD requests, and appends
+these to the <code class="docutils literal"><span class="pre">If[-None]-Match</span></code> header. The encrypter also sets the
+<code class="docutils literal"><span class="pre">X-Backend-Etag-Is-At</span></code> header to point to the previously stored
+<code class="docutils literal"><span class="pre">X-Object-Sysmeta-Crypto-Etag-Mac</span></code> metadata so that the object server
+evaluates the conditional request by comparing the HMAC values included in the
+<code class="docutils literal"><span class="pre">If[-None]-Match</span></code> with the value stored under
+<code class="docutils literal"><span class="pre">X-Object-Sysmeta-Crypto-Etag-Mac</span></code>. For example, given a conditional request
+with header:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>If-Match: match_etag
+</pre></div>
+</div>
+<p>the encrypter would transform the request headers to include:</p>
+<div class="highlight-python"><div class="highlight"><pre><span></span>If-Match: match_etag,HMAC(object_key, match_etag)
+X-Backend-Etag-Is-At: X-Object-Sysmeta-Crypto-Etag-Mac
+</pre></div>
+</div>
+<p>This enables the object server to perform an encrypted comparison to check
+whether the ETags match, without leaking the ETag itself or leaking information
+about the object body.</p>
+</div>
+</div>
+<div class="section" id="decrypter-operation">
+<h4>Decrypter operation<a class="headerlink" href="#decrypter-operation" title="Permalink to this headline">¶</a></h4>
+<p>For each GET or HEAD request to an object, the decrypter inspects the response
+for encrypted items (revealed by crypto-metadata headers), and if any are
+discovered then it will:</p>
+<ol class="arabic simple">
+<li>Fetch the object and container keys from the keymaster via its callback</li>
+<li>Decrypt the <code class="docutils literal"><span class="pre">X-Object-Sysmeta-Crypto-Etag</span></code> value</li>
+<li>Decrypt the <code class="docutils literal"><span class="pre">X-Object-Sysmeta-Container-Update-Override-Etag</span></code> value</li>
+<li>Decrypt metadata header values using the object key</li>
+<li>Decrypt the wrapped body key found in <code class="docutils literal"><span class="pre">X-Object-Sysmeta-Crypto-Body-Meta</span></code></li>
+<li>Decrypt the body using the body key</li>
+</ol>
+<p>For each GET request to a container that would include ETags in its response
+body, the decrypter will:</p>
+<ol class="arabic simple">
+<li>GET the response body with the container listing</li>
+<li>Fetch the container key from the keymaster via its callback</li>
+<li>Decrypt any encrypted ETag entries in the container listing using the
+container key</li>
+</ol>
+</div>
+</div>
+<div class="section" id="impact-on-other-swift-services-and-features">
+<h3>Impact on other Swift services and features<a class="headerlink" href="#impact-on-other-swift-services-and-features" title="Permalink to this headline">¶</a></h3>
+<p>Encryption has no impact on <a class="reference internal" href="middleware.html#versioned-writes"><span>Object Versioning</span></a> other than that any
+previously unencrypted objects will be encrypted as they are copied to or from
+the versions container. Keymaster and encryption middlewares should be placed
+after <code class="docutils literal"><span class="pre">versioned_writes</span></code> in the proxy server pipeline, as described in
+<a class="reference internal" href="#encryption-deployment"><span>Deployment and operation</span></a>.</p>
+<p><cite>Container Sync</cite> uses an internal client to GET objects that are to be sync&#8217;d.
+This internal client must be configured to use the keymaster and encryption
+middlewares as described <a class="reference internal" href="#container-sync-client-config"><span>above</span></a>.</p>
+<p>Encryption has no impact on the <cite>object-auditor</cite> service. Since the ETag
+header saved with the object at rest is the md5 sum of the encrypted object
+body then the auditor will verify that encrypted data is valid.</p>
+<p>Encryption has no impact on the <cite>object-expirer</cite> service. <code class="docutils literal"><span class="pre">X-Delete-At</span></code> and
+<code class="docutils literal"><span class="pre">X-Delete-After</span></code> headers are not encrypted.</p>
+<p>Encryption has no impact on the <cite>object-replicator</cite> and <cite>object-reconstructor</cite>
+services. These services are unaware of the object or EC fragment data being
+encrypted.</p>
+<p>Encryption has no impact on the <cite>container-reconciler</cite> service. The
+<cite>container-reconciler</cite> uses an internal client to move objects between
+different policy rings. The destination object has the same URL as the source
+object and the object is moved without re-encryption.</p>
+</div>
+<div class="section" id="considerations-for-developers">
+<h3>Considerations for developers<a class="headerlink" href="#considerations-for-developers" title="Permalink to this headline">¶</a></h3>
+<p>Developers should be aware that keymaster and encryption middlewares rely on
+the path of an object remaining unchanged. The included keymaster derives keys
+for containers and objects based on their paths and the
+<code class="docutils literal"><span class="pre">encryption_root_secret</span></code>. The keymaster does not rely on object metadata to
+inform its generation of keys for GET and HEAD requests because when handling
+<a class="reference internal" href="#conditional-requests"><span>Conditional Requests</span></a> it is required to provide the object key before any
+metadata has been read from the object.</p>
+<p>Developers should therefore give careful consideration to any new features that
+would relocate object data and metadata within a Swift cluster by means that do
+not cause the object data and metadata to pass through the encryption
+middlewares in the proxy pipeline and be re-encrypted.</p>
+<p>The crypto-metadata associated with each encrypted item does include some
+<cite>key_id</cite> metadata that is provided by the keymaster and contains the path used
+to derive keys. This <cite>key_id</cite> metadata is persisted in anticipation of future
+scenarios when it may be necessary to decrypt an object that has been relocated
+without re-encrypting, in which case the metadata could be used to derive the
+keys that were used for encryption. However, this alone is not sufficient to
+handle conditional requests and to decrypt container listings where objects
+have been relocated, and further work will be required to solve those issues.</p>
+</div>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Object Encryption</a><ul>
+<li><a class="reference internal" href="#deployment-and-operation">Deployment and operation</a><ul>
+<li><a class="reference internal" href="#upgrade-considerations">Upgrade Considerations</a></li>
+<li><a class="reference internal" href="#disabling-encryption">Disabling Encryption</a></li>
+<li><a class="reference internal" href="#container-sync-configuration">Container sync configuration</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#implementation">Implementation</a><ul>
+<li><a class="reference internal" href="#encryption-scheme">Encryption scheme</a></li>
+<li><a class="reference internal" href="#key-management">Key management</a></li>
+<li><a class="reference internal" href="#encryption-middleware">Encryption middleware</a><ul>
+<li><a class="reference internal" href="#encrypter-operation">Encrypter operation</a><ul>
+<li><a class="reference internal" href="#custom-user-metadata">Custom user metadata</a></li>
+<li><a class="reference internal" href="#object-body">Object body</a></li>
+<li><a class="reference internal" href="#entity-tag">Entity tag</a></li>
+<li><a class="reference internal" href="#conditional-requests">Conditional Requests</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#decrypter-operation">Decrypter operation</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#impact-on-other-swift-services-and-features">Impact on other Swift services and features</a></li>
+<li><a class="reference internal" href="#considerations-for-developers">Considerations for developers</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="overview_erasure_code.html"
+                                  title="previous chapter">Erasure Code Support</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="overview_backing_store.html"
+                                  title="next chapter">Using Swift as Backing Store for Service Data</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/swift
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="_sources/overview_encryption.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="right" >
+          <a href="overview_backing_store.html" title="Using Swift as Backing Store for Service Data"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="overview_erasure_code.html" title="Erasure Code Support"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="index.html">swift 2.12.1.dev102 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2017, OpenStack Foundation.
+      Last updated on &#39;Tue Feb 14 07:57:22 2017, commit 7cb6882&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/swift");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

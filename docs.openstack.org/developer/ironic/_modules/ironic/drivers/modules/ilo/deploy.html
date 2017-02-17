@@ -1,0 +1,499 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>ironic.drivers.modules.ilo.deploy &mdash; Ironic 7.0.1.dev7 documentation</title>
+    
+    <link rel="stylesheet" href="../../../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../../_static/toggle.css" type="text/css" />
+    <link rel="stylesheet" href="../../../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../../../',
+        VERSION:     '7.0.1.dev7',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../../../_static/doctools.js"></script>
+    <script type="text/javascript" src="../../../../../_static/toggle.js"></script>
+    <link rel="top" title="Ironic 7.0.1.dev7 documentation" href="../../../../../index.html" />
+    <link rel="up" title="Module code" href="../../../../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for ironic.drivers.modules.ilo.deploy</h1><div class="highlight"><pre>
+<span></span><span class="c1"># Copyright 2014 Hewlett-Packard Development Company, L.P.</span>
+<span class="c1">#</span>
+<span class="c1"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may</span>
+<span class="c1"># not use this file except in compliance with the License. You may obtain</span>
+<span class="c1"># a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#      http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1"># Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="c1"># WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="c1"># License for the specific language governing permissions and limitations</span>
+<span class="c1"># under the License.</span>
+<span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">iLO Deploy Driver(s) and supporting methods.</span>
+<span class="sd">&quot;&quot;&quot;</span>
+
+<span class="kn">from</span> <span class="nn">ironic_lib</span> <span class="kn">import</span> <span class="n">metrics_utils</span>
+<span class="kn">from</span> <span class="nn">oslo_log</span> <span class="kn">import</span> <span class="n">log</span> <span class="k">as</span> <span class="n">logging</span>
+
+<span class="kn">from</span> <span class="nn">ironic.common</span> <span class="kn">import</span> <span class="n">boot_devices</span>
+<span class="kn">from</span> <span class="nn">ironic.common</span> <span class="kn">import</span> <span class="n">exception</span>
+<span class="kn">from</span> <span class="nn">ironic.common.glance_service</span> <span class="kn">import</span> <span class="n">service_utils</span>
+<span class="kn">from</span> <span class="nn">ironic.common.i18n</span> <span class="kn">import</span> <span class="n">_</span><span class="p">,</span> <span class="n">_LW</span>
+<span class="kn">from</span> <span class="nn">ironic.common</span> <span class="kn">import</span> <span class="n">image_service</span>
+<span class="kn">from</span> <span class="nn">ironic.common</span> <span class="kn">import</span> <span class="n">states</span>
+<span class="kn">from</span> <span class="nn">ironic.conductor</span> <span class="kn">import</span> <span class="n">task_manager</span>
+<span class="kn">from</span> <span class="nn">ironic.conductor</span> <span class="kn">import</span> <span class="n">utils</span> <span class="k">as</span> <span class="n">manager_utils</span>
+<span class="kn">from</span> <span class="nn">ironic.conf</span> <span class="kn">import</span> <span class="n">CONF</span>
+<span class="kn">from</span> <span class="nn">ironic.drivers.modules</span> <span class="kn">import</span> <span class="n">agent</span>
+<span class="kn">from</span> <span class="nn">ironic.drivers.modules</span> <span class="kn">import</span> <span class="n">deploy_utils</span>
+<span class="kn">from</span> <span class="nn">ironic.drivers.modules.ilo</span> <span class="kn">import</span> <span class="n">boot</span> <span class="k">as</span> <span class="n">ilo_boot</span>
+<span class="kn">from</span> <span class="nn">ironic.drivers.modules.ilo</span> <span class="kn">import</span> <span class="n">common</span> <span class="k">as</span> <span class="n">ilo_common</span>
+<span class="kn">from</span> <span class="nn">ironic.drivers.modules</span> <span class="kn">import</span> <span class="n">iscsi_deploy</span>
+
+<span class="n">LOG</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+<span class="n">METRICS</span> <span class="o">=</span> <span class="n">metrics_utils</span><span class="o">.</span><span class="n">get_metrics_logger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+
+<span class="k">def</span> <span class="nf">_prepare_agent_vmedia_boot</span><span class="p">(</span><span class="n">task</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Ejects virtual media devices and prepares for vmedia boot.&quot;&quot;&quot;</span>
+    <span class="c1"># Eject all virtual media devices, as we are going to use them</span>
+    <span class="c1"># during deploy.</span>
+    <span class="n">ilo_common</span><span class="o">.</span><span class="n">eject_vmedia_devices</span><span class="p">(</span><span class="n">task</span><span class="p">)</span>
+
+    <span class="n">deploy_ramdisk_opts</span> <span class="o">=</span> <span class="n">deploy_utils</span><span class="o">.</span><span class="n">build_agent_options</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="p">)</span>
+    <span class="n">deploy_iso</span> <span class="o">=</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">driver_info</span><span class="p">[</span><span class="s1">&#39;ilo_deploy_iso&#39;</span><span class="p">]</span>
+    <span class="n">ilo_common</span><span class="o">.</span><span class="n">setup_vmedia</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">deploy_iso</span><span class="p">,</span> <span class="n">deploy_ramdisk_opts</span><span class="p">)</span>
+    <span class="n">manager_utils</span><span class="o">.</span><span class="n">node_power_action</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">states</span><span class="o">.</span><span class="n">REBOOT</span><span class="p">)</span>
+
+
+<span class="k">def</span> <span class="nf">_disable_secure_boot</span><span class="p">(</span><span class="n">task</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Disables secure boot on node, if secure boot is enabled on node.</span>
+
+<span class="sd">    This method checks if secure boot is enabled on node. If enabled, it</span>
+<span class="sd">    disables same and returns True.</span>
+
+<span class="sd">    :param task: a TaskManager instance containing the node to act on.</span>
+<span class="sd">    :returns: It returns True, if secure boot was successfully disabled on</span>
+<span class="sd">              the node.</span>
+<span class="sd">              It returns False, if secure boot on node is in disabled state</span>
+<span class="sd">              or if secure boot feature is not supported by the node.</span>
+<span class="sd">    :raises: IloOperationError, if some operation on iLO failed.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">cur_sec_state</span> <span class="o">=</span> <span class="bp">False</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">cur_sec_state</span> <span class="o">=</span> <span class="n">ilo_common</span><span class="o">.</span><span class="n">get_secure_boot_mode</span><span class="p">(</span><span class="n">task</span><span class="p">)</span>
+    <span class="k">except</span> <span class="n">exception</span><span class="o">.</span><span class="n">IloOperationNotSupported</span><span class="p">:</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;Secure boot mode is not supported for node </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">,</span>
+                  <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+        <span class="k">return</span> <span class="bp">False</span>
+
+    <span class="k">if</span> <span class="n">cur_sec_state</span><span class="p">:</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;Disabling secure boot for node </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">,</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+        <span class="n">ilo_common</span><span class="o">.</span><span class="n">set_secure_boot_mode</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="bp">False</span><span class="p">)</span>
+        <span class="k">return</span> <span class="bp">True</span>
+    <span class="k">return</span> <span class="bp">False</span>
+
+
+<span class="k">def</span> <span class="nf">_prepare_node_for_deploy</span><span class="p">(</span><span class="n">task</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Common preparatory steps for all iLO drivers.</span>
+
+<span class="sd">    This method performs common preparatory steps required for all drivers.</span>
+<span class="sd">    1. Power off node</span>
+<span class="sd">    2. Disables secure boot, if it is in enabled state.</span>
+<span class="sd">    3. Updates boot_mode capability to &#39;uefi&#39; if secure boot is requested.</span>
+<span class="sd">    4. Changes boot mode of the node if secure boot is disabled currently.</span>
+
+<span class="sd">    :param task: a TaskManager instance containing the node to act on.</span>
+<span class="sd">    :raises: IloOperationError, if some operation on iLO failed.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">manager_utils</span><span class="o">.</span><span class="n">node_power_action</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">states</span><span class="o">.</span><span class="n">POWER_OFF</span><span class="p">)</span>
+
+    <span class="c1"># Boot mode can be changed only if secure boot is in disabled state.</span>
+    <span class="c1"># secure boot and boot mode cannot be changed together.</span>
+    <span class="n">change_boot_mode</span> <span class="o">=</span> <span class="bp">True</span>
+
+    <span class="c1"># Disable secure boot on the node if it is in enabled state.</span>
+    <span class="k">if</span> <span class="n">_disable_secure_boot</span><span class="p">(</span><span class="n">task</span><span class="p">):</span>
+        <span class="n">change_boot_mode</span> <span class="o">=</span> <span class="bp">False</span>
+
+    <span class="k">if</span> <span class="n">change_boot_mode</span><span class="p">:</span>
+        <span class="n">ilo_common</span><span class="o">.</span><span class="n">update_boot_mode</span><span class="p">(</span><span class="n">task</span><span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="c1"># Need to update boot mode that will be used during deploy, if one is</span>
+        <span class="c1"># not provided.</span>
+        <span class="c1"># Since secure boot was disabled, we are in &#39;uefi&#39; boot mode.</span>
+        <span class="k">if</span> <span class="n">deploy_utils</span><span class="o">.</span><span class="n">get_boot_mode_for_deploy</span><span class="p">(</span><span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="p">)</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">instance_info</span> <span class="o">=</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">instance_info</span>
+            <span class="n">instance_info</span><span class="p">[</span><span class="s1">&#39;deploy_boot_mode&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="s1">&#39;uefi&#39;</span>
+            <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">instance_info</span> <span class="o">=</span> <span class="n">instance_info</span>
+            <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">save</span><span class="p">()</span>
+
+
+<span class="k">def</span> <span class="nf">_disable_secure_boot_if_supported</span><span class="p">(</span><span class="n">task</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Disables secure boot on node, does not throw if its not supported.</span>
+
+<span class="sd">    :param task: a TaskManager instance containing the node to act on.</span>
+<span class="sd">    :raises: IloOperationError, if some operation on iLO failed.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">ilo_common</span><span class="o">.</span><span class="n">update_secure_boot_mode</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="bp">False</span><span class="p">)</span>
+    <span class="c1"># We need to handle IloOperationNotSupported exception so that if</span>
+    <span class="c1"># the user has incorrectly specified the Node capability</span>
+    <span class="c1"># &#39;secure_boot&#39; to a node that does not have that capability and</span>
+    <span class="c1"># attempted deploy. Handling this exception here, will help the</span>
+    <span class="c1"># user to tear down such a Node.</span>
+    <span class="k">except</span> <span class="n">exception</span><span class="o">.</span><span class="n">IloOperationNotSupported</span><span class="p">:</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s1">&#39;Secure boot mode is not supported for node </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">),</span>
+                    <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+
+
+<span class="k">def</span> <span class="nf">_validate</span><span class="p">(</span><span class="n">task</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Validate the prerequisites for virtual media based deploy.</span>
+
+<span class="sd">    This method validates whether the &#39;driver_info&#39; property of the</span>
+<span class="sd">    supplied node contains the required information for this driver.</span>
+
+<span class="sd">    :param task: a TaskManager instance containing the node to act on.</span>
+<span class="sd">    :raises: InvalidParameterValue if any parameters are incorrect</span>
+<span class="sd">    :raises: MissingParameterValue if some mandatory information</span>
+<span class="sd">        is missing on the node</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">node</span> <span class="o">=</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span>
+    <span class="n">ilo_common</span><span class="o">.</span><span class="n">parse_driver_info</span><span class="p">(</span><span class="n">node</span><span class="p">)</span>
+    <span class="k">if</span> <span class="s1">&#39;ilo_deploy_iso&#39;</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">node</span><span class="o">.</span><span class="n">driver_info</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">MissingParameterValue</span><span class="p">(</span><span class="n">_</span><span class="p">(</span>
+            <span class="s2">&quot;Missing &#39;ilo_deploy_iso&#39; parameter in node&#39;s &#39;driver_info&#39;.&quot;</span><span class="p">))</span>
+    <span class="n">deploy_iso</span> <span class="o">=</span> <span class="n">node</span><span class="o">.</span><span class="n">driver_info</span><span class="p">[</span><span class="s1">&#39;ilo_deploy_iso&#39;</span><span class="p">]</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">service_utils</span><span class="o">.</span><span class="n">is_glance_image</span><span class="p">(</span><span class="n">deploy_iso</span><span class="p">):</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="n">image_service</span><span class="o">.</span><span class="n">HttpImageService</span><span class="p">()</span><span class="o">.</span><span class="n">validate_href</span><span class="p">(</span><span class="n">deploy_iso</span><span class="p">)</span>
+        <span class="k">except</span> <span class="n">exception</span><span class="o">.</span><span class="n">ImageRefValidationFailed</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exception</span><span class="o">.</span><span class="n">InvalidParameterValue</span><span class="p">(</span><span class="n">_</span><span class="p">(</span>
+                <span class="s2">&quot;Virtual media deploy accepts only Glance images or &quot;</span>
+                <span class="s2">&quot;HTTP(S) as driver_info[&#39;ilo_deploy_iso&#39;]. Either &#39;</span><span class="si">%s</span><span class="s2">&#39; &quot;</span>
+                <span class="s2">&quot;is not a glance UUID or not a valid HTTP(S) URL or &quot;</span>
+                <span class="s2">&quot;the given URL is not reachable.&quot;</span><span class="p">)</span> <span class="o">%</span> <span class="n">deploy_iso</span><span class="p">)</span>
+
+
+<div class="viewcode-block" id="IloIscsiDeployMixin"><a class="viewcode-back" href="../../../../../api/ironic.drivers.modules.ilo.deploy.html#ironic.drivers.modules.ilo.deploy.IloIscsiDeployMixin">[docs]</a><span class="k">class</span> <span class="nc">IloIscsiDeployMixin</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IloIscsiDeployMixin.tear_down&#39;</span><span class="p">)</span>
+    <span class="nd">@task_manager.require_exclusive_lock</span>
+<div class="viewcode-block" id="IloIscsiDeployMixin.tear_down"><a class="viewcode-back" href="../../../../../api/ironic.drivers.modules.ilo.deploy.html#ironic.drivers.modules.ilo.deploy.IloIscsiDeployMixin.tear_down">[docs]</a>    <span class="k">def</span> <span class="nf">tear_down</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Tear down a previous deployment on the task&#39;s node.</span>
+
+<span class="sd">        Power off the node. All actual clean-up is done in the clean_up()</span>
+<span class="sd">        method which should be called separately.</span>
+
+<span class="sd">        :param task: a TaskManager instance containing the node to act on.</span>
+<span class="sd">        :returns: deploy state DELETED.</span>
+<span class="sd">        :raises: IloOperationError, if some operation on iLO failed.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+
+        <span class="n">manager_utils</span><span class="o">.</span><span class="n">node_power_action</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">states</span><span class="o">.</span><span class="n">POWER_OFF</span><span class="p">)</span>
+        <span class="n">_disable_secure_boot_if_supported</span><span class="p">(</span><span class="n">task</span><span class="p">)</span>
+        <span class="k">return</span> <span class="nb">super</span><span class="p">(</span><span class="n">IloIscsiDeployMixin</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">tear_down</span><span class="p">(</span><span class="n">task</span><span class="p">)</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IloIscsiDeployMixin.prepare_cleaning&#39;</span><span class="p">)</span>
+<div class="viewcode-block" id="IloIscsiDeployMixin.prepare_cleaning"><a class="viewcode-back" href="../../../../../api/ironic.drivers.modules.ilo.deploy.html#ironic.drivers.modules.ilo.deploy.IloIscsiDeployMixin.prepare_cleaning">[docs]</a>    <span class="k">def</span> <span class="nf">prepare_cleaning</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Boot into the agent to prepare for cleaning.</span>
+
+<span class="sd">        :param task: a TaskManager object containing the node</span>
+<span class="sd">        :returns: states.CLEANWAIT to signify an asynchronous prepare.</span>
+<span class="sd">        :raises NodeCleaningFailure: if the previous cleaning ports cannot</span>
+<span class="sd">            be removed or if new cleaning ports cannot be created</span>
+<span class="sd">        :raises: IloOperationError, if some operation on iLO failed.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="c1"># Powering off the Node before initiating boot for node cleaning.</span>
+        <span class="c1"># If node is in system POST, setting boot device fails.</span>
+        <span class="n">manager_utils</span><span class="o">.</span><span class="n">node_power_action</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">states</span><span class="o">.</span><span class="n">POWER_OFF</span><span class="p">)</span>
+        <span class="k">return</span> <span class="nb">super</span><span class="p">(</span><span class="n">IloIscsiDeployMixin</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">prepare_cleaning</span><span class="p">(</span><span class="n">task</span><span class="p">)</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IloIscsiDeployMixin.continue_deploy&#39;</span><span class="p">)</span>
+    <span class="nd">@task_manager.require_exclusive_lock</span>
+<div class="viewcode-block" id="IloIscsiDeployMixin.continue_deploy"><a class="viewcode-back" href="../../../../../api/ironic.drivers.modules.ilo.deploy.html#ironic.drivers.modules.ilo.deploy.IloIscsiDeployMixin.continue_deploy">[docs]</a>    <span class="k">def</span> <span class="nf">continue_deploy</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Method invoked when deployed with the IPA ramdisk.</span>
+
+<span class="sd">        This method is invoked during a heartbeat from an agent when</span>
+<span class="sd">        the node is in wait-call-back state.</span>
+<span class="sd">        This updates boot mode and secure boot settings, if required.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">ilo_common</span><span class="o">.</span><span class="n">update_boot_mode</span><span class="p">(</span><span class="n">task</span><span class="p">)</span>
+        <span class="n">ilo_common</span><span class="o">.</span><span class="n">update_secure_boot_mode</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="bp">True</span><span class="p">)</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">IloIscsiDeployMixin</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">continue_deploy</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span></div></div>
+
+
+<div class="viewcode-block" id="IloVirtualMediaIscsiDeploy"><a class="viewcode-back" href="../../../../../api/ironic.drivers.modules.ilo.deploy.html#ironic.drivers.modules.ilo.deploy.IloVirtualMediaIscsiDeploy">[docs]</a><span class="k">class</span> <span class="nc">IloVirtualMediaIscsiDeploy</span><span class="p">(</span><span class="n">IloIscsiDeployMixin</span><span class="p">,</span>
+                                 <span class="n">iscsi_deploy</span><span class="o">.</span><span class="n">ISCSIDeploy</span><span class="p">):</span>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IloVirtualMediaIscsiDeploy.validate&#39;</span><span class="p">)</span>
+<div class="viewcode-block" id="IloVirtualMediaIscsiDeploy.validate"><a class="viewcode-back" href="../../../../../api/ironic.drivers.modules.ilo.deploy.html#ironic.drivers.modules.ilo.deploy.IloVirtualMediaIscsiDeploy.validate">[docs]</a>    <span class="k">def</span> <span class="nf">validate</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Validate the prerequisites for virtual media based deploy.</span>
+
+<span class="sd">        This method validates whether the &#39;driver_info&#39; property of the</span>
+<span class="sd">        supplied node contains the required information for this driver.</span>
+
+<span class="sd">        :param task: a TaskManager instance containing the node to act on.</span>
+<span class="sd">        :raises: InvalidParameterValue if any parameters are incorrect</span>
+<span class="sd">        :raises: MissingParameterValue if some mandatory information</span>
+<span class="sd">            is missing on the node</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">_validate</span><span class="p">(</span><span class="n">task</span><span class="p">)</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">IloVirtualMediaIscsiDeploy</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">validate</span><span class="p">(</span><span class="n">task</span><span class="p">)</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IloVirtualMediaIscsiDeploy.prepare&#39;</span><span class="p">)</span>
+<div class="viewcode-block" id="IloVirtualMediaIscsiDeploy.prepare"><a class="viewcode-back" href="../../../../../api/ironic.drivers.modules.ilo.deploy.html#ironic.drivers.modules.ilo.deploy.IloVirtualMediaIscsiDeploy.prepare">[docs]</a>    <span class="k">def</span> <span class="nf">prepare</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Prepare the deployment environment for this task&#39;s node.</span>
+
+<span class="sd">        :param task: a TaskManager instance containing the node to act on.</span>
+<span class="sd">        :raises: IloOperationError, if some operation on iLO failed.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">provision_state</span> <span class="o">==</span> <span class="n">states</span><span class="o">.</span><span class="n">DEPLOYING</span><span class="p">:</span>
+            <span class="n">_prepare_node_for_deploy</span><span class="p">(</span><span class="n">task</span><span class="p">)</span>
+
+        <span class="nb">super</span><span class="p">(</span><span class="n">IloVirtualMediaIscsiDeploy</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">task</span><span class="p">)</span></div></div>
+
+
+<div class="viewcode-block" id="IloVirtualMediaAgentDeploy"><a class="viewcode-back" href="../../../../../api/ironic.drivers.modules.ilo.deploy.html#ironic.drivers.modules.ilo.deploy.IloVirtualMediaAgentDeploy">[docs]</a><span class="k">class</span> <span class="nc">IloVirtualMediaAgentDeploy</span><span class="p">(</span><span class="n">agent</span><span class="o">.</span><span class="n">AgentDeploy</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Interface for deploy-related actions.&quot;&quot;&quot;</span>
+
+<div class="viewcode-block" id="IloVirtualMediaAgentDeploy.get_properties"><a class="viewcode-back" href="../../../../../api/ironic.drivers.modules.ilo.deploy.html#ironic.drivers.modules.ilo.deploy.IloVirtualMediaAgentDeploy.get_properties">[docs]</a>    <span class="k">def</span> <span class="nf">get_properties</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Return the properties of the interface.</span>
+
+<span class="sd">        :returns: dictionary of &lt;property name&gt;:&lt;property description&gt; entries.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="n">ilo_boot</span><span class="o">.</span><span class="n">COMMON_PROPERTIES</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IloVirtualMediaAgentDeploy.validate&#39;</span><span class="p">)</span>
+<div class="viewcode-block" id="IloVirtualMediaAgentDeploy.validate"><a class="viewcode-back" href="../../../../../api/ironic.drivers.modules.ilo.deploy.html#ironic.drivers.modules.ilo.deploy.IloVirtualMediaAgentDeploy.validate">[docs]</a>    <span class="k">def</span> <span class="nf">validate</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Validate the prerequisites for virtual media based deploy.</span>
+
+<span class="sd">        This method validates whether the &#39;driver_info&#39; property of the</span>
+<span class="sd">        supplied node contains the required information for this driver.</span>
+
+<span class="sd">        :param task: a TaskManager instance containing the node to act on.</span>
+<span class="sd">        :raises: InvalidParameterValue if any parameters are incorrect</span>
+<span class="sd">        :raises: MissingParameterValue if some mandatory information</span>
+<span class="sd">            is missing on the node</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">_validate</span><span class="p">(</span><span class="n">task</span><span class="p">)</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">IloVirtualMediaAgentDeploy</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">validate</span><span class="p">(</span><span class="n">task</span><span class="p">)</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IloVirtualMediaAgentDeploy.tear_down&#39;</span><span class="p">)</span>
+    <span class="nd">@task_manager.require_exclusive_lock</span>
+<div class="viewcode-block" id="IloVirtualMediaAgentDeploy.tear_down"><a class="viewcode-back" href="../../../../../api/ironic.drivers.modules.ilo.deploy.html#ironic.drivers.modules.ilo.deploy.IloVirtualMediaAgentDeploy.tear_down">[docs]</a>    <span class="k">def</span> <span class="nf">tear_down</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Tear down a previous deployment on the task&#39;s node.</span>
+
+<span class="sd">        :param task: a TaskManager instance.</span>
+<span class="sd">        :returns: states.DELETED</span>
+<span class="sd">        :raises: IloOperationError, if some operation on iLO failed.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">manager_utils</span><span class="o">.</span><span class="n">node_power_action</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">states</span><span class="o">.</span><span class="n">POWER_OFF</span><span class="p">)</span>
+        <span class="n">_disable_secure_boot_if_supported</span><span class="p">(</span><span class="n">task</span><span class="p">)</span>
+        <span class="k">return</span> <span class="nb">super</span><span class="p">(</span><span class="n">IloVirtualMediaAgentDeploy</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">tear_down</span><span class="p">(</span><span class="n">task</span><span class="p">)</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IloVirtualMediaAgentDeploy.prepare&#39;</span><span class="p">)</span>
+<div class="viewcode-block" id="IloVirtualMediaAgentDeploy.prepare"><a class="viewcode-back" href="../../../../../api/ironic.drivers.modules.ilo.deploy.html#ironic.drivers.modules.ilo.deploy.IloVirtualMediaAgentDeploy.prepare">[docs]</a>    <span class="k">def</span> <span class="nf">prepare</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Prepare the deployment environment for this node.</span>
+
+<span class="sd">        :param task: a TaskManager instance.</span>
+<span class="sd">        :raises: IloOperationError, if some operation on iLO failed.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">provision_state</span> <span class="o">==</span> <span class="n">states</span><span class="o">.</span><span class="n">DEPLOYING</span><span class="p">:</span>
+            <span class="n">_prepare_node_for_deploy</span><span class="p">(</span><span class="n">task</span><span class="p">)</span>
+
+        <span class="nb">super</span><span class="p">(</span><span class="n">IloVirtualMediaAgentDeploy</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">task</span><span class="p">)</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IloVirtualMediaAgentDeploy.prepare_cleaning&#39;</span><span class="p">)</span>
+<div class="viewcode-block" id="IloVirtualMediaAgentDeploy.prepare_cleaning"><a class="viewcode-back" href="../../../../../api/ironic.drivers.modules.ilo.deploy.html#ironic.drivers.modules.ilo.deploy.IloVirtualMediaAgentDeploy.prepare_cleaning">[docs]</a>    <span class="k">def</span> <span class="nf">prepare_cleaning</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Boot into the agent to prepare for cleaning.</span>
+
+<span class="sd">        :param task: a TaskManager object containing the node</span>
+<span class="sd">        :returns: states.CLEANWAIT to signify an asynchronous prepare.</span>
+<span class="sd">        :raises: NodeCleaningFailure, NetworkError if the previous cleaning</span>
+<span class="sd">            ports cannot be removed or if new cleaning ports cannot be created</span>
+<span class="sd">        :raises: IloOperationError, if some operation on iLO failed.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="c1"># Powering off the Node before initiating boot for node cleaning.</span>
+        <span class="c1"># If node is in system POST, setting boot device fails.</span>
+        <span class="n">manager_utils</span><span class="o">.</span><span class="n">node_power_action</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">states</span><span class="o">.</span><span class="n">POWER_OFF</span><span class="p">)</span>
+        <span class="k">return</span> <span class="nb">super</span><span class="p">(</span><span class="n">IloVirtualMediaAgentDeploy</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">prepare_cleaning</span><span class="p">(</span><span class="n">task</span><span class="p">)</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IloVirtualMediaAgentDeploy.get_clean_steps&#39;</span><span class="p">)</span>
+<div class="viewcode-block" id="IloVirtualMediaAgentDeploy.get_clean_steps"><a class="viewcode-back" href="../../../../../api/ironic.drivers.modules.ilo.deploy.html#ironic.drivers.modules.ilo.deploy.IloVirtualMediaAgentDeploy.get_clean_steps">[docs]</a>    <span class="k">def</span> <span class="nf">get_clean_steps</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Get the list of clean steps from the agent.</span>
+
+<span class="sd">        :param task: a TaskManager object containing the node</span>
+<span class="sd">        :raises NodeCleaningFailure: if the clean steps are not yet</span>
+<span class="sd">            available (cached), for example, when a node has just been</span>
+<span class="sd">            enrolled and has not been cleaned yet.</span>
+<span class="sd">        :returns: A list of clean step dictionaries</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+
+        <span class="n">priority</span> <span class="o">=</span> <span class="n">CONF</span><span class="o">.</span><span class="n">ilo</span><span class="o">.</span><span class="n">clean_priority_erase_devices</span>
+        <span class="k">if</span> <span class="n">priority</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">priority</span> <span class="o">=</span> <span class="n">CONF</span><span class="o">.</span><span class="n">deploy</span><span class="o">.</span><span class="n">erase_devices_priority</span>
+
+        <span class="n">new_priorities</span> <span class="o">=</span> <span class="p">{</span>
+            <span class="s1">&#39;erase_devices&#39;</span><span class="p">:</span> <span class="n">priority</span><span class="p">,</span>
+            <span class="s1">&#39;erase_devices_metadata&#39;</span><span class="p">:</span>
+                <span class="n">CONF</span><span class="o">.</span><span class="n">deploy</span><span class="o">.</span><span class="n">erase_devices_metadata_priority</span><span class="p">,</span>
+        <span class="p">}</span>
+        <span class="k">return</span> <span class="n">deploy_utils</span><span class="o">.</span><span class="n">agent_get_clean_steps</span><span class="p">(</span>
+            <span class="n">task</span><span class="p">,</span> <span class="n">interface</span><span class="o">=</span><span class="s1">&#39;deploy&#39;</span><span class="p">,</span>
+            <span class="n">override_priorities</span><span class="o">=</span><span class="n">new_priorities</span><span class="p">)</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IloVirtualMediaAgentDeploy.reboot_to_instance&#39;</span><span class="p">)</span>
+<div class="viewcode-block" id="IloVirtualMediaAgentDeploy.reboot_to_instance"><a class="viewcode-back" href="../../../../../api/ironic.drivers.modules.ilo.deploy.html#ironic.drivers.modules.ilo.deploy.IloVirtualMediaAgentDeploy.reboot_to_instance">[docs]</a>    <span class="k">def</span> <span class="nf">reboot_to_instance</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="n">node</span> <span class="o">=</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;Preparing to reboot to instance for node </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">,</span>
+                  <span class="n">node</span><span class="o">.</span><span class="n">uuid</span><span class="p">)</span>
+
+        <span class="n">error</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">check_deploy_success</span><span class="p">(</span><span class="n">node</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">error</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="c1"># Set boot mode</span>
+            <span class="n">ilo_common</span><span class="o">.</span><span class="n">update_boot_mode</span><span class="p">(</span><span class="n">task</span><span class="p">)</span>
+
+            <span class="c1"># Need to enable secure boot, if being requested</span>
+            <span class="n">ilo_common</span><span class="o">.</span><span class="n">update_secure_boot_mode</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="bp">True</span><span class="p">)</span>
+
+        <span class="nb">super</span><span class="p">(</span><span class="n">IloVirtualMediaAgentDeploy</span><span class="p">,</span>
+              <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">reboot_to_instance</span><span class="p">(</span><span class="n">task</span><span class="p">)</span></div></div>
+
+
+<div class="viewcode-block" id="IloPXEDeploy"><a class="viewcode-back" href="../../../../../api/ironic.drivers.modules.ilo.deploy.html#ironic.drivers.modules.ilo.deploy.IloPXEDeploy">[docs]</a><span class="k">class</span> <span class="nc">IloPXEDeploy</span><span class="p">(</span><span class="n">IloIscsiDeployMixin</span><span class="p">,</span> <span class="n">iscsi_deploy</span><span class="o">.</span><span class="n">ISCSIDeploy</span><span class="p">):</span>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IloPXEDeploy.prepare&#39;</span><span class="p">)</span>
+<div class="viewcode-block" id="IloPXEDeploy.prepare"><a class="viewcode-back" href="../../../../../api/ironic.drivers.modules.ilo.deploy.html#ironic.drivers.modules.ilo.deploy.IloPXEDeploy.prepare">[docs]</a>    <span class="k">def</span> <span class="nf">prepare</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Prepare the deployment environment for this task&#39;s node.</span>
+
+<span class="sd">        If the node&#39;s &#39;capabilities&#39; property includes a boot_mode, that</span>
+<span class="sd">        boot mode will be applied for the node. Otherwise, the existing</span>
+<span class="sd">        boot mode of the node is used in the node&#39;s &#39;capabilities&#39; property.</span>
+
+<span class="sd">        PXEDeploys&#39; prepare method is then called, to prepare the deploy</span>
+<span class="sd">        environment for the node</span>
+
+<span class="sd">        :param task: a TaskManager instance containing the node to act on.</span>
+<span class="sd">        :raises: IloOperationError, if some operation on iLO failed.</span>
+<span class="sd">        :raises: InvalidParameterValue, if some information is invalid.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="n">task</span><span class="o">.</span><span class="n">node</span><span class="o">.</span><span class="n">provision_state</span> <span class="o">==</span> <span class="n">states</span><span class="o">.</span><span class="n">DEPLOYING</span><span class="p">:</span>
+            <span class="n">_prepare_node_for_deploy</span><span class="p">(</span><span class="n">task</span><span class="p">)</span>
+
+        <span class="nb">super</span><span class="p">(</span><span class="n">IloPXEDeploy</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">prepare</span><span class="p">(</span><span class="n">task</span><span class="p">)</span></div>
+
+    <span class="nd">@METRICS.timer</span><span class="p">(</span><span class="s1">&#39;IloPXEDeploy.deploy&#39;</span><span class="p">)</span>
+<div class="viewcode-block" id="IloPXEDeploy.deploy"><a class="viewcode-back" href="../../../../../api/ironic.drivers.modules.ilo.deploy.html#ironic.drivers.modules.ilo.deploy.IloPXEDeploy.deploy">[docs]</a>    <span class="k">def</span> <span class="nf">deploy</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Start deployment of the task&#39;s node.</span>
+
+<span class="sd">        This method sets the boot device to &#39;NETWORK&#39; and then calls</span>
+<span class="sd">        PXEDeploy&#39;s deploy method to deploy on the given node.</span>
+
+<span class="sd">        :param task: a TaskManager instance containing the node to act on.</span>
+<span class="sd">        :returns: deploy state DEPLOYWAIT.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">manager_utils</span><span class="o">.</span><span class="n">node_set_boot_device</span><span class="p">(</span><span class="n">task</span><span class="p">,</span> <span class="n">boot_devices</span><span class="o">.</span><span class="n">PXE</span><span class="p">)</span>
+        <span class="k">return</span> <span class="nb">super</span><span class="p">(</span><span class="n">IloPXEDeploy</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="n">deploy</span><span class="p">(</span><span class="n">task</span><span class="p">)</span></div></div>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/ironic
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../../../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../../../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../../../../index.html">Ironic 7.0.1.dev7 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../../../../index.html" accesskey="U">Module code</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright OpenStack Foundation.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/Ironic");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

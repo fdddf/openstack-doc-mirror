@@ -1,0 +1,505 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Code Review Guide for Nova &mdash; nova 15.0.0.0rc2.dev69 documentation</title>
+    
+    <link rel="stylesheet" href="_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="_static/support-matrix.css" type="text/css" />
+    <link rel="stylesheet" href="_static/feature-matrix.css" type="text/css" />
+    <link rel="stylesheet" href="_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    './',
+        VERSION:     '15.0.0.0rc2.dev69',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="_static/jquery.js"></script>
+    <script type="text/javascript" src="_static/underscore.js"></script>
+    <script type="text/javascript" src="_static/doctools.js"></script>
+    <link rel="top" title="nova 15.0.0.0rc2.dev69 documentation" href="index.html" />
+    <link rel="next" title="Scheduler Evolution" href="scheduler_evolution.html" />
+    <link rel="prev" title="Nova Stable REST API" href="stable_api.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="code-review-guide-for-nova">
+<span id="code-review"></span><h1>Code Review Guide for Nova<a class="headerlink" href="#code-review-guide-for-nova" title="Permalink to this headline">¶</a></h1>
+<p>This is a very terse set of points for reviewers to consider when
+looking at nova code. These are things that are important for the
+continued smooth operation of Nova, but that tend to be carried as
+&#8220;tribal knowledge&#8221; instead of being written down. It is an attempt to
+boil down some of those things into nearly checklist format. Further
+explanation about why some of these things are important belongs
+elsewhere and should be linked from here.</p>
+<div class="section" id="upgrade-related-concerns">
+<h2>Upgrade-Related Concerns<a class="headerlink" href="#upgrade-related-concerns" title="Permalink to this headline">¶</a></h2>
+<div class="section" id="rpc-api-versions">
+<h3>RPC API Versions<a class="headerlink" href="#rpc-api-versions" title="Permalink to this headline">¶</a></h3>
+<ul class="simple">
+<li>If an RPC method is modified, the following needs to happen:</li>
+</ul>
+<blockquote>
+<div><ul class="simple">
+<li>The manager-side (example: compute/manager) needs a version bump</li>
+<li>The manager-side method needs to tolerate older calls as well as
+newer calls</li>
+<li>Arguments can be added as long as they are optional. Arguments
+cannot be removed or changed in an incompatible way.</li>
+<li>The RPC client code (example: compute/rpcapi.py) needs to be able
+to honor a pin for the older version (see
+self.client.can_send_version() calls). If we are pinned at 1.5, but
+the version requirement for a method is 1.7, we need to be able to
+formulate the call at version 1.5.</li>
+<li>Methods can drop compatibility with older versions when we bump a
+major version.</li>
+</ul>
+</div></blockquote>
+<ul class="simple">
+<li>RPC methods can be deprecated by removing the client (example:
+compute/rpcapi.py) implementation. However, the manager method must
+continue to exist until the major version of the API is bumped.</li>
+</ul>
+</div>
+<div class="section" id="object-versions">
+<h3>Object Versions<a class="headerlink" href="#object-versions" title="Permalink to this headline">¶</a></h3>
+<ul class="simple">
+<li>If a tracked attribute (i.e. listed in fields) or remotable method
+is added, or a method is changed, the object version must be
+bumped. Changes for methods follow the same rules as above for
+regular RPC methods. We have tests to try to catch these changes,
+which remind you to bump the version and then correct the
+version-hash in the tests.</li>
+<li>Field types cannot be changed. If absolutely required, create a
+new attribute and deprecate the old one. Ideally, support converting
+the old attribute to the new one with an obj_load_attr()
+handler. There are some exceptional cases where changing the type
+can be allowed, but care must be taken to ensure it does not affect
+the wireline API.</li>
+<li>New attributes should be removed from the primitive in
+obj_make_compatible() if the attribute was added after the target
+version.</li>
+<li>Remotable methods should not return unversioned structures wherever
+possible. They should return objects or simple values as the return
+types are not (and cannot) be checked by the hash tests.</li>
+<li>Remotable methods should not take complex structures as
+arguments. These cannot be verified by the hash tests, and thus are
+subject to drift. Either construct an object and pass that, or pass
+all the simple values required to make the call.</li>
+<li>Changes to an object as described above will cause a hash to change
+in TestObjectVersions. This is a reminder to the developer and the
+reviewer that the version needs to be bumped. There are times when
+we need to make a change to an object without bumping its version,
+but those cases are only where the hash logic detects a change that
+is not actually a compatibility issue and must be handled carefully.</li>
+</ul>
+</div>
+<div class="section" id="database-schema">
+<h3>Database Schema<a class="headerlink" href="#database-schema" title="Permalink to this headline">¶</a></h3>
+<ul class="simple">
+<li>Changes to the database schema must generally be additive-only. This
+means you can add columns, but you can&#8217;t drop or alter a column. We
+have some hacky tests to try to catch these things, but they are
+fragile. Extreme reviewer attention to non-online alterations to the
+DB schema will help us avoid disaster.</li>
+<li>Dropping things from the schema is a thing we need to be extremely
+careful about, making sure that the column has not been used (even
+present in one of our models) for at least a release.</li>
+<li>Data migrations must not be present in schema migrations. If data
+needs to be converted to another format, or moved from one place to
+another, then that must be done while the database server remains
+online. Generally, this can and should be hidden within the object
+layer so that an object can load from either the old or new
+location, and save to the new one.</li>
+</ul>
+</div>
+</div>
+<div class="section" id="rest-api">
+<h2>REST API<a class="headerlink" href="#rest-api" title="Permalink to this headline">¶</a></h2>
+<p>When making a change to the nova API, we should always follow
+<a class="reference external" href="https://specs.openstack.org/openstack/api-wg/">the API WG guidelines</a>
+rather than going for &#8220;local&#8221; consistency.
+Developers and reviewers should read all of the guidelines, but they are
+very long. So here are some key points:</p>
+<ul>
+<li><p class="first"><a class="reference external" href="https://specs.openstack.org/openstack/api-wg/guidelines/terms.html">Terms</a></p>
+<blockquote>
+<div><ul class="simple">
+<li><code class="docutils literal"><span class="pre">project</span></code> should be used in the REST API instead of <code class="docutils literal"><span class="pre">tenant</span></code>.</li>
+<li><code class="docutils literal"><span class="pre">server</span></code> should be used in the REST API instead of <code class="docutils literal"><span class="pre">instance</span></code>.</li>
+<li><code class="docutils literal"><span class="pre">compute</span></code> should be used in the REST API instead of <code class="docutils literal"><span class="pre">nova</span></code>.</li>
+</ul>
+</div></blockquote>
+</li>
+<li><p class="first"><a class="reference external" href="https://specs.openstack.org/openstack/api-wg/guidelines/naming.html">Naming Conventions</a></p>
+<blockquote>
+<div><ul class="simple">
+<li>URL should not include underscores; use hyphens (&#8216;-&#8216;) instead.</li>
+<li>The field names contained in a request/response body should
+use snake_case style, not CamelCase or Mixed_Case style.</li>
+</ul>
+</div></blockquote>
+</li>
+<li><p class="first"><a class="reference external" href="http://specs.openstack.org/openstack/api-wg/guidelines/http.html#http-response-codes">HTTP Response Codes</a></p>
+<blockquote>
+<div><ul class="simple">
+<li>Synchronous resource creation: <code class="docutils literal"><span class="pre">201</span> <span class="pre">Created</span></code></li>
+<li>Asynchronous resource creation: <code class="docutils literal"><span class="pre">202</span> <span class="pre">Accepted</span></code></li>
+<li>Synchronous resource deletion: <code class="docutils literal"><span class="pre">204</span> <span class="pre">No</span> <span class="pre">Content</span></code></li>
+<li>For all other successful operations: <code class="docutils literal"><span class="pre">200</span> <span class="pre">OK</span></code></li>
+</ul>
+</div></blockquote>
+</li>
+</ul>
+</div>
+<div class="section" id="config-options">
+<h2>Config Options<a class="headerlink" href="#config-options" title="Permalink to this headline">¶</a></h2>
+<div class="section" id="location">
+<h3>Location<a class="headerlink" href="#location" title="Permalink to this headline">¶</a></h3>
+<p>The central place where all config options should reside is the <code class="docutils literal"><span class="pre">/nova/conf/</span></code>
+package. Options that are in named sections of <code class="docutils literal"><span class="pre">nova.conf</span></code>, such as
+<code class="docutils literal"><span class="pre">[serial_console]</span></code>, should be in their own module. Options that are in the
+<code class="docutils literal"><span class="pre">[DEFAULT]</span></code> section should be placed in modules that represent a natural
+grouping. For example, all of the options that affect the scheduler would be
+in the <code class="docutils literal"><span class="pre">scheduler.py</span></code> file, and all the networking options would be moved
+to <code class="docutils literal"><span class="pre">network.py</span></code>.</p>
+</div>
+<div class="section" id="implementation">
+<h3>Implementation<a class="headerlink" href="#implementation" title="Permalink to this headline">¶</a></h3>
+<p>A config option should be checked for:</p>
+<ul>
+<li><p class="first">A short description which explains what it does. If it is a unit
+(e.g. timeouts or so) describe the unit which is used (seconds, megabyte,
+mebibyte, ...).</p>
+</li>
+<li><p class="first">A long description which explains the impact and scope. The operators should
+know the expected change in the behavior of Nova if they tweak this.</p>
+</li>
+<li><p class="first">Descriptions/Validations for the possible values.</p>
+<blockquote>
+<div><ul class="simple">
+<li>If this is an option with numeric values (int, float), describe the
+edge cases (like the min value, max value, 0, -1).</li>
+<li>If this is a DictOpt, describe the allowed keys.</li>
+<li>If this is a StrOpt, list any possible regex validations, or provide a
+list of acceptable and/or prohibited values.</li>
+</ul>
+</div></blockquote>
+</li>
+</ul>
+<p>Previously used sections which explained which services consume a specific
+config option and which options are related to each other got dropped
+because they are too hard to maintain:
+<a class="reference external" href="http://lists.openstack.org/pipermail/openstack-dev/2016-May/095538.html">http://lists.openstack.org/pipermail/openstack-dev/2016-May/095538.html</a></p>
+</div>
+</div>
+<div class="section" id="third-party-tests">
+<h2>Third Party Tests<a class="headerlink" href="#third-party-tests" title="Permalink to this headline">¶</a></h2>
+<p>Any change that is not tested well by the Jenkins check jobs must have a
+recent +1 vote from an appropriate third party test (or tests) on the latest
+patchset, before a core reviewer is allowed to make a +2 vote.</p>
+<div class="section" id="virt-drivers">
+<h3>Virt drivers<a class="headerlink" href="#virt-drivers" title="Permalink to this headline">¶</a></h3>
+<p>At a minimum, we must ensure that any technology specific code has a +1
+from the relevant third party test, on the latest patchset, before a +2 vote
+can be applied.
+Specifically, changes to nova/virt/driver/&lt;NNNN&gt; need a +1 vote from the
+respective third party CI.
+For example, if you change something in the XenAPI virt driver, you must wait
+for a +1 from the XenServer CI on the latest patchset, before you can give
+that patch set a +2 vote.</p>
+<p>This is important to ensure:</p>
+<ul class="simple">
+<li>We keep those drivers stable</li>
+<li>We don&#8217;t break that third party CI</li>
+</ul>
+</div>
+<div class="section" id="notes">
+<h3>Notes<a class="headerlink" href="#notes" title="Permalink to this headline">¶</a></h3>
+<p>Please note:</p>
+<ul class="simple">
+<li>Long term, we should ensure that any patch a third party CI is allowed to
+vote on, can be blocked from merging by that third party CI.
+But we need a lot more work to make something like that feasible, hence the
+proposed compromise.</li>
+<li>While its possible to break a virt driver CI system by changing code that is
+outside the virt drivers, this policy is not focusing on fixing that.
+A third party test failure should always be investigated, but the failure of
+a third party test to report in a timely manner should not block others.</li>
+<li>We are only talking about the testing of in-tree code. Please note the only
+public API is our REST API, see: <a class="reference internal" href="policies.html"><em>Development policies</em></a></li>
+</ul>
+</div>
+</div>
+<div class="section" id="should-i-run-the-experimental-queue-jobs-on-this-change">
+<h2>Should I run the experimental queue jobs on this change?<a class="headerlink" href="#should-i-run-the-experimental-queue-jobs-on-this-change" title="Permalink to this headline">¶</a></h2>
+<p>Because we can&#8217;t run all CI jobs in the check and gate pipelines, some
+jobs can be executed on demand, thanks to the experimental pipeline.
+To run the experimental jobs, you need to comment your Gerrit review
+with &#8220;check experimental&#8221;.</p>
+<p>The experimental jobs aim to test specific features, such as LXC containers
+or DVR with multiple nodes.  Also, it might be useful to run them when
+we want to test backward compatibility with tools that deploy OpenStack
+outside Devstack (e.g. TripleO, etc).  They can produce a non-voting
+feedback of whether the system continues to work when we deprecate
+or remove some options or features in Nova.</p>
+<p>The experimental queue can also be used to test that new CI jobs are
+correct before making them voting.</p>
+</div>
+<div class="section" id="id1">
+<h2>Database Schema<a class="headerlink" href="#id1" title="Permalink to this headline">¶</a></h2>
+<ul class="simple">
+<li>Use the <code class="docutils literal"><span class="pre">utf8</span></code> charset only where necessary. Some string fields, such as
+hex-stringified UUID values, MD5 fingerprints, SHA1 hashes or base64-encoded
+data, are always interpreted using ASCII encoding. A hex-stringified UUID
+value in <code class="docutils literal"><span class="pre">latin1</span></code> is 1/3 the size of the same field in <code class="docutils literal"><span class="pre">utf8</span></code>, impacting
+performance without bringing any benefit. If there are no string type columns
+in the table, or the string type columns contain <strong>only</strong> the data described
+above, then stick with <code class="docutils literal"><span class="pre">latin1</span></code>.</li>
+</ul>
+</div>
+<div class="section" id="microversion-api">
+<h2>Microversion API<a class="headerlink" href="#microversion-api" title="Permalink to this headline">¶</a></h2>
+<p>If a new microversion API is added, the following needs to happen:</p>
+<ul class="simple">
+<li>A new patch for the microversion API change in python-novaclient side
+should be submitted.</li>
+<li>If the microversion changes the response schema, a new schema and test for
+the microversion must be added to Tempest. The microversion change in Nova
+should not be merged until the Tempest test is submitted and at least
+passing; it does not need to be merged yet as long as it is testing the
+Nova change via Depends-On. The Nova microversion change commit message
+should reference the Change-Id of the Tempest test for reviewers to identify
+it.</li>
+</ul>
+</div>
+<div class="section" id="release-notes">
+<h2>Release Notes<a class="headerlink" href="#release-notes" title="Permalink to this headline">¶</a></h2>
+<div class="section" id="what-is-reno">
+<h3>What is reno ?<a class="headerlink" href="#what-is-reno" title="Permalink to this headline">¶</a></h3>
+<p>Nova uses <a class="reference external" href="http://docs.openstack.org/developer/reno/usage.html">reno</a> for
+providing release notes in-tree. That means that a patch can include a <em>reno
+file</em> or a series can have a follow-on change containing that file explaining
+what the impact is.</p>
+<p>A <em>reno file</em> is a YAML file written in the releasenotes/notes tree which is
+generated using the reno tool this way:</p>
+<div class="highlight-bash"><div class="highlight"><pre><span></span>$ tox -e venv -- reno new &lt;name-your-file&gt;
+</pre></div>
+</div>
+<p>where usually <code class="docutils literal"><span class="pre">&lt;name-your-file&gt;</span></code> can be <code class="docutils literal"><span class="pre">bp-&lt;blueprint_name&gt;</span></code> for a
+blueprint or <code class="docutils literal"><span class="pre">bug-XXXXXX</span></code> for a bugfix.</p>
+<p>Refer to the <a class="reference external" href="http://docs.openstack.org/developer/reno/usage.html#editing-a-release-note">reno documentation</a>
+for the full list of sections.</p>
+</div>
+<div class="section" id="when-a-release-note-is-needed">
+<h3>When a release note is needed<a class="headerlink" href="#when-a-release-note-is-needed" title="Permalink to this headline">¶</a></h3>
+<p>A release note is required anytime a reno section is needed. Below are some
+examples for each section. Any sections that would be blank should be left out
+of the note file entirely. If no section is needed, then you know you don&#8217;t
+need to provide a release note :-)</p>
+<ul>
+<li><dl class="first docutils">
+<dt><code class="docutils literal"><span class="pre">upgrade</span></code></dt>
+<dd><ul class="first last simple">
+<li>The patch has an <a class="reference external" href="http://docs.openstack.org/infra/manual/developers.html#peer-review">UpgradeImpact</a> tag</li>
+<li>A DB change needs some deployer modification (like a migration)</li>
+<li>A configuration option change (deprecation, removal or modified default)</li>
+<li>some specific changes that have a <a class="reference external" href="http://docs.openstack.org/infra/manual/developers.html#peer-review">DocImpact</a> tag
+but require further action from an deployer perspective</li>
+<li>any patch that requires an action from the deployer in general</li>
+</ul>
+</dd>
+</dl>
+</li>
+<li><dl class="first docutils">
+<dt><code class="docutils literal"><span class="pre">security</span></code></dt>
+<dd><ul class="first last simple">
+<li>If the patch fixes a known vulnerability</li>
+</ul>
+</dd>
+</dl>
+</li>
+<li><dl class="first docutils">
+<dt><code class="docutils literal"><span class="pre">features</span></code></dt>
+<dd><ul class="first last simple">
+<li>If the patch has an <a class="reference external" href="http://docs.openstack.org/infra/manual/developers.html#peer-review">APIImpact</a> tag</li>
+<li>For nova-manage and python-novaclient changes, if it adds or changes a
+new command, including adding new options to existing commands</li>
+<li>not all blueprints in general, just the ones impacting a <a class="reference external" href="http://docs.openstack.org/developer/nova/policies.html#public-contractual-apis">contractual API</a></li>
+<li>a new virt driver is provided or an existing driver impacts the <a class="reference external" href="http://docs.openstack.org/developer/nova/support-matrix.html">HypervisorSupportMatrix</a></li>
+</ul>
+</dd>
+</dl>
+</li>
+<li><dl class="first docutils">
+<dt><code class="docutils literal"><span class="pre">critical</span></code></dt>
+<dd><ul class="first last simple">
+<li>Bugfixes categorized as Critical in Launchpad <em>impacting users</em></li>
+</ul>
+</dd>
+</dl>
+</li>
+<li><dl class="first docutils">
+<dt><code class="docutils literal"><span class="pre">fixes</span></code></dt>
+<dd><ul class="first last simple">
+<li>No clear definition of such bugfixes. Hairy long-standing bugs with high
+importance that have been fixed are good candidates though.</li>
+</ul>
+</dd>
+</dl>
+</li>
+</ul>
+<p>Three sections are left intentionally unexplained (<code class="docutils literal"><span class="pre">prelude</span></code>, <code class="docutils literal"><span class="pre">issues</span></code> and
+<code class="docutils literal"><span class="pre">other</span></code>). Those are targeted to be filled in close to the release time for
+providing details about the soon-ish release. Don&#8217;t use them unless you know
+exactly what you are doing.</p>
+</div>
+</div>
+<div class="section" id="notifications">
+<h2>Notifications<a class="headerlink" href="#notifications" title="Permalink to this headline">¶</a></h2>
+<ul class="simple">
+<li>Every new notification type shall use the new versioned notification
+infrastructure documented in <a class="reference internal" href="notifications.html"><em>Notifications in Nova</em></a></li>
+</ul>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Code Review Guide for Nova</a><ul>
+<li><a class="reference internal" href="#upgrade-related-concerns">Upgrade-Related Concerns</a><ul>
+<li><a class="reference internal" href="#rpc-api-versions">RPC API Versions</a></li>
+<li><a class="reference internal" href="#object-versions">Object Versions</a></li>
+<li><a class="reference internal" href="#database-schema">Database Schema</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#rest-api">REST API</a></li>
+<li><a class="reference internal" href="#config-options">Config Options</a><ul>
+<li><a class="reference internal" href="#location">Location</a></li>
+<li><a class="reference internal" href="#implementation">Implementation</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#third-party-tests">Third Party Tests</a><ul>
+<li><a class="reference internal" href="#virt-drivers">Virt drivers</a></li>
+<li><a class="reference internal" href="#notes">Notes</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#should-i-run-the-experimental-queue-jobs-on-this-change">Should I run the experimental queue jobs on this change?</a></li>
+<li><a class="reference internal" href="#id1">Database Schema</a></li>
+<li><a class="reference internal" href="#microversion-api">Microversion API</a></li>
+<li><a class="reference internal" href="#release-notes">Release Notes</a><ul>
+<li><a class="reference internal" href="#what-is-reno">What is reno ?</a></li>
+<li><a class="reference internal" href="#when-a-release-note-is-needed">When a release note is needed</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#notifications">Notifications</a></li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="stable_api.html"
+                                  title="previous chapter">Nova Stable REST API</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="scheduler_evolution.html"
+                                  title="next chapter">Scheduler Evolution</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/nova
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="_sources/code-review.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="scheduler_evolution.html" title="Scheduler Evolution"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="stable_api.html" title="Nova Stable REST API"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="index.html">nova 15.0.0.0rc2.dev69 documentation</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2010-present, OpenStack Foundation.
+      Last updated on &#39;Tue Feb 14 09:22:31 2017, commit 159bf6e&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/nova");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

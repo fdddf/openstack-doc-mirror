@@ -1,0 +1,202 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>taskflow.jobs.backends &mdash; TaskFlow 2.9.1.dev9 documentation</title>
+    
+    <link rel="stylesheet" href="../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../',
+        VERSION:     '2.9.1.dev9',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../_static/doctools.js"></script>
+    <link rel="top" title="TaskFlow 2.9.1.dev9 documentation" href="../../../index.html" />
+    <link rel="up" title="Module code" href="../../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for taskflow.jobs.backends</h1><div class="highlight"><pre>
+<span></span><span class="c1"># -*- coding: utf-8 -*-</span>
+
+<span class="c1">#    Copyright (C) 2014 Yahoo! Inc. All Rights Reserved.</span>
+<span class="c1">#</span>
+<span class="c1">#    Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may</span>
+<span class="c1">#    not use this file except in compliance with the License. You may obtain</span>
+<span class="c1">#    a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#         http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1">#    Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1">#    distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="c1">#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="c1">#    License for the specific language governing permissions and limitations</span>
+<span class="c1">#    under the License.</span>
+
+<span class="kn">import</span> <span class="nn">contextlib</span>
+
+<span class="kn">from</span> <span class="nn">stevedore</span> <span class="kn">import</span> <span class="n">driver</span>
+
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">exceptions</span> <span class="k">as</span> <span class="n">exc</span>
+<span class="kn">from</span> <span class="nn">taskflow</span> <span class="kn">import</span> <span class="n">logging</span>
+<span class="kn">from</span> <span class="nn">taskflow.utils</span> <span class="kn">import</span> <span class="n">misc</span>
+
+
+<span class="c1"># NOTE(harlowja): this is the entrypoint namespace, not the module namespace.</span>
+<span class="n">BACKEND_NAMESPACE</span> <span class="o">=</span> <span class="s1">&#39;taskflow.jobboards&#39;</span>
+
+<span class="n">LOG</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+
+<div class="viewcode-block" id="fetch"><a class="viewcode-back" href="../../../jobs.html#taskflow.jobs.backends.fetch">[docs]</a><span class="k">def</span> <span class="nf">fetch</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">conf</span><span class="p">,</span> <span class="n">namespace</span><span class="o">=</span><span class="n">BACKEND_NAMESPACE</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Fetch a jobboard backend with the given configuration.</span>
+
+<span class="sd">    This fetch method will look for the entrypoint name in the entrypoint</span>
+<span class="sd">    namespace, and then attempt to instantiate that entrypoint using the</span>
+<span class="sd">    provided name, configuration and any board specific kwargs.</span>
+
+<span class="sd">    NOTE(harlowja): to aid in making it easy to specify configuration and</span>
+<span class="sd">    options to a board the configuration (which is typical just a dictionary)</span>
+<span class="sd">    can also be a URI string that identifies the entrypoint name and any</span>
+<span class="sd">    configuration specific to that board.</span>
+
+<span class="sd">    For example, given the following configuration URI::</span>
+
+<span class="sd">        zookeeper://&lt;not-used&gt;/?a=b&amp;c=d</span>
+
+<span class="sd">    This will look for the entrypoint named &#39;zookeeper&#39; and will provide</span>
+<span class="sd">    a configuration object composed of the URI&#39;s components, in this case that</span>
+<span class="sd">    is ``{&#39;a&#39;: &#39;b&#39;, &#39;c&#39;: &#39;d&#39;}`` to the constructor of that board</span>
+<span class="sd">    instance (also including the name specified).</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">board</span><span class="p">,</span> <span class="n">conf</span> <span class="o">=</span> <span class="n">misc</span><span class="o">.</span><span class="n">extract_driver_and_conf</span><span class="p">(</span><span class="n">conf</span><span class="p">,</span> <span class="s1">&#39;board&#39;</span><span class="p">)</span>
+    <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;Looking for </span><span class="si">%r</span><span class="s1"> jobboard driver in </span><span class="si">%r</span><span class="s1">&#39;</span><span class="p">,</span> <span class="n">board</span><span class="p">,</span> <span class="n">namespace</span><span class="p">)</span>
+    <span class="k">try</span><span class="p">:</span>
+        <span class="n">mgr</span> <span class="o">=</span> <span class="n">driver</span><span class="o">.</span><span class="n">DriverManager</span><span class="p">(</span><span class="n">namespace</span><span class="p">,</span> <span class="n">board</span><span class="p">,</span>
+                                   <span class="n">invoke_on_load</span><span class="o">=</span><span class="bp">True</span><span class="p">,</span>
+                                   <span class="n">invoke_args</span><span class="o">=</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">conf</span><span class="p">),</span>
+                                   <span class="n">invoke_kwds</span><span class="o">=</span><span class="n">kwargs</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">mgr</span><span class="o">.</span><span class="n">driver</span>
+    <span class="k">except</span> <span class="ne">RuntimeError</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="n">exc</span><span class="o">.</span><span class="n">NotFound</span><span class="p">(</span><span class="s2">&quot;Could not find jobboard </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span> <span class="p">(</span><span class="n">board</span><span class="p">),</span> <span class="n">e</span><span class="p">)</span></div>
+
+
+<span class="nd">@contextlib.contextmanager</span>
+<div class="viewcode-block" id="backend"><a class="viewcode-back" href="../../../jobs.html#taskflow.jobs.backends.backend">[docs]</a><span class="k">def</span> <span class="nf">backend</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">conf</span><span class="p">,</span> <span class="n">namespace</span><span class="o">=</span><span class="n">BACKEND_NAMESPACE</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Fetches a jobboard, connects to it and closes it on completion.</span>
+
+<span class="sd">    This allows a board instance to fetched, connected to, and then used in a</span>
+<span class="sd">    context manager statement with the board being closed upon context</span>
+<span class="sd">    manager exit.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">jb</span> <span class="o">=</span> <span class="n">fetch</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">conf</span><span class="p">,</span> <span class="n">namespace</span><span class="o">=</span><span class="n">namespace</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+    <span class="n">jb</span><span class="o">.</span><span class="n">connect</span><span class="p">()</span>
+    <span class="k">with</span> <span class="n">contextlib</span><span class="o">.</span><span class="n">closing</span><span class="p">(</span><span class="n">jb</span><span class="p">):</span>
+        <span class="k">yield</span> <span class="n">jb</span></div>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+  <h3>Navigation</h3>
+  <ul>
+
+    <li><a href="../../../index.html">Table Of Contents</a></li>
+
+
+
+  </ul>
+
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/taskflow
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../../index.html">TaskFlow 2.9.1.dev9 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../../index.html" accesskey="U">Module code</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2017, OpenStack Foundation.
+      Last updated on &#39;Fri Feb 10 20:11:17 2017, commit 643495f&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/TaskFlow");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

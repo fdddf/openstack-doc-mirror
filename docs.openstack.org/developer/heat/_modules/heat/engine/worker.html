@@ -1,0 +1,377 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>heat.engine.worker &mdash; heat 8.0.0.0rc2.dev38 documentation</title>
+    
+    <link rel="stylesheet" href="../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../',
+        VERSION:     '8.0.0.0rc2.dev38',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../_static/doctools.js"></script>
+    <link rel="top" title="heat 8.0.0.0rc2.dev38 documentation" href="../../../index.html" />
+    <link rel="up" title="Module code" href="../../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for heat.engine.worker</h1><div class="highlight"><pre>
+<span></span><span class="c1"># Copyright (c) 2014 Hewlett-Packard Development Company, L.P.</span>
+<span class="c1">#</span>
+<span class="c1"># Licensed under the Apache License, Version 2.0 (the &quot;License&quot;);</span>
+<span class="c1"># you may not use this file except in compliance with the License.</span>
+<span class="c1"># You may obtain a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#    http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1"># Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1"># distributed under the License is distributed on an &quot;AS IS&quot; BASIS,</span>
+<span class="c1"># WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or</span>
+<span class="c1"># implied.</span>
+<span class="c1"># See the License for the specific language governing permissions and</span>
+<span class="c1"># limitations under the License.</span>
+
+<span class="kn">import</span> <span class="nn">eventlet.queue</span>
+
+<span class="kn">from</span> <span class="nn">oslo_log</span> <span class="kn">import</span> <span class="n">log</span> <span class="k">as</span> <span class="n">logging</span>
+<span class="kn">import</span> <span class="nn">oslo_messaging</span>
+<span class="kn">from</span> <span class="nn">oslo_utils</span> <span class="kn">import</span> <span class="n">uuidutils</span>
+<span class="kn">from</span> <span class="nn">osprofiler</span> <span class="kn">import</span> <span class="n">profiler</span>
+
+<span class="kn">from</span> <span class="nn">heat.common</span> <span class="kn">import</span> <span class="n">context</span>
+<span class="kn">from</span> <span class="nn">heat.common.i18n</span> <span class="kn">import</span> <span class="n">_LE</span>
+<span class="kn">from</span> <span class="nn">heat.common.i18n</span> <span class="kn">import</span> <span class="n">_LI</span>
+<span class="kn">from</span> <span class="nn">heat.common.i18n</span> <span class="kn">import</span> <span class="n">_LW</span>
+<span class="kn">from</span> <span class="nn">heat.common</span> <span class="kn">import</span> <span class="n">messaging</span> <span class="k">as</span> <span class="n">rpc_messaging</span>
+<span class="kn">from</span> <span class="nn">heat.db.sqlalchemy</span> <span class="kn">import</span> <span class="n">api</span> <span class="k">as</span> <span class="n">db_api</span>
+<span class="kn">from</span> <span class="nn">heat.engine</span> <span class="kn">import</span> <span class="n">check_resource</span>
+<span class="kn">from</span> <span class="nn">heat.engine</span> <span class="kn">import</span> <span class="n">stack</span> <span class="k">as</span> <span class="n">parser</span>
+<span class="kn">from</span> <span class="nn">heat.engine</span> <span class="kn">import</span> <span class="n">sync_point</span>
+<span class="kn">from</span> <span class="nn">heat.objects</span> <span class="kn">import</span> <span class="n">stack</span> <span class="k">as</span> <span class="n">stack_objects</span>
+<span class="kn">from</span> <span class="nn">heat.rpc</span> <span class="kn">import</span> <span class="n">api</span> <span class="k">as</span> <span class="n">rpc_api</span>
+<span class="kn">from</span> <span class="nn">heat.rpc</span> <span class="kn">import</span> <span class="n">worker_client</span> <span class="k">as</span> <span class="n">rpc_client</span>
+
+<span class="n">LOG</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+<span class="n">CANCEL_RETRIES</span> <span class="o">=</span> <span class="mi">3</span>
+
+
+<span class="nd">@profiler.trace_cls</span><span class="p">(</span><span class="s2">&quot;rpc&quot;</span><span class="p">)</span>
+<div class="viewcode-block" id="WorkerService"><a class="viewcode-back" href="../../../api/heat.engine.worker.html#heat.engine.worker.WorkerService">[docs]</a><span class="k">class</span> <span class="nc">WorkerService</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Service that has &#39;worker&#39; actor in convergence.</span>
+
+<span class="sd">    This service is dedicated to handle internal messages to the &#39;worker&#39;</span>
+<span class="sd">    (a.k.a. &#39;converger&#39;) actor in convergence. Messages on this bus will</span>
+<span class="sd">    use the &#39;cast&#39; rather than &#39;call&#39; method to anycast the message to</span>
+<span class="sd">    an engine that will handle it asynchronously. It won&#39;t wait for</span>
+<span class="sd">    or expect replies from these messages.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">RPC_API_VERSION</span> <span class="o">=</span> <span class="s1">&#39;1.3&#39;</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span>
+                 <span class="n">host</span><span class="p">,</span>
+                 <span class="n">topic</span><span class="p">,</span>
+                 <span class="n">engine_id</span><span class="p">,</span>
+                 <span class="n">thread_group_mgr</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">host</span> <span class="o">=</span> <span class="n">host</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">topic</span> <span class="o">=</span> <span class="n">topic</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">engine_id</span> <span class="o">=</span> <span class="n">engine_id</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">thread_group_mgr</span> <span class="o">=</span> <span class="n">thread_group_mgr</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">_rpc_client</span> <span class="o">=</span> <span class="n">rpc_client</span><span class="o">.</span><span class="n">WorkerClient</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_rpc_server</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">target</span> <span class="o">=</span> <span class="bp">None</span>
+
+<div class="viewcode-block" id="WorkerService.start"><a class="viewcode-back" href="../../../api/heat.engine.worker.html#heat.engine.worker.WorkerService.start">[docs]</a>    <span class="k">def</span> <span class="nf">start</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="n">target</span> <span class="o">=</span> <span class="n">oslo_messaging</span><span class="o">.</span><span class="n">Target</span><span class="p">(</span>
+            <span class="n">version</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">RPC_API_VERSION</span><span class="p">,</span>
+            <span class="n">server</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">engine_id</span><span class="p">,</span>
+            <span class="n">topic</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">target</span> <span class="o">=</span> <span class="n">target</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">_LI</span><span class="p">(</span><span class="s2">&quot;Starting </span><span class="si">%(topic)s</span><span class="s2"> (</span><span class="si">%(version)s</span><span class="s2">) in engine </span><span class="si">%(engine)s</span><span class="s2">.&quot;</span><span class="p">),</span>
+                 <span class="p">{</span><span class="s1">&#39;topic&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span>
+                  <span class="s1">&#39;version&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">RPC_API_VERSION</span><span class="p">,</span>
+                  <span class="s1">&#39;engine&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">engine_id</span><span class="p">})</span>
+
+        <span class="bp">self</span><span class="o">.</span><span class="n">_rpc_server</span> <span class="o">=</span> <span class="n">rpc_messaging</span><span class="o">.</span><span class="n">get_rpc_server</span><span class="p">(</span><span class="n">target</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_rpc_server</span><span class="o">.</span><span class="n">start</span><span class="p">()</span></div>
+
+<div class="viewcode-block" id="WorkerService.stop"><a class="viewcode-back" href="../../../api/heat.engine.worker.html#heat.engine.worker.WorkerService.stop">[docs]</a>    <span class="k">def</span> <span class="nf">stop</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_rpc_server</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="k">return</span>
+        <span class="c1"># Stop rpc connection at first for preventing new requests</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">_LI</span><span class="p">(</span><span class="s2">&quot;Stopping </span><span class="si">%(topic)s</span><span class="s2"> in engine </span><span class="si">%(engine)s</span><span class="s2">.&quot;</span><span class="p">),</span>
+                 <span class="p">{</span><span class="s1">&#39;topic&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="s1">&#39;engine&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">engine_id</span><span class="p">})</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_rpc_server</span><span class="o">.</span><span class="n">stop</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_rpc_server</span><span class="o">.</span><span class="n">wait</span><span class="p">()</span>
+        <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">_LE</span><span class="p">(</span><span class="s2">&quot;</span><span class="si">%(topic)s</span><span class="s2"> is failed to stop, </span><span class="si">%(exc)s</span><span class="s2">&quot;</span><span class="p">),</span>
+                      <span class="p">{</span><span class="s1">&#39;topic&#39;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">topic</span><span class="p">,</span> <span class="s1">&#39;exc&#39;</span><span class="p">:</span> <span class="n">e</span><span class="p">})</span></div>
+
+<div class="viewcode-block" id="WorkerService.stop_traversal"><a class="viewcode-back" href="../../../api/heat.engine.worker.html#heat.engine.worker.WorkerService.stop_traversal">[docs]</a>    <span class="k">def</span> <span class="nf">stop_traversal</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">stack</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Update current traversal to stop workers from propagating.</span>
+
+<span class="sd">        Marks the stack as FAILED due to cancellation, but, allows all</span>
+<span class="sd">        in_progress resources to complete normally; no worker is stopped</span>
+<span class="sd">        abruptly.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">_stop_traversal</span><span class="p">(</span><span class="n">stack</span><span class="p">)</span>
+
+        <span class="n">db_child_stacks</span> <span class="o">=</span> <span class="n">stack_objects</span><span class="o">.</span><span class="n">Stack</span><span class="o">.</span><span class="n">get_all_by_root_owner_id</span><span class="p">(</span>
+            <span class="n">stack</span><span class="o">.</span><span class="n">context</span><span class="p">,</span> <span class="n">stack</span><span class="o">.</span><span class="n">id</span><span class="p">)</span>
+
+        <span class="k">for</span> <span class="n">db_child</span> <span class="ow">in</span> <span class="n">db_child_stacks</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">db_child</span><span class="o">.</span><span class="n">status</span> <span class="o">==</span> <span class="n">parser</span><span class="o">.</span><span class="n">Stack</span><span class="o">.</span><span class="n">IN_PROGRESS</span><span class="p">:</span>
+                <span class="n">child</span> <span class="o">=</span> <span class="n">parser</span><span class="o">.</span><span class="n">Stack</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">stack</span><span class="o">.</span><span class="n">context</span><span class="p">,</span>
+                                          <span class="n">stack_id</span><span class="o">=</span><span class="n">db_child</span><span class="o">.</span><span class="n">id</span><span class="p">,</span>
+                                          <span class="n">stack</span><span class="o">=</span><span class="n">db_child</span><span class="p">,</span>
+                                          <span class="n">load_template</span><span class="o">=</span><span class="bp">False</span><span class="p">)</span>
+                <span class="n">_stop_traversal</span><span class="p">(</span><span class="n">child</span><span class="p">)</span></div>
+
+<div class="viewcode-block" id="WorkerService.stop_all_workers"><a class="viewcode-back" href="../../../api/heat.engine.worker.html#heat.engine.worker.WorkerService.stop_all_workers">[docs]</a>    <span class="k">def</span> <span class="nf">stop_all_workers</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">stack</span><span class="p">):</span>
+        <span class="c1"># stop the traversal</span>
+        <span class="k">if</span> <span class="n">stack</span><span class="o">.</span><span class="n">status</span> <span class="o">==</span> <span class="n">stack</span><span class="o">.</span><span class="n">IN_PROGRESS</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">stop_traversal</span><span class="p">(</span><span class="n">stack</span><span class="p">)</span>
+
+        <span class="c1"># cancel existing workers</span>
+        <span class="n">cancelled</span> <span class="o">=</span> <span class="n">_cancel_workers</span><span class="p">(</span><span class="n">stack</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">thread_group_mgr</span><span class="p">,</span>
+                                    <span class="bp">self</span><span class="o">.</span><span class="n">engine_id</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_rpc_client</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">cancelled</span><span class="p">:</span>
+            <span class="n">LOG</span><span class="o">.</span><span class="n">error</span><span class="p">(</span><span class="n">_LE</span><span class="p">(</span><span class="s2">&quot;Failed to stop all workers of stack </span><span class="si">%(name)s</span><span class="s2"> &quot;</span>
+                          <span class="s2">&quot;, stack cancel not complete&quot;</span><span class="p">),</span>
+                      <span class="p">{</span><span class="s1">&#39;name&#39;</span><span class="p">:</span> <span class="n">stack</span><span class="o">.</span><span class="n">name</span><span class="p">})</span>
+            <span class="k">return</span> <span class="bp">False</span>
+
+        <span class="n">LOG</span><span class="o">.</span><span class="n">info</span><span class="p">(</span><span class="n">_LI</span><span class="p">(</span><span class="s1">&#39;[</span><span class="si">%(name)s</span><span class="s1">(</span><span class="si">%(id)s</span><span class="s1">)] Stopped all active workers for stack &#39;</span>
+                     <span class="s1">&#39;</span><span class="si">%(action)s</span><span class="s1">&#39;</span><span class="p">),</span>
+                 <span class="p">{</span><span class="s1">&#39;name&#39;</span><span class="p">:</span> <span class="n">stack</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="s1">&#39;id&#39;</span><span class="p">:</span> <span class="n">stack</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="s1">&#39;action&#39;</span><span class="p">:</span> <span class="n">stack</span><span class="o">.</span><span class="n">action</span><span class="p">})</span>
+
+        <span class="k">return</span> <span class="bp">True</span></div>
+
+    <span class="k">def</span> <span class="nf">_retrigger_replaced</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">is_update</span><span class="p">,</span> <span class="n">rsrc</span><span class="p">,</span> <span class="n">stack</span><span class="p">,</span> <span class="n">msg_queue</span><span class="p">):</span>
+        <span class="n">graph</span> <span class="o">=</span> <span class="n">stack</span><span class="o">.</span><span class="n">convergence_dependencies</span><span class="o">.</span><span class="n">graph</span><span class="p">()</span>
+        <span class="n">key</span> <span class="o">=</span> <span class="p">(</span><span class="n">rsrc</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="n">is_update</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">key</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">graph</span> <span class="ow">and</span> <span class="n">rsrc</span><span class="o">.</span><span class="n">replaces</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="c1"># This resource replaces old one and is not needed in</span>
+            <span class="c1"># current traversal. You need to mark the resource as</span>
+            <span class="c1"># DELETED so that it gets cleaned up in purge_db.</span>
+            <span class="n">values</span> <span class="o">=</span> <span class="p">{</span><span class="s1">&#39;action&#39;</span><span class="p">:</span> <span class="n">rsrc</span><span class="o">.</span><span class="n">DELETE</span><span class="p">}</span>
+            <span class="n">db_api</span><span class="o">.</span><span class="n">resource_update_and_save</span><span class="p">(</span><span class="n">stack</span><span class="o">.</span><span class="n">context</span><span class="p">,</span> <span class="n">rsrc</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="n">values</span><span class="p">)</span>
+            <span class="c1"># The old resource might be in the graph (a rollback case);</span>
+            <span class="c1"># just re-trigger it.</span>
+            <span class="n">key</span> <span class="o">=</span> <span class="p">(</span><span class="n">rsrc</span><span class="o">.</span><span class="n">replaces</span><span class="p">,</span> <span class="n">is_update</span><span class="p">)</span>
+            <span class="n">cr</span> <span class="o">=</span> <span class="n">check_resource</span><span class="o">.</span><span class="n">CheckResource</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">engine_id</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_rpc_client</span><span class="p">,</span>
+                                              <span class="bp">self</span><span class="o">.</span><span class="n">thread_group_mgr</span><span class="p">,</span> <span class="n">msg_queue</span><span class="p">)</span>
+            <span class="n">cr</span><span class="o">.</span><span class="n">retrigger_check_resource</span><span class="p">(</span><span class="n">stack</span><span class="o">.</span><span class="n">context</span><span class="p">,</span> <span class="n">is_update</span><span class="p">,</span> <span class="n">key</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span>
+                                        <span class="n">stack</span><span class="p">)</span>
+
+    <span class="nd">@context.request_context</span>
+<div class="viewcode-block" id="WorkerService.check_resource"><a class="viewcode-back" href="../../../api/heat.engine.worker.html#heat.engine.worker.WorkerService.check_resource">[docs]</a>    <span class="k">def</span> <span class="nf">check_resource</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">cnxt</span><span class="p">,</span> <span class="n">resource_id</span><span class="p">,</span> <span class="n">current_traversal</span><span class="p">,</span> <span class="n">data</span><span class="p">,</span>
+                       <span class="n">is_update</span><span class="p">,</span> <span class="n">adopt_stack_data</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Process a node in the dependency graph.</span>
+
+<span class="sd">        The node may be associated with either an update or a cleanup of its</span>
+<span class="sd">        associated resource.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">resource_data</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">(</span><span class="n">sync_point</span><span class="o">.</span><span class="n">deserialize_input_data</span><span class="p">(</span><span class="n">data</span><span class="p">))</span>
+        <span class="n">rsrc</span><span class="p">,</span> <span class="n">rsrc_owning_stack</span><span class="p">,</span> <span class="n">stack</span> <span class="o">=</span> <span class="n">check_resource</span><span class="o">.</span><span class="n">load_resource</span><span class="p">(</span>
+            <span class="n">cnxt</span><span class="p">,</span> <span class="n">resource_id</span><span class="p">,</span> <span class="n">resource_data</span><span class="p">,</span> <span class="n">is_update</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">rsrc</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="k">return</span>
+
+        <span class="n">msg_queue</span> <span class="o">=</span> <span class="n">eventlet</span><span class="o">.</span><span class="n">queue</span><span class="o">.</span><span class="n">LightQueue</span><span class="p">()</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">thread_group_mgr</span><span class="o">.</span><span class="n">add_msg_queue</span><span class="p">(</span><span class="n">stack</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="n">msg_queue</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">current_traversal</span> <span class="o">!=</span> <span class="n">stack</span><span class="o">.</span><span class="n">current_traversal</span><span class="p">:</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;[</span><span class="si">%s</span><span class="s1">] Traversal cancelled; re-trigerring.&#39;</span><span class="p">,</span>
+                          <span class="n">current_traversal</span><span class="p">)</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">_retrigger_replaced</span><span class="p">(</span><span class="n">is_update</span><span class="p">,</span> <span class="n">rsrc</span><span class="p">,</span> <span class="n">stack</span><span class="p">,</span> <span class="n">msg_queue</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">cr</span> <span class="o">=</span> <span class="n">check_resource</span><span class="o">.</span><span class="n">CheckResource</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">engine_id</span><span class="p">,</span>
+                                                  <span class="bp">self</span><span class="o">.</span><span class="n">_rpc_client</span><span class="p">,</span>
+                                                  <span class="bp">self</span><span class="o">.</span><span class="n">thread_group_mgr</span><span class="p">,</span>
+                                                  <span class="n">msg_queue</span><span class="p">)</span>
+                <span class="n">cr</span><span class="o">.</span><span class="n">check</span><span class="p">(</span><span class="n">cnxt</span><span class="p">,</span> <span class="n">resource_id</span><span class="p">,</span> <span class="n">current_traversal</span><span class="p">,</span> <span class="n">resource_data</span><span class="p">,</span>
+                         <span class="n">is_update</span><span class="p">,</span> <span class="n">adopt_stack_data</span><span class="p">,</span> <span class="n">rsrc</span><span class="p">,</span> <span class="n">stack</span><span class="p">)</span>
+        <span class="k">finally</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">thread_group_mgr</span><span class="o">.</span><span class="n">remove_msg_queue</span><span class="p">(</span><span class="bp">None</span><span class="p">,</span>
+                                                   <span class="n">stack</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="n">msg_queue</span><span class="p">)</span></div>
+
+    <span class="nd">@context.request_context</span>
+<div class="viewcode-block" id="WorkerService.cancel_check_resource"><a class="viewcode-back" href="../../../api/heat.engine.worker.html#heat.engine.worker.WorkerService.cancel_check_resource">[docs]</a>    <span class="k">def</span> <span class="nf">cancel_check_resource</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">cnxt</span><span class="p">,</span> <span class="n">stack_id</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Cancel check_resource for given stack.</span>
+
+<span class="sd">        All the workers running for the given stack will be</span>
+<span class="sd">        cancelled.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">_cancel_check_resource</span><span class="p">(</span><span class="n">stack_id</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">engine_id</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">thread_group_mgr</span><span class="p">)</span></div></div>
+
+
+<span class="k">def</span> <span class="nf">_stop_traversal</span><span class="p">(</span><span class="n">stack</span><span class="p">):</span>
+    <span class="n">old_trvsl</span> <span class="o">=</span> <span class="n">stack</span><span class="o">.</span><span class="n">current_traversal</span>
+    <span class="n">updated</span> <span class="o">=</span> <span class="n">_update_current_traversal</span><span class="p">(</span><span class="n">stack</span><span class="p">)</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">updated</span><span class="p">:</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s2">&quot;Failed to update stack </span><span class="si">%(name)s</span><span class="s2"> with new &quot;</span>
+                        <span class="s2">&quot;traversal, aborting stack cancel&quot;</span><span class="p">),</span>
+                    <span class="p">{</span><span class="s1">&#39;name&#39;</span><span class="p">:</span> <span class="n">stack</span><span class="o">.</span><span class="n">name</span><span class="p">})</span>
+        <span class="k">return</span>
+
+    <span class="n">reason</span> <span class="o">=</span> <span class="s1">&#39;Stack </span><span class="si">%(action)s</span><span class="s1"> cancelled&#39;</span> <span class="o">%</span> <span class="p">{</span><span class="s1">&#39;action&#39;</span><span class="p">:</span> <span class="n">stack</span><span class="o">.</span><span class="n">action</span><span class="p">}</span>
+    <span class="n">updated</span> <span class="o">=</span> <span class="n">stack</span><span class="o">.</span><span class="n">state_set</span><span class="p">(</span><span class="n">stack</span><span class="o">.</span><span class="n">action</span><span class="p">,</span> <span class="n">stack</span><span class="o">.</span><span class="n">FAILED</span><span class="p">,</span> <span class="n">reason</span><span class="p">)</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">updated</span><span class="p">:</span>
+        <span class="n">LOG</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="n">_LW</span><span class="p">(</span><span class="s2">&quot;Failed to update stack </span><span class="si">%(name)s</span><span class="s2"> status &quot;</span>
+                        <span class="s2">&quot;to </span><span class="si">%(action)s</span><span class="s2">_</span><span class="si">%(state)s</span><span class="s2">&quot;</span><span class="p">),</span>
+                    <span class="p">{</span><span class="s1">&#39;name&#39;</span><span class="p">:</span> <span class="n">stack</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="s1">&#39;action&#39;</span><span class="p">:</span> <span class="n">stack</span><span class="o">.</span><span class="n">action</span><span class="p">,</span>
+                    <span class="s1">&#39;state&#39;</span><span class="p">:</span> <span class="n">stack</span><span class="o">.</span><span class="n">FAILED</span><span class="p">})</span>
+        <span class="k">return</span>
+
+    <span class="n">sync_point</span><span class="o">.</span><span class="n">delete_all</span><span class="p">(</span><span class="n">stack</span><span class="o">.</span><span class="n">context</span><span class="p">,</span> <span class="n">stack</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="n">old_trvsl</span><span class="p">)</span>
+
+
+<span class="k">def</span> <span class="nf">_update_current_traversal</span><span class="p">(</span><span class="n">stack</span><span class="p">):</span>
+    <span class="n">previous_traversal</span> <span class="o">=</span> <span class="n">stack</span><span class="o">.</span><span class="n">current_traversal</span>
+    <span class="n">stack</span><span class="o">.</span><span class="n">current_traversal</span> <span class="o">=</span> <span class="n">uuidutils</span><span class="o">.</span><span class="n">generate_uuid</span><span class="p">()</span>
+    <span class="n">values</span> <span class="o">=</span> <span class="p">{</span><span class="s1">&#39;current_traversal&#39;</span><span class="p">:</span> <span class="n">stack</span><span class="o">.</span><span class="n">current_traversal</span><span class="p">}</span>
+    <span class="k">return</span> <span class="n">stack_objects</span><span class="o">.</span><span class="n">Stack</span><span class="o">.</span><span class="n">select_and_update</span><span class="p">(</span>
+        <span class="n">stack</span><span class="o">.</span><span class="n">context</span><span class="p">,</span> <span class="n">stack</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="n">values</span><span class="p">,</span>
+        <span class="n">exp_trvsl</span><span class="o">=</span><span class="n">previous_traversal</span><span class="p">)</span>
+
+
+<span class="k">def</span> <span class="nf">_cancel_check_resource</span><span class="p">(</span><span class="n">stack_id</span><span class="p">,</span> <span class="n">engine_id</span><span class="p">,</span> <span class="n">tgm</span><span class="p">):</span>
+    <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="s1">&#39;Cancelling workers for stack [</span><span class="si">%s</span><span class="s1">] in engine [</span><span class="si">%s</span><span class="s1">]&#39;</span><span class="p">,</span>
+              <span class="n">stack_id</span><span class="p">,</span> <span class="n">engine_id</span><span class="p">)</span>
+    <span class="n">tgm</span><span class="o">.</span><span class="n">send</span><span class="p">(</span><span class="n">stack_id</span><span class="p">,</span> <span class="n">rpc_api</span><span class="o">.</span><span class="n">THREAD_CANCEL</span><span class="p">)</span>
+
+
+<span class="k">def</span> <span class="nf">_wait_for_cancellation</span><span class="p">(</span><span class="n">stack</span><span class="p">,</span> <span class="n">wait</span><span class="o">=</span><span class="mi">5</span><span class="p">):</span>
+    <span class="c1"># give enough time to wait till cancel is completed</span>
+    <span class="n">retries</span> <span class="o">=</span> <span class="n">CANCEL_RETRIES</span>
+    <span class="k">while</span> <span class="n">retries</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="n">retries</span> <span class="o">-=</span> <span class="mi">1</span>
+        <span class="n">eventlet</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="n">wait</span><span class="p">)</span>
+        <span class="n">engines</span> <span class="o">=</span> <span class="n">db_api</span><span class="o">.</span><span class="n">engine_get_all_locked_by_stack</span><span class="p">(</span>
+            <span class="n">stack</span><span class="o">.</span><span class="n">context</span><span class="p">,</span> <span class="n">stack</span><span class="o">.</span><span class="n">id</span><span class="p">)</span>
+        <span class="k">if</span> <span class="ow">not</span> <span class="n">engines</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">True</span>
+
+    <span class="k">return</span> <span class="bp">False</span>
+
+
+<span class="k">def</span> <span class="nf">_cancel_workers</span><span class="p">(</span><span class="n">stack</span><span class="p">,</span> <span class="n">tgm</span><span class="p">,</span> <span class="n">local_engine_id</span><span class="p">,</span> <span class="n">rpc_client</span><span class="p">):</span>
+    <span class="n">engines</span> <span class="o">=</span> <span class="n">db_api</span><span class="o">.</span><span class="n">engine_get_all_locked_by_stack</span><span class="p">(</span><span class="n">stack</span><span class="o">.</span><span class="n">context</span><span class="p">,</span> <span class="n">stack</span><span class="o">.</span><span class="n">id</span><span class="p">)</span>
+
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">engines</span><span class="p">:</span>
+        <span class="k">return</span> <span class="bp">True</span>
+
+    <span class="c1"># cancel workers running locally</span>
+    <span class="k">if</span> <span class="n">local_engine_id</span> <span class="ow">in</span> <span class="n">engines</span><span class="p">:</span>
+        <span class="n">_cancel_check_resource</span><span class="p">(</span><span class="n">stack</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="n">local_engine_id</span><span class="p">,</span> <span class="n">tgm</span><span class="p">)</span>
+        <span class="n">engines</span><span class="o">.</span><span class="n">remove</span><span class="p">(</span><span class="n">local_engine_id</span><span class="p">)</span>
+
+    <span class="c1"># cancel workers on remote engines</span>
+    <span class="k">for</span> <span class="n">engine_id</span> <span class="ow">in</span> <span class="n">engines</span><span class="p">:</span>
+        <span class="n">rpc_client</span><span class="o">.</span><span class="n">cancel_check_resource</span><span class="p">(</span><span class="n">stack</span><span class="o">.</span><span class="n">context</span><span class="p">,</span> <span class="n">stack</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="n">engine_id</span><span class="p">)</span>
+
+    <span class="k">return</span> <span class="n">_wait_for_cancellation</span><span class="p">(</span><span class="n">stack</span><span class="p">)</span>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/heat
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../../../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../../../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../../../index.html">heat 8.0.0.0rc2.dev38 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../../index.html" accesskey="U">Module code</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2012,2013 Heat Developers.
+      Last updated on &#39;Tue Feb 14 11:42:51 2017, commit 3ffc97c&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/heat");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

@@ -1,0 +1,962 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>tempest.lib.auth &mdash; Tempest 14.0.1.dev239 documentation</title>
+    
+    <link rel="stylesheet" href="../../../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../../../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../../../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../../../',
+        VERSION:     '14.0.1.dev239',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../../../_static/jquery.js"></script>
+    <script type="text/javascript" src="../../../_static/underscore.js"></script>
+    <script type="text/javascript" src="../../../_static/doctools.js"></script>
+    <link rel="top" title="Tempest 14.0.1.dev239 documentation" href="../../../index.html" />
+    <link rel="up" title="Module code" href="../../index.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <h1>Source code for tempest.lib.auth</h1><div class="highlight"><pre>
+<span></span><span class="c1"># Copyright 2014 Hewlett-Packard Development Company, L.P.</span>
+<span class="c1"># Copyright 2016 Rackspace Inc.</span>
+<span class="c1"># All Rights Reserved.</span>
+<span class="c1">#</span>
+<span class="c1">#    Licensed under the Apache License, Version 2.0 (the &quot;License&quot;); you may</span>
+<span class="c1">#    not use this file except in compliance with the License. You may obtain</span>
+<span class="c1">#    a copy of the License at</span>
+<span class="c1">#</span>
+<span class="c1">#         http://www.apache.org/licenses/LICENSE-2.0</span>
+<span class="c1">#</span>
+<span class="c1">#    Unless required by applicable law or agreed to in writing, software</span>
+<span class="c1">#    distributed under the License is distributed on an &quot;AS IS&quot; BASIS, WITHOUT</span>
+<span class="c1">#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the</span>
+<span class="c1">#    License for the specific language governing permissions and limitations</span>
+<span class="c1">#    under the License.</span>
+
+<span class="kn">import</span> <span class="nn">abc</span>
+<span class="kn">import</span> <span class="nn">copy</span>
+<span class="kn">import</span> <span class="nn">datetime</span>
+<span class="kn">import</span> <span class="nn">re</span>
+
+<span class="kn">from</span> <span class="nn">oslo_log</span> <span class="kn">import</span> <span class="n">log</span> <span class="k">as</span> <span class="n">logging</span>
+<span class="kn">import</span> <span class="nn">six</span>
+<span class="kn">from</span> <span class="nn">six.moves.urllib</span> <span class="kn">import</span> <span class="n">parse</span> <span class="k">as</span> <span class="n">urlparse</span>
+
+<span class="kn">from</span> <span class="nn">tempest.lib</span> <span class="kn">import</span> <span class="n">exceptions</span>
+<span class="kn">from</span> <span class="nn">tempest.lib.services.identity.v2</span> <span class="kn">import</span> <span class="n">token_client</span> <span class="k">as</span> <span class="n">json_v2id</span>
+<span class="kn">from</span> <span class="nn">tempest.lib.services.identity.v3</span> <span class="kn">import</span> <span class="n">token_client</span> <span class="k">as</span> <span class="n">json_v3id</span>
+
+<span class="n">ISO8601_FLOAT_SECONDS</span> <span class="o">=</span> <span class="s1">&#39;%Y-%m-</span><span class="si">%d</span><span class="s1">T%H:%M:%S.</span><span class="si">%f</span><span class="s1">Z&#39;</span>
+<span class="n">ISO8601_INT_SECONDS</span> <span class="o">=</span> <span class="s1">&#39;%Y-%m-</span><span class="si">%d</span><span class="s1">T%H:%M:%SZ&#39;</span>
+<span class="n">LOG</span> <span class="o">=</span> <span class="n">logging</span><span class="o">.</span><span class="n">getLogger</span><span class="p">(</span><span class="vm">__name__</span><span class="p">)</span>
+
+
+<span class="k">def</span> <span class="nf">replace_version</span><span class="p">(</span><span class="n">url</span><span class="p">,</span> <span class="n">new_version</span><span class="p">):</span>
+    <span class="n">parts</span> <span class="o">=</span> <span class="n">urlparse</span><span class="o">.</span><span class="n">urlparse</span><span class="p">(</span><span class="n">url</span><span class="p">)</span>
+    <span class="n">version_path</span> <span class="o">=</span> <span class="s1">&#39;/</span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="n">new_version</span>
+    <span class="n">path</span><span class="p">,</span> <span class="n">subs</span> <span class="o">=</span> <span class="n">re</span><span class="o">.</span><span class="n">subn</span><span class="p">(</span><span class="sa">r</span><span class="s1">&#39;(^|/)+v\d+(?:\.\d+)?&#39;</span><span class="p">,</span>
+                         <span class="n">version_path</span><span class="p">,</span>
+                         <span class="n">parts</span><span class="o">.</span><span class="n">path</span><span class="p">,</span>
+                         <span class="n">count</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">subs</span><span class="p">:</span>
+        <span class="n">path</span> <span class="o">=</span> <span class="s1">&#39;</span><span class="si">%s%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="p">(</span><span class="n">parts</span><span class="o">.</span><span class="n">path</span><span class="o">.</span><span class="n">rstrip</span><span class="p">(</span><span class="s1">&#39;/&#39;</span><span class="p">),</span> <span class="n">version_path</span><span class="p">)</span>
+    <span class="n">url</span> <span class="o">=</span> <span class="n">urlparse</span><span class="o">.</span><span class="n">urlunparse</span><span class="p">((</span><span class="n">parts</span><span class="o">.</span><span class="n">scheme</span><span class="p">,</span>
+                               <span class="n">parts</span><span class="o">.</span><span class="n">netloc</span><span class="p">,</span>
+                               <span class="n">path</span><span class="p">,</span>
+                               <span class="n">parts</span><span class="o">.</span><span class="n">params</span><span class="p">,</span>
+                               <span class="n">parts</span><span class="o">.</span><span class="n">query</span><span class="p">,</span>
+                               <span class="n">parts</span><span class="o">.</span><span class="n">fragment</span><span class="p">))</span>
+    <span class="k">return</span> <span class="n">url</span>
+
+
+<span class="k">def</span> <span class="nf">apply_url_filters</span><span class="p">(</span><span class="n">url</span><span class="p">,</span> <span class="n">filters</span><span class="p">):</span>
+    <span class="k">if</span> <span class="n">filters</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;api_version&#39;</span><span class="p">,</span> <span class="bp">None</span><span class="p">)</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+        <span class="n">url</span> <span class="o">=</span> <span class="n">replace_version</span><span class="p">(</span><span class="n">url</span><span class="p">,</span> <span class="n">filters</span><span class="p">[</span><span class="s1">&#39;api_version&#39;</span><span class="p">])</span>
+    <span class="n">parts</span> <span class="o">=</span> <span class="n">urlparse</span><span class="o">.</span><span class="n">urlparse</span><span class="p">(</span><span class="n">url</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">filters</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;skip_path&#39;</span><span class="p">,</span> <span class="bp">None</span><span class="p">)</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span> <span class="ow">and</span> <span class="n">parts</span><span class="o">.</span><span class="n">path</span> <span class="o">!=</span> <span class="s1">&#39;&#39;</span><span class="p">:</span>
+        <span class="n">url</span> <span class="o">=</span> <span class="n">urlparse</span><span class="o">.</span><span class="n">urlunparse</span><span class="p">((</span><span class="n">parts</span><span class="o">.</span><span class="n">scheme</span><span class="p">,</span>
+                                   <span class="n">parts</span><span class="o">.</span><span class="n">netloc</span><span class="p">,</span>
+                                   <span class="s1">&#39;/&#39;</span><span class="p">,</span>
+                                   <span class="n">parts</span><span class="o">.</span><span class="n">params</span><span class="p">,</span>
+                                   <span class="n">parts</span><span class="o">.</span><span class="n">query</span><span class="p">,</span>
+                                   <span class="n">parts</span><span class="o">.</span><span class="n">fragment</span><span class="p">))</span>
+
+    <span class="k">return</span> <span class="n">url</span>
+
+
+<span class="nd">@six.add_metaclass</span><span class="p">(</span><span class="n">abc</span><span class="o">.</span><span class="n">ABCMeta</span><span class="p">)</span>
+<div class="viewcode-block" id="AuthProvider"><a class="viewcode-back" href="../../../library/auth.html#tempest.lib.auth.AuthProvider">[docs]</a><span class="k">class</span> <span class="nc">AuthProvider</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Provide authentication&quot;&quot;&quot;</span>
+
+    <span class="n">SCOPES</span> <span class="o">=</span> <span class="nb">set</span><span class="p">([</span><span class="s1">&#39;project&#39;</span><span class="p">])</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">credentials</span><span class="p">,</span> <span class="n">scope</span><span class="o">=</span><span class="s1">&#39;project&#39;</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Auth provider __init__</span>
+
+<span class="sd">        :param credentials: credentials for authentication</span>
+<span class="sd">        :param scope: the default scope to be used by the credential providers</span>
+<span class="sd">                      when requesting a token. Valid values depend on the</span>
+<span class="sd">                      AuthProvider class implementation, and are defined in</span>
+<span class="sd">                      the set SCOPES. Default value is &#39;project&#39;.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">check_credentials</span><span class="p">(</span><span class="n">credentials</span><span class="p">):</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">credentials</span> <span class="o">=</span> <span class="n">credentials</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">credentials</span><span class="p">,</span> <span class="n">Credentials</span><span class="p">):</span>
+                <span class="n">password</span> <span class="o">=</span> <span class="n">credentials</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;password&#39;</span><span class="p">)</span>
+                <span class="n">message</span> <span class="o">=</span> <span class="s2">&quot;Credentials are: &quot;</span> <span class="o">+</span> <span class="nb">str</span><span class="p">(</span><span class="n">credentials</span><span class="p">)</span>
+                <span class="k">if</span> <span class="n">password</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+                    <span class="n">message</span> <span class="o">+=</span> <span class="s2">&quot; Password is not defined.&quot;</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="n">message</span> <span class="o">+=</span> <span class="s2">&quot; Password is defined.&quot;</span>
+                <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">InvalidCredentials</span><span class="p">(</span><span class="n">message</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="s2">&quot;credentials object is of type </span><span class="si">%s</span><span class="s2">, which is&quot;</span>
+                                <span class="s2">&quot; not a valid Credentials object type.&quot;</span> <span class="o">%</span>
+                                <span class="n">credentials</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="vm">__name__</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_scope</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">scope</span> <span class="o">=</span> <span class="n">scope</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">cache</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">alt_auth_data</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">alt_part</span> <span class="o">=</span> <span class="bp">None</span>
+
+    <span class="k">def</span> <span class="fm">__str__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="s2">&quot;Creds :{creds}, cached auth data: {cache}&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span>
+            <span class="n">creds</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="p">,</span> <span class="n">cache</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">cache</span><span class="p">)</span>
+
+    <span class="nd">@abc.abstractmethod</span>
+    <span class="k">def</span> <span class="nf">_decorate_request</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">filters</span><span class="p">,</span> <span class="n">method</span><span class="p">,</span> <span class="n">url</span><span class="p">,</span> <span class="n">headers</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">body</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+                          <span class="n">auth_data</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Decorate request with authentication data&quot;&quot;&quot;</span>
+        <span class="k">return</span>
+
+    <span class="nd">@abc.abstractmethod</span>
+    <span class="k">def</span> <span class="nf">_get_auth</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span>
+
+    <span class="nd">@abc.abstractmethod</span>
+    <span class="k">def</span> <span class="nf">_fill_credentials</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">auth_data_body</span><span class="p">):</span>
+        <span class="k">return</span>
+
+<div class="viewcode-block" id="AuthProvider.fill_credentials"><a class="viewcode-back" href="../../../library/auth.html#tempest.lib.auth.AuthProvider.fill_credentials">[docs]</a>    <span class="k">def</span> <span class="nf">fill_credentials</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Fill credentials object with data from auth&quot;&quot;&quot;</span>
+        <span class="n">auth_data</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_auth</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_fill_credentials</span><span class="p">(</span><span class="n">auth_data</span><span class="p">[</span><span class="mi">1</span><span class="p">])</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">credentials</span></div>
+
+    <span class="nd">@classmethod</span>
+<div class="viewcode-block" id="AuthProvider.check_credentials"><a class="viewcode-back" href="../../../library/auth.html#tempest.lib.auth.AuthProvider.check_credentials">[docs]</a>    <span class="k">def</span> <span class="nf">check_credentials</span><span class="p">(</span><span class="bp">cls</span><span class="p">,</span> <span class="n">credentials</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Verify credentials are valid.&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">credentials</span><span class="p">,</span> <span class="n">Credentials</span><span class="p">)</span> <span class="ow">and</span> <span class="n">credentials</span><span class="o">.</span><span class="n">is_valid</span><span class="p">()</span></div>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">auth_data</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Auth data for set scope&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_auth</span><span class="p">()</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span> <span class="nf">scope</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Scope used in auth requests&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_scope</span>
+
+    <span class="nd">@auth_data.deleter</span>
+    <span class="k">def</span> <span class="nf">auth_data</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">clear_auth</span><span class="p">()</span>
+
+<div class="viewcode-block" id="AuthProvider.get_auth"><a class="viewcode-back" href="../../../library/auth.html#tempest.lib.auth.AuthProvider.get_auth">[docs]</a>    <span class="k">def</span> <span class="nf">get_auth</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Returns auth from cache if available, else auth first&quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">cache</span> <span class="ow">is</span> <span class="bp">None</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">is_expired</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">cache</span><span class="p">):</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">set_auth</span><span class="p">()</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">cache</span></div>
+
+<div class="viewcode-block" id="AuthProvider.set_auth"><a class="viewcode-back" href="../../../library/auth.html#tempest.lib.auth.AuthProvider.set_auth">[docs]</a>    <span class="k">def</span> <span class="nf">set_auth</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Forces setting auth.</span>
+
+<span class="sd">        Forces setting auth, ignores cache if it exists.</span>
+<span class="sd">        Refills credentials.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">cache</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_auth</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_fill_credentials</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">cache</span><span class="p">[</span><span class="mi">1</span><span class="p">])</span></div>
+
+<div class="viewcode-block" id="AuthProvider.clear_auth"><a class="viewcode-back" href="../../../library/auth.html#tempest.lib.auth.AuthProvider.clear_auth">[docs]</a>    <span class="k">def</span> <span class="nf">clear_auth</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Clear access cache</span>
+
+<span class="sd">        Can be called to clear the access cache so that next request</span>
+<span class="sd">        will fetch a new token and base_url.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">cache</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">reset</span><span class="p">()</span></div>
+
+    <span class="nd">@abc.abstractmethod</span>
+    <span class="k">def</span> <span class="nf">is_expired</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">auth_data</span><span class="p">):</span>
+        <span class="k">return</span>
+
+<div class="viewcode-block" id="AuthProvider.auth_request"><a class="viewcode-back" href="../../../library/auth.html#tempest.lib.auth.AuthProvider.auth_request">[docs]</a>    <span class="k">def</span> <span class="nf">auth_request</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">method</span><span class="p">,</span> <span class="n">url</span><span class="p">,</span> <span class="n">headers</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">body</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">filters</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Obtains auth data and decorates a request with that.</span>
+
+<span class="sd">        :param method: HTTP method of the request</span>
+<span class="sd">        :param url: relative URL of the request (path)</span>
+<span class="sd">        :param headers: HTTP headers of the request</span>
+<span class="sd">        :param body: HTTP body in case of POST / PUT</span>
+<span class="sd">        :param filters: select a base URL out of the catalog</span>
+<span class="sd">        :return: a Tuple (url, headers, body)</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">orig_req</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">(</span><span class="n">url</span><span class="o">=</span><span class="n">url</span><span class="p">,</span> <span class="n">headers</span><span class="o">=</span><span class="n">headers</span><span class="p">,</span> <span class="n">body</span><span class="o">=</span><span class="n">body</span><span class="p">)</span>
+
+        <span class="n">auth_url</span><span class="p">,</span> <span class="n">auth_headers</span><span class="p">,</span> <span class="n">auth_body</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_decorate_request</span><span class="p">(</span>
+            <span class="n">filters</span><span class="p">,</span> <span class="n">method</span><span class="p">,</span> <span class="n">url</span><span class="p">,</span> <span class="n">headers</span><span class="p">,</span> <span class="n">body</span><span class="p">)</span>
+        <span class="n">auth_req</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">(</span><span class="n">url</span><span class="o">=</span><span class="n">auth_url</span><span class="p">,</span> <span class="n">headers</span><span class="o">=</span><span class="n">auth_headers</span><span class="p">,</span> <span class="n">body</span><span class="o">=</span><span class="n">auth_body</span><span class="p">)</span>
+
+        <span class="c1"># Overwrite part if the request if it has been requested</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">alt_part</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">alt_auth_data</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="n">alt_url</span><span class="p">,</span> <span class="n">alt_headers</span><span class="p">,</span> <span class="n">alt_body</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_decorate_request</span><span class="p">(</span>
+                    <span class="n">filters</span><span class="p">,</span> <span class="n">method</span><span class="p">,</span> <span class="n">url</span><span class="p">,</span> <span class="n">headers</span><span class="p">,</span> <span class="n">body</span><span class="p">,</span>
+                    <span class="n">auth_data</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">alt_auth_data</span><span class="p">)</span>
+                <span class="n">alt_auth_req</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">(</span><span class="n">url</span><span class="o">=</span><span class="n">alt_url</span><span class="p">,</span> <span class="n">headers</span><span class="o">=</span><span class="n">alt_headers</span><span class="p">,</span>
+                                    <span class="n">body</span><span class="o">=</span><span class="n">alt_body</span><span class="p">)</span>
+                <span class="k">if</span> <span class="n">auth_req</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">alt_part</span><span class="p">]</span> <span class="o">==</span> <span class="n">alt_auth_req</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">alt_part</span><span class="p">]:</span>
+                    <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">BadAltAuth</span><span class="p">(</span><span class="n">part</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">alt_part</span><span class="p">)</span>
+                <span class="n">auth_req</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">alt_part</span><span class="p">]</span> <span class="o">=</span> <span class="n">alt_auth_req</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">alt_part</span><span class="p">]</span>
+
+            <span class="k">else</span><span class="p">:</span>
+                <span class="c1"># If the requested part is not affected by auth, we are</span>
+                <span class="c1"># not altering auth as expected, raise an exception</span>
+                <span class="k">if</span> <span class="n">auth_req</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">alt_part</span><span class="p">]</span> <span class="o">==</span> <span class="n">orig_req</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">alt_part</span><span class="p">]:</span>
+                    <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">BadAltAuth</span><span class="p">(</span><span class="n">part</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">alt_part</span><span class="p">)</span>
+                <span class="c1"># If alt auth data is None, skip auth in the requested part</span>
+                <span class="n">auth_req</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">alt_part</span><span class="p">]</span> <span class="o">=</span> <span class="n">orig_req</span><span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">alt_part</span><span class="p">]</span>
+
+            <span class="c1"># Next auth request will be normal, unless otherwise requested</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">reset_alt_auth_data</span><span class="p">()</span>
+
+        <span class="k">return</span> <span class="n">auth_req</span><span class="p">[</span><span class="s1">&#39;url&#39;</span><span class="p">],</span> <span class="n">auth_req</span><span class="p">[</span><span class="s1">&#39;headers&#39;</span><span class="p">],</span> <span class="n">auth_req</span><span class="p">[</span><span class="s1">&#39;body&#39;</span><span class="p">]</span></div>
+
+<div class="viewcode-block" id="AuthProvider.reset_alt_auth_data"><a class="viewcode-back" href="../../../library/auth.html#tempest.lib.auth.AuthProvider.reset_alt_auth_data">[docs]</a>    <span class="k">def</span> <span class="nf">reset_alt_auth_data</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Configure auth provider to provide valid authentication data&quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">alt_part</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">alt_auth_data</span> <span class="o">=</span> <span class="bp">None</span></div>
+
+<div class="viewcode-block" id="AuthProvider.set_alt_auth_data"><a class="viewcode-back" href="../../../library/auth.html#tempest.lib.auth.AuthProvider.set_alt_auth_data">[docs]</a>    <span class="k">def</span> <span class="nf">set_alt_auth_data</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">request_part</span><span class="p">,</span> <span class="n">auth_data</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Alternate auth data on next request</span>
+
+<span class="sd">        Configure auth provider to provide alt authentication data</span>
+<span class="sd">        on a part of the *next* auth_request. If credentials are None,</span>
+<span class="sd">        set invalid data.</span>
+
+<span class="sd">        :param request_part: request part to contain invalid auth: url,</span>
+<span class="sd">                             headers, body</span>
+<span class="sd">        :param auth_data: alternative auth_data from which to get the</span>
+<span class="sd">                          invalid data to be injected</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">alt_part</span> <span class="o">=</span> <span class="n">request_part</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">alt_auth_data</span> <span class="o">=</span> <span class="n">auth_data</span></div>
+
+    <span class="nd">@abc.abstractmethod</span>
+<div class="viewcode-block" id="AuthProvider.base_url"><a class="viewcode-back" href="../../../library/auth.html#tempest.lib.auth.AuthProvider.base_url">[docs]</a>    <span class="k">def</span> <span class="nf">base_url</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">filters</span><span class="p">,</span> <span class="n">auth_data</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Extracts the base_url based on provided filters&quot;&quot;&quot;</span>
+        <span class="k">return</span></div>
+
+    <span class="nd">@scope.setter</span>
+    <span class="k">def</span> <span class="nf">scope</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">value</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Set the scope to be used in token requests</span>
+
+<span class="sd">        :param scope: scope to be used. If the scope is different, clear caches</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="n">value</span> <span class="ow">not</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">SCOPES</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">InvalidScope</span><span class="p">(</span>
+                <span class="n">scope</span><span class="o">=</span><span class="n">value</span><span class="p">,</span> <span class="n">auth_provider</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="o">.</span><span class="vm">__name__</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">value</span> <span class="o">!=</span> <span class="bp">self</span><span class="o">.</span><span class="n">scope</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">clear_auth</span><span class="p">()</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">_scope</span> <span class="o">=</span> <span class="n">value</span></div>
+
+
+<span class="k">class</span> <span class="nc">KeystoneAuthProvider</span><span class="p">(</span><span class="n">AuthProvider</span><span class="p">):</span>
+
+    <span class="n">EXPIRY_DATE_FORMATS</span> <span class="o">=</span> <span class="p">(</span><span class="n">ISO8601_FLOAT_SECONDS</span><span class="p">,</span> <span class="n">ISO8601_INT_SECONDS</span><span class="p">)</span>
+
+    <span class="n">token_expiry_threshold</span> <span class="o">=</span> <span class="n">datetime</span><span class="o">.</span><span class="n">timedelta</span><span class="p">(</span><span class="n">seconds</span><span class="o">=</span><span class="mi">60</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">credentials</span><span class="p">,</span> <span class="n">auth_url</span><span class="p">,</span>
+                 <span class="n">disable_ssl_certificate_validation</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+                 <span class="n">ca_certs</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">trace_requests</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">scope</span><span class="o">=</span><span class="s1">&#39;project&#39;</span><span class="p">,</span>
+                 <span class="n">http_timeout</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="nb">super</span><span class="p">(</span><span class="n">KeystoneAuthProvider</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">credentials</span><span class="p">,</span> <span class="n">scope</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">dscv</span> <span class="o">=</span> <span class="n">disable_ssl_certificate_validation</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">ca_certs</span> <span class="o">=</span> <span class="n">ca_certs</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">trace_requests</span> <span class="o">=</span> <span class="n">trace_requests</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">http_timeout</span> <span class="o">=</span> <span class="n">http_timeout</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">auth_url</span> <span class="o">=</span> <span class="n">auth_url</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">auth_client</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_auth_client</span><span class="p">(</span><span class="n">auth_url</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_decorate_request</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">filters</span><span class="p">,</span> <span class="n">method</span><span class="p">,</span> <span class="n">url</span><span class="p">,</span> <span class="n">headers</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">body</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+                          <span class="n">auth_data</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="k">if</span> <span class="n">auth_data</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">auth_data</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_auth</span><span class="p">()</span>
+        <span class="n">token</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">auth_data</span>
+        <span class="n">base_url</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">base_url</span><span class="p">(</span><span class="n">filters</span><span class="o">=</span><span class="n">filters</span><span class="p">,</span> <span class="n">auth_data</span><span class="o">=</span><span class="n">auth_data</span><span class="p">)</span>
+        <span class="c1"># build authenticated request</span>
+        <span class="c1"># returns new request, it does not touch the original values</span>
+        <span class="n">_headers</span> <span class="o">=</span> <span class="n">copy</span><span class="o">.</span><span class="n">deepcopy</span><span class="p">(</span><span class="n">headers</span><span class="p">)</span> <span class="k">if</span> <span class="n">headers</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span> <span class="k">else</span> <span class="p">{}</span>
+        <span class="n">_headers</span><span class="p">[</span><span class="s1">&#39;X-Auth-Token&#39;</span><span class="p">]</span> <span class="o">=</span> <span class="nb">str</span><span class="p">(</span><span class="n">token</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">url</span> <span class="ow">is</span> <span class="bp">None</span> <span class="ow">or</span> <span class="n">url</span> <span class="o">==</span> <span class="s2">&quot;&quot;</span><span class="p">:</span>
+            <span class="n">_url</span> <span class="o">=</span> <span class="n">base_url</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="c1"># Join base URL and url, and remove multiple contiguous slashes</span>
+            <span class="n">_url</span> <span class="o">=</span> <span class="s2">&quot;/&quot;</span><span class="o">.</span><span class="n">join</span><span class="p">([</span><span class="n">base_url</span><span class="p">,</span> <span class="n">url</span><span class="p">])</span>
+            <span class="n">parts</span> <span class="o">=</span> <span class="p">[</span><span class="n">x</span> <span class="k">for</span> <span class="n">x</span> <span class="ow">in</span> <span class="n">urlparse</span><span class="o">.</span><span class="n">urlparse</span><span class="p">(</span><span class="n">_url</span><span class="p">)]</span>
+            <span class="n">parts</span><span class="p">[</span><span class="mi">2</span><span class="p">]</span> <span class="o">=</span> <span class="n">re</span><span class="o">.</span><span class="n">sub</span><span class="p">(</span><span class="s2">&quot;/{2,}&quot;</span><span class="p">,</span> <span class="s2">&quot;/&quot;</span><span class="p">,</span> <span class="n">parts</span><span class="p">[</span><span class="mi">2</span><span class="p">])</span>
+            <span class="n">_url</span> <span class="o">=</span> <span class="n">urlparse</span><span class="o">.</span><span class="n">urlunparse</span><span class="p">(</span><span class="n">parts</span><span class="p">)</span>
+        <span class="c1"># no change to method or body</span>
+        <span class="k">return</span> <span class="nb">str</span><span class="p">(</span><span class="n">_url</span><span class="p">),</span> <span class="n">_headers</span><span class="p">,</span> <span class="n">body</span>
+
+    <span class="nd">@abc.abstractmethod</span>
+    <span class="k">def</span> <span class="nf">_auth_client</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span>
+
+    <span class="nd">@abc.abstractmethod</span>
+    <span class="k">def</span> <span class="nf">_auth_params</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Auth parameters to be passed to the token request</span>
+
+<span class="sd">        By default all fields available in Credentials are passed to the</span>
+<span class="sd">        token request. Scope may affect this.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span>
+
+    <span class="k">def</span> <span class="nf">_get_auth</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="c1"># Bypasses the cache</span>
+        <span class="n">auth_func</span> <span class="o">=</span> <span class="nb">getattr</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">auth_client</span><span class="p">,</span> <span class="s1">&#39;get_token&#39;</span><span class="p">)</span>
+        <span class="n">auth_params</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_auth_params</span><span class="p">()</span>
+
+        <span class="c1"># returns token, auth_data</span>
+        <span class="n">token</span><span class="p">,</span> <span class="n">auth_data</span> <span class="o">=</span> <span class="n">auth_func</span><span class="p">(</span><span class="o">**</span><span class="n">auth_params</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">token</span><span class="p">,</span> <span class="n">auth_data</span>
+
+    <span class="k">def</span> <span class="nf">_parse_expiry_time</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">expiry_string</span><span class="p">):</span>
+        <span class="n">expiry</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="k">for</span> <span class="n">date_format</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">EXPIRY_DATE_FORMATS</span><span class="p">:</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="n">expiry</span> <span class="o">=</span> <span class="n">datetime</span><span class="o">.</span><span class="n">datetime</span><span class="o">.</span><span class="n">strptime</span><span class="p">(</span>
+                    <span class="n">expiry_string</span><span class="p">,</span> <span class="n">date_format</span><span class="p">)</span>
+            <span class="k">except</span> <span class="ne">ValueError</span><span class="p">:</span>
+                <span class="k">pass</span>
+        <span class="k">if</span> <span class="n">expiry</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+                <span class="s2">&quot;time data &#39;{data}&#39; does not match any of the&quot;</span>
+                <span class="s2">&quot;expected formats: {formats}&quot;</span><span class="o">.</span><span class="n">format</span><span class="p">(</span>
+                    <span class="n">data</span><span class="o">=</span><span class="n">expiry_string</span><span class="p">,</span> <span class="n">formats</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">EXPIRY_DATE_FORMATS</span><span class="p">))</span>
+        <span class="k">return</span> <span class="n">expiry</span>
+
+    <span class="k">def</span> <span class="nf">get_token</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_auth</span><span class="p">()[</span><span class="mi">0</span><span class="p">]</span>
+
+
+<div class="viewcode-block" id="KeystoneV2AuthProvider"><a class="viewcode-back" href="../../../library/auth.html#tempest.lib.auth.KeystoneV2AuthProvider">[docs]</a><span class="k">class</span> <span class="nc">KeystoneV2AuthProvider</span><span class="p">(</span><span class="n">KeystoneAuthProvider</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Provides authentication based on the Identity V2 API</span>
+
+<span class="sd">    The Keystone Identity V2 API defines both unscoped and project scoped</span>
+<span class="sd">    tokens. This auth provider only implements &#39;project&#39;.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">SCOPES</span> <span class="o">=</span> <span class="nb">set</span><span class="p">([</span><span class="s1">&#39;project&#39;</span><span class="p">])</span>
+
+    <span class="k">def</span> <span class="nf">_auth_client</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">auth_url</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">json_v2id</span><span class="o">.</span><span class="n">TokenClient</span><span class="p">(</span>
+            <span class="n">auth_url</span><span class="p">,</span> <span class="n">disable_ssl_certificate_validation</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">dscv</span><span class="p">,</span>
+            <span class="n">ca_certs</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">ca_certs</span><span class="p">,</span> <span class="n">trace_requests</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">trace_requests</span><span class="p">,</span>
+            <span class="n">http_timeout</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">http_timeout</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_auth_params</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Auth parameters to be passed to the token request</span>
+
+<span class="sd">        All fields available in Credentials are passed to the token request.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="nb">dict</span><span class="p">(</span>
+            <span class="n">user</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">username</span><span class="p">,</span>
+            <span class="n">password</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">password</span><span class="p">,</span>
+            <span class="n">tenant</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">tenant_name</span><span class="p">,</span>
+            <span class="n">auth_data</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_fill_credentials</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">auth_data_body</span><span class="p">):</span>
+        <span class="n">tenant</span> <span class="o">=</span> <span class="n">auth_data_body</span><span class="p">[</span><span class="s1">&#39;token&#39;</span><span class="p">][</span><span class="s1">&#39;tenant&#39;</span><span class="p">]</span>
+        <span class="n">user</span> <span class="o">=</span> <span class="n">auth_data_body</span><span class="p">[</span><span class="s1">&#39;user&#39;</span><span class="p">]</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">tenant_name</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">tenant_name</span> <span class="o">=</span> <span class="n">tenant</span><span class="p">[</span><span class="s1">&#39;name&#39;</span><span class="p">]</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">tenant_id</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">tenant_id</span> <span class="o">=</span> <span class="n">tenant</span><span class="p">[</span><span class="s1">&#39;id&#39;</span><span class="p">]</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">username</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">username</span> <span class="o">=</span> <span class="n">user</span><span class="p">[</span><span class="s1">&#39;name&#39;</span><span class="p">]</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">user_id</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">user_id</span> <span class="o">=</span> <span class="n">user</span><span class="p">[</span><span class="s1">&#39;id&#39;</span><span class="p">]</span>
+
+<div class="viewcode-block" id="KeystoneV2AuthProvider.base_url"><a class="viewcode-back" href="../../../library/auth.html#tempest.lib.auth.KeystoneV2AuthProvider.base_url">[docs]</a>    <span class="k">def</span> <span class="nf">base_url</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">filters</span><span class="p">,</span> <span class="n">auth_data</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Base URL from catalog</span>
+
+<span class="sd">        :param filters: Used to filter results</span>
+
+<span class="sd">        Filters can be:</span>
+
+<span class="sd">        - service: service type name such as compute, image, etc.</span>
+<span class="sd">        - region: service region name</span>
+<span class="sd">        - name: service name, only if service exists</span>
+<span class="sd">        - endpoint_type: type of endpoint such as</span>
+<span class="sd">            adminURL, publicURL, internalURL</span>
+<span class="sd">        - api_version: the version of api used to replace catalog version</span>
+<span class="sd">        - skip_path: skips the suffix path of the url and uses base URL</span>
+
+<span class="sd">        :rtype: string</span>
+<span class="sd">        :return: url with filters applied</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="n">auth_data</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">auth_data</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_auth</span><span class="p">()</span>
+        <span class="n">token</span><span class="p">,</span> <span class="n">_auth_data</span> <span class="o">=</span> <span class="n">auth_data</span>
+        <span class="n">service</span> <span class="o">=</span> <span class="n">filters</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;service&#39;</span><span class="p">)</span>
+        <span class="n">region</span> <span class="o">=</span> <span class="n">filters</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;region&#39;</span><span class="p">)</span>
+        <span class="n">name</span> <span class="o">=</span> <span class="n">filters</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;name&#39;</span><span class="p">)</span>
+        <span class="n">endpoint_type</span> <span class="o">=</span> <span class="n">filters</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;endpoint_type&#39;</span><span class="p">,</span> <span class="s1">&#39;publicURL&#39;</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">service</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">EndpointNotFound</span><span class="p">(</span><span class="s2">&quot;No service provided&quot;</span><span class="p">)</span>
+
+        <span class="n">_base_url</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="k">for</span> <span class="n">ep</span> <span class="ow">in</span> <span class="n">_auth_data</span><span class="p">[</span><span class="s1">&#39;serviceCatalog&#39;</span><span class="p">]:</span>
+            <span class="k">if</span> <span class="n">ep</span><span class="p">[</span><span class="s2">&quot;type&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="n">service</span><span class="p">:</span>
+                <span class="k">if</span> <span class="n">name</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span> <span class="ow">and</span> <span class="n">ep</span><span class="p">[</span><span class="s2">&quot;name&quot;</span><span class="p">]</span> <span class="o">!=</span> <span class="n">name</span><span class="p">:</span>
+                    <span class="k">continue</span>
+                <span class="k">for</span> <span class="n">_ep</span> <span class="ow">in</span> <span class="n">ep</span><span class="p">[</span><span class="s1">&#39;endpoints&#39;</span><span class="p">]:</span>
+                    <span class="k">if</span> <span class="n">region</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span> <span class="ow">and</span> <span class="n">_ep</span><span class="p">[</span><span class="s1">&#39;region&#39;</span><span class="p">]</span> <span class="o">==</span> <span class="n">region</span><span class="p">:</span>
+                        <span class="n">_base_url</span> <span class="o">=</span> <span class="n">_ep</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">endpoint_type</span><span class="p">)</span>
+                <span class="k">if</span> <span class="ow">not</span> <span class="n">_base_url</span><span class="p">:</span>
+                    <span class="c1"># No region or name matching, use the first</span>
+                    <span class="n">_base_url</span> <span class="o">=</span> <span class="n">ep</span><span class="p">[</span><span class="s1">&#39;endpoints&#39;</span><span class="p">][</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">endpoint_type</span><span class="p">)</span>
+                <span class="k">break</span>
+        <span class="k">if</span> <span class="n">_base_url</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">EndpointNotFound</span><span class="p">(</span>
+                <span class="s2">&quot;service: </span><span class="si">%s</span><span class="s2">, region: </span><span class="si">%s</span><span class="s2">, endpoint_type: </span><span class="si">%s</span><span class="s2">, name: </span><span class="si">%s</span><span class="s2">&quot;</span> <span class="o">%</span>
+                <span class="p">(</span><span class="n">service</span><span class="p">,</span> <span class="n">region</span><span class="p">,</span> <span class="n">endpoint_type</span><span class="p">,</span> <span class="n">name</span><span class="p">))</span>
+        <span class="k">return</span> <span class="n">apply_url_filters</span><span class="p">(</span><span class="n">_base_url</span><span class="p">,</span> <span class="n">filters</span><span class="p">)</span></div>
+
+    <span class="k">def</span> <span class="nf">is_expired</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">auth_data</span><span class="p">):</span>
+        <span class="n">_</span><span class="p">,</span> <span class="n">access</span> <span class="o">=</span> <span class="n">auth_data</span>
+        <span class="n">expiry</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_parse_expiry_time</span><span class="p">(</span><span class="n">access</span><span class="p">[</span><span class="s1">&#39;token&#39;</span><span class="p">][</span><span class="s1">&#39;expires&#39;</span><span class="p">])</span>
+        <span class="k">return</span> <span class="p">(</span><span class="n">expiry</span> <span class="o">-</span> <span class="bp">self</span><span class="o">.</span><span class="n">token_expiry_threshold</span> <span class="o">&lt;=</span>
+                <span class="n">datetime</span><span class="o">.</span><span class="n">datetime</span><span class="o">.</span><span class="n">utcnow</span><span class="p">())</span></div>
+
+
+<div class="viewcode-block" id="KeystoneV3AuthProvider"><a class="viewcode-back" href="../../../library/auth.html#tempest.lib.auth.KeystoneV3AuthProvider">[docs]</a><span class="k">class</span> <span class="nc">KeystoneV3AuthProvider</span><span class="p">(</span><span class="n">KeystoneAuthProvider</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Provides authentication based on the Identity V3 API&quot;&quot;&quot;</span>
+
+    <span class="n">SCOPES</span> <span class="o">=</span> <span class="nb">set</span><span class="p">([</span><span class="s1">&#39;project&#39;</span><span class="p">,</span> <span class="s1">&#39;domain&#39;</span><span class="p">,</span> <span class="s1">&#39;unscoped&#39;</span><span class="p">,</span> <span class="bp">None</span><span class="p">])</span>
+
+    <span class="k">def</span> <span class="nf">_auth_client</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">auth_url</span><span class="p">):</span>
+        <span class="k">return</span> <span class="n">json_v3id</span><span class="o">.</span><span class="n">V3TokenClient</span><span class="p">(</span>
+            <span class="n">auth_url</span><span class="p">,</span> <span class="n">disable_ssl_certificate_validation</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">dscv</span><span class="p">,</span>
+            <span class="n">ca_certs</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">ca_certs</span><span class="p">,</span> <span class="n">trace_requests</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">trace_requests</span><span class="p">,</span>
+            <span class="n">http_timeout</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">http_timeout</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_auth_params</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Auth parameters to be passed to the token request</span>
+
+<span class="sd">        Fields available in Credentials are passed to the token request,</span>
+<span class="sd">        depending on the value of scope. Valid values for scope are: &quot;project&quot;,</span>
+<span class="sd">        &quot;domain&quot;. Any other string (e.g. &quot;unscoped&quot;) or None will lead to an</span>
+<span class="sd">        unscoped token request.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+
+        <span class="n">auth_params</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">(</span>
+            <span class="n">user_id</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">user_id</span><span class="p">,</span>
+            <span class="n">username</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">username</span><span class="p">,</span>
+            <span class="n">user_domain_id</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">user_domain_id</span><span class="p">,</span>
+            <span class="n">user_domain_name</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">user_domain_name</span><span class="p">,</span>
+            <span class="n">password</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">password</span><span class="p">,</span>
+            <span class="n">auth_data</span><span class="o">=</span><span class="bp">True</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">scope</span> <span class="o">==</span> <span class="s1">&#39;project&#39;</span><span class="p">:</span>
+            <span class="n">auth_params</span><span class="o">.</span><span class="n">update</span><span class="p">(</span>
+                <span class="n">project_domain_id</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">project_domain_id</span><span class="p">,</span>
+                <span class="n">project_domain_name</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">project_domain_name</span><span class="p">,</span>
+                <span class="n">project_id</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">project_id</span><span class="p">,</span>
+                <span class="n">project_name</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">project_name</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">scope</span> <span class="o">==</span> <span class="s1">&#39;domain&#39;</span><span class="p">:</span>
+            <span class="n">auth_params</span><span class="o">.</span><span class="n">update</span><span class="p">(</span>
+                <span class="n">domain_id</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">domain_id</span><span class="p">,</span>
+                <span class="n">domain_name</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">domain_name</span><span class="p">)</span>
+
+        <span class="k">return</span> <span class="n">auth_params</span>
+
+    <span class="k">def</span> <span class="nf">_fill_credentials</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">auth_data_body</span><span class="p">):</span>
+        <span class="c1"># project or domain, depending on the scope</span>
+        <span class="n">project</span> <span class="o">=</span> <span class="n">auth_data_body</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;project&#39;</span><span class="p">,</span> <span class="bp">None</span><span class="p">)</span>
+        <span class="n">domain</span> <span class="o">=</span> <span class="n">auth_data_body</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;domain&#39;</span><span class="p">,</span> <span class="bp">None</span><span class="p">)</span>
+        <span class="c1"># user is always there</span>
+        <span class="n">user</span> <span class="o">=</span> <span class="n">auth_data_body</span><span class="p">[</span><span class="s1">&#39;user&#39;</span><span class="p">]</span>
+        <span class="c1"># Set project fields</span>
+        <span class="k">if</span> <span class="n">project</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">project_name</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">project_name</span> <span class="o">=</span> <span class="n">project</span><span class="p">[</span><span class="s1">&#39;name&#39;</span><span class="p">]</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">project_id</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">project_id</span> <span class="o">=</span> <span class="n">project</span><span class="p">[</span><span class="s1">&#39;id&#39;</span><span class="p">]</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">project_domain_id</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">project_domain_id</span> <span class="o">=</span> <span class="n">project</span><span class="p">[</span><span class="s1">&#39;domain&#39;</span><span class="p">][</span><span class="s1">&#39;id&#39;</span><span class="p">]</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">project_domain_name</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">project_domain_name</span> <span class="o">=</span> <span class="p">(</span>
+                    <span class="n">project</span><span class="p">[</span><span class="s1">&#39;domain&#39;</span><span class="p">][</span><span class="s1">&#39;name&#39;</span><span class="p">])</span>
+        <span class="c1"># Set domain fields</span>
+        <span class="k">if</span> <span class="n">domain</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">domain_id</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">domain_id</span> <span class="o">=</span> <span class="n">domain</span><span class="p">[</span><span class="s1">&#39;id&#39;</span><span class="p">]</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">domain_name</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">domain_name</span> <span class="o">=</span> <span class="n">domain</span><span class="p">[</span><span class="s1">&#39;name&#39;</span><span class="p">]</span>
+        <span class="c1"># Set user fields</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">username</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">username</span> <span class="o">=</span> <span class="n">user</span><span class="p">[</span><span class="s1">&#39;name&#39;</span><span class="p">]</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">user_id</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">user_id</span> <span class="o">=</span> <span class="n">user</span><span class="p">[</span><span class="s1">&#39;id&#39;</span><span class="p">]</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">user_domain_id</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">user_domain_id</span> <span class="o">=</span> <span class="n">user</span><span class="p">[</span><span class="s1">&#39;domain&#39;</span><span class="p">][</span><span class="s1">&#39;id&#39;</span><span class="p">]</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">user_domain_name</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="o">.</span><span class="n">user_domain_name</span> <span class="o">=</span> <span class="n">user</span><span class="p">[</span><span class="s1">&#39;domain&#39;</span><span class="p">][</span><span class="s1">&#39;name&#39;</span><span class="p">]</span>
+
+<div class="viewcode-block" id="KeystoneV3AuthProvider.base_url"><a class="viewcode-back" href="../../../library/auth.html#tempest.lib.auth.KeystoneV3AuthProvider.base_url">[docs]</a>    <span class="k">def</span> <span class="nf">base_url</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">filters</span><span class="p">,</span> <span class="n">auth_data</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Base URL from catalog</span>
+
+<span class="sd">        If scope is not &#39;project&#39;, it may be that there is not catalog in</span>
+<span class="sd">        the auth_data. In such case, as long as the requested service is</span>
+<span class="sd">        &#39;identity&#39;, we can use the original auth URL to build the base_url.</span>
+
+<span class="sd">        :param filters: Used to filter results</span>
+
+<span class="sd">        Filters can be:</span>
+
+<span class="sd">        - service: service type name such as compute, image, etc.</span>
+<span class="sd">        - region: service region name</span>
+<span class="sd">        - name: service name, only if service exists</span>
+<span class="sd">        - endpoint_type: type of endpoint such as</span>
+<span class="sd">            adminURL, publicURL, internalURL</span>
+<span class="sd">        - api_version: the version of api used to replace catalog version</span>
+<span class="sd">        - skip_path: skips the suffix path of the url and uses base URL</span>
+
+<span class="sd">        :rtype: string</span>
+<span class="sd">        :return: url with filters applied</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">if</span> <span class="n">auth_data</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="n">auth_data</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">get_auth</span><span class="p">()</span>
+        <span class="n">token</span><span class="p">,</span> <span class="n">_auth_data</span> <span class="o">=</span> <span class="n">auth_data</span>
+        <span class="n">service</span> <span class="o">=</span> <span class="n">filters</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;service&#39;</span><span class="p">)</span>
+        <span class="n">region</span> <span class="o">=</span> <span class="n">filters</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;region&#39;</span><span class="p">)</span>
+        <span class="n">name</span> <span class="o">=</span> <span class="n">filters</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;name&#39;</span><span class="p">)</span>
+        <span class="n">endpoint_type</span> <span class="o">=</span> <span class="n">filters</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;endpoint_type&#39;</span><span class="p">,</span> <span class="s1">&#39;public&#39;</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="n">service</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">EndpointNotFound</span><span class="p">(</span><span class="s2">&quot;No service provided&quot;</span><span class="p">)</span>
+
+        <span class="k">if</span> <span class="s1">&#39;URL&#39;</span> <span class="ow">in</span> <span class="n">endpoint_type</span><span class="p">:</span>
+            <span class="n">endpoint_type</span> <span class="o">=</span> <span class="n">endpoint_type</span><span class="o">.</span><span class="n">replace</span><span class="p">(</span><span class="s1">&#39;URL&#39;</span><span class="p">,</span> <span class="s1">&#39;&#39;</span><span class="p">)</span>
+        <span class="n">_base_url</span> <span class="o">=</span> <span class="bp">None</span>
+        <span class="n">catalog</span> <span class="o">=</span> <span class="n">_auth_data</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;catalog&#39;</span><span class="p">,</span> <span class="p">[])</span>
+
+        <span class="c1"># Select entries with matching service type</span>
+        <span class="n">service_catalog</span> <span class="o">=</span> <span class="p">[</span><span class="n">ep</span> <span class="k">for</span> <span class="n">ep</span> <span class="ow">in</span> <span class="n">catalog</span> <span class="k">if</span> <span class="n">ep</span><span class="p">[</span><span class="s1">&#39;type&#39;</span><span class="p">]</span> <span class="o">==</span> <span class="n">service</span><span class="p">]</span>
+        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">service_catalog</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">name</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="n">service_catalog</span> <span class="o">=</span> <span class="p">(</span>
+                    <span class="p">[</span><span class="n">ep</span> <span class="k">for</span> <span class="n">ep</span> <span class="ow">in</span> <span class="n">service_catalog</span> <span class="k">if</span> <span class="n">ep</span><span class="p">[</span><span class="s1">&#39;name&#39;</span><span class="p">]</span> <span class="o">==</span> <span class="n">name</span><span class="p">])</span>
+                <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">service_catalog</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+                    <span class="n">service_catalog</span> <span class="o">=</span> <span class="n">service_catalog</span><span class="p">[</span><span class="mi">0</span><span class="p">][</span><span class="s1">&#39;endpoints&#39;</span><span class="p">]</span>
+                <span class="k">else</span><span class="p">:</span>
+                    <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">EndpointNotFound</span><span class="p">(</span><span class="n">name</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">service_catalog</span> <span class="o">=</span> <span class="n">service_catalog</span><span class="p">[</span><span class="mi">0</span><span class="p">][</span><span class="s1">&#39;endpoints&#39;</span><span class="p">]</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">catalog</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span> <span class="ow">and</span> <span class="n">service</span> <span class="o">==</span> <span class="s1">&#39;identity&#39;</span><span class="p">:</span>
+                <span class="c1"># NOTE(andreaf) If there&#39;s no catalog at all and the service</span>
+                <span class="c1"># is identity, it&#39;s a valid use case. Having a non-empty</span>
+                <span class="c1"># catalog with no identity in it is not valid instead.</span>
+                <span class="n">msg</span> <span class="o">=</span> <span class="p">(</span><span class="s1">&#39;Got an empty catalog. Scope: </span><span class="si">%s</span><span class="s1">. &#39;</span>
+                       <span class="s1">&#39;Falling back to configured URL for </span><span class="si">%s</span><span class="s1">: </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">)</span>
+                <span class="n">LOG</span><span class="o">.</span><span class="n">debug</span><span class="p">(</span><span class="n">msg</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">scope</span><span class="p">,</span> <span class="n">service</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">auth_url</span><span class="p">)</span>
+                <span class="k">return</span> <span class="n">apply_url_filters</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">auth_url</span><span class="p">,</span> <span class="n">filters</span><span class="p">)</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="c1"># No matching service</span>
+                <span class="n">msg</span> <span class="o">=</span> <span class="p">(</span><span class="s1">&#39;No matching service found in the catalog.</span><span class="se">\n</span><span class="s1">&#39;</span>
+                       <span class="s1">&#39;Scope: </span><span class="si">%s</span><span class="s1">, Credentials: </span><span class="si">%s</span><span class="se">\n</span><span class="s1">&#39;</span>
+                       <span class="s1">&#39;Auth data: </span><span class="si">%s</span><span class="se">\n</span><span class="s1">&#39;</span>
+                       <span class="s1">&#39;Service: </span><span class="si">%s</span><span class="s1">, Region: </span><span class="si">%s</span><span class="s1">, endpoint_type: </span><span class="si">%s</span><span class="se">\n</span><span class="s1">&#39;</span>
+                       <span class="s1">&#39;Catalog: </span><span class="si">%s</span><span class="s1">&#39;</span><span class="p">)</span>
+                <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">EndpointNotFound</span><span class="p">(</span><span class="n">msg</span> <span class="o">%</span> <span class="p">(</span>
+                    <span class="bp">self</span><span class="o">.</span><span class="n">scope</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">credentials</span><span class="p">,</span> <span class="n">_auth_data</span><span class="p">,</span> <span class="n">service</span><span class="p">,</span> <span class="n">region</span><span class="p">,</span>
+                    <span class="n">endpoint_type</span><span class="p">,</span> <span class="n">catalog</span><span class="p">))</span>
+        <span class="c1"># Filter by endpoint type (interface)</span>
+        <span class="n">filtered_catalog</span> <span class="o">=</span> <span class="p">[</span><span class="n">ep</span> <span class="k">for</span> <span class="n">ep</span> <span class="ow">in</span> <span class="n">service_catalog</span> <span class="k">if</span>
+                            <span class="n">ep</span><span class="p">[</span><span class="s1">&#39;interface&#39;</span><span class="p">]</span> <span class="o">==</span> <span class="n">endpoint_type</span><span class="p">]</span>
+        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">filtered_catalog</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="c1"># No matching type, keep all and try matching by region at least</span>
+            <span class="n">filtered_catalog</span> <span class="o">=</span> <span class="n">service_catalog</span>
+        <span class="c1"># Filter by region</span>
+        <span class="n">filtered_catalog</span> <span class="o">=</span> <span class="p">[</span><span class="n">ep</span> <span class="k">for</span> <span class="n">ep</span> <span class="ow">in</span> <span class="n">filtered_catalog</span> <span class="k">if</span>
+                            <span class="n">ep</span><span class="p">[</span><span class="s1">&#39;region&#39;</span><span class="p">]</span> <span class="o">==</span> <span class="n">region</span><span class="p">]</span>
+        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">filtered_catalog</span><span class="p">)</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="c1"># No matching region (or name), take the first endpoint</span>
+            <span class="n">filtered_catalog</span> <span class="o">=</span> <span class="p">[</span><span class="n">service_catalog</span><span class="p">[</span><span class="mi">0</span><span class="p">]]</span>
+        <span class="c1"># There should be only one match. If not take the first.</span>
+        <span class="n">_base_url</span> <span class="o">=</span> <span class="n">filtered_catalog</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;url&#39;</span><span class="p">,</span> <span class="bp">None</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">_base_url</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">EndpointNotFound</span><span class="p">(</span><span class="n">service</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">apply_url_filters</span><span class="p">(</span><span class="n">_base_url</span><span class="p">,</span> <span class="n">filters</span><span class="p">)</span></div>
+
+    <span class="k">def</span> <span class="nf">is_expired</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">auth_data</span><span class="p">):</span>
+        <span class="n">_</span><span class="p">,</span> <span class="n">access</span> <span class="o">=</span> <span class="n">auth_data</span>
+        <span class="n">expiry</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_parse_expiry_time</span><span class="p">(</span><span class="n">access</span><span class="p">[</span><span class="s1">&#39;expires_at&#39;</span><span class="p">])</span>
+        <span class="k">return</span> <span class="p">(</span><span class="n">expiry</span> <span class="o">-</span> <span class="bp">self</span><span class="o">.</span><span class="n">token_expiry_threshold</span> <span class="o">&lt;=</span>
+                <span class="n">datetime</span><span class="o">.</span><span class="n">datetime</span><span class="o">.</span><span class="n">utcnow</span><span class="p">())</span></div>
+
+
+<span class="k">def</span> <span class="nf">is_identity_version_supported</span><span class="p">(</span><span class="n">identity_version</span><span class="p">):</span>
+    <span class="k">return</span> <span class="n">identity_version</span> <span class="ow">in</span> <span class="n">IDENTITY_VERSION</span>
+
+
+<div class="viewcode-block" id="get_credentials"><a class="viewcode-back" href="../../../library/auth.html#tempest.lib.auth.get_credentials">[docs]</a><span class="k">def</span> <span class="nf">get_credentials</span><span class="p">(</span><span class="n">auth_url</span><span class="p">,</span> <span class="n">fill_in</span><span class="o">=</span><span class="bp">True</span><span class="p">,</span> <span class="n">identity_version</span><span class="o">=</span><span class="s1">&#39;v2&#39;</span><span class="p">,</span>
+                    <span class="n">disable_ssl_certificate_validation</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">ca_certs</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span>
+                    <span class="n">trace_requests</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="n">http_timeout</span><span class="o">=</span><span class="bp">None</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Builds a credentials object based on the configured auth_version</span>
+
+<span class="sd">    :param auth_url (string): Full URI of the OpenStack Identity API(Keystone)</span>
+<span class="sd">           which is used to fetch the token from Identity service.</span>
+<span class="sd">    :param fill_in (boolean): obtain a token and fill in all credential</span>
+<span class="sd">           details provided by the identity service. When fill_in is not</span>
+<span class="sd">           specified, credentials are not validated. Validation can be invoked</span>
+<span class="sd">           by invoking ``is_valid()``</span>
+<span class="sd">    :param identity_version (string): identity API version is used to</span>
+<span class="sd">           select the matching auth provider and credentials class</span>
+<span class="sd">    :param disable_ssl_certificate_validation: whether to enforce SSL</span>
+<span class="sd">           certificate validation in SSL API requests to the auth system</span>
+<span class="sd">    :param ca_certs: CA certificate bundle for validation of certificates</span>
+<span class="sd">           in SSL API requests to the auth system</span>
+<span class="sd">    :param trace_requests: trace in log API requests to the auth system</span>
+<span class="sd">    :param http_timeout: timeout in seconds to wait for the http request to</span>
+<span class="sd">           return</span>
+<span class="sd">    :param kwargs (dict): Dict of credential key/value pairs</span>
+
+<span class="sd">    Examples:</span>
+
+<span class="sd">        Returns credentials from the provided parameters:</span>
+<span class="sd">        &gt;&gt;&gt; get_credentials(username=&#39;foo&#39;, password=&#39;bar&#39;)</span>
+
+<span class="sd">        Returns credentials including IDs:</span>
+<span class="sd">        &gt;&gt;&gt; get_credentials(username=&#39;foo&#39;, password=&#39;bar&#39;, fill_in=True)</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">is_identity_version_supported</span><span class="p">(</span><span class="n">identity_version</span><span class="p">):</span>
+        <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">InvalidIdentityVersion</span><span class="p">(</span>
+            <span class="n">identity_version</span><span class="o">=</span><span class="n">identity_version</span><span class="p">)</span>
+
+    <span class="n">credential_class</span><span class="p">,</span> <span class="n">auth_provider_class</span> <span class="o">=</span> <span class="n">IDENTITY_VERSION</span><span class="o">.</span><span class="n">get</span><span class="p">(</span>
+        <span class="n">identity_version</span><span class="p">)</span>
+
+    <span class="n">creds</span> <span class="o">=</span> <span class="n">credential_class</span><span class="p">(</span><span class="o">**</span><span class="n">kwargs</span><span class="p">)</span>
+    <span class="c1"># Fill in the credentials fields that were not specified</span>
+    <span class="k">if</span> <span class="n">fill_in</span><span class="p">:</span>
+        <span class="n">dscv</span> <span class="o">=</span> <span class="n">disable_ssl_certificate_validation</span>
+        <span class="n">auth_provider</span> <span class="o">=</span> <span class="n">auth_provider_class</span><span class="p">(</span>
+            <span class="n">creds</span><span class="p">,</span> <span class="n">auth_url</span><span class="p">,</span> <span class="n">disable_ssl_certificate_validation</span><span class="o">=</span><span class="n">dscv</span><span class="p">,</span>
+            <span class="n">ca_certs</span><span class="o">=</span><span class="n">ca_certs</span><span class="p">,</span> <span class="n">trace_requests</span><span class="o">=</span><span class="n">trace_requests</span><span class="p">,</span>
+            <span class="n">http_timeout</span><span class="o">=</span><span class="n">http_timeout</span><span class="p">)</span>
+        <span class="n">creds</span> <span class="o">=</span> <span class="n">auth_provider</span><span class="o">.</span><span class="n">fill_credentials</span><span class="p">()</span>
+    <span class="k">return</span> <span class="n">creds</span></div>
+
+
+<div class="viewcode-block" id="Credentials"><a class="viewcode-back" href="../../../library/auth.html#tempest.lib.auth.Credentials">[docs]</a><span class="k">class</span> <span class="nc">Credentials</span><span class="p">(</span><span class="nb">object</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Set of credentials for accessing OpenStack services</span>
+
+<span class="sd">    ATTRIBUTES: list of valid class attributes representing credentials.</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">ATTRIBUTES</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="n">COLLISIONS</span> <span class="o">=</span> <span class="p">[]</span>
+
+    <span class="k">def</span> <span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="o">**</span><span class="n">kwargs</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Enforce the available attributes at init time (only).</span>
+
+<span class="sd">        Additional attributes can still be set afterwards if tests need</span>
+<span class="sd">        to do so.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_initial</span> <span class="o">=</span> <span class="n">kwargs</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_apply_credentials</span><span class="p">(</span><span class="n">kwargs</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">_apply_credentials</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">attr</span><span class="p">):</span>
+        <span class="k">for</span> <span class="p">(</span><span class="n">key1</span><span class="p">,</span> <span class="n">key2</span><span class="p">)</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">COLLISIONS</span><span class="p">:</span>
+            <span class="n">val1</span> <span class="o">=</span> <span class="n">attr</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">key1</span><span class="p">)</span>
+            <span class="n">val2</span> <span class="o">=</span> <span class="n">attr</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">key2</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">val1</span> <span class="ow">and</span> <span class="n">val2</span> <span class="ow">and</span> <span class="n">val1</span> <span class="o">!=</span> <span class="n">val2</span><span class="p">:</span>
+                <span class="n">msg</span> <span class="o">=</span> <span class="p">(</span><span class="s1">&#39;Cannot have conflicting values for </span><span class="si">%s</span><span class="s1"> and </span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span>
+                       <span class="p">(</span><span class="n">key1</span><span class="p">,</span> <span class="n">key2</span><span class="p">))</span>
+                <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">InvalidCredentials</span><span class="p">(</span><span class="n">msg</span><span class="p">)</span>
+        <span class="k">for</span> <span class="n">key</span> <span class="ow">in</span> <span class="n">attr</span><span class="p">:</span>
+            <span class="k">if</span> <span class="n">key</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">ATTRIBUTES</span><span class="p">:</span>
+                <span class="nb">setattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">key</span><span class="p">,</span> <span class="n">attr</span><span class="p">[</span><span class="n">key</span><span class="p">])</span>
+            <span class="k">else</span><span class="p">:</span>
+                <span class="n">msg</span> <span class="o">=</span> <span class="s1">&#39;</span><span class="si">%s</span><span class="s1"> is not a valid attr for </span><span class="si">%s</span><span class="s1">&#39;</span> <span class="o">%</span> <span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="vm">__class__</span><span class="p">)</span>
+                <span class="k">raise</span> <span class="n">exceptions</span><span class="o">.</span><span class="n">InvalidCredentials</span><span class="p">(</span><span class="n">msg</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="fm">__str__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Represent only attributes included in self.ATTRIBUTES&quot;&quot;&quot;</span>
+        <span class="n">attrs</span> <span class="o">=</span> <span class="p">[</span><span class="n">attr</span> <span class="k">for</span> <span class="n">attr</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">ATTRIBUTES</span> <span class="k">if</span> <span class="n">attr</span> <span class="ow">is</span> <span class="ow">not</span> <span class="s1">&#39;password&#39;</span><span class="p">]</span>
+        <span class="n">_repr</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">((</span><span class="n">k</span><span class="p">,</span> <span class="nb">getattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">k</span><span class="p">))</span> <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="n">attrs</span><span class="p">)</span>
+        <span class="k">return</span> <span class="nb">str</span><span class="p">(</span><span class="n">_repr</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="fm">__eq__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">other</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Credentials are equal if attributes in self.ATTRIBUTES are equal&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="nb">str</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">==</span> <span class="nb">str</span><span class="p">(</span><span class="n">other</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="fm">__ne__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">other</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Contrary to the __eq__&quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="fm">__eq__</span><span class="p">(</span><span class="n">other</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="fm">__getattr__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">key</span><span class="p">):</span>
+        <span class="c1"># If an attribute is set, __getattr__ is not invoked</span>
+        <span class="c1"># If an attribute is not set, and it is a known one, return None</span>
+        <span class="k">if</span> <span class="n">key</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">ATTRIBUTES</span><span class="p">:</span>
+            <span class="k">return</span> <span class="bp">None</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">AttributeError</span>
+
+    <span class="k">def</span> <span class="fm">__delitem__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">key</span><span class="p">):</span>
+        <span class="c1"># For backwards compatibility, support dict behaviour</span>
+        <span class="k">if</span> <span class="n">key</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">ATTRIBUTES</span><span class="p">:</span>
+            <span class="nb">delattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">key</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">AttributeError</span>
+
+    <span class="k">def</span> <span class="nf">get</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">item</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="bp">None</span><span class="p">):</span>
+        <span class="c1"># In this patch act as dict for backward compatibility</span>
+        <span class="k">try</span><span class="p">:</span>
+            <span class="k">return</span> <span class="nb">getattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">item</span><span class="p">)</span>
+        <span class="k">except</span> <span class="ne">AttributeError</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">default</span>
+
+    <span class="k">def</span> <span class="nf">get_init_attributes</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_initial</span><span class="o">.</span><span class="n">keys</span><span class="p">()</span>
+
+    <span class="k">def</span> <span class="nf">is_valid</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">raise</span> <span class="ne">NotImplementedError</span>
+
+    <span class="k">def</span> <span class="nf">reset</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="c1"># First delete all known attributes</span>
+        <span class="k">for</span> <span class="n">key</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">ATTRIBUTES</span><span class="p">:</span>
+            <span class="k">if</span> <span class="nb">getattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">key</span><span class="p">)</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="nb">delattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">key</span><span class="p">)</span>
+        <span class="c1"># Then re-apply initial setup</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_apply_credentials</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_initial</span><span class="p">)</span></div>
+
+
+<span class="k">class</span> <span class="nc">KeystoneV2Credentials</span><span class="p">(</span><span class="n">Credentials</span><span class="p">):</span>
+
+    <span class="n">ATTRIBUTES</span> <span class="o">=</span> <span class="p">[</span><span class="s1">&#39;username&#39;</span><span class="p">,</span> <span class="s1">&#39;password&#39;</span><span class="p">,</span> <span class="s1">&#39;tenant_name&#39;</span><span class="p">,</span> <span class="s1">&#39;user_id&#39;</span><span class="p">,</span>
+                  <span class="s1">&#39;tenant_id&#39;</span><span class="p">,</span> <span class="s1">&#39;project_id&#39;</span><span class="p">,</span> <span class="s1">&#39;project_name&#39;</span><span class="p">]</span>
+    <span class="n">COLLISIONS</span> <span class="o">=</span> <span class="p">[(</span><span class="s1">&#39;project_name&#39;</span><span class="p">,</span> <span class="s1">&#39;tenant_name&#39;</span><span class="p">),</span> <span class="p">(</span><span class="s1">&#39;project_id&#39;</span><span class="p">,</span> <span class="s1">&#39;tenant_id&#39;</span><span class="p">)]</span>
+
+    <span class="k">def</span> <span class="fm">__str__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Represent only attributes included in self.ATTRIBUTES&quot;&quot;&quot;</span>
+        <span class="n">attrs</span> <span class="o">=</span> <span class="p">[</span><span class="n">attr</span> <span class="k">for</span> <span class="n">attr</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">ATTRIBUTES</span> <span class="k">if</span> <span class="n">attr</span> <span class="ow">is</span> <span class="ow">not</span> <span class="s1">&#39;password&#39;</span><span class="p">]</span>
+        <span class="n">_repr</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">((</span><span class="n">k</span><span class="p">,</span> <span class="nb">getattr</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">k</span><span class="p">))</span> <span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="n">attrs</span><span class="p">)</span>
+        <span class="k">return</span> <span class="nb">str</span><span class="p">(</span><span class="n">_repr</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="fm">__setattr__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">key</span><span class="p">,</span> <span class="n">value</span><span class="p">):</span>
+        <span class="c1"># NOTE(andreaf) In order to ease the migration towards &#39;project&#39; we</span>
+        <span class="c1"># support v2 credentials configured with &#39;project&#39; and translate it</span>
+        <span class="c1"># to tenant on the fly. The original kwargs are stored for clients</span>
+        <span class="c1"># that may rely on them. We also set project when tenant is defined</span>
+        <span class="c1"># so clients can rely on project being part of credentials.</span>
+        <span class="n">parent</span> <span class="o">=</span> <span class="nb">super</span><span class="p">(</span><span class="n">KeystoneV2Credentials</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="c1"># for project_* set tenant only</span>
+        <span class="k">if</span> <span class="n">key</span> <span class="o">==</span> <span class="s1">&#39;project_id&#39;</span><span class="p">:</span>
+            <span class="n">parent</span><span class="o">.</span><span class="fm">__setattr__</span><span class="p">(</span><span class="s1">&#39;tenant_id&#39;</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+        <span class="k">elif</span> <span class="n">key</span> <span class="o">==</span> <span class="s1">&#39;project_name&#39;</span><span class="p">:</span>
+            <span class="n">parent</span><span class="o">.</span><span class="fm">__setattr__</span><span class="p">(</span><span class="s1">&#39;tenant_name&#39;</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">key</span> <span class="o">==</span> <span class="s1">&#39;tenant_id&#39;</span><span class="p">:</span>
+            <span class="n">parent</span><span class="o">.</span><span class="fm">__setattr__</span><span class="p">(</span><span class="s1">&#39;project_id&#39;</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+        <span class="k">elif</span> <span class="n">key</span> <span class="o">==</span> <span class="s1">&#39;tenant_name&#39;</span><span class="p">:</span>
+            <span class="n">parent</span><span class="o">.</span><span class="fm">__setattr__</span><span class="p">(</span><span class="s1">&#39;project_name&#39;</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+        <span class="c1"># trigger default behaviour for all attributes</span>
+        <span class="n">parent</span><span class="o">.</span><span class="fm">__setattr__</span><span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+
+    <span class="k">def</span> <span class="nf">is_valid</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Check of credentials (no API call)</span>
+
+<span class="sd">        Minimum set of valid credentials, are username and password.</span>
+<span class="sd">        Tenant is optional.</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="k">return</span> <span class="bp">None</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">username</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">password</span><span class="p">)</span>
+
+
+<div class="viewcode-block" id="KeystoneV3Credentials"><a class="viewcode-back" href="../../../library/auth.html#tempest.lib.auth.KeystoneV3Credentials">[docs]</a><span class="k">class</span> <span class="nc">KeystoneV3Credentials</span><span class="p">(</span><span class="n">Credentials</span><span class="p">):</span>
+    <span class="sd">&quot;&quot;&quot;Credentials suitable for the Keystone Identity V3 API&quot;&quot;&quot;</span>
+
+    <span class="n">ATTRIBUTES</span> <span class="o">=</span> <span class="p">[</span><span class="s1">&#39;domain_id&#39;</span><span class="p">,</span> <span class="s1">&#39;domain_name&#39;</span><span class="p">,</span> <span class="s1">&#39;password&#39;</span><span class="p">,</span> <span class="s1">&#39;username&#39;</span><span class="p">,</span>
+                  <span class="s1">&#39;project_domain_id&#39;</span><span class="p">,</span> <span class="s1">&#39;project_domain_name&#39;</span><span class="p">,</span> <span class="s1">&#39;project_id&#39;</span><span class="p">,</span>
+                  <span class="s1">&#39;project_name&#39;</span><span class="p">,</span> <span class="s1">&#39;tenant_id&#39;</span><span class="p">,</span> <span class="s1">&#39;tenant_name&#39;</span><span class="p">,</span> <span class="s1">&#39;user_domain_id&#39;</span><span class="p">,</span>
+                  <span class="s1">&#39;user_domain_name&#39;</span><span class="p">,</span> <span class="s1">&#39;user_id&#39;</span><span class="p">]</span>
+    <span class="n">COLLISIONS</span> <span class="o">=</span> <span class="p">[(</span><span class="s1">&#39;project_name&#39;</span><span class="p">,</span> <span class="s1">&#39;tenant_name&#39;</span><span class="p">),</span> <span class="p">(</span><span class="s1">&#39;project_id&#39;</span><span class="p">,</span> <span class="s1">&#39;tenant_id&#39;</span><span class="p">)]</span>
+
+    <span class="k">def</span> <span class="fm">__setattr__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">key</span><span class="p">,</span> <span class="n">value</span><span class="p">):</span>
+        <span class="n">parent</span> <span class="o">=</span> <span class="nb">super</span><span class="p">(</span><span class="n">KeystoneV3Credentials</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="c1"># for tenant_* set both project and tenant</span>
+        <span class="k">if</span> <span class="n">key</span> <span class="o">==</span> <span class="s1">&#39;tenant_id&#39;</span><span class="p">:</span>
+            <span class="n">parent</span><span class="o">.</span><span class="fm">__setattr__</span><span class="p">(</span><span class="s1">&#39;project_id&#39;</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+        <span class="k">elif</span> <span class="n">key</span> <span class="o">==</span> <span class="s1">&#39;tenant_name&#39;</span><span class="p">:</span>
+            <span class="n">parent</span><span class="o">.</span><span class="fm">__setattr__</span><span class="p">(</span><span class="s1">&#39;project_name&#39;</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+        <span class="c1"># for project_* set both project and tenant</span>
+        <span class="k">if</span> <span class="n">key</span> <span class="o">==</span> <span class="s1">&#39;project_id&#39;</span><span class="p">:</span>
+            <span class="n">parent</span><span class="o">.</span><span class="fm">__setattr__</span><span class="p">(</span><span class="s1">&#39;tenant_id&#39;</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+        <span class="k">elif</span> <span class="n">key</span> <span class="o">==</span> <span class="s1">&#39;project_name&#39;</span><span class="p">:</span>
+            <span class="n">parent</span><span class="o">.</span><span class="fm">__setattr__</span><span class="p">(</span><span class="s1">&#39;tenant_name&#39;</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+        <span class="c1"># for *_domain_* set both user and project if not set yet</span>
+        <span class="k">if</span> <span class="n">key</span> <span class="o">==</span> <span class="s1">&#39;user_domain_id&#39;</span><span class="p">:</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">project_domain_id</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="n">parent</span><span class="o">.</span><span class="fm">__setattr__</span><span class="p">(</span><span class="s1">&#39;project_domain_id&#39;</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">key</span> <span class="o">==</span> <span class="s1">&#39;project_domain_id&#39;</span><span class="p">:</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">user_domain_id</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="n">parent</span><span class="o">.</span><span class="fm">__setattr__</span><span class="p">(</span><span class="s1">&#39;user_domain_id&#39;</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">key</span> <span class="o">==</span> <span class="s1">&#39;user_domain_name&#39;</span><span class="p">:</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">project_domain_name</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="n">parent</span><span class="o">.</span><span class="fm">__setattr__</span><span class="p">(</span><span class="s1">&#39;project_domain_name&#39;</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">key</span> <span class="o">==</span> <span class="s1">&#39;project_domain_name&#39;</span><span class="p">:</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">user_domain_name</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="n">parent</span><span class="o">.</span><span class="fm">__setattr__</span><span class="p">(</span><span class="s1">&#39;user_domain_name&#39;</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+        <span class="c1"># support domain_name coming from config</span>
+        <span class="k">if</span> <span class="n">key</span> <span class="o">==</span> <span class="s1">&#39;domain_name&#39;</span><span class="p">:</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">user_domain_name</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="n">parent</span><span class="o">.</span><span class="fm">__setattr__</span><span class="p">(</span><span class="s1">&#39;user_domain_name&#39;</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+            <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">project_domain_name</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">:</span>
+                <span class="n">parent</span><span class="o">.</span><span class="fm">__setattr__</span><span class="p">(</span><span class="s1">&#39;project_domain_name&#39;</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+        <span class="c1"># finally trigger default behaviour for all attributes</span>
+        <span class="n">parent</span><span class="o">.</span><span class="fm">__setattr__</span><span class="p">(</span><span class="n">key</span><span class="p">,</span> <span class="n">value</span><span class="p">)</span>
+
+<div class="viewcode-block" id="KeystoneV3Credentials.is_valid"><a class="viewcode-back" href="../../../library/auth.html#tempest.lib.auth.KeystoneV3Credentials.is_valid">[docs]</a>    <span class="k">def</span> <span class="nf">is_valid</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="sd">&quot;&quot;&quot;Check of credentials (no API call)</span>
+
+<span class="sd">        Valid combinations of v3 credentials (excluding token)</span>
+<span class="sd">        - User id, password (optional domain)</span>
+<span class="sd">        - User name, password and its domain id/name</span>
+<span class="sd">        For the scope, valid combinations are:</span>
+<span class="sd">        - None</span>
+<span class="sd">        - Project id (optional domain)</span>
+<span class="sd">        - Project name and its domain id/name</span>
+<span class="sd">        - Domain id</span>
+<span class="sd">        - Domain name</span>
+<span class="sd">        &quot;&quot;&quot;</span>
+        <span class="n">valid_user_domain</span> <span class="o">=</span> <span class="nb">any</span><span class="p">(</span>
+            <span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">user_domain_id</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">,</span>
+             <span class="bp">self</span><span class="o">.</span><span class="n">user_domain_name</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">])</span>
+        <span class="n">valid_project_domain</span> <span class="o">=</span> <span class="nb">any</span><span class="p">(</span>
+            <span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">project_domain_id</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">,</span>
+             <span class="bp">self</span><span class="o">.</span><span class="n">project_domain_name</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">])</span>
+        <span class="n">valid_user</span> <span class="o">=</span> <span class="nb">any</span><span class="p">(</span>
+            <span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">user_id</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">,</span>
+             <span class="bp">self</span><span class="o">.</span><span class="n">username</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span> <span class="ow">and</span> <span class="n">valid_user_domain</span><span class="p">])</span>
+        <span class="n">valid_project_scope</span> <span class="o">=</span> <span class="nb">any</span><span class="p">(</span>
+            <span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">project_name</span> <span class="ow">is</span> <span class="bp">None</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">project_id</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">,</span>
+             <span class="bp">self</span><span class="o">.</span><span class="n">project_id</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">,</span>
+             <span class="bp">self</span><span class="o">.</span><span class="n">project_name</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span> <span class="ow">and</span> <span class="n">valid_project_domain</span><span class="p">])</span>
+        <span class="n">valid_domain_scope</span> <span class="o">=</span> <span class="nb">any</span><span class="p">(</span>
+            <span class="p">[</span><span class="bp">self</span><span class="o">.</span><span class="n">domain_id</span> <span class="ow">is</span> <span class="bp">None</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">domain_name</span> <span class="ow">is</span> <span class="bp">None</span><span class="p">,</span>
+             <span class="bp">self</span><span class="o">.</span><span class="n">domain_id</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">domain_name</span><span class="p">])</span>
+        <span class="k">return</span> <span class="nb">all</span><span class="p">([</span><span class="bp">self</span><span class="o">.</span><span class="n">password</span> <span class="ow">is</span> <span class="ow">not</span> <span class="bp">None</span><span class="p">,</span>
+                    <span class="n">valid_user</span><span class="p">,</span>
+                    <span class="n">valid_project_scope</span> <span class="ow">and</span> <span class="n">valid_domain_scope</span><span class="p">])</span></div></div>
+
+
+<span class="n">IDENTITY_VERSION</span> <span class="o">=</span> <span class="p">{</span><span class="s1">&#39;v2&#39;</span><span class="p">:</span> <span class="p">(</span><span class="n">KeystoneV2Credentials</span><span class="p">,</span> <span class="n">KeystoneV2AuthProvider</span><span class="p">),</span>
+                    <span class="s1">&#39;v3&#39;</span><span class="p">:</span> <span class="p">(</span><span class="n">KeystoneV3Credentials</span><span class="p">,</span> <span class="n">KeystoneV3AuthProvider</span><span class="p">)}</span>
+</pre></div>
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/tempest
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../../../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="nav-item nav-item-0"><a href="../../../index.html">Tempest 14.0.1.dev239 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="../../index.html" accesskey="U">Module code</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2013, OpenStack QA Team.
+      Last updated on &#39;Wed Feb 15 06:42:15 2017, commit ee84e39&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/Tempest");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

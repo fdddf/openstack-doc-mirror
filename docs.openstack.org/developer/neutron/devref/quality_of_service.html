@@ -1,0 +1,542 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Quality of Service &mdash; neutron 10.0.0.0rc2.dev58 documentation</title>
+    
+    <link rel="stylesheet" href="../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../',
+        VERSION:     '10.0.0.0rc2.dev58',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../_static/jquery.js"></script>
+    <script type="text/javascript" src="../_static/underscore.js"></script>
+    <script type="text/javascript" src="../_static/doctools.js"></script>
+    <link rel="top" title="neutron 10.0.0.0rc2.dev58 documentation" href="../index.html" />
+    <link rel="up" title="Developer Guide" href="index.html" />
+    <link rel="next" title="Service Extensions" href="service_extensions.html" />
+    <link rel="prev" title="Neutron Open vSwitch vhost-user support" href="ovs_vhostuser.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="quality-of-service">
+<h1>Quality of Service<a class="headerlink" href="#quality-of-service" title="Permalink to this headline">¶</a></h1>
+<p>Quality of Service advanced service is designed as a service plugin. The
+service is decoupled from the rest of Neutron code on multiple levels (see
+below).</p>
+<p>QoS extends core resources (ports, networks) without using mixins inherited
+from plugins but through an ml2 extension driver.</p>
+<p>Details about the DB models, API extension, and use cases can be found here: <a class="reference external" href="http://specs.openstack.org/openstack/neutron-specs/specs/liberty/qos-api-extension.html">qos spec</a>
+.</p>
+<div class="section" id="service-side-design">
+<h2>Service side design<a class="headerlink" href="#service-side-design" title="Permalink to this headline">¶</a></h2>
+<ul class="simple">
+<li>neutron.extensions.qos:
+base extension + API controller definition. Note that rules are subattributes
+of policies and hence embedded into their URIs.</li>
+<li>neutron.services.qos.qos_plugin:
+QoSPlugin, service plugin that implements &#8216;qos&#8217; extension, receiving and
+handling API calls to create/modify policies and rules.</li>
+<li>neutron.services.qos.drivers.manager:
+the manager that passes object actions down to every enabled QoS driver and
+issues RPC calls when any of the drivers require RPC push notifications.</li>
+<li>neutron.services.qos.drivers.base:
+the interface class for pluggable QoS drivers that are used to update
+backends about new {create, update, delete} events on any rule or policy
+change. The drivers also declare which QoS rules, VIF drivers and VNIC
+types are supported.</li>
+<li>neutron.core_extensions.base:
+Contains an interface class to implement core resource (port/network)
+extensions. Core resource extensions are then easily integrated into
+interested plugins. We may need to  have a core resource extension manager
+that would utilize those extensions, to avoid plugin modifications for every
+new core resource extension.</li>
+<li>neutron.core_extensions.qos:
+Contains QoS core resource extension that conforms to the interface described
+above.</li>
+<li>neutron.plugins.ml2.extensions.qos:
+Contains ml2 extension driver that handles core resource updates by reusing
+the core_extensions.qos module mentioned above. In the future, we would like
+to see a plugin-agnostic core resource extension manager that could be
+integrated into other plugins with ease.</li>
+</ul>
+<div class="section" id="qos-plugin-implementation-guide">
+<h3>QoS plugin implementation guide<a class="headerlink" href="#qos-plugin-implementation-guide" title="Permalink to this headline">¶</a></h3>
+<p>The neutron.extensions.qos.QoSPluginBase class uses method proxies for methods
+relating to QoS policy rules. Each of these such methods is generic in the sense
+that it is intended to handle any rule type. For example, QoSPluginBase has a
+create_policy_rule method instead of both create_policy_dscp_marking_rule and
+create_policy_bandwidth_limit_rule methods. The logic behind the proxies allows
+a call to a plugin&#8217;s create_policy_dscp_marking_rule to be handled by the
+create_policy_rule method, which will receive a QosDscpMarkingRule object as an
+argument in order to execute behavior specific to the DSCP marking rule type.
+This approach allows new rule types to be introduced without requiring a plugin
+to modify code as a result. As would be expected, any subclass of QoSPluginBase
+must override the base class&#8217;s abc.abstractmethod methods, even if to raise
+NotImplemented.</p>
+</div>
+<div class="section" id="supported-qos-rule-types">
+<h3>Supported QoS rule types<a class="headerlink" href="#supported-qos-rule-types" title="Permalink to this headline">¶</a></h3>
+<p>Each QoS driver has a property called supported_rule_types, where the driver
+exposes the rules it&#8217;s able to handle.</p>
+<p>For a list of all rule types, see:
+neutron.services.qos.qos_consts.VALID_RULE_TYPES.</p>
+<p>The list of supported QoS rule types exposed by neutron is calculated as
+the common subset of rules supported by all active QoS drivers.</p>
+<p>Note: the list of supported rule types reported by core plugin is not enforced
+when accessing QoS rule resources. This is mostly because then we would not be
+able to create rules while at least one of the QoS driver in gate lacks
+support for the rules we&#8217;re trying to test.</p>
+</div>
+<div class="section" id="database-models">
+<h3>Database models<a class="headerlink" href="#database-models" title="Permalink to this headline">¶</a></h3>
+<p>QoS design defines the following two conceptual resources to apply QoS rules
+for a port or a network:</p>
+<ul class="simple">
+<li>QoS policy</li>
+<li>QoS rule (type specific)</li>
+</ul>
+<p>Each QoS policy contains zero or more QoS rules. A policy is then applied to a
+network or a port, making all rules of the policy applied to the corresponding
+Neutron resource.</p>
+<p>When applied through a network association, policy rules could apply or not
+to neutron internal ports (like router, dhcp, load balancer, etc..). The QosRule
+base object provides a default should_apply_to_port method which could be
+overridden. In the future we may want to have a flag in QoSNetworkPolicyBinding
+or QosRule to enforce such type of application (for example when limiting all
+the ingress of routers devices on an external network automatically).</p>
+<p>From database point of view, following objects are defined in schema:</p>
+<ul class="simple">
+<li>QosPolicy: directly maps to the conceptual policy resource.</li>
+<li>QosNetworkPolicyBinding, QosPortPolicyBinding: defines attachment between a
+Neutron resource and a QoS policy.</li>
+<li>QosBandwidthLimitRule: defines the rule to limit the maximum egress
+bandwidth.</li>
+<li>QosDscpMarkingRule: defines the rule that marks the Differentiated Service
+bits for egress traffic.</li>
+</ul>
+<p>All database models are defined under:</p>
+<ul class="simple">
+<li>neutron.db.qos.models</li>
+</ul>
+</div>
+<div class="section" id="qos-versioned-objects">
+<h3>QoS versioned objects<a class="headerlink" href="#qos-versioned-objects" title="Permalink to this headline">¶</a></h3>
+<p>There is a long history of passing database dictionaries directly into business
+logic of Neutron. This path is not the one we wanted to take for QoS effort, so
+we&#8217;ve also introduced a new objects middleware to encapsulate the database logic
+from the rest of the Neutron code that works with QoS resources. For this, we&#8217;ve
+adopted oslo.versionedobjects library and introduced a new NeutronObject class
+that is a base for all other objects that will belong to the middle layer.
+There is an expectation that Neutron will evolve into using objects for all
+resources it handles, though that part was obviously out of scope for the QoS
+effort.</p>
+<p>Every NeutronObject supports the following operations:</p>
+<ul class="simple">
+<li>get_object: returns specific object that is represented by the id passed as an
+argument.</li>
+<li>get_objects: returns all objects of the type, potentially with a filter
+applied.</li>
+<li>create/update/delete: usual persistence operations.</li>
+</ul>
+<p>Base object class is defined in:</p>
+<ul class="simple">
+<li>neutron.objects.base</li>
+</ul>
+<p>For QoS, new neutron objects were implemented:</p>
+<ul class="simple">
+<li>QosPolicy: directly maps to the conceptual policy resource, as defined above.</li>
+<li>QosBandwidthLimitRule: defines the instance-egress bandwidth limit rule
+type, characterized by a max kbps and a max burst kbits.</li>
+<li>QosDscpMarkingRule: defines the DSCP rule type, characterized by an even integer
+between 0 and 56.  These integers are the result of the bits in the DiffServ section
+of the IP header, and only certain configurations are valid.  As a result, the list
+of valid DSCP rule types is: 0, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32,
+34, 36, 38, 40, 46, 48, and 56.</li>
+<li>QosMinimumBandwidthRule: defines the minimum assured bandwidth rule type,
+characterized by a min_kbps parameter. This rule has also a direction
+parameter to set the traffic direction, from the instance point of view. The
+only direction now implemented is egress.</li>
+</ul>
+<p>Those are defined in:</p>
+<ul class="simple">
+<li>neutron.objects.qos.policy</li>
+<li>neutron.objects.qos.rule</li>
+</ul>
+<p>For QosPolicy neutron object, the following public methods were implemented:</p>
+<ul class="simple">
+<li>get_network_policy/get_port_policy: returns a policy object that is attached
+to the corresponding Neutron resource.</li>
+<li>attach_network/attach_port: attach a policy to the corresponding Neutron
+resource.</li>
+<li>detach_network/detach_port: detach a policy from the corresponding Neutron
+resource.</li>
+</ul>
+<p>In addition to the fields that belong to QoS policy database object itself,
+synthetic fields were added to the object that represent lists of rules that
+belong to the policy. To get a list of all rules for a specific policy, a
+consumer of the object can just access the corresponding attribute via:</p>
+<ul class="simple">
+<li>policy.rules</li>
+</ul>
+<p>Implementation is done in a way that will allow adding a new rule list field
+with little or no modifications in the policy object itself. This is achieved
+by smart introspection of existing available rule object definitions and
+automatic definition of those fields on the policy class.</p>
+<p>Note that rules are loaded in a non lazy way, meaning they are all fetched from
+the database on policy fetch.</p>
+<p>For Qos&lt;type&gt;Rule objects, an extendable approach was taken to allow easy
+addition of objects for new rule types. To accommodate this, fields common to
+all types are put into a base class called QosRule that is then inherited into
+type-specific rule implementations that, ideally, only define additional fields
+and some other minor things.</p>
+<p>Note that the QosRule base class is not registered with oslo.versionedobjects
+registry, because it&#8217;s not expected that &#8216;generic&#8217; rules should be
+instantiated (and to suggest just that, the base rule class is marked as ABC).</p>
+<p>QoS objects rely on some primitive database API functions that are added in:</p>
+<ul class="simple">
+<li>neutron.db.api: those can be reused to fetch other models that do not have
+corresponding versioned objects yet, if needed.</li>
+<li>neutron.db.qos.api: contains database functions that are specific to QoS
+models.</li>
+</ul>
+</div>
+<div class="section" id="rpc-communication">
+<h3>RPC communication<a class="headerlink" href="#rpc-communication" title="Permalink to this headline">¶</a></h3>
+<p>Details on RPC communication implemented in reference backend driver are
+discussed in <a class="reference external" href="rpc_callbacks.html">a separate page</a>.</p>
+<p>One thing that should be mentioned here explicitly is that RPC callback
+endpoints communicate using real versioned objects (as defined by serialization
+for oslo.versionedobjects library), not vague json dictionaries. Meaning,
+oslo.versionedobjects are on the wire and not just used internally inside a
+component.</p>
+<p>One more thing to note is that though RPC interface relies on versioned
+objects, it does not yet rely on versioning features the oslo.versionedobjects
+library provides. This is because Liberty is the first release where we start
+using the RPC interface, so we have no way to get different versions in a
+cluster. That said, the versioning strategy for QoS is thought through and
+described in <a class="reference external" href="rpc_callbacks.html">the separate page</a>.</p>
+<p>There is expectation that after RPC callbacks are introduced in Neutron, we
+will be able to migrate propagation from server to agents for other resources
+(f.e. security groups) to the new mechanism. This will need to wait until those
+resources get proper NeutronObject implementations.</p>
+<p>The flow of updates is as follows:</p>
+<ul class="simple">
+<li>if a port that is bound to the agent is attached to a QoS policy, then ML2
+plugin detects the change by relying on ML2 QoS extension driver, and
+notifies the agent about a port change. The agent proceeds with the
+notification by calling to get_device_details() and getting the new port dict
+that contains a new qos_policy_id. Each device details dict is passed into l2
+agent extension manager that passes it down into every enabled extension,
+including QoS. QoS extension sees that there is a new unknown QoS policy for
+a port, so it uses ResourcesPullRpcApi to fetch the current state of the
+policy (with all the rules included) from the server. After that, the QoS
+extension applies the rules by calling into QoS driver that corresponds to
+the agent.</li>
+<li>on existing QoS policy update (it includes any policy or its rules change),
+server pushes the new policy object state through ResourcesPushRpcApi
+interface. The interface fans out the serialized (dehydrated) object to any
+agent that is listening for QoS policy updates. If an agent have seen the
+policy before (it is attached to one of the ports it maintains), then it goes
+with applying the updates to the port. Otherwise, the agent silently ignores
+the update.</li>
+</ul>
+</div>
+</div>
+<div class="section" id="agent-side-design">
+<h2>Agent side design<a class="headerlink" href="#agent-side-design" title="Permalink to this headline">¶</a></h2>
+<p>Reference agents implement QoS functionality using an <a class="reference external" href="./l2_agent_extensions.html">L2 agent extension</a>.</p>
+<ul class="simple">
+<li>neutron.agent.l2.extensions.qos
+defines QoS L2 agent extension. It receives handle_port and delete_port
+events and passes them down into QoS agent backend driver (see below). The
+file also defines the QosAgentDriver interface. Note: each backend implements
+its own driver. The driver handles low level interaction with the underlying
+networking technology, while the QoS extension handles operations that are
+common to all agents.</li>
+</ul>
+<div class="section" id="agent-backends">
+<h3>Agent backends<a class="headerlink" href="#agent-backends" title="Permalink to this headline">¶</a></h3>
+<p>At the moment, QoS is supported by Open vSwitch, SR-IOV and Linux bridge
+ml2 drivers.</p>
+<p>Each agent backend defines a QoS driver that implements the QosAgentDriver
+interface:</p>
+<ul class="simple">
+<li>Open vSwitch (QosOVSAgentDriver);</li>
+<li>SR-IOV (QosSRIOVAgentDriver);</li>
+<li>Linux bridge (QosLinuxbridgeAgentDriver).</li>
+</ul>
+<div class="section" id="open-vswitch">
+<h4>Open vSwitch<a class="headerlink" href="#open-vswitch" title="Permalink to this headline">¶</a></h4>
+<p>Open vSwitch implementation relies on the new ovs_lib OVSBridge functions:</p>
+<ul class="simple">
+<li>get_egress_bw_limit_for_port</li>
+<li>create_egress_bw_limit_for_port</li>
+<li>delete_egress_bw_limit_for_port</li>
+</ul>
+<p>An egress bandwidth limit is effectively configured on the port by setting
+the port Interface parameters ingress_policing_rate and
+ingress_policing_burst.</p>
+<p>That approach is less flexible than linux-htb, Queues and OvS QoS profiles,
+which we may explore in the future, but which will need to be used in
+combination with openflow rules.</p>
+<p>The Open vSwitch DSCP marking implementation relies on the recent addition
+of the ovs_agent_extension_api OVSAgentExtensionAPI to request access to the
+integration bridge functions:</p>
+<ul class="simple">
+<li>add_flow</li>
+<li>mod_flow</li>
+<li>delete_flows</li>
+<li>dump_flows_for</li>
+</ul>
+<p>The DSCP markings are in fact configured on the port by means of
+openflow rules.</p>
+</div>
+<div class="section" id="sr-iov">
+<h4>SR-IOV<a class="headerlink" href="#sr-iov" title="Permalink to this headline">¶</a></h4>
+<p>SR-IOV bandwidth limit implementation relies on the new pci_lib function:</p>
+<ul class="simple">
+<li>set_vf_max_rate</li>
+</ul>
+<p>As the name of the function suggests, the limit is applied on a Virtual
+Function (VF).</p>
+<p>ip link interface has the following limitation for bandwidth limit: it uses
+Mbps as units of bandwidth measurement, not kbps, and does not support float
+numbers. So in case the limit is set to something less than 1000 kbps, it&#8217;s set
+to 1 Mbps only. If the limit is set to something that does not divide to 1000
+kbps chunks, then the effective limit is rounded to the nearest integer Mbps
+value.</p>
+</div>
+</div>
+<div class="section" id="linux-bridge">
+<h3>Linux bridge<a class="headerlink" href="#linux-bridge" title="Permalink to this headline">¶</a></h3>
+<p>The Linux bridge implementation relies on the new tc_lib functions:</p>
+<ul class="simple">
+<li>set_bw_limit</li>
+<li>update_bw_limit</li>
+<li>delete_bw_limit</li>
+</ul>
+<p>The ingress bandwidth limit is configured on the tap port by setting a simple
+<a class="reference external" href="http://linux.die.net/man/8/tc-tbf">tc-tbf</a> queueing discipline (qdisc) on the
+port. It requires a value of HZ parameter configured in kernel on the host.
+This value is necessary to calculate the minimal burst value which is set in
+tc. Details about how it is calculated can be found in
+<a class="reference external" href="http://unix.stackexchange.com/a/100797">here</a>. This solution is similar to Open
+vSwitch implementation.</p>
+</div>
+</div>
+<div class="section" id="qos-driver-design">
+<h2>QoS driver design<a class="headerlink" href="#qos-driver-design" title="Permalink to this headline">¶</a></h2>
+<p>QoS framework is flexible enough to support any third-party vendor. To integrate a
+third party driver (that just wants to be aware of the QoS create/update/delete API
+calls), one needs to implement &#8216;neutron.services.qos.drivers.base&#8217;, and register
+the driver during the core plugin or mechanism driver load, see</p>
+<p>neutron.services.qos.drivers.openvswitch.driver register method for an example.</p>
+<div class="admonition note">
+<p class="first admonition-title">Note</p>
+<p class="last">All the functionality MUST be implemented by the vendor, neutron&#8217;s QoS framework
+will just act as an interface to bypass the received QoS API request and help with
+database persistence for the API operations.</p>
+</div>
+</div>
+<div class="section" id="configuration">
+<h2>Configuration<a class="headerlink" href="#configuration" title="Permalink to this headline">¶</a></h2>
+<p>To enable the service, the following steps should be followed:</p>
+<p>On server side:</p>
+<ul class="simple">
+<li>enable qos service in service_plugins;</li>
+<li>for ml2, add &#8216;qos&#8217; to extension_drivers in [ml2] section.</li>
+</ul>
+<p>On agent side (OVS):</p>
+<ul class="simple">
+<li>add &#8216;qos&#8217; to extensions in [agent] section.</li>
+</ul>
+</div>
+<div class="section" id="testing-strategy">
+<h2>Testing strategy<a class="headerlink" href="#testing-strategy" title="Permalink to this headline">¶</a></h2>
+<p>All the code added or extended as part of the effort got reasonable unit test
+coverage.</p>
+<div class="section" id="neutron-objects">
+<h3>Neutron objects<a class="headerlink" href="#neutron-objects" title="Permalink to this headline">¶</a></h3>
+<p>Base unit test classes to validate neutron objects were implemented in a way
+that allows code reuse when introducing a new object type.</p>
+<p>There are two test classes that are utilized for that:</p>
+<ul class="simple">
+<li>BaseObjectIfaceTestCase: class to validate basic object operations (mostly
+CRUD) with database layer isolated.</li>
+<li>BaseDbObjectTestCase: class to validate the same operations with models in
+place and database layer unmocked.</li>
+</ul>
+<p>Every new object implemented on top of one of those classes is expected to
+either inherit existing test cases as is, or reimplement it, if it makes sense
+in terms of how those objects are implemented. Specific test classes can
+obviously extend the set of test cases as they see needed (f.e. you need to
+define new test cases for those additional methods that you may add to your
+object implementations on top of base semantics common to all neutron objects).</p>
+</div>
+<div class="section" id="functional-tests">
+<h3>Functional tests<a class="headerlink" href="#functional-tests" title="Permalink to this headline">¶</a></h3>
+<p>Additions to ovs_lib to set bandwidth limits on ports are covered in:</p>
+<ul class="simple">
+<li>neutron.tests.functional.agent.test_ovs_lib</li>
+</ul>
+<p>New functional tests for tc_lib to set bandwidth limits on ports are in:</p>
+<ul class="simple">
+<li>neutron.tests.functional.agent.linux.test_tc_lib</li>
+</ul>
+</div>
+<div class="section" id="api-tests">
+<h3>API tests<a class="headerlink" href="#api-tests" title="Permalink to this headline">¶</a></h3>
+<p>API tests for basic CRUD operations for ports, networks, policies, and rules were added in:</p>
+<ul class="simple">
+<li>neutron.tests.tempest.api.test_qos</li>
+</ul>
+</div>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="../index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">Quality of Service</a><ul>
+<li><a class="reference internal" href="#service-side-design">Service side design</a><ul>
+<li><a class="reference internal" href="#qos-plugin-implementation-guide">QoS plugin implementation guide</a></li>
+<li><a class="reference internal" href="#supported-qos-rule-types">Supported QoS rule types</a></li>
+<li><a class="reference internal" href="#database-models">Database models</a></li>
+<li><a class="reference internal" href="#qos-versioned-objects">QoS versioned objects</a></li>
+<li><a class="reference internal" href="#rpc-communication">RPC communication</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#agent-side-design">Agent side design</a><ul>
+<li><a class="reference internal" href="#agent-backends">Agent backends</a><ul>
+<li><a class="reference internal" href="#open-vswitch">Open vSwitch</a></li>
+<li><a class="reference internal" href="#sr-iov">SR-IOV</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#linux-bridge">Linux bridge</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#qos-driver-design">QoS driver design</a></li>
+<li><a class="reference internal" href="#configuration">Configuration</a></li>
+<li><a class="reference internal" href="#testing-strategy">Testing strategy</a><ul>
+<li><a class="reference internal" href="#neutron-objects">Neutron objects</a></li>
+<li><a class="reference internal" href="#functional-tests">Functional tests</a></li>
+<li><a class="reference internal" href="#api-tests">API tests</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="ovs_vhostuser.html"
+                                  title="previous chapter">Neutron Open vSwitch vhost-user support</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="service_extensions.html"
+                                  title="next chapter">Service Extensions</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/neutron
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="../_sources/devref/quality_of_service.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="right" >
+          <a href="service_extensions.html" title="Service Extensions"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="ovs_vhostuser.html" title="Neutron Open vSwitch vhost-user support"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../index.html">neutron 10.0.0.0rc2.dev58 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="index.html" accesskey="U">Developer Guide</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2011-present, OpenStack Foundation..
+      Last updated on Feb 14, 2017.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/neutron");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>

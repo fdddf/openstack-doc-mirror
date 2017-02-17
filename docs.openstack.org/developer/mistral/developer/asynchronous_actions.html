@@ -1,0 +1,276 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>How to work with asynchronous actions &mdash; Mistral</title>
+    
+    <link rel="stylesheet" href="../_static/nature.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/toggle.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/tweaks.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../',
+        VERSION:     '4.0.0.0rc2.dev22',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../_static/jquery.js"></script>
+    <script type="text/javascript" src="../_static/underscore.js"></script>
+    <script type="text/javascript" src="../_static/doctools.js"></script>
+    <script type="text/javascript" src="../_static/toggle.js"></script>
+    <link rel="top" title="Mistral" href="../index.html" />
+    <link rel="up" title="Developer’s Reference" href="index.html" />
+    <link rel="next" title="Mistral Devstack Installation" href="devstack.html" />
+    <link rel="prev" title="How to write a custom YAQL function" href="extending_yaql.html" /> 
+  </head>
+  <body role="document">
+  <div id="header">
+    <h1 id="logo"><a href="http://www.openstack.org/">OpenStack</a></h1>
+    <ul id="navigation">
+      
+      <li><a href="http://www.openstack.org/" title="Go to the Home page" class="link">Home</a></li>
+      <li><a href="http://www.openstack.org/projects/" title="Go to the OpenStack Projects page">Projects</a></li>
+      <li><a href="http://www.openstack.org/user-stories/" title="Go to the User Stories page" class="link">User Stories</a></li>
+      <li><a href="http://www.openstack.org/community/" title="Go to the Community page" class="link">Community</a></li>
+      <li><a href="http://www.openstack.org/blog/" title="Go to the OpenStack Blog">Blog</a></li>
+      <li><a href="http://wiki.openstack.org/" title="Go to the OpenStack Wiki">Wiki</a></li>
+      <li><a href="http://docs.openstack.org/" title="Go to OpenStack Documentation" class="current">Documentation</a></li>
+      
+    </ul>
+  </div>
+  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="how-to-work-with-asynchronous-actions">
+<h1>How to work with asynchronous actions<a class="headerlink" href="#how-to-work-with-asynchronous-actions" title="Permalink to this headline">¶</a></h1>
+<div class="section" id="concept">
+<h2>Concept<a class="headerlink" href="#concept" title="Permalink to this headline">¶</a></h2>
+<img alt="../_images/Mistral_actions.png" src="../_images/Mistral_actions.png" />
+<p>During a workflow execution Mistral eventually runs actions. Action is a particular
+function (or a piece of work) that a workflow task is associated to.</p>
+<p>Actions can be synchronous and asynchronous.</p>
+<p>Synchronous actions are actions that get completed without a 3rd party, i.e. by
+Mistral itself. When Mistral engine schedules to run a synchronous action it sends
+its definition and parameters to Mistral executor, then executor runs it and upon
+its completion sends a result of the action back to Mistral engine.</p>
+<p>In case of asynchronous actions executor doesn&#8217;t send a result back to Mistral.
+In fact, the concept of asynchronous action assumes that a result won&#8217;t be known
+at a time when executor is running it. It rather assumes that action will just
+delegate actual work to a 3rd party which can be either a human or a computer
+system (e.g. a web service). So an asynchronous action&#8217;s run() method is supposed
+to just send a signal to something that is capable of doing required job.</p>
+<p>Once the 3rd party has done the job it takes responsibility to send result of
+the action back to Mistral via Mistral API. Effectively, the 3rd party just needs
+to update the state of corresponding action execution object. To make it possible
+it must know corresponding action execution id.</p>
+<p>It&#8217;s worth noting that from Mistral engine perspective the schema is essentially
+the same in case of synchronous and asynchronous actions. If action is synchronous,
+then executor immediately sends a result back with RPC mechanism (most often,
+a message queue as a transport) to Mistral engine after action completion. But
+engine itself is not waiting anything proactively, its architecture is fully on
+asynchronous messages. So in case of asynchronous action the only change is that
+executor is not responsible for sending action result, something else takes over.</p>
+<p>Let&#8217;s see what we need to keep in mind when working with asynchronous actions.</p>
+</div>
+<div class="section" id="how-to">
+<h2>How to<a class="headerlink" href="#how-to" title="Permalink to this headline">¶</a></h2>
+<p>Currently, Mistral comes with one asynchronous action out of the box, &#8220;mistral_http&#8221;.
+There&#8217;s also &#8220;async_noop&#8221; action that is also asynchronous but it&#8217;s mostly useful
+for testing purposes because it does nothing. &#8220;mistral_http&#8221; is an asynchronous
+version of action &#8220;http&#8221; sending HTTP requests. Asynchrony is controlled by
+action&#8217;s method is_sync() which should return <em>True</em> for synchronous actions and
+<em>False</em> for asynchronous.</p>
+<p>Let&#8217;s see how &#8220;mistral_http&#8221; action works and how to use it step by step.</p>
+<p>We can imagine that we have a simple web service playing a role of 3rd party system
+mentioned before accessible at <a class="reference external" href="http://my.webservice.com">http://my.webservice.com</a>. And if we send an HTTP
+request to that url then our web service will do something useful. To keep it
+simple, let&#8217;s say our web service just calculates a sum of two numbers provided
+as request parameters &#8220;a&#8221; and &#8220;b&#8221;.</p>
+<div class="section" id="workflow-example">
+<h3>1. Workflow example<a class="headerlink" href="#workflow-example" title="Permalink to this headline">¶</a></h3>
+<blockquote>
+<div><div class="highlight-yaml"><div class="highlight"><pre><span></span><span class="nn">---</span>
+  <span class="l l-Scalar l-Scalar-Plain">version</span><span class="p p-Indicator">:</span> <span class="s">&#39;2.0&#39;</span>
+
+  <span class="l l-Scalar l-Scalar-Plain">my_workflow</span><span class="p p-Indicator">:</span>
+    <span class="l l-Scalar l-Scalar-Plain">tasks</span><span class="p p-Indicator">:</span>
+      <span class="l l-Scalar l-Scalar-Plain">one_plus_two</span><span class="p p-Indicator">:</span>
+        <span class="l l-Scalar l-Scalar-Plain">action</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">mistral_http url=http://my.webservice.com</span>
+        <span class="l l-Scalar l-Scalar-Plain">input</span><span class="p p-Indicator">:</span>
+          <span class="l l-Scalar l-Scalar-Plain">params</span><span class="p p-Indicator">:</span>
+            <span class="l l-Scalar l-Scalar-Plain">a</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">1</span>
+            <span class="l l-Scalar l-Scalar-Plain">b</span><span class="p p-Indicator">:</span> <span class="l l-Scalar l-Scalar-Plain">2</span>
+</pre></div>
+</div>
+</div></blockquote>
+<p>So our workflow has just one task &#8220;one_plus_two&#8221; that sends a request to our web
+service and passes parameters &#8220;a&#8221; and &#8220;b&#8221; in a query string. Note that we specify
+&#8220;url&#8221; right after action name but &#8220;params&#8221; in a special section &#8220;input&#8221;. This is
+because there&#8217;s no one-line syntax for dictionaries currently in Mistral. But both
+&#8220;url&#8221; and &#8220;params&#8221; are basically just parameters of action &#8220;mistral_http&#8221;.</p>
+<p>It is important to know that when &#8220;mistral_http&#8221; action sends a request it includes
+special HTTP headers that help identify action execution object. These headers are:</p>
+<ul class="simple">
+<li><strong>Mistral-Workflow-Name</strong></li>
+<li><strong>Mistral-Workflow-Execution-Id</strong></li>
+<li><strong>Mistral-Task-Id</strong></li>
+<li><strong>Mistral-Action-Execution-Id</strong></li>
+<li><strong>Mistral-Callback-URL</strong></li>
+</ul>
+<p>The most important one is &#8220;Mistral-Action-Execution-Id&#8221; which contains an id of
+action execution that we need to calculate result for. Using that id a 3rd party
+can deliver a result back to Mistral once it&#8217;s calculated. If a 3rd party is a
+computer system it can just call Mistral API via HTTP using header
+&#8220;Mistral-Callback-URL&#8221; which contains a base URL. However, a human can also do
+it, the simplest way is just to use Mistral CLI.</p>
+<p>Of course, this is a practically meaningless example. It doesn&#8217;t make sense to use
+asynchronous actions for simple arithmetic operations. Real examples when asynchronous
+actions are needed may include:</p>
+<ul class="simple">
+<li><strong>Analysis of big data volumes</strong>. E.g. we need to run an external reporting tool.</li>
+<li><strong>Human interaction</strong>. E.g. an administrator needs to approve allocation of resources.</li>
+</ul>
+<p>In general, this can be anything that takes significant time, such as hours, days
+or weeks. Sometimes duration of a job may be even unpredictable (it&#8217;s reasonable
+though to try to limit such jobs with timeout policy in practice).
+The key point here is that Mistral shouldn&#8217;t try to wait for completion of such
+job holding some resources needed for that in memory.</p>
+<p>An important aspect of using asynchronous actions is that even when we interact
+with 3rd party computer systems a human can still trigger action completion by
+just calling Mistral API.</p>
+</div>
+<div class="section" id="pushing-action-result-to-mistral">
+<h3>2. Pushing action result to Mistral<a class="headerlink" href="#pushing-action-result-to-mistral" title="Permalink to this headline">¶</a></h3>
+<p>Using CLI:</p>
+<blockquote>
+<div><div class="highlight-console"><div class="highlight"><pre><span></span><span class="gp">$</span> mistral action-execution-update &lt;id&gt; --state SUCCESS --output <span class="m">3</span>
+</pre></div>
+</div>
+</div></blockquote>
+<p>This command will update &#8220;state&#8221; and &#8220;output&#8221; of action execution object with
+corresponding id. That way Mistral will know what the result of this action
+is and decide how to proceed with workflow execution.</p>
+<p>Using raw HTTP:</p>
+<blockquote>
+<div><div class="highlight-HTTP"><div class="highlight"><pre><span></span>POST &lt;Mistral-Callback-URL&gt;/v2/action-executions/&lt;id&gt;
+
+{
+  &quot;state&quot;: &quot;SUCCESS&quot;,
+  &quot;output&quot;: 3
+}
+</pre></div>
+</div>
+</div></blockquote>
+</div>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+<div class="sphinxsidebar">
+    <div class="sphinxsidebarwrapper">
+            <h3><a href="../index.html">Table Of Contents</a></h3>
+            <ul>
+<li><a class="reference internal" href="#">How to work with asynchronous actions</a><ul>
+<li><a class="reference internal" href="#concept">Concept</a></li>
+<li><a class="reference internal" href="#how-to">How to</a><ul>
+<li><a class="reference internal" href="#workflow-example">1. Workflow example</a></li>
+<li><a class="reference internal" href="#pushing-action-result-to-mistral">2. Pushing action result to Mistral</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+            <h4>Previous topic</h4>
+            <p class="topless"><a href="extending_yaql.html"
+                                  title="previous chapter">How to write a custom YAQL function</a></p>
+            <h4>Next topic</h4>
+            <p class="topless"><a href="devstack.html"
+                                  title="next chapter">Mistral Devstack Installation</a></p>
+            <h3>Project Source</h3>
+            <ul class="this-page-menu">
+              <li><a href="http://git.openstack.org/cgit/openstack/mistral
+"
+                     rel="nofollow">Project Source</a></li>
+            </ul>
+            <h3>This Page</h3>
+            <ul class="this-page-menu">
+              <li><a href="../_sources/developer/asynchronous_actions.txt"
+                     rel="nofollow">Show Source</a></li>
+            </ul>
+          <div id="searchbox" style="display: none">
+            <h3>Quick search</h3>
+              <form class="search" action="../search.html" method="get">
+                <input type="text" name="q" size="18" />
+                <input type="submit" value="Go" />
+                <input type="hidden" name="check_keywords" value="yes" />
+                <input type="hidden" name="area" value="default" />
+              </form>
+              <p class="searchtip" style="font-size: 90%">
+              Enter search terms or a module, class or function name.
+              </p>
+          </div>
+          <script type="text/javascript">$('#searchbox').show(0);</script>
+    </div>
+</div>
+
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="../http-routingtable.html" title="HTTP Routing Table"
+             >routing table</a> |</li>
+        <li class="right" >
+          <a href="../py-modindex.html" title="Python Module Index"
+             >modules</a> |</li>
+        <li class="right" >
+          <a href="devstack.html" title="Mistral Devstack Installation"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="extending_yaql.html" title="How to write a custom YAQL function"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../index.html">Mistral</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="index.html" accesskey="U">Developer&#8217;s Reference</a> &raquo;</li> 
+      </ul>
+    </div>
+
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2014, Mistral Contributors.
+      Last updated on &#39;Tue Feb 14 13:51:17 2017, commit 83d638a&#39;.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.6.
+    </div>
+<script type="text/javascript">
+var gaJsHost = (("https:" == document.location.protocol) ? "https://ssl." : "http://www.");
+document.write(unescape("%3Cscript src='" + gaJsHost + "google-analytics.com/ga.js' type='text/javascript'%3E%3C/script%3E"));
+</script>
+<script type="text/javascript">
+try {
+//Tracking docs.openstack.org/developer/<projectname> only
+//The URL is built from the project variable in conf.py
+var pageTracker = _gat._getTracker("UA-17511903-1");
+pageTracker._setCookiePath("/developer/mistral");
+pageTracker._trackPageview();
+} catch(err) {}</script>
+
+  </body>
+</html>
